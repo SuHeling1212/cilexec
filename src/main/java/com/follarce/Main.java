@@ -1,11 +1,6 @@
 package com.follarce;
 
 import com.follarce.Time.getTime;
-
-/**
- * 主类
- * 程序的入口点，用于测试时间获取功能
- */
 public class Main {
     /**
      * 主方法
@@ -15,6 +10,14 @@ public class Main {
         // 获取当前时间组件数组
         int arr[] = getTime.getTime();
         // 这里可以添加使用时间组件的代码
+        for (int i = 0; i < arr.length; i++) {
+            System.out.print(arr[i]);
+            if (i < arr.length - 1) {
+                System.out.print(" ");
+            }
+            
+        }
+        System.out.println();
     }
 }
 
