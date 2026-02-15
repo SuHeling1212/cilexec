@@ -1,0 +1,45 @@
+#<META>
+{
+    "Time": {
+        "createTime": [
+            2026,
+            2,
+            8,
+            9,
+            8,
+            7,
+            819
+        ],
+        "lastEditTime": [
+            2026,
+            2,
+            8,
+            9,
+            8,
+            7,
+            819
+        ],
+        "lastOpenTime": [
+            2026,
+            2,
+            8,
+            9,
+            8,
+            7,
+            819
+        ]
+    },
+    "Owner": "administrator",
+    "Permission": {
+        "Local": "read, write",
+        "Onwner": "read, write",
+        "Others": "read"
+    },
+    "locked": {
+        "isLocked": false,
+        "lockedBy": null
+    }
+    ,"Size":[712,"B"]
+}
+<META>#
+这里是正文内容
