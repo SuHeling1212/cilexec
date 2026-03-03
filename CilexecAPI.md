@@ -50,7 +50,7 @@ print(time_array)  # 输出: [2026, 2, 15, 10, 30, 45, 123]
 - `path` (string)：文件完整路径
 
 **返回值**：
-- 成功：`string[]` 文件内容数组
+- 成功：`string[]` 包含 `"SUCCESS"` 和 文件路径字符串
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
   - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
   - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
@@ -103,7 +103,7 @@ else:
 - `path` (string)：目录路径（结尾是 `/`）
 
 **返回值**：
-- 成功：`string[]` 文件名和目录名数组（目录名后面有 `/`）
+- 成功：`string[]` 包含 `"SUCCESS"` 和 文件名和目录名数组（目录名后面有 `/`）
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
   - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
   - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
@@ -127,7 +127,7 @@ else:
 - `path` (string)：文件完整路径
 
 **返回值**：
-- 成功：`string[]` 元信息内容（JSON 格式，一定不为 null 但可能为 `{}`）
+- 成功：`string[]` 包含 `"SUCCESS"` 和 元信息内容（JSON 格式，一定不为 null 但可能为 `{}`）
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
   - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
   - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
@@ -284,7 +284,7 @@ else:
 - `path` (string)：目录路径（结尾是 `/`）
 
 **返回值**：
-- 成功：`string[]` 元信息内容（JSON 格式，一定不为 null 但可能为 `{}`）
+- 成功：`string[]` 包含 `"SUCCESS"` 和 元信息内容（JSON 格式，一定不为 null 但可能为 `{}`）
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
   - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
   - `ERROR_META_DATA_FILE_DOES_NOT_EXIST`：元信息文件不存在
@@ -524,7 +524,7 @@ else:
 - `param[]` (string[])：切换到新程序的参数数组
 
 **返回值**：
-- 成功：`string[]` 新进程的内容
+- 成功：`string[]` 包含 `"SUCCESS"` 和 新进程的内容
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
   - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
   - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
