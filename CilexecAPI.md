@@ -52,10 +52,10 @@ print(time_array)  # 输出: [2026, 2, 15, 10, 30, 45, 123]
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 文件路径字符串
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
 
 **示例**：
 ```python
@@ -78,12 +78,12 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_FILE_IS_NOT_LOCKED`：文件未锁定
-  - `ERROR_FILE_IS_LOCKED`：文件已被其他进程锁定
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`FILE_IS_NOT_LOCKED`：文件未锁定
+  - `ERROR`和`FILE_IS_LOCKED`：文件已被其他进程锁定
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
 
 **示例**：
 ```python
@@ -105,15 +105,15 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 文件名和目录名数组（目录名后面有 `/`）
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
 
 **示例**：
 ```python
 # 调用示例
 items = getListOfFileAndDirectory("/path/to/directory/")
-if items[0] == "ERROR_INSUFFICIENT_PERMISSION":
+if items[0] == "ERROR"和"INSUFFICIENT_PERMISSION":
     print("权限不足")
 else:
     print(items)  # 输出目录内容列表
@@ -129,10 +129,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 元信息内容（JSON 格式，一定不为 null 但可能为 `{}`）
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
 
 **示例**：
 ```python
@@ -155,12 +155,12 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_FILE_NOT_LOCK`：文件未锁定
-  - `ERROR_FILE_IS_LOCKED`：文件已被其他进程锁定
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`FILE_NOT_LOCK`：文件未锁定
+  - `ERROR`和`FILE_IS_LOCKED`：文件已被其他进程锁定
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
 
 **示例**：
 ```python
@@ -183,11 +183,11 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_INVALID_NAME`：文件名无效
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
-  - `ERROR_FILE_EXIST`：文件已存在
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`INVALID_NAME`：文件名无效
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`FILE_EXIST`：文件已存在
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
 
 **示例**：
 ```python
@@ -209,11 +209,11 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_FILE_IS_LOCKED`：文件已被锁定
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`FILE_IS_LOCKED`：文件已被锁定
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
 
 **示例**：
 ```python
@@ -236,10 +236,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
-  - `ERROR_DIRECTORY_EXIST`：目录已存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`DIRECTORY_EXIST`：目录已存在
 
 **示例**：
 ```python
@@ -261,10 +261,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_DIRECTORY_IS_NOT_EMPTY`：目录不为空
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`DIRECTORY_IS_NOT_EMPTY`：目录不为空
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
 
 **示例**：
 ```python
@@ -286,10 +286,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 元信息内容（JSON 格式，一定不为 null 但可能为 `{}`）
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_META_DATA_FILE_DOES_NOT_EXIST`：元信息文件不存在
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`META_DATA_FILE_DOES_NOT_EXIST`：元信息文件不存在
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
 
 **示例**：
 ```python
@@ -312,12 +312,12 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_META_DATA_FILE_DOES_NOT_EXIST`：元信息文件不存在
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
-  - `ERROR_FILE_IS_NOT_LOCKED`：文件未锁定
-  - `ERROR_FILE_IS_LOCKED`：文件已被其他进程锁定
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`META_DATA_FILE_DOES_NOT_EXIST`：元信息文件不存在
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`FILE_IS_NOT_LOCKED`：文件未锁定
+  - `ERROR`和`FILE_IS_LOCKED`：文件已被其他进程锁定
 
 **示例**：
 ```python
@@ -339,9 +339,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_DIRECTORY_DOES_NOT_EXIST`：目录不存在
-  - `ERROR_IS_NOT_DIRECTORY`：路径指向的不是目录
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`DIRECTORY_DOES_NOT_EXIST`：目录不存在
+  - `ERROR`和`IS_NOT_DIRECTORY`：路径指向的不是目录
 
 **示例**：
 ```python
@@ -364,12 +364,12 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_IS_NOT_DIRECTORY_OR_FILE`：路径指向的不是目录或文件
-  - `ERROR_FILE_EXIST`：目标文件或目录已存在
-  - `ERROR_FILE_DOES_NOT_EXIST`：源文件或目录不存在
-  - `ERROR_INVALID_NEW_NAME`：新名称无效
-  - `ERROR_FILE_IS_LOCKED`：文件已被锁定
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`IS_NOT_DIRECTORY_OR_FILE`：路径指向的不是目录或文件
+  - `ERROR`和`FILE_EXIST`：目标文件或目录已存在
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：源文件或目录不存在
+  - `ERROR`和`INVALID_NEW_NAME`：新名称无效
+  - `ERROR`和`FILE_IS_LOCKED`：文件已被锁定
 
 **示例**：
 ```python
@@ -398,10 +398,10 @@ else:
 **返回值**：
 - 成功：`dict` 文件内容字典
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INCORRECT_FORMAT`：JSON 格式错误
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`INCORRECT_FORMAT`：JSON 格式错误
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
 
 **示例**：
 ```python
@@ -423,10 +423,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_FILE_IS_LOCKED`：文件已被锁定
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`FILE_IS_LOCKED`：文件已被锁定
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
 
 **示例**：
 ```python
@@ -448,10 +448,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_FILE_IS_NOT_LOCKED`：文件未锁定
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`FILE_IS_NOT_LOCKED`：文件未锁定
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
 
 **示例**：
 ```python
@@ -474,10 +474,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_FILE_EXIST`：链接文件已存在
-  - `ERROR_SOURCE_FILE_DOES_NOT_EXIST`：源文件不存在
-  - `ERROR_SOURCE_DIRECTORY_DOES_NOT_EXIST`：源目录不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`FILE_EXIST`：链接文件已存在
+  - `ERROR`和`SOURCE_FILE_DOES_NOT_EXIST`：源文件不存在
+  - `ERROR`和`SOURCE_DIRECTORY_DOES_NOT_EXIST`：源目录不存在
 
 **示例**：
 ```python
@@ -526,9 +526,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 新进程的内容
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
 
 **示例**：
 ```python
@@ -550,8 +550,8 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_PROCESS_DOES_NOT_EXIST`：进程不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`PROCESS_DOES_NOT_EXIST`：进程不存在
 
 **示例**：
 ```python
@@ -572,7 +572,7 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_CHILD_PROCESS_DOES_NOT_EXIST`：子进程不存在
+  - `ERROR`和`CHILD_PROCESS_DOES_NOT_EXIST`：子进程不存在
 
 **示例**：
 ```python
@@ -594,8 +594,8 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_PROCESS_DOES_NOT_EXIST`：进程不存在
-  - `ERROR_PID_DOES_NOT_CHILD_PROCESS`：PID 不是子进程
+  - `ERROR`和`PROCESS_DOES_NOT_EXIST`：进程不存在
+  - `ERROR`和`PID_DOES_NOT_CHILD_PROCESS`：PID 不是子进程
 
 **示例**：
 ```python
@@ -691,9 +691,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_PROCESS_DOES_NOT_EXIST`：进程不存在
-  - `ERROR_PROCESS_IS_PAUSED`：进程已暂停
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`PROCESS_DOES_NOT_EXIST`：进程不存在
+  - `ERROR`和`PROCESS_IS_PAUSED`：进程已暂停
 
 **示例**：
 ```python
@@ -715,9 +715,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_PROCESS_DOES_NOT_EXIST`：进程不存在
-  - `ERROR_PROCESS_IS_RUNNING`：进程已在运行
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`PROCESS_DOES_NOT_EXIST`：进程不存在
+  - `ERROR`和`PROCESS_IS_RUNNING`：进程已在运行
 
 **示例**：
 ```python
@@ -755,8 +755,8 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INVALID_NAME`：名称无效
-  - `ERROR_SWAP_POOL_EXIST`：交换池已存在
+  - `ERROR`和`INVALID_NAME`：名称无效
+  - `ERROR`和`SWAP_POOL_EXIST`：交换池已存在
 
 **示例**：
 ```python
@@ -778,9 +778,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_SOME_VAR_IS_LOCKED`：某些变量已锁定
+  - `ERROR`和`SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`SOME_VAR_IS_LOCKED`：某些变量已锁定
 
 **示例**：
 ```python
@@ -804,10 +804,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_IS_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_VARIABLE_EXIST`：变量已存在
-  - `ERROR_INVALID_PARAMETER`：参数无效
+  - `ERROR`和`SWAP_POOL_IS_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`VARIABLE_EXIST`：变量已存在
+  - `ERROR`和`INVALID_PARAMETER`：参数无效
 
 **示例**：
 ```python
@@ -830,10 +830,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_VARIABLE_DOES_NOT_EXIST`：变量不存在
-  - `ERROR_VAR_IS_LOCKED`：变量已锁定
+  - `ERROR`和`SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`VARIABLE_DOES_NOT_EXIST`：变量不存在
+  - `ERROR`和`VAR_IS_LOCKED`：变量已锁定
 
 **示例**：
 ```python
@@ -856,10 +856,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_VARIABLE_DOES_NOT_EXIST`：变量不存在
-  - `ERROR_VAR_IS_LOCKED`：变量已锁定
+  - `ERROR`和`SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`VARIABLE_DOES_NOT_EXIST`：变量不存在
+  - `ERROR`和`VAR_IS_LOCKED`：变量已锁定
 
 **示例**：
 ```python
@@ -882,10 +882,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_VARIABLE_DOES_NOT_EXIST`：变量不存在
-  - `ERROR_VAR_IS_NOT_LOCKED`：变量未锁定
+  - `ERROR`和`SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`VARIABLE_DOES_NOT_EXIST`：变量不存在
+  - `ERROR`和`VAR_IS_NOT_LOCKED`：变量未锁定
 
 **示例**：
 ```python
@@ -909,10 +909,10 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足（非变量拥有者）
-  - `ERROR_VARIABLE_DOES_NOT_EXIST`：变量不存在
-  - `ERROR_VAR_IS_NOT_LOCKED`：变量未锁定
+  - `ERROR`和`SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足（非变量拥有者）
+  - `ERROR`和`VARIABLE_DOES_NOT_EXIST`：变量不存在
+  - `ERROR`和`VAR_IS_NOT_LOCKED`：变量未锁定
 
 **示例**：
 ```python
@@ -934,8 +934,8 @@ else:
 **返回值**：
 - 成功：`dict<string, string>` 变量名和值的键值对
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足（非交换池拥有者）
+  - `ERROR`和`SWAP_POOL_DOES_NOT_EXIST`：交换池不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足（非交换池拥有者）
 
 **示例**：
 ```python
@@ -1014,11 +1014,11 @@ cilexec 提供了基于 JavaFX 技术的终端组件，用于提供图形化的�
 **返回值**：
 - 成功：`string[]` 命令执行结果输出
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_COMMAND_NOT_FOUND`：命令不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_COMMAND_EXECUTION_FAILED`：命令执行失败
-  - `ERROR_TERMINAL_DOES_NOT_EXIST`：终端不存在
-  - `ERROR_NO_TERMINAL_OPEN`：没有打开的终端
+  - `ERROR`和`COMMAND_NOT_FOUND`：命令不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`COMMAND_EXECUTION_FAILED`：命令执行失败
+  - `ERROR`和`TERMINAL_DOES_NOT_EXIST`：终端不存在
+  - `ERROR`和`NO_TERMINAL_OPEN`：没有打开的终端
 
 **示例**：
 ```python
@@ -1049,13 +1049,13 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_COMMAND_NOT_FOUND`：命令不存在
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_COMMAND_EXECUTION_FAILED`：命令执行失败
-  - `ERROR_FILE_DOES_NOT_EXIST`：输出文件不存在
-  - `ERROR_IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR_TERMINAL_DOES_NOT_EXIST`：终端不存在
-  - `ERROR_NO_TERMINAL_OPEN`：没有打开的终端
+  - `ERROR`和`COMMAND_NOT_FOUND`：命令不存在
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`COMMAND_EXECUTION_FAILED`：命令执行失败
+  - `ERROR`和`FILE_DOES_NOT_EXIST`：输出文件不存在
+  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
+  - `ERROR`和`TERMINAL_DOES_NOT_EXIST`：终端不存在
+  - `ERROR`和`NO_TERMINAL_OPEN`：没有打开的终端
 
 **示例**：
 ```python
@@ -1077,9 +1077,9 @@ else:
 **返回值**：
 - 成功：`string[]` 历史命令数组
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_TERMINAL_DOES_NOT_EXIST`：终端不存在
-  - `ERROR_NO_TERMINAL_OPEN`：没有打开的终端
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`TERMINAL_DOES_NOT_EXIST`：终端不存在
+  - `ERROR`和`NO_TERMINAL_OPEN`：没有打开的终端
 
 **示例**：
 ```python
@@ -1100,8 +1100,8 @@ else:
 **返回值**：
 - 成功：`int` 新终端窗口的 ID
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_TERMINAL_LIMIT_REACHED`：终端数量达到上限
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`TERMINAL_LIMIT_REACHED`：终端数量达到上限
 
 **示例**：
 ```python
@@ -1123,9 +1123,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_TERMINAL_DOES_NOT_EXIST`：终端不存在
-  - `ERROR_NO_TERMINAL_OPEN`：没有打开的终端
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`TERMINAL_DOES_NOT_EXIST`：终端不存在
+  - `ERROR`和`NO_TERMINAL_OPEN`：没有打开的终端
 
 **示例**：
 ```python
@@ -1146,7 +1146,7 @@ else:
 **返回值**：
 - 成功：`dict<int, string>` 终端 ID 和状态的键值对
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
 
 **示例**：
 ```python
@@ -1169,9 +1169,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_TERMINAL_DOES_NOT_EXIST`：终端不存在
-  - `ERROR_NO_TERMINAL_OPEN`：没有打开的终端
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`TERMINAL_DOES_NOT_EXIST`：终端不存在
+  - `ERROR`和`NO_TERMINAL_OPEN`：没有打开的终端
 
 **示例**：
 ```python
@@ -1194,9 +1194,9 @@ else:
 **返回值**：
 - 成功：`string[]` 包含 `"SUCCESS"` 和 `null`
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
-  - `ERROR_INSUFFICIENT_PERMISSION`：权限不足
-  - `ERROR_TERMINAL_DOES_NOT_EXIST`：终端不存在
-  - `ERROR_NO_TERMINAL_OPEN`：没有打开的终端
+  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
+  - `ERROR`和`TERMINAL_DOES_NOT_EXIST`：终端不存在
+  - `ERROR`和`NO_TERMINAL_OPEN`：没有打开的终端
 
 **示例**：
 ```python
