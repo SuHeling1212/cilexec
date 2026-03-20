@@ -91,9 +91,9 @@ public class FileInit {
             "        }\n" +
             "    }\n" +
             "}";
-        writeFile(usersJsonPath, usersContent);
+        writeFileIfNotExists(usersJsonPath, usersContent);
 
-        // 创建默认的 INIT 进程配置文件
+        // 创建默认的 INIT 进程配置文件（如果不存在）
         String initConfigPath = vfsPath + File.separator + "system" + File.separator +
                                "config" + File.separator + "INIT.fcl";
         String initConfigContent = "# INIT Process Configuration\n" +
@@ -103,12 +103,19 @@ public class FileInit {
             "    # INIT process main loop\n" +
             "    # This process adopts orphaned child processes\n" +
             "}";
-        writeFile(initConfigPath, initConfigContent);
+        writeFileIfNotExists(initConfigPath, initConfigContent);
     }
     
     private static void writeFile(String path, String content) {
         try (FileWriter writer = new FileWriter(path)) {
             writer.write(content);
         } catch (IOException e) {}
+    }
+    
+    private static void writeFileIfNotExists(String path, String content) {
+        File file = new File(path);
+        if (!file.exists()) {
+            writeFile(path, content);
+        }
     }
 }
