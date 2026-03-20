@@ -1,6 +1,6 @@
 package com.follarce;
 
-import com.follarce.Time.getTime;
+import com.follarce.API.*;
 public class Main {
     /**
      * 主方法
@@ -8,7 +8,7 @@ public class Main {
      */
     public static void main(String[] args) {
         // 获取当前时间组件数组
-        int arr[] = getTime.getTime();
+        int arr[] = TimeUtil.getTime();
         // 这里可以添加使用时间组件的代码
         for (int i = 0; i < arr.length; i++) {
             System.out.print(arr[i]);

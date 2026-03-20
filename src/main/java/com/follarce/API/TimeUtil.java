@@ -1,4 +1,4 @@
-package com.follarce.Time;
+package com.follarce.API;
 
 import java.time.*;
 
@@ -6,7 +6,7 @@ import java.time.*;
  * 时间获取工具类
  * 提供获取当前时间组件的静态方法
  */
-public class getTime {
+public class TimeUtil {
     /**
      * 获取当前时间的各个组件
      * @return 包含时间组件的整数数组，顺序为：年、月、日、时、分、秒、毫秒
