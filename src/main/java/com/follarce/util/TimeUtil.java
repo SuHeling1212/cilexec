@@ -1,4 +1,4 @@
-package com.follarce.API;
+package com.follarce.util;
 
 import java.time.*;
 

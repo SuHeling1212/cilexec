@@ -4,7 +4,7 @@
     "Local": true,
     "PID": 1,
     "Path": "/bin/Terminal",
-    "Status": "Running",
+    "Status": true,
     "startTime": [
         2026,
         2,
@@ -38,10 +38,7 @@
             "text": "The number squared is:"
         },
         "Code": {
-            "runningCodeLine": [
-                1,
-                4
-            ],
+            "runningCodeLine": 3,
             "Code": [
                 "num=input(\"Enter a number: \")",
                 "num=int(num)*int(num)",

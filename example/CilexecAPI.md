@@ -61,8 +61,8 @@ print(time_array)  # 输出: [2026, 2, 15, 10, 30, 45, 123]
 ```python
 # 调用示例
 content = read("/path/to/file.txt")
-if content[0] == "ERROR_INSUFFICIENT_PERMISSION":
-    print("权限不足")
+if content[1] == "ERROR":
+    print("错误")
 else:
     print(content)  # 输出文件内容数组
 ```
@@ -390,27 +390,21 @@ else:
 
 #### `readJson(path)`
 
-**功能**：读取 JSON 文件内容
+**功能**：解析 JSON 内容
 
 **参数**：
-- `path` (string)：文件路径
+- `content` (string)：json内容
 
 **返回值**：
 - 成功：`dict` 文件内容字典
 - 失败：`string[]` 错误信息数组，包含以下错误码之一：
   - `ERROR`和`INCORRECT_FORMAT`：JSON 格式错误
-  - `ERROR`和`FILE_DOES_NOT_EXIST`：文件不存在
-  - `ERROR`和`IS_NOT_FILE`：路径指向的不是文件
-  - `ERROR`和`INSUFFICIENT_PERMISSION`：权限不足
 
 **示例**：
 ```python
 # 调用示例
-content = readJson("/path/to/file.json")
-if isinstance(content, list) and content[0].startswith("ERROR_"):
-    print(f"读取失败: {content[0]}")
-else:
-    print(content)  # 输出 JSON 内容字典
+content = readJson("apple[1,2,3]")
+
 ```
 
 #### `Lock(path)`
@@ -649,15 +643,11 @@ print(f"Parent process PID: {ppid}")
 
 **返回值**：
 - 成功：`dict<string, int>` 子进程程序名称/PID 键值对
-- 失败：`dict<string, int>` 包含错误码，格式为 `{"ERROR_CHILD_PROCESS_DOES_NOT_EXIST": -1}`
 
 **示例**：
 ```python
 # 调用示例
 child_processes = getListOfChildProcess()
-if "ERROR_CHILD_PROCESS_DOES_NOT_EXIST" in child_processes:
-    print("没有子进程")
-else:
     print(child_processes)  # 输出子进程列表
 ```
 
@@ -669,7 +659,6 @@ else:
 
 **返回值**：
 - 成功：`dict<string, int>` 进程程序名称/PID 键值对
-- 失败：`dict<string, int>` 包含错误码，格式为 `{"ERROR_INSUFFICIENT_PERMISSION": -1}`
 
 **示例**：
 ```python
@@ -952,7 +941,7 @@ else:
 ### 错误处理
 
 所有 API 调用返回的错误信息都遵循以下格式：
-- 错误码：使用大写字母和下划线组成的常量，如 `ERROR_INSUFFICIENT_PERMISSION`
+- 错误码：使用大写字母和下划线组成的常量，如 `ERROR`和`INSUFFICIENT_PERMISSION`
 - 错误信息数组：第一个元素为错误码，后续元素为详细错误信息（如果有）
 
 ### 权限系统
