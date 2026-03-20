@@ -15,12 +15,13 @@ public class ProcessRunner implements Runnable {
     private Object returnValue;
     private long startTimeMs;
     private String owner;
+    private Stack<Integer> whileStack; // Track while loop start positions
 
     public ProcessRunner(int pid) {
         this.pid = pid;
         this.running = true;
         this.functions = new HashMap<>();
-        ProcessFunc.setCurrentPid(pid);
+        this.whileStack = new Stack<>();
         loadFromFile();
 
         if (owner != null) {
@@ -105,6 +106,8 @@ public class ProcessRunner implements Runnable {
             return;
         }
 
+        // Load currentLine from file on every load to ensure correct position
+        // This is important for fork() - child process needs to start from correct line
         Object runningLine = code.get("runningCodeLine");
         if (runningLine instanceof Number) {
             this.currentLine = ((Number) runningLine).intValue();
@@ -118,10 +121,8 @@ public class ProcessRunner implements Runnable {
         } else {
             this.currentLine = 0;
         }
-
-        if (this.currentLine >= this.codeLines.size()) {
-            this.currentLine = 0;
-        }
+        // Note: Don't reset currentLine here - let executeLine handle process termination
+        // when currentLine >= codeLines.size()
     }
 
     @SuppressWarnings("unchecked")
@@ -188,12 +189,43 @@ public class ProcessRunner implements Runnable {
             return;
         }
 
-        if (line.equals("{") || line.equals("}")) {
+        if (line.equals("{")) {
             currentLine++;
             saveToFile();
             return;
         }
+        
+        if (line.equals("}")) {
+            // Check if this is the end of a while block
+            if (!whileStack.isEmpty()) {
+                // Pop the while line and jump back to it
+                int whileLine = whileStack.pop();
+                currentLine = whileLine;
+                saveToFile();
+                // Don't increment currentLine here - we want to go back to while line
+                return;
+            } else {
+                currentLine++;
+            }
+            saveToFile();
+            return;
+        }
 
+        // For fork() and other statements: increment line first, then execute
+        // This ensures child process starts from next line
+        if (line.startsWith("fork(")) {
+            currentLine++;  // Move to next line first
+            saveToFile();   // Save state with updated line
+            try {
+                executeStatement(line);  // Then execute fork
+            } catch (Exception e) {
+                running = false;
+                data.put("_error", e.getMessage());
+            }
+            return;
+        }
+
+        // Normal execution for other statements
         try {
             executeStatement(line);
         } catch (Exception e) {
@@ -327,6 +359,7 @@ public class ProcessRunner implements Runnable {
         String condition = line.substring(5, line.length() - 1).trim();
 
         if (!isTrue(evaluate(condition))) {
+            // Condition is false, skip the entire while block
             int braceCount = 1;
             int i = currentLine + 1;
             while (i < codeLines.size() && braceCount > 0) {
@@ -338,6 +371,9 @@ public class ProcessRunner implements Runnable {
                 i++;
             }
             currentLine = i - 1;
+        } else {
+            // Condition is true, push while line onto stack and enter block
+            whileStack.push(currentLine);
         }
     }
 
@@ -511,8 +547,8 @@ public class ProcessRunner implements Runnable {
             return result;
         }
 
-        // 2. Try ProcessFunc
-        result = ProcessFunc.call(funcName, argArray);
+        // 2. Try ProcessFunc (pass current pid to avoid static variable issues)
+        result = ProcessFunc.call(funcName, argArray, this.pid);
         if (result != null) {
             return result;
         }

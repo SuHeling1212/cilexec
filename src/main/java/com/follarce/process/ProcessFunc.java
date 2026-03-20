@@ -23,13 +23,12 @@ public class ProcessFunc {
     }
 
     /**
-     * Fork a new process
+     * Fork a new process from the specified parent PID
      * 
-     * @return child PID for parent, 0 for child
+     * @param parentPid the parent process ID
+     * @return child PID on success, -1 on failure
      */
-    public static int fork() {
-        int parentPid = currentPid.get();
-
+    public static int fork(int parentPid) {
         try {
             // 1. Read parent process file
             String[] readResult = FileUtil.read("/system/process/" + parentPid + ".json");
@@ -38,6 +37,15 @@ public class ProcessFunc {
             }
 
             Map<String, Object> parentProcess = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+
+            // Get parent's current code line
+            Map<String, Object> parentProgram = (Map<String, Object>) parentProcess.get("Program");
+            Map<String, Object> parentCode = (Map<String, Object>) parentProgram.get("Code");
+            int parentRunningLine = 0;
+            Object runningLineObj = parentCode.get("runningCodeLine");
+            if (runningLineObj instanceof Number) {
+                parentRunningLine = ((Number) runningLineObj).intValue();
+            }
 
             // 2. Allocate new PID
             int childPid = allocatePid();
@@ -60,10 +68,11 @@ public class ProcessFunc {
             childProcess.put("startTime", TimeUtil.getTime());
             childProcess.put("RunningTime", 0);
 
-            // Reset program state (reset runningCodeLine to 0)
+            // Set child's program state - continue from next line after fork()
             Map<String, Object> program = (Map<String, Object>) childProcess.get("Program");
             Map<String, Object> code = (Map<String, Object>) program.get("Code");
-            code.put("runningCodeLine", 0);
+            // Child continues from the line AFTER fork() call
+            code.put("runningCodeLine", parentRunningLine + 1);
 
             // 5. Write child process file
             FileUtil.createFile("/system/process/", childPid + ".json");
@@ -84,12 +93,21 @@ public class ProcessFunc {
 
             FileUtil.write("/system/process/" + parentPid + ".json", JsonUtil.toJson(parentProcess));
 
-            // 7. Return child PID (parent gets child PID, child gets 0)
+            // 7. Return child PID
             return childPid;
 
         } catch (Exception e) {
             return -1;
         }
+    }
+    
+    /**
+     * Fork a new process using current PID (for backward compatibility)
+     * 
+     * @return child PID for parent, -1 on failure
+     */
+    public static int fork() {
+        return fork(currentPid.get());
     }
 
     private static synchronized int allocatePid() {
@@ -554,19 +572,22 @@ public class ProcessFunc {
     }
 
     /**
-     * Dispatch function calls from script engine
+     * Dispatch function calls from script engine (with explicit caller PID)
      */
-    public static Object call(String name, Object[] args) {
+    public static Object call(String name, Object[] args, int callerPid) {
+        // Set current PID for this call
+        setCurrentPid(callerPid);
+        
         switch (name) {
             // Process info
             case "getPID":
-                return getPID();
+                return callerPid;
             case "getPPID":
-                return getPPID();
+                return getPPIDInternal(callerPid);
 
             // Process creation
             case "fork":
-                return fork();
+                return fork(callerPid);
             case "exec":
                 if (args.length != 2 || !(args[0] instanceof String) || !(args[1] instanceof String[])) {
                     return new String[] { "ERROR", "INVALID_ARGUMENTS" };
@@ -592,21 +613,185 @@ public class ProcessFunc {
 
             // Process waiting
             case "wait":
-                return waitProcess();
+                return waitProcessInternal(callerPid);
             case "waitPID":
                 if (args.length != 1 || !(args[0] instanceof Number)) {
                     return new String[] { "ERROR", "INVALID_ARGUMENTS" };
                 }
-                return waitPID(((Number) args[0]).intValue());
+                return waitPIDInternal(callerPid, ((Number) args[0]).intValue());
 
             // Process listing
             case "getListOfChildProcess":
-                return getListOfChildProcess();
+                return getListOfChildProcessInternal(callerPid);
             case "getListOfProcess":
                 return getListOfProcess();
 
             default:
                 return null;
         }
+    }
+    
+    /**
+     * Dispatch function calls from script engine (backward compatibility)
+     */
+    public static Object call(String name, Object[] args) {
+        return call(name, args, currentPid.get());
+    }
+    
+    private static int getPPIDInternal(int pid) {
+        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
+        if (!readResult[0].equals("SUCCESS")) {
+            return 0;
+        }
+
+        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
+
+        if (parent == null || !parent.containsKey("PID")) {
+            return 0;
+        }
+
+        return ((Number) parent.get("PID")).intValue();
+    }
+    
+    private static String[] waitProcessInternal(int pid) {
+        // Read current process
+        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
+        if (!readResult[0].equals("SUCCESS")) {
+            return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
+        }
+
+        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Map<String, Object> children = (Map<String, Object>) process.get("Child");
+
+        // Check if there are any children
+        if (children == null || children.isEmpty()) {
+            return new String[] { "ERROR", "CHILD_PROCESS_DOES_NOT_EXIST" };
+        }
+
+        // Wait for any child to terminate
+        while (true) {
+            for (Object childInfo : children.values()) {
+                Map<String, Object> child = (Map<String, Object>) childInfo;
+                int childPid = ((Number) child.get("PID")).intValue();
+
+                // Check child status
+                String[] childResult = FileUtil.read("/system/process/" + childPid + ".json");
+                if (childResult[0].equals("SUCCESS")) {
+                    Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+                    Boolean status = (Boolean) childProcess.get("Status");
+
+                    if (status == null || !status) {
+                        // Child terminated, remove from parent's child list
+                        children.remove(String.valueOf(childPid));
+
+                        // Update parent file
+                        FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
+
+                        return new String[] { "SUCCESS", null };
+                    }
+                } else {
+                    // Child process file doesn't exist, remove from list
+                    children.remove(String.valueOf(childPid));
+                    FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
+                    return new String[] { "SUCCESS", null };
+                }
+            }
+
+            // Sleep before checking again
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                return new String[] { "ERROR", "INTERRUPTED" };
+            }
+
+            // Reload children list (in case it changed)
+            readResult = FileUtil.read("/system/process/" + pid + ".json");
+            if (!readResult[0].equals("SUCCESS")) {
+                return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
+            }
+            process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+            children = (Map<String, Object>) process.get("Child");
+
+            if (children == null || children.isEmpty()) {
+                return new String[] { "ERROR", "CHILD_PROCESS_DOES_NOT_EXIST" };
+            }
+        }
+    }
+    
+    private static String[] waitPIDInternal(int currentPid, int targetPid) {
+        // Check if the process exists
+        String[] targetResult = FileUtil.read("/system/process/" + targetPid + ".json");
+        if (!targetResult[0].equals("SUCCESS")) {
+            return new String[] { "ERROR", "PROCESS_DOES_NOT_EXIST" };
+        }
+
+        // Read current process to check if it's a child
+        String[] currentResult = FileUtil.read("/system/process/" + currentPid + ".json");
+        if (!currentResult[0].equals("SUCCESS")) {
+            return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
+        }
+
+        Map<String, Object> currentProcess = (Map<String, Object>) JsonUtil.readJson(currentResult[1]);
+        Map<String, Object> children = (Map<String, Object>) currentProcess.get("Child");
+
+        // Check if pid is a child process
+        if (children == null || !children.containsKey(String.valueOf(targetPid))) {
+            return new String[] { "ERROR", "PID_DOES_NOT_CHILD_PROCESS" };
+        }
+
+        // Wait for the child to terminate
+        while (true) {
+            String[] childResult = FileUtil.read("/system/process/" + targetPid + ".json");
+            if (!childResult[0].equals("SUCCESS")) {
+                // Process file deleted, consider it terminated
+                children.remove(String.valueOf(targetPid));
+                FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(currentProcess));
+                return new String[] { "SUCCESS", null };
+            }
+
+            Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+            Boolean status = (Boolean) childProcess.get("Status");
+
+            if (status == null || !status) {
+                // Child terminated, remove from parent's child list
+                children.remove(String.valueOf(targetPid));
+                FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(currentProcess));
+                return new String[] { "SUCCESS", null };
+            }
+
+            // Sleep before checking again
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                return new String[] { "ERROR", "INTERRUPTED" };
+            }
+        }
+    }
+    
+    private static Object getListOfChildProcessInternal(int pid) {
+        // Read current process
+        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
+        if (!readResult[0].equals("SUCCESS")) {
+            return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
+        }
+
+        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Map<String, Object> children = (Map<String, Object>) process.get("Child");
+
+        if (children == null || children.isEmpty()) {
+            return new HashMap<>();
+        }
+
+        // Build result map: child name -> PID
+        Map<String, Integer> result = new HashMap<>();
+        for (Map.Entry<String, Object> entry : children.entrySet()) {
+            Map<String, Object> child = (Map<String, Object>) entry.getValue();
+            String name = (String) child.get("Name");
+            int childPid = ((Number) child.get("PID")).intValue();
+            result.put(name, childPid);
+        }
+
+        return result;
     }
 }
