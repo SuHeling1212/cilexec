@@ -143,7 +143,24 @@ public class FileUtil {
             return new Object[] { rootFile, null };
         }
 
+        // 安全检查：确保规范化后的路径不会跳出 VFS 根目录
+        if (normalized.contains("..") || normalized.contains("~")) {
+            return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
+        }
+
         String realPath = root + normalized.replace('/', File.separatorChar);
+
+        // 双重检查：确保最终路径在 VFS 根目录内
+        File checkFile = new File(realPath);
+        try {
+            String canonicalPath = checkFile.getCanonicalPath();
+            String canonicalRoot = new File(root).getCanonicalPath();
+            if (!canonicalPath.startsWith(canonicalRoot)) {
+                return new Object[] { null, new String[] { "ERROR", "PATH_TRAVERSAL_DETECTED" } };
+            }
+        } catch (Exception e) {
+            return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
+        }
 
         // 解析链接
         String targetPath = resolveLink(realPath);
@@ -308,8 +325,12 @@ public class FileUtil {
             timeMap.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             metaMap.put("Time", timeMap);
 
-            // 添加所有者
-            metaMap.put("Owner", "local");
+            // 添加所有者（使用当前用户）
+            String currentUser = com.follarce.init.UserInit.getCurrentUser();
+            if (currentUser == null) {
+                currentUser = "local";
+            }
+            metaMap.put("Owner", currentUser);
 
             // 添加大小
             metaMap.put("Size", new Object[] { 0, "B" });
@@ -460,8 +481,12 @@ public class FileUtil {
         timeMap.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
         metaMap.put("Time", timeMap);
 
-        // 所有者
-        metaMap.put("Owner", "local");
+        // 所有者（使用当前用户）
+        String currentUser = com.follarce.init.UserInit.getCurrentUser();
+        if (currentUser == null) {
+            currentUser = "local";
+        }
+        metaMap.put("Owner", currentUser);
 
         // 权限
         Map<String, String> permMap = new HashMap<>();
@@ -1391,9 +1416,10 @@ public class FileUtil {
                 return new String[] { "ERROR", "FILE_IS_LOCKED" };
             }
 
-            // 8. 锁定文件
+            // 8. 锁定文件（使用当前进程ID）
             locked.put("isLocked", true);
-            locked.put("lockedBy", "current_process"); // 暂时写死，后面会改成真实进程ID
+            int currentPid = com.follarce.process.ProcessFunc.getPID();
+            locked.put("lockedBy", currentPid);
 
             // 9. 更新元数据中的时间
             Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
@@ -1478,7 +1504,24 @@ public class FileUtil {
                 return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" };
             }
 
-            // 8. 解锁文件
+            // 8. 验证锁持有者（只有锁定者才能解锁，或者是 local 用户）
+            Object lockedBy = locked.get("lockedBy");
+            int currentPid = com.follarce.process.ProcessFunc.getPID();
+            boolean isLocal = com.follarce.init.UserInit.isLocal();
+            
+            if (!isLocal) {
+                // 非 local 用户需要验证持有者
+                if (lockedBy instanceof Number) {
+                    int lockHolderPid = ((Number) lockedBy).intValue();
+                    if (lockHolderPid != currentPid) {
+                        return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+                    }
+                } else {
+                    return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+                }
+            }
+
+            // 9. 解锁文件
             locked.put("isLocked", false);
             locked.put("lockedBy", null);
 
@@ -1559,7 +1602,7 @@ public class FileUtil {
     /**
      * 提取元数据内容
      */
-    private static String[] extractMetaContent(String fullContent) {
+    public static String[] extractMetaContent(String fullContent) {
         if (fullContent == null || fullContent.isEmpty()) {
             return new String[] { "ERROR", "NO_META" };
         }

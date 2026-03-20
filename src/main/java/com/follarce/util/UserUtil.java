@@ -3,19 +3,19 @@ package com.follarce.util;
 import java.util.*;
 
 public class UserUtil {
-    
-    private static String currentUser = "local";
-    
+
+    private static ThreadLocal<String> currentUser = ThreadLocal.withInitial(() -> "local");
+
     public static void setCurrentUser(String user) {
-        currentUser = user;
+        currentUser.set(user);
     }
-    
+
     public static String getCurrentUser() {
-        return currentUser;
+        return currentUser.get();
     }
-    
+
     public static boolean isLocal() {
-        return "local".equals(currentUser);
+        return "local".equals(currentUser.get());
     }
     
     /**
@@ -59,72 +59,63 @@ public class UserUtil {
         if (isLocal()) {
             return true;
         }
-        
+
         // Get real path
         String root = FileUtil.getVfsRoot();
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', java.io.File.separatorChar);
         java.io.File file = new java.io.File(realPath);
-        
+
         if (!file.exists()) {
             return false;
         }
-        
+
         // Parse metadata from file content
         try {
-            String content = new String(java.nio.file.Files.readAllBytes(file.toPath()), 
+            String content = new String(java.nio.file.Files.readAllBytes(file.toPath()),
                                         java.nio.charset.StandardCharsets.UTF_8);
             String[] metaResult = extractMetaContent(content);
             if (!metaResult[0].equals("SUCCESS")) {
                 return false;
             }
-            
+
             Map<String, Object> meta = (Map<String, Object>) JsonUtil.readJson(metaResult[1]);
             String owner = (String) meta.get("Owner");
-            
-            // User can access their own files
-            if (owner != null && owner.equals(currentUser)) {
-                return true;
-            }
-            
-            // Check others permission
+            String currentUserStr = getCurrentUser();
+
+            // Get permission map
             Map<String, String> perm = (Map<String, String>) meta.get("Permission");
-            if (perm != null) {
-                String othersPerm = perm.get("Others");
-                if (othersPerm != null && othersPerm.contains(operation)) {
+            if (perm == null) {
+                return false;
+            }
+
+            // Check owner permission
+            if (owner != null && owner.equals(currentUserStr)) {
+                String ownerPerm = perm.get("Owner");
+                if (ownerPerm != null && ownerPerm.contains(operation)) {
                     return true;
                 }
+                return false; // Owner exists but doesn't have permission
+            }
+
+            // Check others permission
+            String othersPerm = perm.get("Others");
+            if (othersPerm != null && othersPerm.contains(operation)) {
+                return true;
             }
         } catch (Exception e) {
             return false;
         }
-        
+
         return false;
     }
     
     /**
      * Extract meta content from file
+     * Delegates to FileUtil to avoid code duplication
      */
     private static String[] extractMetaContent(String fullContent) {
-        if (fullContent == null || fullContent.isEmpty()) {
-            return new String[] { "ERROR", "NO_META" };
-        }
-        
-        String metaStart = "#<META>";
-        String metaEnd = "<META>#";
-        
-        int startIndex = fullContent.indexOf(metaStart);
-        if (startIndex == -1) {
-            return new String[] { "ERROR", "NO_META" };
-        }
-        
-        int endIndex = fullContent.indexOf(metaEnd, startIndex + metaStart.length());
-        if (endIndex == -1) {
-            return new String[] { "ERROR", "META_NOT_CLOSED" };
-        }
-        
-        String metaJson = fullContent.substring(startIndex + metaStart.length(), endIndex).trim();
-        return new String[] { "SUCCESS", metaJson };
+        return FileUtil.extractMetaContent(fullContent);
     }
     
     /**

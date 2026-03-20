@@ -3,12 +3,13 @@ package com.follarce.init;
 import com.follarce.util.*;
 import com.follarce.process.ProcessRunner;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ProcessInit {
-    
+
     private static boolean initialized = false;
     private static Thread schedulerThread;
-    private static Map<Integer, ProcessRunner> runners = new HashMap<>();
+    private static Map<Integer, ProcessRunner> runners = new ConcurrentHashMap<>();
     
     /**
      * Initialize the process system
@@ -76,13 +77,20 @@ public class ProcessInit {
             return;
         }
         
+        // Get current user
+        String currentUser = UserInit.getCurrentUser();
+        if (currentUser == null) {
+            currentUser = "local";
+        }
+        boolean isLocal = UserInit.isLocal();
+        
         // Build process JSON
         Map<String, Object> process = new HashMap<>();
         
         // Basic info
         process.put("Name", "INIT");
-        process.put("Owner", "local");
-        process.put("Local", true);
+        process.put("Owner", currentUser);
+        process.put("Local", isLocal);
         process.put("PID", 1);
         process.put("Path", "");
         process.put("Status", true);
@@ -104,13 +112,27 @@ public class ProcessInit {
         // Data section
         program.put("Data", new HashMap<>());
         
-        // Code section - empty loop to keep process alive
+        // Code section - read from INIT.fcl config file
         Map<String, Object> code = new HashMap<>();
         code.put("runningCodeLine", 0);
-        
+
         List<String> codeLines = new ArrayList<>();
-        codeLines.add("while true {");
-        codeLines.add("}");
+        String[] initConfigResult = FileUtil.read("/system/config/INIT.fcl");
+        if (initConfigResult[0].equals("SUCCESS")) {
+            String[] lines = initConfigResult[1].split("\n");
+            for (String line : lines) {
+                String trimmed = line.trim();
+                // Skip comments and empty lines
+                if (!trimmed.isEmpty() && !trimmed.startsWith("#")) {
+                    codeLines.add(trimmed);
+                }
+            }
+        }
+        // Fallback to default if config is empty or failed to read
+        if (codeLines.isEmpty()) {
+            codeLines.add("while true {");
+            codeLines.add("}");
+        }
         code.put("Code", codeLines);
         
         program.put("Code", code);
@@ -174,7 +196,7 @@ public class ProcessInit {
                         while (it.hasNext()) {
                             Map.Entry<Integer, ProcessRunner> entry = it.next();
                             if (!currentPids.contains(entry.getKey())) {
-                                entry.getValue().stop();
+                                entry.getValue().shutdown(); // Use shutdown to avoid modifying deleted process file
                                 it.remove();
                                 System.out.println("Removed runner for PID: " + entry.getKey());
                             }
@@ -208,9 +230,9 @@ public class ProcessInit {
      * Shutdown the process system
      */
     public static void shutdown() {
-        // Stop all runners
+        // Stop all runners without modifying process files
         for (ProcessRunner runner : runners.values()) {
-            runner.stop();
+            runner.shutdown();
         }
         runners.clear();
         

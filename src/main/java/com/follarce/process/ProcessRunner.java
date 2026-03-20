@@ -49,8 +49,17 @@ public class ProcessRunner implements Runnable {
             this.owner = "local";
         }
 
-        Boolean status = (Boolean) process.get("Status");
-        if (status == null || !status) {
+        Object statusObj = process.get("Status");
+        if (statusObj == null) {
+            running = false;
+            return;
+        }
+        
+        // Handle status: Boolean (true/false)
+        if (statusObj instanceof Boolean) {
+            running = (Boolean) statusObj;
+        } else {
+            // Unknown or null status, treat as stopped
             running = false;
             return;
         }
@@ -74,19 +83,38 @@ public class ProcessRunner implements Runnable {
         }
 
         Map<String, Object> program = (Map<String, Object>) process.get("Program");
+        if (program == null) {
+            running = false;
+            return;
+        }
+        
         this.data = (Map<String, Object>) program.get("Data");
         if (this.data == null) {
             this.data = new HashMap<>();
         }
 
         Map<String, Object> code = (Map<String, Object>) program.get("Code");
+        if (code == null) {
+            running = false;
+            return;
+        }
+        
         this.codeLines = (List<String>) code.get("Code");
+        if (this.codeLines == null) {
+            running = false;
+            return;
+        }
 
         Object runningLine = code.get("runningCodeLine");
         if (runningLine instanceof Number) {
             this.currentLine = ((Number) runningLine).intValue();
         } else if (runningLine instanceof List) {
-            this.currentLine = ((Number) ((List<?>) runningLine).get(0)).intValue();
+            List<?> runningLineList = (List<?>) runningLine;
+            if (!runningLineList.isEmpty()) {
+                this.currentLine = ((Number) runningLineList.get(0)).intValue();
+            } else {
+                this.currentLine = 0;
+            }
         } else {
             this.currentLine = 0;
         }
@@ -143,7 +171,7 @@ public class ProcessRunner implements Runnable {
 
         loadFromFile();
 
-        if (!running)
+        if (!running || codeLines == null)
             return;
 
         if (currentLine >= codeLines.size()) {
@@ -760,6 +788,9 @@ public class ProcessRunner implements Runnable {
             String[] parts = expr.split("%", 2);
             Object left = evaluate(parts[0].trim());
             Object right = evaluate(parts[1].trim());
+            if (((Number) right).intValue() == 0) {
+                throw new RuntimeException("Modulo by zero");
+            }
             return ((Number) left).intValue() % ((Number) right).intValue();
         }
 
@@ -793,6 +824,11 @@ public class ProcessRunner implements Runnable {
     public void stop() {
         running = false;
         saveToFile();
+    }
+
+    public void shutdown() {
+        running = false;
+        // Don't save to file - preserve original Status
     }
 
     private static class FunctionDef {

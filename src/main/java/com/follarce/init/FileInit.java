@@ -76,6 +76,34 @@ public class FileInit {
         
         // 创建默认的 swap 目录（空，不创建文件）
         // 交换池文件会在使用时动态创建
+        
+        // 创建默认的 users.json（只有 local 用户）
+        String usersJsonPath = vfsPath + File.separator + "system" + File.separator + 
+                              "config" + File.separator + "users.json";
+        String usersContent = "{\n" +
+            "    \"currentUser\": \"local\",\n" +
+            "    \"users\": {\n" +
+            "        \"local\": {\n" +
+            "            \"password\": \"local\",\n" +
+            "            \"isLocal\": true,\n" +
+            "            \"home\": \"/user/local\",\n" +
+            "            \"created\": " + timeStr + "\n" +
+            "        }\n" +
+            "    }\n" +
+            "}";
+        writeFile(usersJsonPath, usersContent);
+
+        // 创建默认的 INIT 进程配置文件
+        String initConfigPath = vfsPath + File.separator + "system" + File.separator +
+                               "config" + File.separator + "INIT.fcl";
+        String initConfigContent = "# INIT Process Configuration\n" +
+            "# This is the first process (PID 1) that runs when the system starts\n" +
+            "\n" +
+            "while true {\n" +
+            "    # INIT process main loop\n" +
+            "    # This process adopts orphaned child processes\n" +
+            "}";
+        writeFile(initConfigPath, initConfigContent);
     }
     
     private static void writeFile(String path, String content) {

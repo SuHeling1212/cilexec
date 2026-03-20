@@ -63,7 +63,11 @@ public class SwapUtil {
         }
 
         Map<String, Object> pool = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
-        int ownerPid = ((Number) pool.get("OwnerPID")).intValue();
+        Object ownerPidObj = pool.get("OwnerPID");
+        if (ownerPidObj == null) {
+            return new String[] { "ERROR", "INVALID_SWAP_POOL" };
+        }
+        int ownerPid = ((Number) ownerPidObj).intValue();
         int currentPid = ProcessFunc.getPID();
 
         if (currentPid != ownerPid && !UserUtil.isLocal()) {

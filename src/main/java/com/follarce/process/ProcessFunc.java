@@ -3,6 +3,7 @@ package com.follarce.process;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
@@ -11,14 +12,14 @@ import com.follarce.util.UserUtil;
 
 public class ProcessFunc {
 
-    private static int currentPid = 1;
+    private static AtomicInteger currentPid = new AtomicInteger(1);
 
     public static void setCurrentPid(int pid) {
-        currentPid = pid;
+        currentPid.set(pid);
     }
 
     public static int getPID() {
-        return currentPid;
+        return currentPid.get();
     }
 
     /**
@@ -27,7 +28,7 @@ public class ProcessFunc {
      * @return child PID for parent, 0 for child
      */
     public static int fork() {
-        int parentPid = currentPid;
+        int parentPid = currentPid.get();
 
         try {
             // 1. Read parent process file
@@ -91,7 +92,7 @@ public class ProcessFunc {
         }
     }
 
-    private static int allocatePid() {
+    private static synchronized int allocatePid() {
         String[] listResult = FileUtil.getListOfFileAndDirectory("/system/process/");
         if (!listResult[0].equals("SUCCESS")) {
             return 1;
@@ -280,9 +281,8 @@ public class ProcessFunc {
             }
         }
 
-        // 3. LAST: Kill the process
-        process.put("Status", false);
-        FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
+        // 3. LAST: Delete the process file
+        FileUtil.removeFile("/system/process/" + pid + ".json");
 
         return new String[] { "SUCCESS", null };
     }
@@ -484,14 +484,14 @@ public class ProcessFunc {
 
         Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
 
-        // Check if already paused
-        String status = (String) process.get("Status");
-        if ("PAUSED".equals(status)) {
+        // Check if already paused (Status is Boolean false when paused)
+        Object statusObj = process.get("Status");
+        if (Boolean.FALSE.equals(statusObj)) {
             return new String[] { "ERROR", "PROCESS_IS_PAUSED" };
         }
 
-        // Pause the process
-        process.put("Status", "PAUSED");
+        // Pause the process - use Boolean false for paused state
+        process.put("Status", false);
         FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
 
         return new String[] { "SUCCESS", null };
@@ -541,13 +541,13 @@ public class ProcessFunc {
         Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
 
         // Check if already running
-        String status = (String) process.get("Status");
-        if ("Running".equals(status) || status == null) {
+        Object statusObj = process.get("Status");
+        if (Boolean.TRUE.equals(statusObj) || "Running".equals(statusObj) || statusObj == null) {
             return new String[] { "ERROR", "PROCESS_IS_RUNNING" };
         }
 
-        // Continue the process
-        process.put("Status", "Running");
+        // Continue the process - use Boolean true for running state
+        process.put("Status", true);
         FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
 
         return new String[] { "SUCCESS", null };

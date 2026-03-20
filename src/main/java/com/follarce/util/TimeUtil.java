@@ -27,4 +27,12 @@ public class TimeUtil {
         // 返回时间组件数组
         return new int[] { year, month, day, hour, minute, second, millis };
     }
+
+    /**
+     * 获取当前时间数组（用于元数据）
+     * @return 时间数组 [年,月,日,时,分,秒,毫秒]
+     */
+    public static int[] getTimeArray() {
+        return getTime();
+    }
 }
