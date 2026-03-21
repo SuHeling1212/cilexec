@@ -1,6 +1,4 @@
 #<META>{"Owner":"local","Permission":{"Owner":"rwx","Others":"rwx"}}</META>
-# INIT Process - Minimal test
-
 while true {
 
     

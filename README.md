@@ -54,6 +54,7 @@ src/main/java/com/follarce/
 │   ├── ProcessFunctionProvider.java # 进程管理函数
 │   ├── UserFunctionProvider.java    # 用户管理函数
 │   ├── UtilFunctionProvider.java    # 工具函数
+│   ├── MathFunctionProvider.java    # 数学函数库
 │   └── RandomFunctionProvider.java  # 随机数函数示例
 └── basicUtil/                # 基础工具类
     ├── FileUtil.java         # 虚拟文件系统
@@ -626,6 +627,166 @@ if result[0] == "SUCCESS" {
     
     socket.close(udpSocket)
 }
+```
+
+### 数学函数 API
+
+提供全面的数学计算功能，包括算术、三角函数、对数、随机数、统计、数论等。
+
+#### 基础算术
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.abs(n)` | `n`: 数字 | `number` | 绝对值 |
+| `math.max(...numbers)` | `...numbers`: 数字列表 | `number` | 最大值 |
+| `math.min(...numbers)` | `...numbers`: 数字列表 | `number` | 最小值 |
+| `math.pow(base, exp)` | `base`: 底数, `exp`: 指数 | `number` | 幂运算 |
+| `math.sqrt(n)` | `n`: 数字 | `number` | 平方根 |
+| `math.cbrt(n)` | `n`: 数字 | `number` | 立方根 |
+| `math.round(n, decimals)` | `n`: 数字, `decimals`: 小数位(可选) | `number` | 四舍五入 |
+| `math.floor(n)` | `n`: 数字 | `number` | 向下取整 |
+| `math.ceil(n)` | `n`: 数字 | `number` | 向上取整 |
+| `math.mod(a, b)` | `a`: 被除数, `b`: 除数 | `number` | 取模 |
+| `math.sign(n)` | `n`: 数字 | `number` | 符号函数 (-1, 0, 1) |
+| `math.clamp(n, min, max)` | `n`: 数字, `min`: 最小值, `max`: 最大值 | `number` | 限制范围 |
+| `math.lerp(start, end, t)` | `start`: 起始值, `end`: 结束值, `t`: 插值系数(0-1) | `number` | 线性插值 |
+
+#### 三角函数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.sin(rad)` | `rad`: 弧度 | `number` | 正弦 |
+| `math.cos(rad)` | `rad`: 弧度 | `number` | 余弦 |
+| `math.tan(rad)` | `rad`: 弧度 | `number` | 正切 |
+| `math.asin(n)` | `n`: 数字 | `number` | 反正弦 |
+| `math.acos(n)` | `n`: 数字 | `number` | 反余弦 |
+| `math.atan(n)` | `n`: 数字 | `number` | 反正切 |
+| `math.atan2(y, x)` | `y`: Y坐标, `x`: X坐标 | `number` | 反正切2 |
+| `math.sinh(n)` | `n`: 数字 | `number` | 双曲正弦 |
+| `math.cosh(n)` | `n`: 数字 | `number` | 双曲余弦 |
+| `math.tanh(n)` | `n`: 数字 | `number` | 双曲正切 |
+| `math.deg(rad)` | `rad`: 弧度 | `number` | 弧度转角度 |
+| `math.rad(deg)` | `deg`: 角度 | `number` | 角度转弧度 |
+
+#### 对数和指数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.log(base, n)` | `base`: 底数, `n`: 真数 | `number` | 对数 |
+| `math.log10(n)` | `n`: 数字 | `number` | 常用对数(底数10) |
+| `math.log2(n)` | `n`: 数字 | `number` | 二进制对数(底数2) |
+| `math.ln(n)` | `n`: 数字 | `number` | 自然对数(底数e) |
+| `math.exp(n)` | `n`: 数字 | `number` | e的n次方 |
+
+#### 随机数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.random(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机数(0-1或指定范围) |
+| `math.randint(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `int` | 随机整数 |
+| `math.randfloat(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机浮点数 |
+| `math.randchoice(list)` | `list`: 数组 | `any` | 随机选择数组元素 |
+| `math.shuffle(list)` | `list`: 数组 | `array` | 随机打乱数组 |
+
+#### 统计函数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.sum(...numbers)` | `...numbers`: 数字列表 | `number` | 求和 |
+| `math.avg(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值 |
+| `math.mean(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值(同avg) |
+| `math.median(...numbers)` | `...numbers`: 数字列表 | `number` | 中位数 |
+| `math.mode(...numbers)` | `...numbers`: 数字列表 | `number` | 众数 |
+| `math.var(...numbers)` | `...numbers`: 数字列表 | `number` | 方差 |
+| `math.std(...numbers)` | `...numbers`: 数字列表 | `number` | 标准差 |
+| `math.minarr(arr)` | `arr`: 数组 | `number` | 数组最小值 |
+| `math.maxarr(arr)` | `arr`: 数组 | `number` | 数组最大值 |
+| `math.range(start, end, step)` | `start`: 起始, `end`: 结束, `step`: 步长(可选) | `array` | 生成范围数组 |
+
+#### 数论函数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.gcd(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最大公约数 |
+| `math.lcm(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最小公倍数 |
+| `math.prime(n)` | `n`: 整数 | `boolean` | 判断素数 |
+| `math.factors(n)` | `n`: 整数 | `array` | 获取所有因数 |
+| `math.fib(n)` | `n`: 整数 | `int` | 斐波那契数列第n项 |
+| `math.factorial(n)` | `n`: 整数 | `int` | 阶乘 |
+
+#### 数学常数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.pi` | 无 | `number` | π (3.14159...) |
+| `math.e` | 无 | `number` | 自然常数e (2.71828...) |
+| `math.tau` | 无 | `number` | 2π (6.28318...) |
+| `math.inf` | 无 | `number` | 正无穷 |
+| `math.nan` | 无 | `number` | 非数字 |
+
+#### 几何计算
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.hypot(a, b)` | `a`: 直角边, `b`: 直角边 | `number` | 斜边长度 |
+| `math.dist(x1, y1, x2, y2)` | 两点坐标 | `number` | 两点间距离 |
+| `math.area.circle(radius)` | `radius`: 半径 | `number` | 圆面积 |
+| `math.area.rect(width, height)` | `width`: 宽, `height`: 高 | `number` | 矩形面积 |
+| `math.vol.sphere(radius)` | `radius`: 半径 | `number` | 球体积 |
+
+#### 位运算
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.bit.and(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位与 |
+| `math.bit.or(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位或 |
+| `math.bit.xor(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位异或 |
+| `math.bit.not(a)` | `a`: 整数 | `int` | 按位取反 |
+| `math.bit.shiftl(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 左移 |
+| `math.bit.shiftr(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 右移 |
+
+#### 高级函数
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `math.map(value, inMin, inMax, outMin, outMax)` | 输入值和范围 | `number` | 映射值到新范围 |
+| `math.norm(value, min, max)` | `value`: 值, `min`: 最小值, `max`: 最大值 | `number` | 归一化到0-1 |
+| `math.perlin(x, y)` | `x`: X坐标, `y`: Y坐标(可选) | `number` | Perlin噪声 |
+| `math.noise(x)` | `x`: 坐标 | `number` | 简单噪声 |
+
+**使用示例：**
+```fcl
+# 基础算术
+x = math.abs(-10)           # 10
+y = math.pow(2, 8)          # 256
+z = math.sqrt(16)           # 4
+w = math.clamp(x, 0, 100)   # 限制在0-100之间
+
+# 三角函数
+angle = math.rad(90)        # π/2
+s = math.sin(angle)         # 1.0
+
+# 随机数
+r = math.random()           # 0-1之间的随机数
+ dice = math.randint(1, 6)   # 1-6的随机整数
+
+# 统计
+data = [1, 2, 3, 4, 5]
+sum = math.sum(data)        # 15
+avg = math.avg(data)        # 3.0
+std = math.std(data)        # 标准差
+
+# 数论
+p = math.prime(17)          # true (是素数)
+f = math.factors(12)        # [1, 2, 3, 4, 6, 12]
+ fib10 = math.fib(10)        # 55
+
+# 几何
+area = math.area.circle(5)  # 78.54...
+dist = math.dist(0, 0, 3, 4) # 5.0
+
+# 位运算
+result = math.bit.and(5, 3) # 1 (101 & 011 = 001)
 ```
 
 ### 工具函数 API

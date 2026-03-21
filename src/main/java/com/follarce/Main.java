@@ -54,6 +54,9 @@ public class Main {
         // Socket functions (TCP/UDP)
         FunctionRegistry.register(new SocketFunctionProvider());
         
+        // Math functions (comprehensive mathematical operations)
+        FunctionRegistry.register(new MathFunctionProvider());
+        
         // Swap pool functions (if exists)
         // FunctionRegistry.register(new SwapFunctionProvider());
         
