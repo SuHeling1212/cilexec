@@ -1,23 +1,65 @@
 package com.follarce.init;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 
+import com.follarce.util.Logger;
 import com.follarce.util.TimeUtil;
 
 public class FileInit {
-    
+
     private static final String VFS_ROOT = "cilexec_root";
-    
+
     public static void init() {
         String workDir = getWorkDirectory();
         String vfsPath = workDir + File.separator + VFS_ROOT;
-        
+
+        // Check if file structure already exists and is valid
+        if (isValidFileStructure(vfsPath)) {
+            Logger.debug("File structure already exists and is valid, skipping initialization");
+            return;
+        }
+
         createDirectories(vfsPath);
         createFiles(vfsPath);
+        copyInitFile(vfsPath);
     }
-    
+
+    /**
+     * Check if file structure exists and is valid
+     */
+    private static boolean isValidFileStructure(String vfsPath) {
+        // Check if all required directories exist
+        String[][] requiredDirs = {
+            {"system", "app"},
+            {"system", "config"},
+            {"system", "process"},
+            {"system", "swap"},
+            {"user", "local", "app"}
+        };
+
+        for (String[] dirParts : requiredDirs) {
+            String dirPath = vfsPath;
+            for (String part : dirParts) {
+                dirPath += File.separator + part;
+            }
+            if (!new File(dirPath).isDirectory()) {
+                return false;
+            }
+        }
+
+        // Check if required files exist
+        String initJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "init.json";
+        String localJsonPath = vfsPath + File.separator + "user" + File.separator + "local" + File.separator + "local.json";
+        String usersJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "users.json";
+        String initFclPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "INIT.fcl";
+
+        return new File(initJsonPath).exists() &&
+               new File(localJsonPath).exists() &&
+               new File(usersJsonPath).exists() &&
+               new File(initFclPath).exists();
+    }
+
     private static String getWorkDirectory() {
         try {
             String path = FileInit.class.getProtectionDomain()
@@ -31,18 +73,18 @@ public class FileInit {
             return System.getProperty("user.dir");
         }
     }
-    
+
     private static void createDirectories(String vfsPath) {
         String[][] dirs = {
             {"system", "app"},
             {"system", "config"},
             {"system", "process"},
-            {"system", "swap"},        // 交换池目录
+            {"system", "swap"},
             {"user", "local", "app"}
         };
-        
+
         new File(vfsPath).mkdirs();
-        
+
         for (String[] dirParts : dirs) {
             String dirPath = vfsPath;
             for (String part : dirParts) {
@@ -51,19 +93,19 @@ public class FileInit {
             new File(dirPath).mkdirs();
         }
     }
-    
+
     private static void createFiles(String vfsPath) {
         int[] time = TimeUtil.getTime();
         String timeStr = String.format("[%d,%d,%d,%d,%d,%d,%d]",
             time[0], time[1], time[2], time[3], time[4], time[5], time[6]);
-        
-        String initJsonPath = vfsPath + File.separator + "system" + File.separator + 
-                             "config" + File.separator + "init.json";
+
+        // init.json - VFS root configuration (only if not exists)
+        String initJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "init.json";
         String initContent = "{\n    \"root\": \"" + vfsPath.replace("\\", "\\\\") + "\"\n}";
-        writeFile(initJsonPath, initContent);
-        
-        String localJsonPath = vfsPath + File.separator + "user" + File.separator + 
-                              "local" + File.separator + "local.json";
+        writeFileIfNotExists(initJsonPath, initContent);
+
+        // local.json - local user configuration (only if not exists)
+        String localJsonPath = vfsPath + File.separator + "user" + File.separator + "local" + File.separator + "local.json";
         String localContent = "{\n" +
             "    \"name\": \"local\",\n" +
             "    \"id\": 1,\n" +
@@ -72,14 +114,10 @@ public class FileInit {
             "    \"createTime\": " + timeStr + ",\n" +
             "    \"process\": []\n" +
             "}";
-        writeFile(localJsonPath, localContent);
-        
-        // 创建默认的 swap 目录（空，不创建文件）
-        // 交换池文件会在使用时动态创建
-        
-        // 创建默认的 users.json（只有 local 用户）
-        String usersJsonPath = vfsPath + File.separator + "system" + File.separator + 
-                              "config" + File.separator + "users.json";
+        writeFileIfNotExists(localJsonPath, localContent);
+
+        // users.json - user database (only if not exists)
+        String usersJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "users.json";
         String usersContent = "{\n" +
             "    \"currentUser\": \"local\",\n" +
             "    \"users\": {\n" +
@@ -92,26 +130,49 @@ public class FileInit {
             "    }\n" +
             "}";
         writeFileIfNotExists(usersJsonPath, usersContent);
+    }
 
-        // 创建默认的 INIT 进程配置文件（如果不存在）
-        String initConfigPath = vfsPath + File.separator + "system" + File.separator +
-                               "config" + File.separator + "INIT.fcl";
-        String initConfigContent = "# INIT Process Configuration\n" +
-            "# This is the first process (PID 1) that runs when the system starts\n" +
-            "\n" +
-            "while true {\n" +
-            "    # INIT process main loop\n" +
-            "    # This process adopts orphaned child processes\n" +
-            "}";
-        writeFileIfNotExists(initConfigPath, initConfigContent);
+    /**
+     * Copy INIT.fcl from resources to VFS (if not exists)
+     */
+    private static void copyInitFile(String vfsPath) {
+        String initFclPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "INIT.fcl";
+        
+        // Only create if not exists
+        if (new File(initFclPath).exists()) {
+            return;
+        }
+
+        try {
+            // Read INIT.fcl from resources
+            InputStream is = FileInit.class.getResourceAsStream("/INIT.fcl");
+            if (is == null) {
+                Logger.warn("INIT.fcl not found in resources");
+                return;
+            }
+
+            String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            is.close();
+
+            // Write to VFS
+            writeFile(initFclPath, content);
+        } catch (IOException e) {
+            Logger.error("Error copying INIT.fcl: " + e.getMessage());
+        }
     }
-    
+
     private static void writeFile(String path, String content) {
-        try (FileWriter writer = new FileWriter(path)) {
-            writer.write(content);
-        } catch (IOException e) {}
+        try {
+            File file = new File(path);
+            file.getParentFile().mkdirs();
+            try (FileWriter writer = new FileWriter(file)) {
+                writer.write(content);
+            }
+        } catch (IOException e) {
+            Logger.error("Error writing file " + path + ": " + e.getMessage());
+        }
     }
-    
+
     private static void writeFileIfNotExists(String path, String content) {
         File file = new File(path);
         if (!file.exists()) {

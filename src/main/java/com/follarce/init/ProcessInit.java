@@ -20,7 +20,7 @@ public class ProcessInit {
             return;
         }
         
-        System.out.println("Initializing process system...");
+        Logger.info("Initializing process system");
         
         // Ensure process directory exists
         ensureProcessDirectory();
@@ -33,14 +33,14 @@ public class ProcessInit {
             ProcessRunner runner = new ProcessRunner(1);
             runners.put(1, runner);
             new Thread(runner).start();
-            System.out.println("Started runner for existing PID: 1");
+            Logger.debug("Started runner for existing PID: 1");
         }
         
         // Start the scheduler
         startScheduler();
         
         initialized = true;
-        System.out.println("Process system initialized");
+        Logger.info("Process system initialized");
     }
     
     /**
@@ -65,7 +65,7 @@ public class ProcessInit {
      * Create the INIT process (PID 1)
      */
     private static void createInitProcess() {
-        System.out.println("Creating INIT process (PID 1)...");
+        Logger.info("Creating INIT process (PID 1)");
         
         // Ensure process directory exists
         FileUtil.createDirectory("/system/", "process");
@@ -73,7 +73,7 @@ public class ProcessInit {
         // Create the process file first
         String[] createResult = FileUtil.createFile("/system/process/", "1.json");
         if (!createResult[0].equals("SUCCESS")) {
-            System.err.println("Failed to create process file: " + createResult[1]);
+            Logger.error("Failed to create process file: " + createResult[1]);
             return;
         }
         
@@ -143,15 +143,15 @@ public class ProcessInit {
         String[] writeResult = FileUtil.write("/system/process/1.json", processJson);
         
         if (writeResult[0].equals("SUCCESS")) {
-            System.out.println("INIT process created successfully");
+            Logger.info("INIT process created successfully");
             
             // Start the runner immediately
             ProcessRunner runner = new ProcessRunner(1);
             runners.put(1, runner);
             new Thread(runner).start();
-            System.out.println("Started runner for PID: 1");
+            Logger.debug("Started runner for PID: 1");
         } else {
-            System.err.println("Failed to write INIT process: " + writeResult[1]);
+            Logger.error("Failed to write INIT process: " + writeResult[1]);
         }
     }
     
@@ -160,7 +160,7 @@ public class ProcessInit {
      * Monitors for new processes and creates runners for them
      */
     private static void startScheduler() {
-        System.out.println("Starting process scheduler...");
+        Logger.info("Starting process scheduler");
         
         schedulerThread = new Thread(() -> {
             while (true) {
@@ -183,7 +183,7 @@ public class ProcessInit {
                                         ProcessRunner runner = new ProcessRunner(pid);
                                         runners.put(pid, runner);
                                         new Thread(runner).start();
-                                        System.out.println("Started runner for PID: " + pid);
+                                        Logger.debug("Started runner for PID: " + pid);
                                     }
                                 } catch (NumberFormatException e) {
                                     // Ignore non-numeric filenames
@@ -198,12 +198,12 @@ public class ProcessInit {
                             if (!currentPids.contains(entry.getKey())) {
                                 entry.getValue().shutdown(); // Use shutdown to avoid modifying deleted process file
                                 it.remove();
-                                System.out.println("Removed runner for PID: " + entry.getKey());
+                                Logger.debug("Removed runner for PID: " + entry.getKey());
                             }
                         }
                     }
                 } catch (Exception e) {
-                    System.err.println("Scheduler error: " + e.getMessage());
+                    Logger.error("Scheduler error: " + e.getMessage());
                 }
                 
                 // Sleep before next scan
@@ -241,6 +241,6 @@ public class ProcessInit {
         }
         
         initialized = false;
-        System.out.println("Process system shutdown");
+        Logger.info("Process system shutdown");
     }
 }

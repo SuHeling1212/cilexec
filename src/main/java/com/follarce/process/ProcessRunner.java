@@ -1,5 +1,8 @@
 package com.follarce.process;
 
+import com.follarce.init.UserInit;
+import com.follarce.plugin.FunctionContext;
+import com.follarce.plugin.FunctionRegistry;
 import com.follarce.util.*;
 import java.util.*;
 import java.util.regex.*;
@@ -16,6 +19,7 @@ public class ProcessRunner implements Runnable {
     private long startTimeMs;
     private String owner;
     private Stack<Integer> whileStack; // Track while loop start positions
+    private FunctionContext functionContext; // Function call context
 
     public ProcessRunner(int pid) {
         this.pid = pid;
@@ -27,6 +31,28 @@ public class ProcessRunner implements Runnable {
         if (owner != null) {
             UserUtil.setCurrentUser(owner);
         }
+        
+        // Initialize function call context
+        int ppid = getParentPid();
+        String currentUser = owner != null ? owner : UserInit.getCurrentUser();
+        if (currentUser == null) currentUser = "local";
+        this.functionContext = new FunctionContext(pid, ppid, currentUser);
+    }
+    
+    private int getParentPid() {
+        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
+        if (!readResult[0].equals("SUCCESS")) return 0;
+        
+        try {
+            Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+            Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
+            if (parent != null && parent.containsKey("PID")) {
+                return ((Number) parent.get("PID")).intValue();
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+        return 0;
     }
 
     @SuppressWarnings("unchecked")
@@ -92,6 +118,12 @@ public class ProcessRunner implements Runnable {
         this.data = (Map<String, Object>) program.get("Data");
         if (this.data == null) {
             this.data = new HashMap<>();
+        }
+
+        // Set __current_script for import functionality
+        String scriptPath = (String) process.get("Path");
+        if (scriptPath != null && !scriptPath.isEmpty()) {
+            this.data.put("__current_script", scriptPath);
         }
 
         Map<String, Object> code = (Map<String, Object>) program.get("Code");
@@ -183,7 +215,7 @@ public class ProcessRunner implements Runnable {
 
         String line = codeLines.get(currentLine).trim();
 
-        if (line.isEmpty() || line.startsWith("//")) {
+        if (line.isEmpty() || line.startsWith("//") || line.startsWith("#")) {
             currentLine++;
             saveToFile();
             return;
@@ -218,6 +250,19 @@ public class ProcessRunner implements Runnable {
             saveToFile();   // Save state with updated line
             try {
                 executeStatement(line);  // Then execute fork
+            } catch (Exception e) {
+                running = false;
+                data.put("_error", e.getMessage());
+            }
+            return;
+        }
+
+        // For exec(): reload code after execution
+        if (line.startsWith("exec(")) {
+            try {
+                executeStatement(line);
+                // exec replaces the process code, reload from file
+                loadFromFile();
             } catch (Exception e) {
                 running = false;
                 data.put("_error", e.getMessage());
@@ -541,66 +586,13 @@ public class ProcessRunner implements Runnable {
 
         Object[] argArray = args.toArray();
 
-        // 1. Try FileUtil
-        Object result = FileUtil.call(funcName, argArray);
+        // Use new plugin system to call functions
+        Object result = FunctionRegistry.call(funcName, argArray, functionContext);
         if (result != null) {
             return result;
         }
 
-        // 2. Try ProcessFunc (pass current pid to avoid static variable issues)
-        result = ProcessFunc.call(funcName, argArray, this.pid);
-        if (result != null) {
-            return result;
-        }
-
-        // 3. Try TimeUtil
-        if ("now".equals(funcName)) {
-            return TimeUtil.getTime();
-        }
-
-        // 4. Try JsonUtil
-        if ("parseJson".equals(funcName)) {
-            if (argArray.length < 1)
-                return new String[] { "ERROR", "INVALID_ARGUMENTS" };
-            return JsonUtil.readJson((String) argArray[0]);
-        }
-        if ("toJson".equals(funcName)) {
-            if (argArray.length < 1)
-                return new String[] { "ERROR", "INVALID_ARGUMENTS" };
-            return JsonUtil.toJson(argArray[0]);
-        }
-
-        // 5. Type conversion
-        if ("int".equals(funcName)) {
-            if (argArray.length < 1)
-                return 0;
-            if (argArray[0] instanceof String)
-                return Integer.parseInt((String) argArray[0]);
-            if (argArray[0] instanceof Number)
-                return ((Number) argArray[0]).intValue();
-            return 0;
-        }
-        if ("str".equals(funcName)) {
-            if (argArray.length < 1)
-                return "";
-            return argArray[0].toString();
-        }
-        if ("len".equals(funcName)) {
-            if (argArray.length < 1)
-                return 0;
-            Object obj = argArray[0];
-            if (obj instanceof List)
-                return ((List<?>) obj).size();
-            if (obj instanceof Map)
-                return ((Map<?, ?>) obj).size();
-            if (obj instanceof String)
-                return ((String) obj).length();
-            if (obj instanceof Object[])
-                return ((Object[]) obj).length;
-            return 1;
-        }
-
-        // 6. User defined functions
+        // 6. User-defined functions
         FunctionDef func = functions.get(funcName);
         if (func != null) {
             if (args.size() != func.params.size()) {

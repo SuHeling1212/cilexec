@@ -31,16 +31,28 @@ src/main/java/com/follarce/
 ├── Main.java                 # 程序入口
 ├── init/
 │   ├── FileInit.java         # 文件系统初始化
-│   └── ProcessInit.java      # 进程系统初始化
+│   ├── ProcessInit.java      # 进程系统初始化
+│   └── UserInit.java         # 用户管理
 ├── process/
 │   ├── ProcessRunner.java    # 脚本执行引擎
 │   ├── ProcessFunc.java      # 进程操作函数
 │   └── SwapUtil.java         # 进程间数据交换
+├── plugin/                   # 插件系统
+│   ├── FunctionProvider.java # 函数提供者接口
+│   ├── FunctionContext.java  # 函数调用上下文
+│   ├── FunctionInfo.java     # 函数信息描述
+│   ├── FunctionRegistry.java # 函数注册中心
+│   ├── FileFunctionProvider.java    # 文件操作函数
+│   ├── ProcessFunctionProvider.java # 进程管理函数
+│   ├── UserFunctionProvider.java    # 用户管理函数
+│   └── UtilFunctionProvider.java    # 工具函数
 └── util/
     ├── FileUtil.java         # 虚拟文件系统
     ├── JsonUtil.java         # JSON 工具
     ├── TimeUtil.java         # 时间工具
-    └── UserUtil.java         # 权限管理
+    ├── UserUtil.java         # 权限管理
+    ├── Logger.java           # 日志工具
+    └── Constants.java        # 常量定义
 ```
 
 ## 核心功能
@@ -421,6 +433,19 @@ SwapUtil.onProcessExit(pid);
 - `"whitelist{pid1,pid2,...}"` - 白名单访问控制
 - `"blacklist{pid1,pid2,...}"` - 黑名单访问控制
 
+### 用户管理 API
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `createUser(username, password, isLocal)` | `username`: 用户名, `password`: 密码, `isLocal`: 是否为local用户 | `String[]` | 创建新用户 |
+| `removeUser(username, password)` | `username`: 用户名, `password`: 密码 | `String[]` | 删除用户（需密码验证） |
+| `userExists(username)` | `username`: 用户名 | `boolean` | 检查用户是否存在 |
+| `validateUser(username, password)` | `username`: 用户名, `password`: 密码 | `boolean` | 验证用户密码 |
+| `switchUser(username, password)` | `username`: 用户名, `password`: 密码 | `String[]` | 切换当前用户 |
+| `getCurrentUser()` | 无 | `String` | 获取当前登录用户 |
+| `isLocal()` | 无 | `boolean` | 检查当前用户是否为local |
+| `getListOfUsers()` | 无 | `Map<String, Object>` | 获取所有用户列表 |
+
 ### 工具函数 API
 
 | 函数 | 参数 | 返回值 | 说明 |
@@ -522,13 +547,56 @@ value = swapPool.get("counter", "shared")
 - 失败：`["ERROR", "ERROR_CODE"]`
 
 常见错误码：
+
+**文件操作错误码：**
 - `INVALID_PATH` - 无效路径
 - `FILE_DOES_NOT_EXIST` - 文件不存在
 - `DIRECTORY_DOES_NOT_EXIST` - 目录不存在
 - `FILE_EXIST` - 文件已存在
+- `DIRECTORY_EXIST` - 目录已存在
 - `INSUFFICIENT_PERMISSION` - 权限不足
 - `FILE_IS_LOCKED` - 文件被锁定
+- `DIRECTORY_IS_LOCKED` - 目录被锁定
+- `IS_NOT_FILE` - 路径不是文件
+- `IS_NOT_DIRECTORY` - 路径不是目录
+- `DIRECTORY_IS_NOT_EMPTY` - 目录不为空
+
+**进程操作错误码：**
 - `PROCESS_DOES_NOT_EXIST` - 进程不存在
+- `CANNOT_KILL_INIT` - 不能终止 INIT 进程
+- `INSUFFICIENT_PERMISSION` - 权限不足
+
+**用户管理错误码：**
+- `INVALID_USERNAME` - 无效用户名
+- `INVALID_PASSWORD` - 无效密码
+- `USER_EXISTS` - 用户已存在
+- `USER_NOT_EXISTS` - 用户不存在
+- `CANNOT_REMOVE_LOCAL` - 不能删除 local 用户
+- `SAVE_FAILED` - 保存失败
+- `READ_FAILED` - 读取失败
+- `INVALID_USER_DATA` - 用户数据无效
+- `USERNAME_MUST_BE_STRING` - 用户名必须是字符串
+- `PASSWORD_MUST_BE_STRING` - 密码必须是字符串
+- `ISLOCAL_MUST_BE_BOOLEAN` - isLocal 必须是布尔值
+- `TOO_MANY_ARGUMENTS` - 参数过多
+- `UNKNOWN_FUNCTION` - 未知函数
+
+**交换池错误码：**
+- `POOL_EXISTS` - 交换池已存在
+- `POOL_DOES_NOT_EXIST` - 交换池不存在
+- `VARIABLE_EXISTS` - 变量已存在
+- `VARIABLE_DOES_NOT_EXIST` - 变量不存在
+- `VARIABLE_IS_LOCKED` - 变量被锁定
+- `INSUFFICIENT_PERMISSION` - 权限不足
+
+**通用错误码：**
+- `INVALID_ARGUMENTS` - 无效参数
+- `INVALID_JSON` - 无效 JSON 格式
+- `CREATE_FAILED` - 创建失败
+- `DELETE_FAILED` - 删除失败
+- `WRITE_FAILED` - 写入失败
+- `READ_FAILED` - 读取失败
+- `RENAME_FAILED` - 重命名失败
 
 ## 用途
 

@@ -4,8 +4,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 /**
- * 简单日志记录器
- * 提供统一的日志输出接口
+ * Simple logger
+ * Provides unified log output interface
  */
 public class Logger {
 

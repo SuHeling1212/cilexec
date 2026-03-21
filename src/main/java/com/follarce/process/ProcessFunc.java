@@ -2,6 +2,7 @@ package com.follarce.process;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -73,6 +74,9 @@ public class ProcessFunc {
             Map<String, Object> code = (Map<String, Object>) program.get("Code");
             // Child continues from the line AFTER fork() call
             code.put("runningCodeLine", parentRunningLine + 1);
+            
+            // Clear the return value register for the child process
+            program.put("returnValue", null);
 
             // 5. Write child process file
             FileUtil.createFile("/system/process/", childPid + ".json");
@@ -589,10 +593,27 @@ public class ProcessFunc {
             case "fork":
                 return fork(callerPid);
             case "exec":
-                if (args.length != 2 || !(args[0] instanceof String) || !(args[1] instanceof String[])) {
+                if (args.length != 2 || !(args[0] instanceof String)) {
                     return new String[] { "ERROR", "INVALID_ARGUMENTS" };
                 }
-                return exec((String) args[0], (String[]) args[1]);
+                // Convert List or Object[] to String[]
+                String[] stringParams;
+                if (args[1] instanceof List) {
+                    List<?> paramList = (List<?>) args[1];
+                    stringParams = new String[paramList.size()];
+                    for (int i = 0; i < paramList.size(); i++) {
+                        stringParams[i] = paramList.get(i).toString();
+                    }
+                } else if (args[1] instanceof Object[]) {
+                    Object[] paramArray = (Object[]) args[1];
+                    stringParams = new String[paramArray.length];
+                    for (int i = 0; i < paramArray.length; i++) {
+                        stringParams[i] = paramArray[i].toString();
+                    }
+                } else {
+                    return new String[] { "ERROR", "INVALID_ARGUMENTS" };
+                }
+                return exec((String) args[0], stringParams);
 
             // Process control
             case "kill":

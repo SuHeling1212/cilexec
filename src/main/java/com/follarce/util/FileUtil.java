@@ -11,18 +11,18 @@ import java.util.Set;
 import java.util.Stack;
 
 public class FileUtil {
-    private static String VFS_ROOT = null; // 一开始不知道
+    private static String VFS_ROOT = null; // Initially unknown
     private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger("FileUtil");
 
     /**
-     * 检查文件名是否合法（不能以.开头）
+     * Check if filename is valid (cannot start with .)
      */
     private static boolean isValidName(String name) {
         return name != null && !name.trim().isEmpty() && !name.startsWith(".");
     }
 
     /**
-     * 检查文件是否是链接文件，如果是则返回目标路径（支持链式链接）
+     * Check if file is a link file, if so return target path (supports chain links)
      */
     private static String getLinkTarget(String realPath) {
         try {
@@ -40,29 +40,29 @@ public class FileUtil {
                     Map<String, Object> metaMap = (Map<String, Object>) metaObj;
                     String linkTarget = (String) metaMap.get("Link");
                     if (linkTarget != null && !linkTarget.isEmpty()) {
-                        // 如果是相对路径，基于当前文件所在目录
+                        // If relative path, based on current file directory
                         if (!linkTarget.startsWith("/")) {
                             String fileDir = realPath.substring(0, realPath.lastIndexOf(File.separator) + 1);
                             return fileDir + linkTarget.replace('/', File.separatorChar);
                         }
-                        // 如果是绝对路径，加上 VFS 根目录
+                        // If absolute path, add VFS root directory
                         return getVfsRoot() + linkTarget.replace('/', File.separatorChar);
                     }
                 }
             }
         } catch (IOException e) {
-            LOGGER.warning("读取链接文件失败: " + realPath + " - " + e.getMessage());
+            LOGGER.warning("Failed to read link file: " + realPath + " - " + e.getMessage());
         }
         return null;
     }
 
     /**
-     * 递归解析链接文件（支持链式链接，检测循环）
+     * Recursively resolve link file (supports chain links, detects cycles)
      */
     private static String resolveLinkRecursive(String realPath, Set<String> visited) {
         if (visited.contains(realPath)) {
-            LOGGER.warning("检测到循环链接: " + realPath);
-            return null; // 检测到循环链接
+            LOGGER.warning("Detected cyclic link: " + realPath);
+            return null; // Detected cyclic link
         }
         visited.add(realPath);
 
@@ -74,23 +74,23 @@ public class FileUtil {
     }
 
     /**
-     * 获取真实路径（处理链接文件，支持链式链接）
+     * Get real path (handle link files, supports chain links)
      */
     private static String resolveLink(String realPath) {
         Set<String> visited = new HashSet<>();
         String result = resolveLinkRecursive(realPath, visited);
-        return result != null ? result : realPath; // 如果出错，返回原路径
+        return result != null ? result : realPath; // If error, return original path
     }
 
     /**
-     * 规范化路径（支持 Windows 反斜杠，处理 .. 和 .）
+     * Normalize path (supports Windows backslash, handles .. and .)
      */
     private static String normalizePath(String path) {
         if (path == null || path.isEmpty()) {
             return "/";
         }
 
-        // 统一替换反斜杠为正斜杠
+        // Replace backslashes with forward slashes
         String unified = path.replace('\\', '/');
         String[] parts = unified.split("/");
         Stack<String> stack = new Stack<>();
@@ -113,7 +113,7 @@ public class FileUtil {
             result.append("/").append(part);
         }
 
-        // 处理根路径
+        // Handle root path
         if (result.length() == 0) {
             return "/";
         }
@@ -122,12 +122,12 @@ public class FileUtil {
     }
 
     /**
-     * 验证文件路径并返回 File 对象
-     * 
-     * @param path           虚拟路径
-     * @param checkParentDir 是否检查父目录存在
-     * @param needExist      文件是否需要存在
-     * @return [File对象, 错误信息] 如果出错返回null和错误码
+     * Validate file path and return File object
+     *
+     * @param path           Virtual path
+     * @param checkParentDir Whether to check if parent directory exists
+     * @param needExist      Whether file needs to exist
+     * @return [File object, error info] Returns null and error code if error
      */
     private static Object[] validateFile(String path, boolean checkParentDir, boolean needExist) {
         if (path == null || path.trim().isEmpty()) {
@@ -137,20 +137,20 @@ public class FileUtil {
         String root = getVfsRoot();
         String normalized = normalizePath(path);
 
-        // 处理根路径特殊情况
+        // Handle root path special case
         if (normalized.equals("/")) {
             File rootFile = new File(root);
             return new Object[] { rootFile, null };
         }
 
-        // 安全检查：确保规范化后的路径不会跳出 VFS 根目录
+        // Security check: ensure normalized path doesn't escape VFS root
         if (normalized.contains("..") || normalized.contains("~")) {
             return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
         }
 
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 双重检查：确保最终路径在 VFS 根目录内
+        // Double check: ensure final path is within VFS root
         File checkFile = new File(realPath);
         try {
             String canonicalPath = checkFile.getCanonicalPath();
@@ -162,11 +162,11 @@ public class FileUtil {
             return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
         }
 
-        // 解析链接
+        // Resolve link
         String targetPath = resolveLink(realPath);
         File file = new File(targetPath);
 
-        // 检查父目录
+        // Check parent directory
         if (checkParentDir) {
             File parentDir = file.getParentFile();
             if (parentDir != null && !parentDir.exists()) {
@@ -174,12 +174,12 @@ public class FileUtil {
             }
         }
 
-        // 检查文件是否存在
+        // Check if file exists
         if (needExist && !file.exists()) {
             return new Object[] { null, new String[] { "ERROR", "FILE_DOES_NOT_EXIST" } };
         }
 
-        // 检查是否是文件（如果是目录则报错）
+        // Check if it's a file (error if it's a directory)
         if (needExist && file.isDirectory()) {
             return new Object[] { null, new String[] { "ERROR", "IS_NOT_FILE" } };
         }
@@ -188,7 +188,7 @@ public class FileUtil {
     }
 
     /**
-     * 检查目录是否被锁定
+     * Check if directory is locked
      */
     private static String[] checkDirectoryLock(File dir) {
         File metaFile = new File(dir, ".META");
@@ -214,38 +214,38 @@ public class FileUtil {
                 }
             }
         } catch (IOException e) {
-            LOGGER.warning("检查目录锁状态失败: " + e.getMessage());
+            LOGGER.warning("Failed to check directory lock status: " + e.getMessage());
         }
         return null;
     }
 
     /**
-     * 创建链接文件
-     * 
-     * @param path       链接文件存放的目录路径（结尾是/）
-     * @param sourcePath 源文件或目录路径
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Create link file
+     *
+     * @param path       Directory path where link file is stored (ends with /)
+     * @param sourcePath Source file or directory path
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] Link(String path, String sourcePath) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 检查源路径
+        // 2. Check source path
         if (sourcePath == null || sourcePath.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_SOURCE_PATH" };
         }
 
-        // 3. 确保路径以/结尾
+        // 3. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 4. 获取根目录
+        // 4. Get root directory
         String root = getVfsRoot();
 
-        // 5. 转换源路径为真实路径，检查源文件/目录是否存在
+        // 5. Convert source path to real path, check if source file/directory exists
         String normalizedSource = normalizePath(sourcePath);
         String realSourcePath = root + normalizedSource.replace('/', File.separatorChar);
         File sourceFile = new File(realSourcePath);
@@ -254,13 +254,13 @@ public class FileUtil {
             return new String[] { "ERROR", "SOURCE_FILE_DOES_NOT_EXIST" };
         }
 
-        // 6. 从源路径提取文件名（链接文件的名字就是源文件的名字）
+        // 6. Extract filename from source path (link file name is same as source file name)
         String sourceName = sourcePath;
         int lastSlash = sourcePath.lastIndexOf('/');
         if (lastSlash >= 0) {
             sourceName = sourcePath.substring(lastSlash + 1);
         }
-        // 如果提取的结果是空字符串，说明源路径以/结尾，需要再往前找
+        // If extracted result is empty string, source path ends with /, need to look further
         if (sourceName.isEmpty()) {
             String pathWithoutTrailingSlash = sourcePath.substring(0, sourcePath.length() - 1);
             lastSlash = pathWithoutTrailingSlash.lastIndexOf('/');
@@ -270,21 +270,21 @@ public class FileUtil {
                 sourceName = pathWithoutTrailingSlash;
             }
         }
-        // 如果是目录且名字末尾有/，去掉
+        // If it's a directory and name ends with /, remove it
         if (sourceName.endsWith("/")) {
             sourceName = sourceName.substring(0, sourceName.length() - 1);
         }
 
-        // 检查文件名是否合法
+        // Check if filename is valid
         if (!isValidName(sourceName)) {
             return new String[] { "ERROR", "INVALID_NAME" };
         }
 
-        // 7. 转换链接目录路径
+        // 7. Convert link directory path
         String normalized = normalizePath(path);
         String realDirPath = root + normalized.replace('/', File.separatorChar);
 
-        // 8. 检查目录是否存在
+        // 8. Check if directory exists
         File dir = new File(realDirPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
@@ -294,102 +294,102 @@ public class FileUtil {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 检查目录是否被锁定
+        // Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
         }
 
-        // 9. 完整的链接文件路径（名字与源文件相同）
+        // 9. Full link file path (name is same as source file)
         String realLinkPath = realDirPath + File.separator + sourceName;
         File linkFile = new File(realLinkPath);
 
-        // 10. 检查链接文件是否已存在
+        // 10. Check if link file already exists
         if (linkFile.exists()) {
             return new String[] { "ERROR", "FILE_EXIST" };
         }
 
         try {
-            // 11. 获取当前时间
+            // 11. Get current time
             int[] now = TimeUtil.getTime();
 
-            // 12. 创建链接文件的元数据
+            // 12. Create link file metadata
             Map<String, Object> metaMap = new HashMap<>();
 
-            // 添加链接目标（存储原始路径，方便相对路径处理）
+            // Add link target (store original path for easy relative path handling)
             metaMap.put("Link", sourcePath);
 
-            // 添加时间信息
+            // Add time info
             Map<String, Object> timeMap = new HashMap<>();
             timeMap.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             timeMap.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             metaMap.put("Time", timeMap);
 
-            // 添加所有者（使用当前用户）
+            // Add owner (use current user)
             String currentUser = com.follarce.init.UserInit.getCurrentUser();
             if (currentUser == null) {
                 currentUser = "local";
             }
             metaMap.put("Owner", currentUser);
 
-            // 添加大小
+            // Add size
             metaMap.put("Size", new Object[] { 0, "B" });
 
-            // 添加权限
+            // Add permissions
             Map<String, String> permMap = new HashMap<>();
             permMap.put("Owner", "read, write");
             permMap.put("Others", "read");
             metaMap.put("Permission", permMap);
 
-            // 添加锁状态
+            // Add lock status
             Map<String, Object> lockMap = new HashMap<>();
             lockMap.put("isLocked", false);
             lockMap.put("lockedBy", null);
             metaMap.put("locked", lockMap);
 
-            // 13. 转换为JSON
+            // 13. Convert to JSON
             String metaJson = JsonUtil.toJson(metaMap);
 
-            // 14. 创建链接文件内容
+            // 14. Create link file content
             String fileContent = "#<META>\n" + metaJson + "\n<META>#\n";
 
-            // 15. 写入文件
+            // 15. Write file
             Files.write(linkFile.toPath(), fileContent.getBytes());
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("创建链接文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to create link file: " + e.getMessage());
             return new String[] { "ERROR", "CREATE_LINK_FAILED" };
         }
     }
 
     /**
-     * 重命名文件或目录
-     * 
-     * @param path    源路径（文件或目录）
-     * @param newName 新名称
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Rename file or directory
+     *
+     * @param path    Source path (file or directory)
+     * @param newName New name
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] Rename(String path, String newName) {
-        // 1. 检查新名称是否合法
+        // 1. Check if new name is valid
         if (!isValidName(newName)) {
             return new String[] { "ERROR", "INVALID_NEW_NAME" };
         }
 
-        // 2. 验证新名称是否合法（不能包含特殊字符）
+        // 2. Validate new name (cannot contain special characters)
         if (newName.contains("/") || newName.contains("\\") || newName.contains("..")) {
             return new String[] { "ERROR", "INVALID_NEW_NAME" };
         }
 
-        // 3. 检查路径
+        // 3. Check path
         Object[] validateResult = validateFile(path, true, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
         File source = (File) validateResult[0];
 
-        // 4. 如果是目录，检查目录是否被锁定
+        // 4. If it's a directory, check if directory is locked
         if (source.isDirectory()) {
             String[] lockCheck = checkDirectoryLock(source);
             if (lockCheck != null) {
@@ -397,7 +397,7 @@ public class FileUtil {
             }
         }
 
-        // 5. 如果是文件，检查是否被锁定
+        // 5. If it's a file, check if it's locked
         if (source.isFile()) {
             String[] lockCheck = checkLock(source);
             if (lockCheck != null) {
@@ -405,13 +405,13 @@ public class FileUtil {
             }
         }
 
-        // 6. 获取父目录和目标路径
+        // 6. Get parent directory and target path
         File parentDir = source.getParentFile();
         if (parentDir == null) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 检查父目录是否被锁定
+        // Check if parent directory is locked
         String[] parentLockCheck = checkDirectoryLock(parentDir);
         if (parentLockCheck != null) {
             return parentLockCheck;
@@ -419,12 +419,12 @@ public class FileUtil {
 
         File target = new File(parentDir, newName);
 
-        // 7. 检查目标是否已存在
+        // 7. Check if target already exists
         if (target.exists()) {
             return new String[] { "ERROR", "FILE_EXIST" };
         }
 
-        // 8. 执行重命名
+        // 8. Execute rename
         boolean renamed = source.renameTo(target);
         if (renamed) {
             return new String[] { "SUCCESS", null };
@@ -434,7 +434,7 @@ public class FileUtil {
     }
 
     /**
-     * 检查文件是否被锁定
+     * Check if file is locked
      */
     private static String[] checkLock(File file) {
         try {
@@ -455,14 +455,14 @@ public class FileUtil {
                 }
             }
         } catch (IOException e) {
-            LOGGER.warning("检查锁状态失败: " + e.getMessage());
+            LOGGER.warning("Failed to check lock status: " + e.getMessage());
             return new String[] { "ERROR", "CHECK_LOCK_FAILED" };
         }
         return null;
     }
 
     /**
-     * 创建目录元数据文件
+     * Create directory metadata file
      */
     private static void createDirectoryMetaData(File dir) throws IOException {
         File metaFile = new File(dir, ".META");
@@ -474,27 +474,27 @@ public class FileUtil {
 
         Map<String, Object> metaMap = new HashMap<>();
 
-        // 时间信息
+        // Time info
         Map<String, Object> timeMap = new HashMap<>();
         timeMap.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
         timeMap.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
         timeMap.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
         metaMap.put("Time", timeMap);
 
-        // 所有者（使用当前用户）
+        // Owner (use current user)
         String currentUser = com.follarce.init.UserInit.getCurrentUser();
         if (currentUser == null) {
             currentUser = "local";
         }
         metaMap.put("Owner", currentUser);
 
-        // 权限
+        // Permissions
         Map<String, String> permMap = new HashMap<>();
         permMap.put("Owner", "read, write");
         permMap.put("Others", "read");
         metaMap.put("Permission", permMap);
 
-        // 锁状态
+        // Lock status
         Map<String, Object> lockMap = new HashMap<>();
         lockMap.put("isLocked", false);
         lockMap.put("lockedBy", null);
@@ -506,50 +506,50 @@ public class FileUtil {
     }
 
     /**
-     * 删除空目录
-     * 
-     * @param path 目录路径（结尾是/）
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Delete empty directory
+     *
+     * @param path Directory path (ends with /)
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] removeDirectory(String path) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 确保路径以/结尾
+        // 2. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 3. 获取根目录
+        // 3. Get root directory
         String root = getVfsRoot();
 
-        // 4. 转换为真实路径
+        // 4. Convert to real path
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 5. 检查目录是否存在
+        // 5. Check if directory exists
         File dir = new File(realPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 6. 检查是否是目录
+        // 6. Check if it's a directory
         if (!dir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 7. 检查目录是否被锁定
+        // 7. Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
         }
 
-        // 8. 检查目录是否为空（忽略 .META 文件）
+        // 8. Check if directory is empty (ignore .META file)
         String[] files = dir.list();
         if (files != null) {
-            // 过滤掉 .META 文件
+            // Filter out .META file
             int fileCount = 0;
             for (String f : files) {
                 if (!f.equals(".META")) {
@@ -561,13 +561,13 @@ public class FileUtil {
             }
         }
 
-        // 9. 先删除 .META 文件（如果存在）
+        // 9. First delete .META file (if exists)
         File metaFile = new File(dir, ".META");
         if (metaFile.exists()) {
             metaFile.delete();
         }
 
-        // 10. 删除目录
+        // 10. Delete directory
         boolean deleted = dir.delete();
         if (deleted) {
             return new String[] { "SUCCESS", null };
@@ -577,75 +577,75 @@ public class FileUtil {
     }
 
     /**
-     * 创建目录
-     * 
-     * @param path 目录路径（结尾是/）
-     * @param name 目录名称
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Create directory
+     *
+     * @param path Directory path (ends with /)
+     * @param name Directory name
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] createDirectory(String path, String name) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 检查目录名是否合法
+        // 2. Check if directory name is valid
         if (!isValidName(name)) {
             return new String[] { "ERROR", "INVALID_NAME" };
         }
 
-        // 3. 验证目录名是否合法（不能包含特殊字符）
+        // 3. Validate directory name (cannot contain special characters)
         if (name.contains("/") || name.contains("\\") || name.contains("..")) {
             return new String[] { "ERROR", "INVALID_NAME" };
         }
 
-        // 4. 确保路径以/结尾
+        // 4. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 5. 获取根目录
+        // 5. Get root directory
         String root = getVfsRoot();
 
-        // 6. 转换为真实路径（父目录路径）
+        // 6. Convert to real path (parent directory path)
         String normalized = normalizePath(path);
         String realParentPath = root + normalized.replace('/', File.separatorChar);
 
-        // 7. 检查父目录是否存在
+        // 7. Check if parent directory exists
         File parentDir = new File(realParentPath);
         if (!parentDir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 8. 检查父目录是否是目录
+        // 8. Check if parent directory is a directory
         if (!parentDir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 9. 检查父目录是否被锁定
+        // 9. Check if parent directory is locked
         String[] parentLockCheck = checkDirectoryLock(parentDir);
         if (parentLockCheck != null) {
             return parentLockCheck;
         }
 
-        // 10. 完整的目录路径
+        // 10. Full directory path
         String realDirPath = realParentPath + File.separator + name;
         File newDir = new File(realDirPath);
 
-        // 11. 检查目录是否已存在
+        // 11. Check if directory already exists
         if (newDir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_EXIST" };
         }
 
-        // 12. 创建目录
+        // 12. Create directory
         boolean created = newDir.mkdir();
         if (created) {
             try {
-                // 13. 创建目录元数据文件
+                // 13. Create directory metadata file
                 createDirectoryMetaData(newDir);
                 return new String[] { "SUCCESS", null };
             } catch (IOException e) {
-                LOGGER.warning("创建目录元数据失败: " + e.getMessage());
+                LOGGER.warning("Failed to create directory metadata: " + e.getMessage());
                 return new String[] { "SUCCESS", null };
             }
         } else {
@@ -654,26 +654,26 @@ public class FileUtil {
     }
 
     /**
-     * 删除文件
-     * 
-     * @param path 文件完整路径
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Delete file
+     *
+     * @param path Full file path
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] removeFile(String path) {
-        // 1. 验证文件
+        // 1. Validate file
         Object[] validateResult = validateFile(path, true, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
         File file = (File) validateResult[0];
 
-        // 2. 检查锁状态
+        // 2. Check lock status
         String[] lockCheck = checkLock(file);
         if (lockCheck != null) {
             return lockCheck;
         }
 
-        // 3. 检查父目录是否被锁定
+        // 3. Check if parent directory is locked
         File parentDir = file.getParentFile();
         if (parentDir != null) {
             String[] parentLockCheck = checkDirectoryLock(parentDir);
@@ -682,7 +682,7 @@ public class FileUtil {
             }
         }
 
-        // 4. 删除文件
+        // 4. Delete file
         try {
             boolean deleted = file.delete();
             if (deleted) {
@@ -691,147 +691,147 @@ public class FileUtil {
                 return new String[] { "ERROR", "DELETE_FAILED" };
             }
         } catch (Exception e) {
-            LOGGER.warning("删除文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to delete file: " + e.getMessage());
             return new String[] { "ERROR", "DELETE_FAILED" };
         }
     }
 
     /**
-     * 创建文件
-     * 
-     * @param path 目录路径（结尾是/）
-     * @param name 文件名称
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Create file
+     *
+     * @param path Directory path (ends with /)
+     * @param name File name
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] createFile(String path, String name) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 检查文件名是否合法
+        // 2. Check if filename is valid
         if (!isValidName(name)) {
             return new String[] { "ERROR", "INVALID_NAME" };
         }
 
-        // 3. 验证文件名是否合法（不能包含特殊字符）
+        // 3. Validate filename (cannot contain special characters)
         if (name.contains("/") || name.contains("\\") || name.contains("..")) {
             return new String[] { "ERROR", "INVALID_NAME" };
         }
 
-        // 4. 确保路径以/结尾
+        // 4. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 5. 获取根目录
+        // 5. Get root directory
         String root = getVfsRoot();
 
-        // 6. 转换为真实路径（目录路径）
+        // 6. Convert to real path (directory path)
         String normalized = normalizePath(path);
         String realDirPath = root + normalized.replace('/', File.separatorChar);
 
-        // 7. 检查目录是否存在
+        // 7. Check if directory exists
         File dir = new File(realDirPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 8. 检查是否是目录
+        // 8. Check if it's a directory
         if (!dir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 9. 检查目录是否被锁定
+        // 9. Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
         }
 
-        // 10. 完整的文件路径
+        // 10. Full file path
         String realFilePath = realDirPath + File.separator + name;
         File newFile = new File(realFilePath);
 
-        // 11. 检查文件是否已存在
+        // 11. Check if file already exists
         if (newFile.exists()) {
             return new String[] { "ERROR", "FILE_EXIST" };
         }
 
         try {
-            // 12. 获取当前时间
+            // 12. Get current time
             int[] now = TimeUtil.getTime();
 
-            // 13. 创建默认元数据
+            // 13. Create default metadata
             Map<String, Object> metaMap = new HashMap<>();
 
-            // 添加时间信息
+            // Add time info
             Map<String, Object> timeMap = new HashMap<>();
             timeMap.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             timeMap.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             timeMap.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             metaMap.put("Time", timeMap);
 
-            // 添加所有者（暂时用local）
+            // Add owner (use local for now)
             metaMap.put("Owner", "local");
 
-            // 添加默认权限
+            // Add default permissions
             Map<String, String> permMap = new HashMap<>();
             permMap.put("Owner", "read, write");
             permMap.put("Others", "read");
             metaMap.put("Permission", permMap);
 
-            // 添加锁状态
+            // Add lock status
             Map<String, Object> lockMap = new HashMap<>();
             lockMap.put("isLocked", false);
             lockMap.put("lockedBy", null);
             metaMap.put("locked", lockMap);
 
-            // 添加大小（初始为0）
+            // Add size (initially 0)
             metaMap.put("Size", new Object[] { 0, "B" });
 
-            // 14. 转换为JSON
+            // 14. Convert to JSON
             String metaJson = JsonUtil.toJson(metaMap);
 
-            // 15. 创建文件内容（只有元数据，正文为空）
+            // 15. Create file content (only metadata, body is empty)
             String fileContent = "#<META>\n" + metaJson + "\n<META>#\n";
 
-            // 16. 写入文件
+            // 16. Write file
             Files.write(newFile.toPath(), fileContent.getBytes());
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("创建文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to create file: " + e.getMessage());
             return new String[] { "ERROR", "CREATE_FAILED" };
         }
     }
 
     /**
-     * 写入文件元信息
-     * 
-     * @param path    文件路径
-     * @param content 新的元信息内容（JSON格式）
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Write file metadata
+     *
+     * @param path    File path
+     * @param content New metadata content (JSON format)
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] writeFileMetaData(String path, String content) {
-        // 1. 验证文件
+        // 1. Validate file
         Object[] validateResult = validateFile(path, true, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
         File file = (File) validateResult[0];
 
-        // 2. 检查元数据内容
+        // 2. Check metadata content
         if (content == null) {
             content = "{}";
         }
 
-        // 3. 验证JSON格式
+        // 3. Validate JSON format
         if (!JsonUtil.isValidJson(content)) {
             return new String[] { "ERROR", "INVALID_JSON" };
         }
 
-        // 4. 检查父目录是否被锁定
+        // 4. Check if parent directory is locked
         File parentDir = file.getParentFile();
         if (parentDir != null) {
             String[] parentLockCheck = checkDirectoryLock(parentDir);
@@ -841,17 +841,17 @@ public class FileUtil {
         }
 
         try {
-            // 5. 读取文件现有内容（为了获取正文）
+            // 5. Read existing file content (to get body)
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
             String bodyContent = extractBodyContent(fullContent);
 
-            // 6. 检查锁状态
+            // 6. Check lock status
             String[] lockCheck = checkLock(file);
             if (lockCheck != null) {
                 return lockCheck;
             }
 
-            // 7. 解析新的元数据，并确保有时间字段
+            // 7. Parse new metadata and ensure time field exists
             Object newMetaObj = JsonUtil.readJson(content);
             Map<String, Object> newMetaMap;
 
@@ -861,7 +861,7 @@ public class FileUtil {
                 newMetaMap = new HashMap<>();
             }
 
-            // 8. 更新时间字段
+            // 8. Update time field
             Map<String, Object> time = (Map<String, Object>) newMetaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -870,12 +870,12 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 9. 如果有createTime，保留；没有则添加
+            // 9. If createTime exists, keep it; otherwise add it
             if (!time.containsKey("createTime")) {
                 time.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             }
 
-            // 10. 确保有locked字段
+            // 10. Ensure locked field exists
             if (!newMetaMap.containsKey("locked")) {
                 Map<String, Object> lockMap = new HashMap<>();
                 lockMap.put("isLocked", false);
@@ -883,29 +883,29 @@ public class FileUtil {
                 newMetaMap.put("locked", lockMap);
             }
 
-            // 11. 重新组装文件
+            // 11. Reassemble file
             String newMetaJson = JsonUtil.toJson(newMetaMap);
             String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
 
-            // 12. 写回文件
+            // 12. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("写入元数据失败: " + e.getMessage());
+            LOGGER.warning("Failed to write metadata: " + e.getMessage());
             return new String[] { "ERROR", "WRITE_FAILED" };
         }
     }
 
     /**
-     * 读取文件元信息
-     * 
-     * @param path 文件路径
-     * @return String[] 数组，[0]是状态，[1]是元信息JSON（如果没有元数据则返回"{}"）
+     * Read file metadata
+     *
+     * @param path File path
+     * @return String[] Array, [0] is status, [1] is metadata JSON (returns "{}" if no metadata)
      */
     public static String[] readFileMetaData(String path) {
-        // 1. 验证文件
+        // 1. Validate file
         Object[] validateResult = validateFile(path, true, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
@@ -913,65 +913,65 @@ public class FileUtil {
         File file = (File) validateResult[0];
 
         try {
-            // 2. 读取文件内容
+            // 2. Read file content
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
 
-            // 3. 提取元数据
+            // 3. Extract metadata
             String[] metaResult = extractMetaContent(fullContent);
 
             if (metaResult[0].equals("SUCCESS")) {
-                // 有元数据，直接返回
+                // Has metadata, return directly
                 return new String[] { "SUCCESS", metaResult[1] };
             } else {
-                // 没有元数据，返回空对象
+                // No metadata, return empty object
                 return new String[] { "SUCCESS", "{}" };
             }
 
         } catch (IOException e) {
-            LOGGER.warning("读取元数据失败: " + e.getMessage());
+            LOGGER.warning("Failed to read metadata: " + e.getMessage());
             return new String[] { "ERROR", "READ_FAILED" };
         }
     }
 
     /**
-     * 读取目录元信息
-     * 
-     * @param path 目录路径（结尾是/）
-     * @return String[] 数组，[0]是状态，[1]是元信息JSON（如果没有元数据则返回"{}"）
+     * Read directory metadata
+     *
+     * @param path Directory path (ends with /)
+     * @return String[] Array, [0] is status, [1] is metadata JSON (returns "{}" if no metadata)
      */
     public static String[] readDirectoryMetaData(String path) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 确保路径以/结尾
+        // 2. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 3. 获取根目录
+        // 3. Get root directory
         String root = getVfsRoot();
 
-        // 4. 转换为真实路径
+        // 4. Convert to real path
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 5. 检查目录是否存在
+        // 5. Check if directory exists
         File dir = new File(realPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 6. 检查是否是目录
+        // 6. Check if it's a directory
         if (!dir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 7. 元数据文件路径
+        // 7. Metadata file path
         File metaFile = new File(dir, ".META");
 
-        // 8. 检查元数据文件是否存在
+        // 8. Check if metadata file exists
         if (!metaFile.exists()) {
             return new String[] { "ERROR", "META_DATA_FILE_DOES_NOT_EXIST" };
         }
@@ -986,73 +986,73 @@ public class FileUtil {
                 return new String[] { "ERROR", "INVALID_META_FORMAT" };
             }
         } catch (IOException e) {
-            LOGGER.warning("读取目录元数据失败: " + e.getMessage());
+            LOGGER.warning("Failed to read directory metadata: " + e.getMessage());
             return new String[] { "ERROR", "READ_FAILED" };
         }
     }
 
     /**
-     * 写入目录元信息
-     * 
-     * @param path    目录路径（结尾是/）
-     * @param content 新的元信息内容（JSON格式）
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Write directory metadata
+     *
+     * @param path    Directory path (ends with /)
+     * @param content New metadata content (JSON format)
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] writeDirectoryMetaData(String path, String content) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 确保路径以/结尾
+        // 2. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 3. 检查元数据内容
+        // 3. Check metadata content
         if (content == null) {
             content = "{}";
         }
 
-        // 4. 验证JSON格式
+        // 4. Validate JSON format
         if (!JsonUtil.isValidJson(content)) {
             return new String[] { "ERROR", "INVALID_JSON" };
         }
 
-        // 5. 获取根目录
+        // 5. Get root directory
         String root = getVfsRoot();
 
-        // 6. 转换为真实路径
+        // 6. Convert to real path
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 7. 检查目录是否存在
+        // 7. Check if directory exists
         File dir = new File(realPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 8. 检查是否是目录
+        // 8. Check if it's a directory
         if (!dir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 9. 检查目录是否被锁定
+        // 9. Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
         }
 
-        // 10. 元数据文件路径
+        // 10. Metadata file path
         File metaFile = new File(dir, ".META");
 
-        // 11. 检查元数据文件是否存在
+        // 11. Check if metadata file exists
         if (!metaFile.exists()) {
             return new String[] { "ERROR", "META_DATA_FILE_DOES_NOT_EXIST" };
         }
 
         try {
-            // 12. 解析新的元数据，并确保有时间字段
+            // 12. Parse new metadata and ensure time field exists
             Object newMetaObj = JsonUtil.readJson(content);
             Map<String, Object> newMetaMap;
 
@@ -1062,7 +1062,7 @@ public class FileUtil {
                 newMetaMap = new HashMap<>();
             }
 
-            // 13. 更新时间字段
+            // 13. Update time field
             Map<String, Object> time = (Map<String, Object>) newMetaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -1071,12 +1071,12 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 14. 如果有createTime，保留；没有则添加
+            // 14. If createTime exists, keep it; otherwise add it
             if (!time.containsKey("createTime")) {
                 time.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             }
 
-            // 15. 确保有locked字段
+            // 15. Ensure locked field exists
             if (!newMetaMap.containsKey("locked")) {
                 Map<String, Object> lockMap = new HashMap<>();
                 lockMap.put("isLocked", false);
@@ -1084,176 +1084,176 @@ public class FileUtil {
                 newMetaMap.put("locked", lockMap);
             }
 
-            // 16. 重新组装文件
+            // 16. Reassemble file
             String newMetaJson = JsonUtil.toJson(newMetaMap);
             String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n";
 
-            // 17. 写回文件
+            // 17. Write back to file
             Files.write(metaFile.toPath(), newFullContent.getBytes(StandardCharsets.UTF_8));
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("写入目录元数据失败: " + e.getMessage());
+            LOGGER.warning("Failed to write directory metadata: " + e.getMessage());
             return new String[] { "ERROR", "WRITE_FAILED" };
         }
     }
 
     /**
-     * 创建目录元信息文件
-     * 
-     * @param path 目录路径（结尾是/）
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Create directory metadata file
+     *
+     * @param path Directory path (ends with /)
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] createDirectoryMetaData(String path) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 确保路径以/结尾
+        // 2. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 3. 获取根目录
+        // 3. Get root directory
         String root = getVfsRoot();
 
-        // 4. 转换为真实路径
+        // 4. Convert to real path
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 5. 检查目录是否存在
+        // 5. Check if directory exists
         File dir = new File(realPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 6. 检查是否是目录
+        // 6. Check if it's a directory
         if (!dir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 7. 检查目录是否被锁定
+        // 7. Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
         }
 
-        // 8. 元数据文件路径
+        // 8. Metadata file path
         File metaFile = new File(dir, ".META");
 
-        // 9. 检查元数据文件是否已存在
+        // 9. Check if metadata file already exists
         if (metaFile.exists()) {
             return new String[] { "ERROR", "FILE_EXIST" };
         }
 
         try {
-            // 10. 获取当前时间
+            // 10. Get current time
             int[] now = TimeUtil.getTime();
 
-            // 11. 创建元数据
+            // 11. Create metadata
             Map<String, Object> metaMap = new HashMap<>();
 
-            // 时间信息
+            // Time info
             Map<String, Object> timeMap = new HashMap<>();
             timeMap.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             timeMap.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             timeMap.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             metaMap.put("Time", timeMap);
 
-            // 所有者
+            // Owner
             metaMap.put("Owner", "local");
 
-            // 权限
+            // Permissions
             Map<String, String> permMap = new HashMap<>();
             permMap.put("Owner", "read, write");
             permMap.put("Others", "read");
             metaMap.put("Permission", permMap);
 
-            // 锁状态
+            // Lock status
             Map<String, Object> lockMap = new HashMap<>();
             lockMap.put("isLocked", false);
             lockMap.put("lockedBy", null);
             metaMap.put("locked", lockMap);
 
-            // 12. 转换为JSON
+            // 12. Convert to JSON
             String metaJson = JsonUtil.toJson(metaMap);
 
-            // 13. 创建文件内容
+            // 13. Create file content
             String fileContent = "#<META>\n" + metaJson + "\n<META>#\n";
 
-            // 14. 写入文件
+            // 14. Write file
             Files.write(metaFile.toPath(), fileContent.getBytes(StandardCharsets.UTF_8));
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("创建目录元数据失败: " + e.getMessage());
+            LOGGER.warning("Failed to create directory metadata: " + e.getMessage());
             return new String[] { "ERROR", "CREATE_FAILED" };
         }
     }
 
     /**
-     * 获取目录下的文件和目录列表
-     * 
-     * @param path 目录路径（结尾是/）
-     * @return String[] 数组，[0]是状态，[1...]是文件名/目录名
+     * Get list of files and directories under directory
+     *
+     * @param path Directory path (ends with /)
+     * @return String[] Array, [0] is status, [1...] are filenames/directory names
      */
     public static String[] getListOfFileAndDirectory(String path) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 确保路径以/结尾
+        // 2. Ensure path ends with /
         if (!path.endsWith("/")) {
             path = path + "/";
         }
 
-        // 3. 获取根目录
+        // 3. Get root directory
         String root = getVfsRoot();
 
-        // 4. 转换为真实路径
+        // 4. Convert to real path
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 5. 检查目录是否存在
+        // 5. Check if directory exists
         File dir = new File(realPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 6. 检查是否是目录
+        // 6. Check if it's a directory
         if (!dir.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 7. 获取目录下的所有文件
+        // 7. Get all files under directory
         File[] files = dir.listFiles();
         if (files == null) {
-            return new String[] { "SUCCESS" }; // 空目录
+            return new String[] { "SUCCESS" }; // Empty directory
         }
 
-        // 8. 收集文件名和目录名（过滤掉 .META 文件）
+        // 8. Collect filenames and directory names (filter out .META file)
         java.util.List<String> items = new java.util.ArrayList<>();
         for (File f : files) {
             String name = f.getName();
-            // 不显示 .META 文件
+            // Don't show .META file
             if (name.equals(".META")) {
                 continue;
             }
             if (f.isDirectory()) {
-                items.add(name + "/"); // 目录后面加/
+                items.add(name + "/"); // Add / after directory
             } else {
                 items.add(name);
             }
         }
 
-        // 9. 按字母顺序排序
+        // 9. Sort alphabetically
         java.util.Collections.sort(items);
 
-        // 10. 构造返回数组
+        // 10. Construct return array
         String[] result = new String[items.size() + 1];
         result[0] = "SUCCESS";
         for (int i = 0; i < items.size(); i++) {
@@ -1264,21 +1264,21 @@ public class FileUtil {
     }
 
     /**
-     * 写入文件
-     * 
-     * @param path    文件路径
-     * @param content 要写入的内容
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Write file
+     *
+     * @param path    File path
+     * @param content Content to write
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] write(String path, String content) {
-        // 1. 验证文件
+        // 1. Validate file
         Object[] validateResult = validateFile(path, true, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
         File file = (File) validateResult[0];
 
-        // 2. 检查父目录是否被锁定
+        // 2. Check if parent directory is locked
         File parentDir = file.getParentFile();
         if (parentDir != null) {
             String[] parentLockCheck = checkDirectoryLock(parentDir);
@@ -1288,23 +1288,23 @@ public class FileUtil {
         }
 
         try {
-            // 3. 读取文件现有内容（为了获取元数据）
+            // 3. Read existing file content (to get metadata)
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
 
-            // 4. 检查锁状态
+            // 4. Check lock status
             String[] lockCheck = checkLock(file);
             if (lockCheck != null) {
                 return lockCheck;
             }
 
-            // 5. 提取元数据
+            // 5. Extract metadata
             String metaJson = "{}";
             String[] metaResult = extractMetaContent(fullContent);
             if (metaResult[0].equals("SUCCESS")) {
                 metaJson = metaResult[1];
             }
 
-            // 6. 解析元数据
+            // 6. Parse metadata
             Object metaObj = JsonUtil.readJson(metaJson);
             Map<String, Object> metaMap;
 
@@ -1314,7 +1314,7 @@ public class FileUtil {
                 metaMap = new HashMap<>();
             }
 
-            // 7. 确保有locked字段
+            // 7. Ensure locked field exists
             if (!metaMap.containsKey("locked")) {
                 Map<String, Object> lockMap = new HashMap<>();
                 lockMap.put("isLocked", false);
@@ -1322,7 +1322,7 @@ public class FileUtil {
                 metaMap.put("locked", lockMap);
             }
 
-            // 8. 更新元数据中的时间
+            // 8. Update time in metadata
             Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -1331,41 +1331,41 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 9. 确保有创建时间
+            // 9. Ensure create time exists
             if (!time.containsKey("createTime")) {
                 time.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             }
 
-            // 10. 重新组装文件（保留元数据，更新正文）
+            // 10. Reassemble file (keep metadata, update body)
             String newMetaJson = JsonUtil.toJson(metaMap);
             String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + content;
 
-            // 11. 写回文件
+            // 11. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("写入文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to write file: " + e.getMessage());
             return new String[] { "ERROR", "WRITE_FAILED" };
         }
     }
 
     /**
-     * 锁定文件
-     * 
-     * @param path 文件路径
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Lock file
+     *
+     * @param path File path
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] lock(String path) {
-        // 1. 验证文件
+        // 1. Validate file
         Object[] validateResult = validateFile(path, false, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
         File file = (File) validateResult[0];
 
-        // 2. 检查父目录是否被锁定
+        // 2. Check if parent directory is locked
         File parentDir = file.getParentFile();
         if (parentDir != null) {
             String[] parentLockCheck = checkDirectoryLock(parentDir);
@@ -1375,25 +1375,25 @@ public class FileUtil {
         }
 
         try {
-            // 3. 读取文件全部内容
+            // 3. Read full file content
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
 
-            // 4. 分离元数据和正文
+            // 4. Separate metadata and body
             String[] metaResult = extractMetaContent(fullContent);
             String metaJson;
             String bodyContent;
 
             if (metaResult[0].equals("SUCCESS")) {
-                // 有元数据
+                // Has metadata
                 metaJson = metaResult[1];
                 bodyContent = extractBodyContent(fullContent);
             } else {
-                // 没有元数据，创建默认的
+                // No metadata, create default
                 metaJson = "{}";
                 bodyContent = fullContent;
             }
 
-            // 5. 解析元数据
+            // 5. Parse metadata
             Object metaObj = JsonUtil.readJson(metaJson);
             Map<String, Object> metaMap;
 
@@ -1403,25 +1403,25 @@ public class FileUtil {
                 metaMap = new HashMap<>();
             }
 
-            // 6. 获取或创建 locked 字段
+            // 6. Get or create locked field
             Map<String, Object> locked = (Map<String, Object>) metaMap.get("locked");
             if (locked == null) {
                 locked = new HashMap<>();
                 metaMap.put("locked", locked);
             }
 
-            // 7. 检查是否已锁定
+            // 7. Check if already locked
             Boolean isLocked = (Boolean) locked.get("isLocked");
             if (isLocked != null && isLocked) {
                 return new String[] { "ERROR", "FILE_IS_LOCKED" };
             }
 
-            // 8. 锁定文件（使用当前进程ID）
+            // 8. Lock file (use current process ID)
             locked.put("isLocked", true);
             int currentPid = com.follarce.process.ProcessFunc.getPID();
             locked.put("lockedBy", currentPid);
 
-            // 9. 更新元数据中的时间
+            // 9. Update time in metadata
             Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -1430,36 +1430,36 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 10. 重新组装文件
+            // 10. Reassemble file
             String newMetaJson = JsonUtil.toJson(metaMap);
             String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
 
-            // 11. 写回文件
+            // 11. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("锁定文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to lock file: " + e.getMessage());
             return new String[] { "ERROR", "LOCK_FAILED" };
         }
     }
 
     /**
-     * 解锁文件
-     * 
-     * @param path 文件路径
-     * @return String[] 数组，[0]是状态，[1]是错误码（如果有）
+     * Unlock file
+     *
+     * @param path File path
+     * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] unlock(String path) {
-        // 1. 验证文件
+        // 1. Validate file
         Object[] validateResult = validateFile(path, false, true);
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
         File file = (File) validateResult[0];
 
-        // 2. 检查父目录是否被锁定
+        // 2. Check if parent directory is locked
         File parentDir = file.getParentFile();
         if (parentDir != null) {
             String[] parentLockCheck = checkDirectoryLock(parentDir);
@@ -1469,10 +1469,10 @@ public class FileUtil {
         }
 
         try {
-            // 3. 读取文件全部内容
+            // 3. Read full file content
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
 
-            // 4. 分离元数据和正文
+            // 4. Separate metadata and body
             String[] metaResult = extractMetaContent(fullContent);
             String metaJson;
             String bodyContent;
@@ -1481,10 +1481,10 @@ public class FileUtil {
                 metaJson = metaResult[1];
                 bodyContent = extractBodyContent(fullContent);
             } else {
-                return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" }; // 没有元数据，肯定没锁
+                return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" }; // No metadata, definitely not locked
             }
 
-            // 5. 解析元数据
+            // 5. Parse metadata
             Object metaObj = JsonUtil.readJson(metaJson);
             if (!(metaObj instanceof Map)) {
                 return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" };
@@ -1492,25 +1492,25 @@ public class FileUtil {
 
             Map<String, Object> metaMap = (Map<String, Object>) metaObj;
 
-            // 6. 获取 locked 字段
+            // 6. Get locked field
             Map<String, Object> locked = (Map<String, Object>) metaMap.get("locked");
             if (locked == null) {
                 return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" };
             }
 
-            // 7. 检查是否已锁定
+            // 7. Check if already locked
             Boolean isLocked = (Boolean) locked.get("isLocked");
             if (isLocked == null || !isLocked) {
                 return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" };
             }
 
-            // 8. 验证锁持有者（只有锁定者才能解锁，或者是 local 用户）
+            // 8. Verify lock holder (only locker can unlock, or local user)
             Object lockedBy = locked.get("lockedBy");
             int currentPid = com.follarce.process.ProcessFunc.getPID();
             boolean isLocal = com.follarce.init.UserInit.isLocal();
-            
+
             if (!isLocal) {
-                // 非 local 用户需要验证持有者
+                // Non-local user needs to verify holder
                 if (lockedBy instanceof Number) {
                     int lockHolderPid = ((Number) lockedBy).intValue();
                     if (lockHolderPid != currentPid) {
@@ -1521,11 +1521,11 @@ public class FileUtil {
                 }
             }
 
-            // 9. 解锁文件
+            // 9. Unlock file
             locked.put("isLocked", false);
             locked.put("lockedBy", null);
 
-            // 9. 更新元数据中的时间
+            // 9. Update time in metadata
             Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -1534,73 +1534,73 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 10. 重新组装文件
+            // 10. Reassemble file
             String newMetaJson = JsonUtil.toJson(metaMap);
             String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
 
-            // 11. 写回文件
+            // 11. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
 
             return new String[] { "SUCCESS", null };
 
         } catch (IOException e) {
-            LOGGER.warning("解锁文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to unlock file: " + e.getMessage());
             return new String[] { "ERROR", "UNLOCK_FAILED" };
         }
     }
 
     /**
-     * 读取文件
-     * 
-     * @param path 文件路径
-     * @return String[] 数组，[0]是状态，[1]是内容或错误码
+     * Read file
+     *
+     * @param path File path
+     * @return String[] Array, [0] is status, [1] is content or error code
      */
     public static String[] read(String path) {
-        // 1. 检查路径
+        // 1. Check path
         if (path == null || path.trim().isEmpty()) {
             return new String[] { "ERROR", "INVALID_PATH" };
         }
 
-        // 2. 获取根目录
+        // 2. Get root directory
         String root = getVfsRoot();
 
-        // 3. 转换为真实路径
+        // 3. Convert to real path
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', File.separatorChar);
 
-        // 4. 检查是否是链接文件，如果是则操作目标文件
+        // 4. Check if it's a link file, if so operate on target file
         String targetPath = resolveLink(realPath);
 
-        // 5. 检查父目录是否存在
+        // 5. Check if parent directory exists
         File file = new File(targetPath);
         File parentDir = file.getParentFile();
         if (parentDir != null && !parentDir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
         }
 
-        // 6. 检查文件是否存在
+        // 6. Check if file exists
         if (!file.exists()) {
             return new String[] { "ERROR", "FILE_DOES_NOT_EXIST" };
         }
 
-        // 7. 检查是否是文件
+        // 7. Check if it's a file
         if (file.isDirectory()) {
             return new String[] { "ERROR", "IS_NOT_FILE" };
         }
 
-        // 8. 读取文件
+        // 8. Read file
         try {
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
             String bodyContent = extractBodyContent(fullContent);
             return new String[] { "SUCCESS", bodyContent };
         } catch (IOException e) {
-            LOGGER.warning("读取文件失败: " + e.getMessage());
+            LOGGER.warning("Failed to read file: " + e.getMessage());
             return new String[] { "ERROR", "READ_FAILED" };
         }
     }
 
     /**
-     * 提取元数据内容
+     * Extract metadata content
      */
     public static String[] extractMetaContent(String fullContent) {
         if (fullContent == null || fullContent.isEmpty()) {
@@ -1628,7 +1628,7 @@ public class FileUtil {
     }
 
     /**
-     * 提取正文内容
+     * Extract body content
      */
     private static String extractBodyContent(String fullContent) {
         if (fullContent == null) {
@@ -1638,34 +1638,34 @@ public class FileUtil {
         String metaEnd = "<META>#";
         int endIndex = fullContent.indexOf(metaEnd);
         if (endIndex == -1) {
-            return fullContent; // 没有元数据，返回全部内容
+            return fullContent; // No metadata, return all content
         }
-        // 返回元数据结束之后的内容
+        // Return content after metadata ends
         return fullContent.substring(endIndex + metaEnd.length()).trim();
     }
 
     /**
-     * 获取VFS根目录（从配置文件读）
+     * Get VFS root directory (read from config file)
      */
     public static String getVfsRoot() {
         if (VFS_ROOT != null) {
-            return VFS_ROOT; // 已经获取过了
+            return VFS_ROOT; // Already retrieved
         }
 
         try {
-            // 先要找到JAR所在目录
+            // First find JAR directory
             String jarDir = getJarDirectory();
 
-            // 读取 init.json
+            // Read init.json
             String initPath = jarDir + File.separator + "cilexec_root" +
                     File.separator + "system" + File.separator +
                     "config" + File.separator + "init.json";
 
             File initFile = new File(initPath);
             if (!initFile.exists()) {
-                // 如果找不到，就用默认路径
+                // If not found, use default path
                 VFS_ROOT = jarDir + File.separator + "cilexec_root";
-                LOGGER.info("使用默认VFS根目录: " + VFS_ROOT);
+                LOGGER.info("Using default VFS root: " + VFS_ROOT);
                 return VFS_ROOT;
             }
 
@@ -1677,26 +1677,26 @@ public class FileUtil {
                 String root = (String) map.get("root");
                 if (root != null && !root.isEmpty()) {
                     VFS_ROOT = root;
-                    LOGGER.info("从配置文件读取VFS根目录: " + VFS_ROOT);
+                    LOGGER.info("Read VFS root from config file: " + VFS_ROOT);
                     return VFS_ROOT;
                 }
             }
 
-            // 解析失败，用默认路径
+            // Parse failed, use default path
             VFS_ROOT = jarDir + File.separator + "cilexec_root";
-            LOGGER.info("解析失败，使用默认VFS根目录: " + VFS_ROOT);
+            LOGGER.info("Parse failed, using default VFS root: " + VFS_ROOT);
             return VFS_ROOT;
 
         } catch (Exception e) {
-            // 出错时用默认路径
+            // Use default path on error
             VFS_ROOT = getJarDirectory() + File.separator + "cilexec_root";
-            LOGGER.warning("读取配置文件出错: " + e.getMessage() + "，使用默认VFS根目录: " + VFS_ROOT);
+            LOGGER.warning("Error reading config file: " + e.getMessage() + ", using default VFS root: " + VFS_ROOT);
             return VFS_ROOT;
         }
     }
 
     /**
-     * 获取JAR所在目录
+     * Get JAR directory
      */
     private static String getJarDirectory() {
         try {
@@ -1708,7 +1708,7 @@ public class FileUtil {
             File jarFile = new File(path);
             return jarFile.getParent();
         } catch (Exception e) {
-            LOGGER.warning("获取JAR目录失败: " + e.getMessage());
+            LOGGER.warning("Failed to get JAR directory: " + e.getMessage());
             return System.getProperty("user.dir");
         }
     }

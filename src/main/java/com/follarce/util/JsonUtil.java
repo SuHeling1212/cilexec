@@ -14,10 +14,10 @@ public class JsonUtil {
     private static final Gson gson = new Gson();
  
     /**
-     * 判断字符串是否为合法的JSON
-     * 
-     * @param content 要检查的字符串
-     * @return true=合法JSON，false=非法JSON
+     * Check if string is valid JSON
+     *
+     * @param content String to check
+     * @return true=valid JSON, false=invalid JSON
      */
     public static boolean isValidJson(String content) {
         if (content == null || content.trim().isEmpty()) {
@@ -33,15 +33,15 @@ public class JsonUtil {
     }
 
     /**
-     * 解析JSON内容
-     * 
-     * @param content JSON字符串内容
-     * @return 成功返回解析后的对象（Map/List/String/Number/Boolean），失败返回String[]错误信息数组
+     * Parse JSON content
+     *
+     * @param content JSON string content
+     * @return Returns parsed object (Map/List/String/Number/Boolean) on success, returns String[] error info array on failure
      */
     public static Object readJson(String content) {
         List<String> errors = new ArrayList<>();
 
-        // 先调用isValidJson判断是否合法
+        // First call isValidJson to check if valid
         if (!isValidJson(content)) {
             errors.add("ERROR");
             errors.add("INCORRECT_FORMAT");
@@ -51,7 +51,7 @@ public class JsonUtil {
         try {
             String trimmed = content.trim();
 
-            // 判断JSON类型并解析
+            // Determine JSON type and parse
             if (trimmed.startsWith("{")) {
                 Type type = new TypeToken<Map<String, Object>>() {
                 }.getType();
@@ -67,7 +67,7 @@ public class JsonUtil {
             } else if (trimmed.equals("null")) {
                 return null;
             } else {
-                // 数字类型
+                // Number type
                 try {
                     return gson.fromJson(content, Integer.class);
                 } catch (Exception e) {
@@ -75,7 +75,7 @@ public class JsonUtil {
                 }
             }
         } catch (JsonSyntaxException e) {
-            // 虽然isValidJson通过了，但解析还是失败了（理论上不会发生）
+            // Although isValidJson passed, parsing still failed (theoretically shouldn't happen)
             errors.add("ERROR");
             errors.add("INCORRECT_FORMAT");
             return errors.toArray(new String[0]);
@@ -83,10 +83,10 @@ public class JsonUtil {
     }
 
     /**
-     * 将对象转换为JSON字符串
-     * 
-     * @param obj 要转换的对象
-     * @return JSON字符串
+     * Convert object to JSON string
+     *
+     * @param obj Object to convert
+     * @return JSON string
      */
     public static String toJson(Object obj) {
         return gson.toJson(obj);

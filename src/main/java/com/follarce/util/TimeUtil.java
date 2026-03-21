@@ -3,18 +3,18 @@ package com.follarce.util;
 import java.time.*;
 
 /**
- * 时间获取工具类
- * 提供获取当前时间组件的静态方法
+ * Time utility class
+ * Provides static methods for getting current time components
  */
 public class TimeUtil {
     /**
-     * 获取当前时间的各个组件
-     * @return 包含时间组件的整数数组，顺序为：年、月、日、时、分、秒、毫秒
+     * Get current time components
+     * @return Integer array containing time components in order: Year, Month, Day, Hour, Minute, Second, Millisecond
      */
     public static int[] getTime() {
-        // 获取当前时间
+        // Get current time
         LocalDateTime now = LocalDateTime.now();
-        // 提取各个时间组件
+        // Extract time components
         int year = now.getYear();
         int month = now.getMonthValue();
         int day = now.getDayOfMonth();
@@ -22,15 +22,15 @@ public class TimeUtil {
         int minute = now.getMinute();
         int second = now.getSecond();
         int nano = now.getNano();
-        // 将纳秒转换为毫秒
+        // Convert nanoseconds to milliseconds
         int millis = nano / 1_000_000;
-        // 返回时间组件数组
+        // Return time component array
         return new int[] { year, month, day, hour, minute, second, millis };
     }
 
     /**
-     * 获取当前时间数组（用于元数据）
-     * @return 时间数组 [年,月,日,时,分,秒,毫秒]
+     * Get current time array (for metadata)
+     * @return Time array [Year, Month, Day, Hour, Minute, Second, Millisecond]
      */
     public static int[] getTimeArray() {
         return getTime();
