@@ -16,21 +16,53 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Socket utility class
  * Provides TCP/UDP socket functionality for Java API calls
- * 
+ *
+ * SYSTEM LIMITATION NOTICE:
+ * =======================
+ * This module VIOLATES the "zero in-memory state" design principle of CilExec.
+ *
+ * This is NOT a design flaw, but an inevitable result of fundamental technical
+ * limitations:
+ *
+ * 1. Java Socket objects cannot be serialized (java.net.Socket does not implement
+ *    Serializable). Socket connections are operating system kernel resources,
+ *    not pure Java objects.
+ *
+ * 2. The operating system kernel does not persist TCP connection state. When a
+ *    process terminates, all its socket connections are forcibly closed by the
+ *    kernel.
+ *
+ * 3. The TCP protocol itself is connection-oriented with state (sequence numbers,
+ *    window sizes, buffer data). Once disconnected, the connection cannot be
+ *    restored without re-establishing the three-way handshake.
+ *
+ * 4. The peer server will also detect the connection loss and clean up resources.
+ *
+ * Therefore, socket connections are classified as "temporary runtime resources"
+ * rather than "persistable state". We can only:
+ * - Save socket metadata (ID, configuration) to files
+ * - Maintain actual connection objects in memory
+ * - Clean up all sockets on process exit
+ *
+ * EDUCATIONAL VALUE:
+ * This limitation serves as an excellent teaching case for understanding the
+ * distinction between "persistable state" (files, data) and "temporary runtime
+ * resources" (network connections, file handles, threads).
+ *
  * Usage example:
  * <pre>
  * // Create TCP server
  * String[] result = SocketUtil.createServer("127.0.0.1", 8080, "/user/local/sockets/");
- * 
+ *
  * // Connect to TCP server
  * String[] result = SocketUtil.connect("127.0.0.1", 8080, "/user/local/sockets/");
- * 
+ *
  * // Send data
  * String[] result = SocketUtil.send(1, "Hello World");
- * 
+ *
  * // Receive data (saved to file)
  * String[] result = SocketUtil.receive(1, "/user/local/data/");
- * 
+ *
  * // Close socket
  * String[] result = SocketUtil.close(1);
  * </pre>
