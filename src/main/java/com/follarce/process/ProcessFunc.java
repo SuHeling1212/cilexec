@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.follarce.basicUtil.FileUtil;
 import com.follarce.basicUtil.JsonUtil;
+import com.follarce.basicUtil.Logger;
 import com.follarce.basicUtil.TimeUtil;
 import com.follarce.basicUtil.UserUtil;
 import com.follarce.network.SocketUtil;
@@ -35,6 +36,7 @@ public class ProcessFunc {
             // 1. Read parent process file
             String[] readResult = FileUtil.read("/system/process/" + parentPid + ".json");
             if (!readResult[0].equals("SUCCESS")) {
+                Logger.warn("Fork failed: parent process " + parentPid + " not found");
                 return -1;
             }
 
@@ -51,6 +53,7 @@ public class ProcessFunc {
 
             // 2. Allocate new PID
             int childPid = allocatePid();
+            Logger.info("Allocated PID " + childPid + " for new process");
 
             // 3. Deep copy parent process
             String parentJson = JsonUtil.toJson(parentProcess);
@@ -98,10 +101,13 @@ public class ProcessFunc {
 
             FileUtil.write("/system/process/" + parentPid + ".json", JsonUtil.toJson(parentProcess));
 
+            Logger.info("Process forked: parent PID " + parentPid + " -> child PID " + childPid);
+
             // 7. Return child PID
             return childPid;
 
         } catch (Exception e) {
+            Logger.error("Fork failed: " + e.getMessage(), e);
             return -1;
         }
     }
