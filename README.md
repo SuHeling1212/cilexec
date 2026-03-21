@@ -32,17 +32,19 @@ while true {
 ```
 src/main/java/com/follarce/
 ├── Main.java                 # 程序入口
-├── init/
+├── init/                     # 系统初始化
 │   ├── FileInit.java         # 文件系统初始化
 │   ├── ProcessInit.java      # 进程系统初始化
 │   └── UserInit.java         # 用户管理
-├── process/
+├── process/                  # 进程管理
 │   ├── ProcessRunner.java    # 脚本执行引擎
 │   ├── ProcessFunc.java      # 进程操作函数
 │   └── SwapUtil.java         # 进程间数据交换
 ├── network/                  # 网络功能
 │   ├── NetworkUtil.java      # 网络下载工具
-│   └── NetworkFunctionProvider.java # 网络函数提供者
+│   ├── NetworkFunctionProvider.java # 网络函数提供者
+│   ├── SocketUtil.java       # Socket工具
+│   └── SocketFunctionProvider.java  # Socket函数提供者
 ├── plugin/                   # 插件系统
 │   ├── FunctionProvider.java # 函数提供者接口
 │   ├── FunctionContext.java  # 函数调用上下文
@@ -51,8 +53,9 @@ src/main/java/com/follarce/
 │   ├── FileFunctionProvider.java    # 文件操作函数
 │   ├── ProcessFunctionProvider.java # 进程管理函数
 │   ├── UserFunctionProvider.java    # 用户管理函数
-│   └── UtilFunctionProvider.java    # 工具函数
-└── util/
+│   ├── UtilFunctionProvider.java    # 工具函数
+│   └── RandomFunctionProvider.java  # 随机数函数示例
+└── basicUtil/                # 基础工具类
     ├── FileUtil.java         # 虚拟文件系统
     ├── JsonUtil.java         # JSON 工具
     ├── TimeUtil.java         # 时间工具
@@ -156,7 +159,7 @@ mvn clean package
 ./package.sh
 
 # 运行
-java -jar target/cilexec-1.0.0SNAPSHOT.jar
+java -jar target/cilexec-1.0.2-SNAPSHOT.jar
 ```
 
 ## 项目性质
