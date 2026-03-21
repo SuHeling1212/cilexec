@@ -1,6 +1,6 @@
-package com.follarce.util;
+package com.follarce.basicUtil;
 
-import com.follarce.util.*;
+import com.follarce.basicUtil.*;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;

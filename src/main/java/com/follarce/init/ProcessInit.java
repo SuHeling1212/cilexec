@@ -1,6 +1,6 @@
 package com.follarce.init;
 
-import com.follarce.util.*;
+import com.follarce.basicUtil.*;
 import com.follarce.process.ProcessRunner;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;

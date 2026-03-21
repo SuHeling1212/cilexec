@@ -1,6 +1,6 @@
 package com.follarce.process;
 
-import com.follarce.util.*;
+import com.follarce.basicUtil.*;
 import com.follarce.process.ProcessFunc;
 import java.util.*;
 

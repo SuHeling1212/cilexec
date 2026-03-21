@@ -6,10 +6,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.follarce.util.FileUtil;
-import com.follarce.util.JsonUtil;
-import com.follarce.util.TimeUtil;
-import com.follarce.util.UserUtil;
+import com.follarce.basicUtil.FileUtil;
+import com.follarce.basicUtil.JsonUtil;
+import com.follarce.basicUtil.TimeUtil;
+import com.follarce.basicUtil.UserUtil;
+import com.follarce.network.SocketUtil;
 
 public class ProcessFunc {
 
@@ -303,7 +304,10 @@ public class ProcessFunc {
             }
         }
 
-        // 3. LAST: Delete the process file
+        // 3. Clean up sockets owned by this process
+        SocketUtil.onProcessExit(pid);
+
+        // 4. LAST: Delete the process file
         FileUtil.removeFile("/system/process/" + pid + ".json");
 
         return new String[] { "SUCCESS", null };

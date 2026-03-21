@@ -1,6 +1,6 @@
 package com.follarce.plugin;
 
-import com.follarce.util.FileUtil;
+import com.follarce.basicUtil.FileUtil;
 
 /**
  * File operation function provider

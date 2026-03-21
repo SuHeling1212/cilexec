@@ -1,6 +1,7 @@
 # CilExec
 
->**声明：本项目由 AI（TREA,DeepSeek）辅助开发完成。**
+>**声明：本项目由 AI（TREA,DeepSeek）开发完成，甚至连这个文档也是 AI 生成的。我不对代码质量和问题负任何责任**
+
 
 一个用 Java 实现的虚拟操作系统内核。
 
@@ -39,6 +40,9 @@ src/main/java/com/follarce/
 │   ├── ProcessRunner.java    # 脚本执行引擎
 │   ├── ProcessFunc.java      # 进程操作函数
 │   └── SwapUtil.java         # 进程间数据交换
+├── network/                  # 网络功能
+│   ├── NetworkUtil.java      # 网络下载工具
+│   └── NetworkFunctionProvider.java # 网络函数提供者
 ├── plugin/                   # 插件系统
 │   ├── FunctionProvider.java # 函数提供者接口
 │   ├── FunctionContext.java  # 函数调用上下文
@@ -255,6 +259,19 @@ String[] result = SwapUtil.swapPoolUpdate("varName", "poolName", "newValue");
 Object allVars = SwapUtil.swapPoolGetAll("poolName");  // Map<String, Object>
 ```
 
+#### NetworkUtil - 网络下载
+
+```java
+// 下载文件到指定目录（文件名自动从 URL 提取）
+String[] result = NetworkUtil.webget("https://example.com/image.png", "/user/local/downloads/");
+if ("SUCCESS".equals(result[0])) {
+    String filename = result[1];  // "image.png"
+}
+
+// 自定义超时（30秒）
+String[] result = NetworkUtil.webget("https://example.com/file.zip", "/user/local/downloads/", 30000);
+```
+
 #### JsonUtil - JSON 处理
 
 ```java
@@ -447,6 +464,122 @@ SwapUtil.onProcessExit(pid);
 | `getCurrentUser()` | 无 | `String` | 获取当前登录用户 |
 | `isLocal()` | 无 | `boolean` | 检查当前用户是否为local |
 | `getListOfUsers()` | 无 | `Map<String, Object>` | 获取所有用户列表 |
+
+### 网络下载 API
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `webget(url, saveDir)` | `url`: 下载地址, `saveDir`: 保存目录 | `String[]` | 下载文件到指定目录，文件名自动从 URL 提取，返回 `["SUCCESS", filename]` 或 `["ERROR", code]` |
+| `webget(url, saveDir, timeout)` | `url`: 下载地址, `saveDir`: 保存目录, `timeout`: 超时时间(毫秒) | `String[]` | 带超时设置的下载 |
+
+**文件名提取规则：**
+- `https://example.com/image.png` → `image.png`
+- `https://example.com/path/file.zip` → `file.zip`
+- `https://example.com/` → `index.html`
+- `https://example.com/page.html?foo=bar` → `page.html`
+
+**使用示例：**
+```fcl
+# 下载图片到指定目录
+result = webget("https://example.com/photo.jpg", "/user/local/images/")
+if result[0] == "SUCCESS" {
+    filename = result[1]  # "photo.jpg"
+}
+
+# 下载文件并设置30秒超时
+result = webget("https://example.com/archive.zip", "/user/local/downloads/", 30000)
+```
+
+### Socket API
+
+提供 TCP 和 UDP 网络通信功能，支持服务器/客户端模式，接收的数据自动保存为文件。
+
+#### TCP 服务器/客户端
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `socket.createServer(host, port, saveDir)` | `host`: 绑定地址, `port`: 端口, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 创建 TCP 服务器，返回 `["SUCCESS", socketId]` |
+| `socket.accept(serverId, saveDir)` | `serverId`: 服务器 socket ID, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 接受客户端连接，返回 `["SUCCESS", clientSocketId]` |
+| `socket.connect(host, port, saveDir)` | `host`: 服务器地址, `port`: 端口, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 连接 TCP 服务器，返回 `["SUCCESS", socketId]` |
+| `socket.send(socketId, data)` | `socketId`: socket ID, `data`: 要发送的数据 | `String[]` | 发送数据 |
+| `socket.receive(socketId, saveDir)` | `socketId`: socket ID, `saveDir`: 保存目录(可选，默认使用 socket 创建时的目录) | `String[]` | 接收数据并保存到文件，返回 `["SUCCESS", filename]` |
+| `socket.close(socketId)` | `socketId`: socket ID | `String[]` | 关闭 socket |
+| `socket.getInfo(socketId)` | `socketId`: socket ID | `Map` | 获取 socket 信息 |
+| `socket.list()` | 无 | `Map` | 列出当前进程的所有 socket |
+
+#### UDP 通信
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `socket.createUdp(host, port, saveDir)` | `host`: 绑定地址, `port`: 端口(0表示自动分配), `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 创建 UDP socket，返回 `["SUCCESS", socketId]` |
+| `socket.sendTo(socketId, host, port, data)` | `socketId`: socket ID, `host`: 目标地址, `port`: 目标端口, `data`: 数据 | `String[]` | 发送 UDP 数据包 |
+
+**默认保存目录规则：**
+- **Local 用户**: `/user/local/sockets/`
+- **普通用户 alice**: `/user/alice/sockets/`
+- **普通用户 bob**: `/user/bob/sockets/`
+
+> 注意：普通用户无法保存到 `/system/` 或其他用户的目录，权限检查会返回 `INSUFFICIENT_PERMISSION` 错误。
+
+**使用示例：**
+```fcl
+# TCP 服务器示例
+result = socket.createServer("127.0.0.1", 8080, "/user/local/sockets/")
+if result[0] == "SUCCESS" {
+    serverId = int(result[1])
+    
+    # 接受客户端连接
+    clientResult = socket.accept(serverId, "/user/local/sockets/")
+    if clientResult[0] == "SUCCESS" {
+        clientId = int(clientResult[1])
+        
+        # 接收数据（自动保存到文件）
+        recvResult = socket.receive(clientId)
+        if recvResult[0] == "SUCCESS" {
+            filename = recvResult[1]  # 例如: "socket_2_20260321_201145_123.dat"
+        }
+        
+        # 发送响应
+        socket.send(clientId, "Hello Client!")
+        
+        # 关闭连接
+        socket.close(clientId)
+    }
+    
+    socket.close(serverId)
+}
+
+# TCP 客户端示例
+result = socket.connect("127.0.0.1", 8080, "/user/local/sockets/")
+if result[0] == "SUCCESS" {
+    socketId = int(result[1])
+    
+    # 发送数据
+    socket.send(socketId, "Hello Server!")
+    
+    # 接收响应
+    recvResult = socket.receive(socketId)
+    if recvResult[0] == "SUCCESS" {
+        filename = recvResult[1]
+    }
+    
+    socket.close(socketId)
+}
+
+# UDP 示例
+result = socket.createUdp("0.0.0.0", 0, "/user/local/sockets/")
+if result[0] == "SUCCESS" {
+    udpSocket = int(result[1])
+    
+    # 发送 UDP 数据包
+    socket.sendTo(udpSocket, "127.0.0.1", 9090, "Hello UDP!")
+    
+    # 接收数据（自动保存）
+    recvResult = socket.receive(udpSocket)
+    
+    socket.close(udpSocket)
+}
+```
 
 ### 工具函数 API
 
@@ -853,6 +986,81 @@ swapPool.add("token:abc123", "shared", ["times(3)"])
 value = swapPool.get("counter", "shared")
 ```
 
+### 示例4：网络下载
+```
+// 下载图片到指定目录（文件名自动提取）
+result = webget("https://example.com/image.png", "/user/local/downloads/")
+if result[0] == "SUCCESS" {
+    filename = result[1]  // "image.png"
+}
+
+// 下载文件并设置30秒超时
+result = webget("https://example.com/archive.zip", "/user/local/downloads/", 30000)
+```
+
+### 示例5：Socket TCP 通信
+
+```fcl
+# TCP 服务器（使用默认保存目录）
+# Local 用户默认: /user/local/sockets/
+# 普通用户 alice 默认: /user/alice/sockets/
+result = socket.createServer("127.0.0.1", 8080)
+if result[0] == "SUCCESS" {
+    serverId = int(result[1])
+    
+    # 接受客户端连接
+    clientResult = socket.accept(serverId)
+    if clientResult[0] == "SUCCESS" {
+        clientId = int(clientResult[1])
+        
+        # 接收数据（自动保存到默认目录）
+        recvResult = socket.receive(clientId)
+        if recvResult[0] == "SUCCESS" {
+            filename = recvResult[1]  # 例如: "socket_2_20260321_201145_123.dat"
+        }
+        
+        # 发送响应
+        socket.send(clientId, "Hello Client!")
+        socket.close(clientId)
+    }
+    socket.close(serverId)
+}
+
+# TCP 客户端（使用默认保存目录）
+result = socket.connect("127.0.0.1", 8080)
+if result[0] == "SUCCESS" {
+    socketId = int(result[1])
+    socket.send(socketId, "Hello Server!")
+    recvResult = socket.receive(socketId)
+    socket.close(socketId)
+}
+
+# 普通用户尝试保存到 system 目录（会失败）
+result = socket.createServer("127.0.0.1", 8081, "/system/data/")
+# 返回: ["ERROR", "INSUFFICIENT_PERMISSION"]
+```
+
+### 示例6：Socket UDP 通信
+
+```fcl
+# 创建 UDP socket（端口 0 表示自动分配，使用默认保存目录）
+result = socket.createUdp("0.0.0.0", 0)
+if result[0] == "SUCCESS" {
+    udpSocket = int(result[1])
+    
+    # 发送 UDP 数据包到指定地址
+    socket.sendTo(udpSocket, "127.0.0.1", 9090, "Hello UDP!")
+    
+    # 接收数据（自动保存到默认目录）
+    recvResult = socket.receive(udpSocket)
+    if recvResult[0] == "SUCCESS" {
+        filename = recvResult[1]
+    }
+    
+    socket.close(udpSocket)
+}
+```
+
 ## 返回值规范
 
 所有返回 `String[]` 的函数遵循统一格式：
@@ -902,6 +1110,49 @@ value = swapPool.get("counter", "shared")
 - `VARIABLE_IS_LOCKED` - 变量被锁定
 - `INSUFFICIENT_PERMISSION` - 权限不足
 
+**网络下载错误码：**
+- `INVALID_URL` - URL 为空或格式错误
+- `INVALID_SAVE_DIR` - 保存目录为空
+- `SAVE_DIR_MUST_BE_STRING` - 保存目录必须是字符串
+- `CANNOT_EXTRACT_FILENAME` - 无法从 URL 提取文件名
+- `TOO_MANY_REDIRECTS` - 重定向次数过多
+- `RESOURCE_NOT_FOUND` - HTTP 404
+- `ACCESS_FORBIDDEN` - HTTP 403
+- `UNAUTHORIZED` - HTTP 401
+- `SERVER_ERROR` - HTTP 5xx 错误
+- `CONNECTION_TIMEOUT` - 连接超时
+- `UNKNOWN_HOST` - 无法解析主机
+- `CONNECTION_REFUSED` - 连接被拒绝
+- `IO_ERROR` - I/O 错误
+- `DOWNLOAD_FAILED` - 下载失败
+
+**Socket 错误码：**
+- `INVALID_HOST` - 无效主机地址
+- `INVALID_PORT` - 无效端口号（1-65535）
+- `INVALID_SAVE_DIR` - 无效保存目录
+- `INVALID_DATA` - 无效数据
+- `INVALID_TIMEOUT` - 无效超时时间
+- `SOCKET_ID_MUST_BE_NUMBER` - socket ID 必须是数字
+- `HOST_MUST_BE_STRING` - 主机地址必须是字符串
+- `PORT_MUST_BE_NUMBER` - 端口必须是数字
+- `DATA_MUST_BE_STRING` - 数据必须是字符串
+- `SAVE_DIR_MUST_BE_STRING` - 保存目录必须是字符串
+- `SOCKET_DOES_NOT_EXIST` - socket 不存在
+- `SOCKET_CLOSED` - socket 已关闭
+- `NOT_SERVER_SOCKET` - 不是服务器 socket
+- `NOT_UDP_SOCKET` - 不是 UDP socket
+- `INVALID_SOCKET_TYPE` - 无效 socket 类型
+- `PORT_IN_USE` - 端口已被占用
+- `CREATE_SOCKET_FAILED` - 创建 socket 失败
+- `CONNECT_FAILED` - 连接失败
+- `ACCEPT_FAILED` - 接受连接失败
+- `ACCEPT_TIMEOUT` - 接受连接超时
+- `SEND_FAILED` - 发送失败
+- `RECEIVE_FAILED` - 接收失败
+- `RECEIVE_TIMEOUT` - 接收超时
+- `NO_DATA_RECEIVED` - 未接收到数据
+- `CONNECTION_REFUSED` - 连接被拒绝
+
 **通用错误码：**
 - `INVALID_ARGUMENTS` - 无效参数
 - `INVALID_JSON` - 无效 JSON 格式
@@ -910,6 +1161,54 @@ value = swapPool.get("counter", "shared")
 - `WRITE_FAILED` - 写入失败
 - `READ_FAILED` - 读取失败
 - `RENAME_FAILED` - 重命名失败
+
+## 日志系统
+
+### 日志文件位置
+
+日志文件 `app.log` 位于程序运行目录（JAR 包所在目录）。
+
+### 日志格式
+
+```
+[2024-01-15 10:30:25] [INFO] Operation success
+[2024-01-15 10:30:26] [ERROR] Error: file not found
+```
+
+### 启动和结束标记
+
+每次程序运行会自动添加分隔线标记：
+
+```
+============================================================
+[2024-01-15 10:30:25] [STARTUP] Application started
+============================================================
+[2024-01-15 10:30:25] [INFO] Registered 5 function providers
+...
+============================================================
+[2024-01-15 10:30:30] [SHUTDOWN] Application ended
+============================================================
+```
+
+
+### 日志级别
+
+- `DEBUG` - 调试信息
+- `INFO` - 一般信息（默认级别）
+- `WARN` - 警告信息
+- `ERROR` - 错误信息
+
+### 使用方式
+
+```java
+import com.follarce.basicUtil.Logger;
+
+Logger.debug("Debug message");
+Logger.info("Info message");
+Logger.warn("Warning message");
+Logger.error("Error message");
+Logger.error("Error with exception", throwable);
+```
 
 ## 用途
 
@@ -920,4 +1219,4 @@ value = swapPool.get("counter", "shared")
 
 ## 许可证
 
-[待添加]
+本项目采用 [MIT License](LICENSE) 开源许可证。

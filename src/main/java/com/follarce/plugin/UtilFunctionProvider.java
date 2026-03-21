@@ -1,7 +1,7 @@
 package com.follarce.plugin;
 
-import com.follarce.util.JsonUtil;
-import com.follarce.util.TimeUtil;
+import com.follarce.basicUtil.JsonUtil;
+import com.follarce.basicUtil.TimeUtil;
 
 import java.util.List;
 import java.util.Map;

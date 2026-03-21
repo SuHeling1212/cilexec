@@ -1,8 +1,8 @@
 package com.follarce.init;
 
-import com.follarce.util.FileUtil;
-import com.follarce.util.JsonUtil;
-import com.follarce.util.TimeUtil;
+import com.follarce.basicUtil.FileUtil;
+import com.follarce.basicUtil.JsonUtil;
+import com.follarce.basicUtil.TimeUtil;
 
 import java.util.*;
 

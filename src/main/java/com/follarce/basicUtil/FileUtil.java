@@ -1,4 +1,4 @@
-package com.follarce.util;
+package com.follarce.basicUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -127,9 +127,10 @@ public class FileUtil {
      * @param path           Virtual path
      * @param checkParentDir Whether to check if parent directory exists
      * @param needExist      Whether file needs to exist
+     * @param operation      Operation type (read/write/execute), null to skip permission check
      * @return [File object, error info] Returns null and error code if error
      */
-    private static Object[] validateFile(String path, boolean checkParentDir, boolean needExist) {
+    private static Object[] validateFile(String path, boolean checkParentDir, boolean needExist, String operation) {
         if (path == null || path.trim().isEmpty()) {
             return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
         }
@@ -184,7 +185,21 @@ public class FileUtil {
             return new Object[] { null, new String[] { "ERROR", "IS_NOT_FILE" } };
         }
 
+        // Check permission
+        if (operation != null && needExist) {
+            if (!UserUtil.checkFilePermission(path, operation)) {
+                return new Object[] { null, new String[] { "ERROR", "INSUFFICIENT_PERMISSION" } };
+            }
+        }
+
         return new Object[] { file, null };
+    }
+
+    /**
+     * Validate file path and return File object (backward compatible, no permission check)
+     */
+    private static Object[] validateFile(String path, boolean checkParentDir, boolean needExist) {
+        return validateFile(path, checkParentDir, needExist, null);
     }
 
     /**
@@ -540,7 +555,15 @@ public class FileUtil {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 7. Check if directory is locked
+        // 7. Check write permission on parent directory
+        String parentPath = path.substring(0, path.lastIndexOf('/', path.length() - 2) + 1);
+        if (!parentPath.isEmpty() && !parentPath.equals("/")) {
+            if (!UserUtil.checkFilePermission(parentPath, "write")) {
+                return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+            }
+        }
+
+        // 8. Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
@@ -622,7 +645,12 @@ public class FileUtil {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 9. Check if parent directory is locked
+        // 9. Check write permission on parent directory
+        if (!UserUtil.checkFilePermission(path, "write")) {
+            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        }
+
+        // 10. Check if parent directory is locked
         String[] parentLockCheck = checkDirectoryLock(parentDir);
         if (parentLockCheck != null) {
             return parentLockCheck;
@@ -660,8 +688,8 @@ public class FileUtil {
      * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] removeFile(String path) {
-        // 1. Validate file
-        Object[] validateResult = validateFile(path, true, true);
+        // 1. Validate file with write permission check
+        Object[] validateResult = validateFile(path, true, true, "write");
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
@@ -742,7 +770,12 @@ public class FileUtil {
             return new String[] { "ERROR", "IS_NOT_DIRECTORY" };
         }
 
-        // 9. Check if directory is locked
+        // 9. Check write permission on parent directory
+        if (!UserUtil.checkFilePermission(path, "write")) {
+            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        }
+
+        // 10. Check if directory is locked
         String[] lockCheck = checkDirectoryLock(dir);
         if (lockCheck != null) {
             return lockCheck;
@@ -1271,8 +1304,8 @@ public class FileUtil {
      * @return String[] Array, [0] is status, [1] is error code (if any)
      */
     public static String[] write(String path, String content) {
-        // 1. Validate file
-        Object[] validateResult = validateFile(path, true, true);
+        // 1. Validate file with write permission check
+        Object[] validateResult = validateFile(path, true, true, "write");
         if (validateResult[1] != null) {
             return (String[]) validateResult[1];
         }
@@ -1342,6 +1375,9 @@ public class FileUtil {
 
             // 11. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
+
+            // 12. Update file size metadata
+            updateFileSize(file, metaMap);
 
             return new String[] { "SUCCESS", null };
 
@@ -1588,14 +1624,69 @@ public class FileUtil {
             return new String[] { "ERROR", "IS_NOT_FILE" };
         }
 
-        // 8. Read file
+        // 8. Check read permission
+        if (!UserUtil.checkFilePermission(path, "read")) {
+            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        }
+
+        // 9. Read file
         try {
             String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
             String bodyContent = extractBodyContent(fullContent);
+
+            // 9. Update lastOpenTime and file size in metadata
+            updateReadMetadata(file, fullContent);
+
             return new String[] { "SUCCESS", bodyContent };
         } catch (IOException e) {
             LOGGER.warning("Failed to read file: " + e.getMessage());
             return new String[] { "ERROR", "READ_FAILED" };
+        }
+    }
+
+    /**
+     * Update metadata when file is read (lastOpenTime and file size)
+     *
+     * @param file        The file being read
+     * @param fullContent The full content of the file (including metadata)
+     */
+    private static void updateReadMetadata(File file, String fullContent) {
+        try {
+            String[] metaResult = extractMetaContent(fullContent);
+            if (!metaResult[0].equals("SUCCESS")) {
+                return; // No metadata to update
+            }
+
+            Object metaObj = JsonUtil.readJson(metaResult[1]);
+            if (!(metaObj instanceof Map)) {
+                return;
+            }
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> metaMap = (Map<String, Object>) metaObj;
+
+            // Update lastOpenTime
+            Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
+            if (time == null) {
+                time = new HashMap<>();
+                metaMap.put("Time", time);
+            }
+            int[] now = TimeUtil.getTime();
+            time.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+
+            // Update file size
+            String bodyContent = extractBodyContent(fullContent);
+            int sizeInBytes = bodyContent.getBytes(StandardCharsets.UTF_8).length;
+            Object[] sizeInfo = formatSize(sizeInBytes);
+            metaMap.put("Size", sizeInfo);
+
+            // Reassemble and write back
+            String newMetaJson = JsonUtil.toJson(metaMap);
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
+            Files.write(file.toPath(), newFullContent.getBytes(StandardCharsets.UTF_8));
+
+        } catch (IOException e) {
+            LOGGER.warning("Failed to update read metadata: " + e.getMessage());
         }
     }
 
@@ -1785,6 +1876,66 @@ public class FileUtil {
 
             default:
                 return null;
+        }
+    }
+
+    /**
+     * Update file size metadata
+     * Calculates the actual file content size (excluding metadata) and updates the metadata
+     *
+     * @param file     The file to update
+     * @param metaMap  The metadata map to update
+     */
+    private static void updateFileSize(File file, Map<String, Object> metaMap) {
+        try {
+            // Read the full file content
+            String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+
+            // Extract body content (actual file content without metadata)
+            String bodyContent = extractBodyContent(fullContent);
+
+            // Calculate size in bytes
+            int sizeInBytes = bodyContent.getBytes(StandardCharsets.UTF_8).length;
+
+            // Format size with unit
+            Object[] sizeInfo = formatSize(sizeInBytes);
+
+            // Update metadata
+            metaMap.put("Size", sizeInfo);
+
+            // Also update lastEditTime and lastOpenTime
+            Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
+            if (time != null) {
+                int[] now = TimeUtil.getTime();
+                time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+                time.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+            }
+
+            // Reassemble and write back
+            String newMetaJson = JsonUtil.toJson(metaMap);
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
+            Files.write(file.toPath(), newFullContent.getBytes(StandardCharsets.UTF_8));
+
+        } catch (IOException e) {
+            LOGGER.warning("Failed to update file size: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Format size with appropriate unit
+     *
+     * @param bytes Size in bytes
+     * @return Object array [size, unit]
+     */
+    private static Object[] formatSize(int bytes) {
+        if (bytes < 1024) {
+            return new Object[] { bytes, "B" };
+        } else if (bytes < 1024 * 1024) {
+            return new Object[] { bytes / 1024, "KB" };
+        } else if (bytes < 1024 * 1024 * 1024) {
+            return new Object[] { bytes / (1024 * 1024), "MB" };
+        } else {
+            return new Object[] { bytes / (1024 * 1024 * 1024), "GB" };
         }
     }
 

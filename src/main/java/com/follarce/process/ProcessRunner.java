@@ -3,7 +3,7 @@ package com.follarce.process;
 import com.follarce.init.UserInit;
 import com.follarce.plugin.FunctionContext;
 import com.follarce.plugin.FunctionRegistry;
-import com.follarce.util.*;
+import com.follarce.basicUtil.*;
 import java.util.*;
 import java.util.regex.*;
 

@@ -1,14 +1,26 @@
 package com.follarce;
 
 import com.follarce.init.*;
+import com.follarce.network.NetworkFunctionProvider;
+import com.follarce.network.SocketFunctionProvider;
+import com.follarce.network.SocketUtil;
 import com.follarce.plugin.*;
-import com.follarce.util.*;
+import com.follarce.basicUtil.*;
 
 import java.util.*;
 
 public class Main {
 
     public static void main(String[] args) {
+        // Add shutdown hook to log when application ends (including Ctrl+C)
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            Logger.logShutdown();
+            Logger.close();
+        }));
+
+        // Log application startup
+        Logger.logStartup();
+
         // Initialize system components
         FileInit.init();
         
@@ -16,6 +28,7 @@ public class Main {
         registerFunctionProviders();
         
         ProcessInit.init();
+        SocketUtil.init();
     }
     
     /**
@@ -34,6 +47,12 @@ public class Main {
         
         // Utility functions (time, JSON, type conversion, etc.)
         FunctionRegistry.register(new UtilFunctionProvider());
+        
+        // Network functions (HTTP download, etc.)
+        FunctionRegistry.register(new NetworkFunctionProvider());
+        
+        // Socket functions (TCP/UDP)
+        FunctionRegistry.register(new SocketFunctionProvider());
         
         // Swap pool functions (if exists)
         // FunctionRegistry.register(new SwapFunctionProvider());

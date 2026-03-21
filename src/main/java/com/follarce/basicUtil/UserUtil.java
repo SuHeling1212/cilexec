@@ -1,4 +1,4 @@
-package com.follarce.util;
+package com.follarce.basicUtil;
 
 import java.util.*;
 

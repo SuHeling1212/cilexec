@@ -3,8 +3,8 @@ package com.follarce.init;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 
-import com.follarce.util.Logger;
-import com.follarce.util.TimeUtil;
+import com.follarce.basicUtil.Logger;
+import com.follarce.basicUtil.TimeUtil;
 
 public class FileInit {
 
