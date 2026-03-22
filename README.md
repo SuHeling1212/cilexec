@@ -1,611 +1,611 @@
+
 # CilExec
 
->**声明：本项目由 AI（TREA,DeepSeek）开发完成，甚至连这个文档也是 AI 生成的。我不对代码质量和问题负任何责任**
+> **Disclaimer: This project is developed by AI (TREA, DeepSeek), including this documentation. I take no responsibility for code quality or any issues that may arise.**
 
+A virtual operating system kernel implemented in Java.
 
-一个用 Java 实现的虚拟操作系统内核。
+## Project Introduction
 
-## 项目简介
+CilExec is a proof-of-concept project demonstrating how to implement core operating system mechanisms in Java. It provides a complete virtualization environment including process management, file system, script engine, and permission framework.
 
-CilExec 是一个概念验证项目，展示了如何用 Java 实现操作系统的核心机制。它提供了一个完整的虚拟化环境，包括进程管理、文件系统、脚本引擎和权限框架。
-
-## 技术栈
+## Tech Stack
 
 - Java 25
 - Maven
-- Gson (JSON 处理)
+- Gson (JSON processing)
 
-## 脚本格式
+## Script Format
 
-**`.fcl`** (Follarce CilExec Language) 是标准的系统脚本格式。
+**`.fcl`** (Follarce CilExec Language) is the standard system script format.
 
-示例：
+Example:
 ```fcl
-# 这是注释
+# This is a comment
 while true {
-    # INIT 进程主循环
+    # INIT process main loop
 }
 ```
 
-## 项目结构
+## Project Structure
 
 ```
 src/main/java/com/follarce/
-├── Main.java                 # 程序入口
-├── init/                     # 系统初始化
-│   ├── FileInit.java         # 文件系统初始化
-│   ├── ProcessInit.java      # 进程系统初始化
-│   └── UserInit.java         # 用户管理
-├── process/                  # 进程管理
-│   ├── ProcessRunner.java    # 脚本执行引擎
-│   ├── ProcessFunc.java      # 进程操作函数
-│   └── SwapUtil.java         # 进程间数据交换
-├── network/                  # 网络功能
-│   ├── NetworkUtil.java      # 网络下载工具
-│   ├── NetworkFunctionProvider.java # 网络函数提供者
-│   ├── SocketUtil.java       # Socket工具
-│   └── SocketFunctionProvider.java  # Socket函数提供者
-├── plugin/                   # 插件系统
-│   ├── FunctionProvider.java # 函数提供者接口
-│   ├── FunctionContext.java  # 函数调用上下文
-│   ├── FunctionInfo.java     # 函数信息描述
-│   ├── FunctionRegistry.java # 函数注册中心
-│   ├── FileFunctionProvider.java    # 文件操作函数
-│   ├── ProcessFunctionProvider.java # 进程管理函数
-│   ├── UserFunctionProvider.java    # 用户管理函数
-│   ├── UtilFunctionProvider.java    # 工具函数
-│   └── MathFunctionProvider.java    # 数学函数库
-└── basicUtil/                # 基础工具类
-    ├── FileUtil.java         # 虚拟文件系统
-    ├── JsonUtil.java         # JSON 工具
-    ├── TimeUtil.java         # 时间工具
-    ├── UserUtil.java         # 权限管理
-    ├── Logger.java           # 日志工具
-    └── Constants.java        # 常量定义
+├── Main.java                 # Program entry point
+├── init/                     # System initialization
+│   ├── FileInit.java         # File system initialization
+│   ├── ProcessInit.java      # Process system initialization
+│   └── UserInit.java         # User management
+├── process/                  # Process management
+│   ├── ProcessRunner.java    # Script execution engine
+│   ├── ProcessFunc.java      # Process operation functions
+│   └── SwapUtil.java         # Inter-process data exchange
+├── network/                  # Network functionality
+│   ├── NetworkUtil.java      # Network download utilities
+│   ├── NetworkFunctionProvider.java # Network function provider
+│   ├── SocketUtil.java       # Socket utilities
+│   └── SocketFunctionProvider.java  # Socket function provider
+├── plugin/                   # Plugin system
+│   ├── FunctionProvider.java # Function provider interface
+│   ├── FunctionContext.java  # Function call context
+│   ├── FunctionInfo.java     # Function information descriptor
+│   ├── FunctionRegistry.java # Function registry center
+│   ├── FileFunctionProvider.java    # File operation functions
+│   ├── ProcessFunctionProvider.java # Process management functions
+│   ├── UserFunctionProvider.java    # User management functions
+│   ├── UtilFunctionProvider.java    # Utility functions
+│   └── MathFunctionProvider.java    # Mathematical function library
+└── basicUtil/                # Basic utility classes
+    ├── FileUtil.java         # Virtual file system
+    ├── JsonUtil.java         # JSON utilities
+    ├── TimeUtil.java         # Time utilities
+    ├── UserUtil.java         # Permission management
+    ├── Logger.java           # Logging utilities
+    └── Constants.java        # Constant definitions
 ```
 
-## 核心功能
+## Core Features
 
-### 1. 虚拟文件系统 (VFS)
+### 1. Virtual File System (VFS)
 
-- 文件和目录的创建、读取、写入、删除
-- 元数据管理（时间、所有者、权限、锁状态）
-- 软链接支持
-- 文件/目录锁定机制
+- File and directory creation, reading, writing, deletion
+- Metadata management (time, owner, permissions, lock status)
+- Symbolic link support
+- File/directory locking mechanism
 
-### 2. 进程管理
+### 2. Process Management
 
-- 类 Unix 进程模型
-- fork/exec/wait/kill 操作
-- 进程树结构（父子关系）
-- 孤儿进程自动收养（由 INIT 进程接管）
-- 进程状态持久化
+- Unix-like process model
+- fork/exec/wait/kill operations
+- Process tree structure (parent-child relationships)
+- Automatic orphan process adoption (by INIT process)
+- Process state persistence
 
-### 3. 脚本引擎
+### 3. Script Engine
 
-内置解释器支持：
-- 变量类型：int, string, array, map
-- 控制流：if, while
-- 函数定义和调用
-- 脚本导入
-- 内置系统调用
+Built-in interpreter supports:
+- Variable types: int, string, array, map
+- Control flow: if, while
+- Function definition and invocation
+- Script import
+- Built-in system calls
 
-### 4. 交换池系统
+### 4. Swap Pool System
 
-进程间数据共享机制：
-- 创建/删除交换池
-- 变量的添加、获取、更新、删除
-- 访问控制（白名单/黑名单）
-- 变量类型：always, times(n), sync
+Inter-process data sharing mechanism:
+- Create/delete swap pools
+- Add, retrieve, update, delete variables
+- Access control (whitelist/blacklist)
+- Variable types: always, times(n), sync
 
-### 5. 权限框架
+### 5. Permission Framework
 
-- 基于所有者的权限检查
-- Local 用户（超级用户）模式
-- 文件操作权限验证
-- 进程操作权限验证
+- Owner-based permission checking
+- Local user (superuser) mode
+- File operation permission validation
+- Process operation permission validation
 
-## 架构设计说明
+## Architecture Design Principles
 
-### "零内存状态"设计原则
+### "Zero Memory State" Design Principle
 
-CilExec 的核心设计原则是**所有系统状态都持久化到文件系统，不在内存中保存业务状态**。这带来以下优势：
+CilExec's core design principle is **all system state is persisted to the file system, with no business state kept in memory**. This brings the following advantages:
 
-- **极端容错性**：随时断电、kill -9，状态不丢失
-- **恒定内存占用**：与进程数量、数据量无关
-- **状态完全透明**：直接查看文件即可了解系统状态
-- **可恢复性**：重启后从文件恢复，继续执行
+- **Extreme fault tolerance**: Power outages or kill -9 won't lose state
+- **Constant memory footprint**: Independent of process count or data volume
+- **Completely transparent state**: View files directly to understand system state
+- **Recoverability**: Restart and resume execution from files
 
-### 架构限制说明
+### Architecture Limitations
 
-#### 完全无内存状态的模块 ✅
+#### Fully Memory-Less Modules ✅
 
-| 模块 | 实现方式 | 状态存储位置 |
-|------|----------|--------------|
-| 虚拟文件系统 (FileUtil) | 所有文件操作直接读写磁盘 | `/system/files/` |
-| 进程管理 (ProcessFunc) | 进程状态保存为 JSON | `/system/process/*.json` |
-| 交换池 (SwapUtil) | 变量数据持久化到文件 | `/system/swap/*.json` |
-| 用户系统 (UserUtil) | 用户信息存储在配置文件 | `/system/config/users.json` |
+| Module | Implementation | State Storage Location |
+|--------|----------------|----------------------|
+| Virtual File System (FileUtil) | All file operations directly read/write disk | `/system/files/` |
+| Process Management (ProcessFunc) | Process state saved as JSON | `/system/process/*.json` |
+| Swap Pool (SwapUtil) | Variable data persisted to files | `/system/swap/*.json` |
+| User System (UserUtil) | User info stored in config file | `/system/config/users.json` |
 
-#### 受技术限制无法完全无内存状态的模块 ⚠️
+#### Modules Limited by Technical Constraints ⚠️
 
-**Socket 网络功能 (SocketUtil)**
+**Socket Network Functionality (SocketUtil)**
 
-**原因**：
-1. Java Socket 对象无法序列化（`java.net.Socket` 未实现 `Serializable`）
-2. Socket 连接是操作系统内核资源，不是纯 Java 对象
-3. 操作系统内核不持久化 TCP 连接状态，进程结束后强制关闭所有 Socket
-4. TCP 协议本身是有状态连接，断线后必须重新三次握手
+**Reason**:
+1. Java Socket objects cannot be serialized (`java.net.Socket` does not implement `Serializable`)
+2. Socket connections are operating system kernel resources, not pure Java objects
+3. The OS kernel does not persist TCP connection state; all sockets are forcibly closed when a process terminates
+4. The TCP protocol itself is connection-oriented with state; after disconnection, the three-way handshake must be re-established
 
-**影响**：
-- 系统重启后所有 Socket 连接丢失
-- Socket ID 生成器在内存中，重启后可能产生重复 ID
+**Impact**:
+- All socket connections are lost after system restart
+- Socket ID generator is in memory, may produce duplicate IDs after restart
 
-**对策**：
-- Socket 元数据（ID、配置）仍保存到 `/system/sockets/*.json`
-- 实际连接对象必须在内存中维护
-- 进程退出时自动清理所有 Socket
+**Mitigation**:
+- Socket metadata (ID, configuration) still saved to `/system/sockets/*.json`
+- Actual connection objects must be maintained in memory
+- Automatically clean up all sockets on process exit
 
-**教学价值**：
-这是理解"可持久化状态"与"临时运行时资源"区别的绝佳案例。有些资源（如网络连接、文件句柄、线程）本质上是临时的，无法持久化。
+**Educational Value**:
+This serves as an excellent teaching case for understanding the distinction between "persistable state" and "temporary runtime resources." Some resources (network connections, file handles, threads) are inherently temporary and cannot be persisted.
 
-## 构建和运行
+## Build and Run
 
 ```bash
-# 使用 Maven 打包
+# Package with Maven
 mvn clean package
 
-# 或使用提供的脚本
+# Or use the provided script
 ./package.sh
 
-# 运行
+# Run
 java -jar target/cilexec-1.0.2-SNAPSHOT.jar
 ```
 
-## 项目性质
+## Project Nature
 
-**这是一个操作系统内核的概念验证项目。**
+**This is a proof-of-concept operating system kernel.**
 
-它实现了操作系统的核心机制，但本身不是一个完整的可用系统：
+It implements core operating system mechanisms but is not a complete usable system:
 
-- ✅ 内核功能完整（进程、文件系统、脚本引擎）
-- ❌ 没有 Shell/命令行界面
-- ❌ 没有用户登录系统
-- ❌ 没有系统工具（ls, cat, echo 等）
+- ✅ Complete kernel functionality (processes, file system, script engine)
+- ❌ No Shell/command-line interface
+- ❌ No user login system
+- ❌ No system tools (ls, cat, echo, etc.)
 
-## API 参考
+## API Reference
 
-### 使用方式说明
+### Usage Methods
 
-CilExec 提供两种使用方式：
+CilExec provides two ways to use its functionality:
 
-1. **脚本语言调用** - 在 CilExec 脚本中直接调用函数
-2. **Java API 调用** - 在 Java 代码中直接调用工具类方法
+1. **Script Language Call** - Call functions directly in CilExec scripts
+2. **Java API Call** - Call utility class methods directly in Java code
 
 ---
 
 ### Java API
 
-如果你想在 Java 代码中使用 CilExec 的功能，可以直接调用以下类：
+If you want to use CilExec functionality in Java code, you can directly call the following classes:
 
-#### FileUtil - 虚拟文件系统
+#### FileUtil - Virtual File System
 
 ```java
-// 读取文件
+// Read file
 String[] result = FileUtil.read("/path/to/file.txt");
 if ("SUCCESS".equals(result[0])) {
     String content = result[1];
 }
 
-// 写入文件
+// Write file
 String[] result = FileUtil.write("/path/to/file.txt", "content");
 
-// 创建文件
+// Create file
 String[] result = FileUtil.createFile("/path/to/", "filename.txt");
 
-// 创建目录
+// Create directory
 String[] result = FileUtil.createDirectory("/path/to/", "dirname");
 
-// 列出目录
+// List directory
 String[] result = FileUtil.getListOfFileAndDirectory("/path/to/");
 
-// 删除文件
+// Delete file
 String[] result = FileUtil.removeFile("/path/to/file.txt");
 
-// 删除目录
+// Delete directory
 String[] result = FileUtil.removeDirectory("/path/to/dir/");
 
-// 重命名
+// Rename
 String[] result = FileUtil.Rename("/path/to/old", "newname");
 
-// 创建链接
+// Create link
 String[] result = FileUtil.Link("/path/to/linkdir/", "/path/to/source");
 
-// 锁定/解锁文件
+// Lock/unlock file
 String[] result = FileUtil.lock("/path/to/file.txt");
 String[] result = FileUtil.unlock("/path/to/file.txt");
 
-// 读写文件元数据
+// Read/write file metadata
 String[] result = FileUtil.readFileMetaData("/path/to/file.txt");
 String[] result = FileUtil.writeFileMetaData("/path/to/file.txt", jsonContent);
 
-// 读写目录元数据
+// Read/write directory metadata
 String[] result = FileUtil.readDirectoryMetaData("/path/to/dir/");
 String[] result = FileUtil.writeDirectoryMetaData("/path/to/dir/", jsonContent);
 String[] result = FileUtil.createDirectoryMetaData("/path/to/dir/");
 
-// 获取 VFS 根目录
+// Get VFS root directory
 String vfsRoot = FileUtil.getVfsRoot();
 
-// 函数分派（脚本引擎内部使用）
+// Function dispatch (for script engine internal use)
 Object result = FileUtil.call("read", new Object[]{"/path/to/file.txt"});
 ```
 
-#### ProcessFunc - 进程管理
+#### ProcessFunc - Process Management
 
 ```java
-// 设置当前 PID（重要：调用前需设置）
+// Set current PID (must set before calling)
 ProcessFunc.setCurrentPid(pid);
 
-// 获取当前 PID
+// Get current PID
 int pid = ProcessFunc.getPID();
 
-// 获取父进程 PID
+// Get parent process PID
 int ppid = ProcessFunc.getPPID();
 
-// 创建子进程
+// Create child process
 int childPid = ProcessFunc.fork();
 
-// 执行程序
+// Execute program
 String[] result = ProcessFunc.exec("/path/to/script.txt", new String[]{"arg1", "arg2"});
 
-// 终止进程
+// Terminate process
 String[] result = ProcessFunc.kill(pid);
 
-// 等待子进程
+// Wait for child process
 String[] result = ProcessFunc.waitProcess();
 String[] result = ProcessFunc.waitPID(childPid);
 
-// 暂停/继续进程
+// Pause/resume process
 String[] result = ProcessFunc.Pause(pid);
 String[] result = ProcessFunc.Continue(pid);
 
-// 获取进程列表
+// Get process list
 Object children = ProcessFunc.getListOfChildProcess();  // Map<String, Integer>
 Object all = ProcessFunc.getListOfProcess();            // Map<String, Integer>
 
-// 函数分派（脚本引擎内部使用）
+// Function dispatch (for script engine internal use)
 Object result = ProcessFunc.call("fork", new Object[]{});
 ```
 
-#### SwapUtil - 交换池
+#### SwapUtil - Swap Pool
 
 ```java
-// 创建/删除交换池
+// Create/delete swap pool
 String[] result = SwapUtil.createSwapPool("poolName");
 String[] result = SwapUtil.removeSwapPool("poolName");
 
-// 添加变量
+// Add variable
 String[] result = SwapUtil.swapPoolAdd("varName:value", "poolName", new String[]{"always"});
 String[] result = SwapUtil.swapPoolAdd("varName:value", "poolName", new String[]{"times(3)"});
 
-// 获取变量
+// Get variable
 Object value = SwapUtil.swapPoolGet("varName", "poolName");
 
-// 删除变量
+// Delete variable
 String[] result = SwapUtil.swapPoolRemove("varName", "poolName");
 
-// 锁定/解锁变量
+// Lock/unlock variable
 String[] result = SwapUtil.swapPoolLock("varName", "poolName");
 String[] result = SwapUtil.swapPoolUnlock("varName", "poolName");
 
-// 更新变量
+// Update variable
 String[] result = SwapUtil.swapPoolUpdate("varName", "poolName", "newValue");
 
-// 获取所有变量（仅 owner）
+// Get all variables (owner only)
 Object allVars = SwapUtil.swapPoolGetAll("poolName");  // Map<String, Object>
 ```
 
-#### NetworkUtil - 网络下载
+#### NetworkUtil - Network Download
 
 ```java
-// 下载文件到指定目录（文件名自动从 URL 提取）
+// Download file to specified directory (filename auto-extracted from URL)
 String[] result = NetworkUtil.webget("https://example.com/image.png", "/user/local/downloads/");
 if ("SUCCESS".equals(result[0])) {
     String filename = result[1];  // "image.png"
 }
 
-// 自定义超时（30秒）
+// Custom timeout (30 seconds)
 String[] result = NetworkUtil.webget("https://example.com/file.zip", "/user/local/downloads/", 30000);
 ```
 
-#### JsonUtil - JSON 处理
+#### JsonUtil - JSON Processing
 
 ```java
-// 解析 JSON
-Object obj = JsonUtil.readJson(jsonString);  // 返回 Map/List/String/Number/Boolean
+// Parse JSON
+Object obj = JsonUtil.readJson(jsonString);  // Returns Map/List/String/Number/Boolean
 
-// 转换为 JSON
+// Convert to JSON
 String json = JsonUtil.toJson(object);
 
-// 验证 JSON
+// Validate JSON
 boolean valid = JsonUtil.isValidJson(jsonString);
 ```
 
-#### TimeUtil - 时间工具
+#### TimeUtil - Time Utilities
 
 ```java
-// 获取当前时间 [年, 月, 日, 时, 分, 秒, 毫秒]
+// Get current time [year, month, day, hour, minute, second, millisecond]
 int[] time = TimeUtil.getTime();
-// time[0] = 年, time[1] = 月, ..., time[6] = 毫秒
+// time[0] = year, time[1] = month, ..., time[6] = millisecond
 ```
 
-#### UserUtil - 用户权限
+#### UserUtil - User Permissions
 
 ```java
-// 设置/获取当前用户
+// Set/get current user
 UserUtil.setCurrentUser("username");
 String user = UserUtil.getCurrentUser();
 
-// 检查是否是 local 用户
+// Check if is local user
 boolean isLocal = UserUtil.isLocal();
 
-// 权限检查
+// Permission check
 boolean canAccess = UserUtil.checkFilePermission("/path/to/file", "read");
 boolean canManage = UserUtil.checkProcessPermission(pid);
 ```
 
-#### UserInit - 用户管理
+#### UserInit - User Management
 
 ```java
-// 获取用户列表
+// Get user list
 Map<String, Object> users = UserInit.getListOfUsers();
 
-// 创建用户
+// Create user
 String[] result = UserInit.createUser("username", "password", false);
 
-// 删除用户（需要密码验证）
+// Delete user (requires password verification)
 String[] result = UserInit.removeUser("username", "password");
 
-// 检查用户是否存在
+// Check if user exists
 boolean exists = UserInit.userExists("username");
 
-// 验证用户密码
+// Validate user password
 boolean valid = UserInit.validateUser("username", "password");
 
-// 获取当前登录用户
+// Get current logged-in user
 String currentUser = UserInit.getCurrentUser();
 
-// 切换用户（需要密码验证）
+// Switch user (requires password verification)
 String[] result = UserInit.switchUser("username", "password");
 
-// 检查当前用户是否是 local
+// Check if current user is local
 boolean isLocal = UserInit.isLocal();
 
-// 获取用户信息
+// Get user info
 Map<String, Object> userInfo = UserInit.getUserInfo("username");
 ```
 
-#### ProcessRunner - 脚本执行器
+#### ProcessRunner - Script Executor
 
 ```java
-// 创建进程运行器
+// Create process runner
 ProcessRunner runner = new ProcessRunner(pid);
 
-// 在独立线程中运行
+// Run in separate thread
 new Thread(runner).start();
 
-// 检查状态
+// Check status
 boolean running = runner.isRunning();
 int currentPid = runner.getPid();
 
-// 停止进程
+// Stop process
 runner.stop();
 
-// 单步执行（如需手动控制）
+// Single-step execution (for manual control)
 runner.executeLine();
 ```
 
-#### ProcessInit - 系统初始化
+#### ProcessInit - System Initialization
 
 ```java
-// 初始化整个进程系统（通常在 Main 中调用）
+// Initialize the entire process system (typically called in Main)
 ProcessInit.init();
 
-// 获取指定 PID 的 runner
+// Get runner for specific PID
 ProcessRunner runner = ProcessInit.getRunner(pid);
 
-// 关闭系统
+// Shutdown system
 ProcessInit.shutdown();
 ```
 
-#### FileInit - 文件系统初始化
+#### FileInit - File System Initialization
 
 ```java
-// 初始化文件系统（创建目录结构、配置文件等）
+// Initialize file system (create directory structure, config files, etc.)
 FileInit.init();
 ```
 
-#### UserInit - 用户系统初始化
+#### UserInit - User System Initialization
 
 ```java
-// 用户系统不需要显式初始化
-// users.json 在 FileInit.init() 中自动创建
+// User system doesn't require explicit initialization
+// users.json is automatically created in FileInit.init()
 ```
 
-#### SwapUtil - 进程退出清理
+#### SwapUtil - Process Exit Cleanup
 
 ```java
-// 进程退出时清理交换池中的同步变量（自动调用）
+// Clean up sync variables in swap pool when process exits (automatically called)
 SwapUtil.onProcessExit(pid);
 ```
 
 ---
 
-### 脚本语言 API
+### Script Language API
 
-在脚本中可直接调用的文件操作函数：
+File operation functions callable in scripts:
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `read(path)` | `path`: 文件路径 | `String[]` | 读取文件内容，返回 `["SUCCESS", content]` 或 `["ERROR", code]` |
-| `write(path, content)` | `path`: 文件路径, `content`: 内容 | `String[]` | 写入文件（覆盖原有内容） |
-| `append(path, content)` | `path`: 文件路径, `content`: 内容 | `String[]` | 追加内容到文件（在末尾添加新行） |
-| `createFile(path, name)` | `path`: 目录路径, `name`: 文件名 | `String[]` | 创建新文件 |
-| `removeFile(path)` | `path`: 文件路径 | `String[]` | 删除文件 |
-| `createDir(path, name)` | `path`: 父目录路径, `name`: 目录名 | `String[]` | 创建目录 |
-| `removeDir(path)` | `path`: 目录路径 | `String[]` | 删除空目录 |
-| `listdir(path)` | `path`: 目录路径 | `String[]` | 列出目录内容，返回 `["SUCCESS", "item1/", "item2", ...]` |
-| `rename(path, newName)` | `path`: 原路径, `newName`: 新名称 | `String[]` | 重命名文件或目录 |
-| `link(path, sourcePath)` | `path`: 链接存放目录, `sourcePath`: 源文件路径 | `String[]` | 创建软链接 |
-| `lock(path)` | `path`: 文件路径 | `String[]` | 锁定文件 |
-| `unlock(path)` | `path`: 文件路径 | `String[]` | 解锁文件 |
-| `readMeta(path)` | `path`: 文件路径 | `String[]` | 读取文件元数据（JSON格式） |
-| `writeMeta(path, content)` | `path`: 文件路径, `content`: JSON元数据 | `String[]` | 写入文件元数据 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `read(path)` | `path`: file path | `String[]` | Read file content, returns `["SUCCESS", content]` or `["ERROR", code]` |
+| `write(path, content)` | `path`: file path, `content`: content | `String[]` | Write file (overwrites existing content) |
+| `append(path, content)` | `path`: file path, `content`: content | `String[]` | Append content to file (adds new line at end) |
+| `createFile(path, name)` | `path`: directory path, `name`: filename | `String[]` | Create new file |
+| `removeFile(path)` | `path`: file path | `String[]` | Delete file |
+| `createDir(path, name)` | `path`: parent directory path, `name`: directory name | `String[]` | Create directory |
+| `removeDir(path)` | `path`: directory path | `String[]` | Delete empty directory |
+| `listdir(path)` | `path`: directory path | `String[]` | List directory contents, returns `["SUCCESS", "item1/", "item2", ...]` |
+| `rename(path, newName)` | `path`: original path, `newName`: new name | `String[]` | Rename file or directory |
+| `link(path, sourcePath)` | `path`: link directory, `sourcePath`: source path | `String[]` | Create symbolic link |
+| `lock(path)` | `path`: file path | `String[]` | Lock file |
+| `unlock(path)` | `path`: file path | `String[]` | Unlock file |
+| `readMeta(path)` | `path`: file path | `String[]` | Read file metadata (JSON format) |
+| `writeMeta(path, content)` | `path`: file path, `content`: JSON metadata | `String[]` | Write file metadata |
 
-### 进程管理 API
+### Process Management API
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `getPID()` | 无 | `int` | 获取当前进程ID |
-| `getPPID()` | 无 | `int` | 获取父进程ID |
-| `fork()` | 无 | `int` | 创建子进程，父进程返回子PID，子进程返回0 |
-| `exec(path, params)` | `path`: 程序路径, `params`: 参数数组 | `String[]` | 执行新程序替换当前进程 |
-| `kill(pid)` | `pid`: 进程ID | `String[]` | 终止指定进程 |
-| `wait()` | 无 | `String[]` | 等待任意子进程结束 |
-| `waitPID(pid)` | `pid`: 子进程ID | `String[]` | 等待指定子进程结束 |
-| `Pause(pid)` | `pid`: 进程ID | `String[]` | 暂停进程 |
-| `Continue(pid)` | `pid`: 进程ID | `String[]` | 继续暂停的进程 |
-| `getListOfChildProcess()` | 无 | `Map<String, Integer>` | 获取子进程列表 |
-| `getListOfProcess()` | 无 | `Map<String, Integer>` | 获取所有进程列表（需要local权限） |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `getPID()` | None | `int` | Get current process ID |
+| `getPPID()` | None | `int` | Get parent process ID |
+| `fork()` | None | `int` | Create child process; parent returns child PID, child returns 0 |
+| `exec(path, params)` | `path`: program path, `params`: parameter array | `String[]` | Execute new program replacing current process |
+| `kill(pid)` | `pid`: process ID | `String[]` | Terminate specified process |
+| `wait()` | None | `String[]` | Wait for any child process to end |
+| `waitPID(pid)` | `pid`: child process ID | `String[]` | Wait for specified child process to end |
+| `Pause(pid)` | `pid`: process ID | `String[]` | Pause process |
+| `Continue(pid)` | `pid`: process ID | `String[]` | Resume paused process |
+| `getListOfChildProcess()` | None | `Map<String, Integer>` | Get child process list |
+| `getListOfProcess()` | None | `Map<String, Integer>` | Get all process list (requires local permission) |
 
-### 交换池 API
+### Swap Pool API
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `swapPool.create(name)` | `name`: 池名称 | `String[]` | 创建交换池 |
-| `swapPool.remove(name)` | `name`: 池名称 | `String[]` | 删除交换池 |
-| `swapPool.add(varSpec, poolName, params)` | `varSpec`: "name:value", `poolName`: 池名, `params`: 参数数组 | `String[]` | 添加变量到交换池 |
-| `swapPool.get(varName, poolName)` | `varName`: 变量名, `poolName`: 池名 | `Object` | 从交换池获取变量 |
-| `swapPool.removeVar(varName, poolName)` | `varName`: 变量名, `poolName`: 池名 | `String[]` | 从交换池删除变量 |
-| `swapPool.lock(varName, poolName)` | `varName`: 变量名, `poolName`: 池名 | `String[]` | 锁定变量 |
-| `swapPool.unlock(varName, poolName)` | `varName`: 变量名, `poolName`: 池名 | `String[]` | 解锁变量 |
-| `swapPool.update(varName, poolName, newValue)` | `varName`: 变量名, `poolName`: 池名, `newValue`: 新值 | `String[]` | 更新变量值 |
-| `swapPool.getAll(poolName)` | `poolName`: 池名 | `Map<String, Object>` | 获取池内所有变量（仅owner） |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `swapPool.create(name)` | `name`: pool name | `String[]` | Create swap pool |
+| `swapPool.remove(name)` | `name`: pool name | `String[]` | Delete swap pool |
+| `swapPool.add(varSpec, poolName, params)` | `varSpec`: "name:value", `poolName`: pool name, `params`: parameter array | `String[]` | Add variable to swap pool |
+| `swapPool.get(varName, poolName)` | `varName`: variable name, `poolName`: pool name | `Object` | Get variable from swap pool |
+| `swapPool.removeVar(varName, poolName)` | `varName`: variable name, `poolName`: pool name | `String[]` | Delete variable from swap pool |
+| `swapPool.lock(varName, poolName)` | `varName`: variable name, `poolName`: pool name | `String[]` | Lock variable |
+| `swapPool.unlock(varName, poolName)` | `varName`: variable name, `poolName`: pool name | `String[]` | Unlock variable |
+| `swapPool.update(varName, poolName, newValue)` | `varName`: variable name, `poolName`: pool name, `newValue`: new value | `String[]` | Update variable value |
+| `swapPool.getAll(poolName)` | `poolName`: pool name | `Map<String, Object>` | Get all variables in pool (owner only) |
 
-**swapPool.add 的参数选项：**
-- `"always"` - 变量永久有效（默认）
-- `"times(n)"` - 变量可被读取n次后自动删除
-- `"sync"` - 同步变量，变更时通知读取者
-- `"whitelist{pid1,pid2,...}"` - 白名单访问控制
-- `"blacklist{pid1,pid2,...}"` - 黑名单访问控制
+**swapPool.add parameter options:**
+- `"always"` - Variable persists indefinitely (default)
+- `"times(n)"` - Variable auto-deletes after being read n times
+- `"sync"` - Synchronized variable, notifies readers when changed
+- `"whitelist{pid1,pid2,...}"` - Whitelist access control
+- `"blacklist{pid1,pid2,...}"` - Blacklist access control
 
-### 用户管理 API
+### User Management API
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `createUser(username, password, isLocal)` | `username`: 用户名, `password`: 密码, `isLocal`: 是否为local用户 | `String[]` | 创建新用户 |
-| `removeUser(username, password)` | `username`: 用户名, `password`: 密码 | `String[]` | 删除用户（需密码验证） |
-| `userExists(username)` | `username`: 用户名 | `boolean` | 检查用户是否存在 |
-| `validateUser(username, password)` | `username`: 用户名, `password`: 密码 | `boolean` | 验证用户密码 |
-| `switchUser(username, password)` | `username`: 用户名, `password`: 密码 | `String[]` | 切换当前用户 |
-| `getCurrentUser()` | 无 | `String` | 获取当前登录用户 |
-| `isLocal()` | 无 | `boolean` | 检查当前用户是否为local |
-| `getListOfUsers()` | 无 | `Map<String, Object>` | 获取所有用户列表 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `createUser(username, password, isLocal)` | `username`: username, `password`: password, `isLocal`: whether local user | `String[]` | Create new user |
+| `removeUser(username, password)` | `username`: username, `password`: password | `String[]` | Delete user (requires password verification) |
+| `userExists(username)` | `username`: username | `boolean` | Check if user exists |
+| `validateUser(username, password)` | `username`: username, `password`: password | `boolean` | Validate user password |
+| `switchUser(username, password)` | `username`: username, `password`: password | `String[]` | Switch current user |
+| `getCurrentUser()` | None | `String` | Get current logged-in user |
+| `isLocal()` | None | `boolean` | Check if current user is local |
+| `getListOfUsers()` | None | `Map<String, Object>` | Get all user list |
 
-### 网络下载 API
+### Network Download API
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `webget(url, saveDir)` | `url`: 下载地址, `saveDir`: 保存目录 | `String[]` | 下载文件到指定目录，文件名自动从 URL 提取，返回 `["SUCCESS", filename]` 或 `["ERROR", code]` |
-| `webget(url, saveDir, timeout)` | `url`: 下载地址, `saveDir`: 保存目录, `timeout`: 超时时间(毫秒) | `String[]` | 带超时设置的下载 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `webget(url, saveDir)` | `url`: download URL, `saveDir`: save directory | `String[]` | Download file to specified directory, filename auto-extracted from URL, returns `["SUCCESS", filename]` or `["ERROR", code]` |
+| `webget(url, saveDir, timeout)` | `url`: download URL, `saveDir`: save directory, `timeout`: timeout (ms) | `String[]` | Download with timeout setting |
 
-**文件名提取规则：**
+**Filename extraction rules:**
 - `https://example.com/image.png` → `image.png`
 - `https://example.com/path/file.zip` → `file.zip`
 - `https://example.com/` → `index.html`
 - `https://example.com/page.html?foo=bar` → `page.html`
 
-**使用示例：**
+**Usage Example:**
 ```fcl
-# 下载图片到指定目录
+# Download image to specified directory
 result = webget("https://example.com/photo.jpg", "/user/local/images/")
 if result[0] == "SUCCESS" {
     filename = result[1]  # "photo.jpg"
 }
 
-# 下载文件并设置30秒超时
+# Download file with 30-second timeout
 result = webget("https://example.com/archive.zip", "/user/local/downloads/", 30000)
 ```
 
 ### Socket API
 
-提供 TCP 和 UDP 网络通信功能，支持服务器/客户端模式，接收的数据自动保存为文件。
+Provides TCP and UDP network communication functionality, supporting server/client modes with auto-save of received data to files.
 
-#### TCP 服务器/客户端
+#### TCP Server/Client
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `socket.createServer(host, port, saveDir)` | `host`: 绑定地址, `port`: 端口, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 创建 TCP 服务器，返回 `["SUCCESS", socketId]` |
-| `socket.accept(serverId, saveDir)` | `serverId`: 服务器 socket ID, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 接受客户端连接，返回 `["SUCCESS", clientSocketId]` |
-| `socket.connect(host, port, saveDir)` | `host`: 服务器地址, `port`: 端口, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 连接 TCP 服务器，返回 `["SUCCESS", socketId]` |
-| `socket.send(socketId, data)` | `socketId`: socket ID, `data`: 要发送的数据 | `String[]` | 发送数据 |
-| `socket.receive(socketId, saveDir)` | `socketId`: socket ID, `saveDir`: 保存目录(可选，默认使用 socket 创建时的目录) | `String[]` | 接收数据并保存到文件，返回 `["SUCCESS", filename]` |
-| `socket.close(socketId)` | `socketId`: socket ID | `String[]` | 关闭 socket |
-| `socket.getInfo(socketId)` | `socketId`: socket ID | `Map` | 获取 socket 信息 |
-| `socket.list()` | 无 | `Map` | 列出当前进程的所有 socket |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `socket.createServer(host, port, saveDir)` | `host`: bind address, `port`: port, `saveDir`: data save directory (optional, auto-selects based on user) | `String[]` | Create TCP server, returns `["SUCCESS", socketId]` |
+| `socket.accept(serverId, saveDir)` | `serverId`: server socket ID, `saveDir`: data save directory (optional) | `String[]` | Accept client connection, returns `["SUCCESS", clientSocketId]` |
+| `socket.connect(host, port, saveDir)` | `host`: server address, `port`: port, `saveDir`: data save directory (optional) | `String[]` | Connect to TCP server, returns `["SUCCESS", socketId]` |
+| `socket.send(socketId, data)` | `socketId`: socket ID, `data`: data to send | `String[]` | Send data |
+| `socket.receive(socketId, saveDir)` | `socketId`: socket ID, `saveDir`: save directory (optional, uses socket's default) | `String[]` | Receive data and save to file, returns `["SUCCESS", filename]` |
+| `socket.close(socketId)` | `socketId`: socket ID | `String[]` | Close socket |
+| `socket.getInfo(socketId)` | `socketId`: socket ID | `Map` | Get socket information |
+| `socket.list()` | None | `Map` | List all sockets owned by current process |
 
-#### UDP 通信
+#### UDP Communication
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `socket.createUdp(host, port, saveDir)` | `host`: 绑定地址, `port`: 端口(0表示自动分配), `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 创建 UDP socket，返回 `["SUCCESS", socketId]` |
-| `socket.sendTo(socketId, host, port, data)` | `socketId`: socket ID, `host`: 目标地址, `port`: 目标端口, `data`: 数据 | `String[]` | 发送 UDP 数据包 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `socket.createUdp(host, port, saveDir)` | `host`: bind address, `port`: port (0 for auto-assign), `saveDir`: data save directory (optional) | `String[]` | Create UDP socket, returns `["SUCCESS", socketId]` |
+| `socket.sendTo(socketId, host, port, data)` | `socketId`: socket ID, `host`: target address, `port`: target port, `data`: data | `String[]` | Send UDP packet |
 
-**默认保存目录规则：**
-- **Local 用户**: `/user/local/sockets/`
-- **普通用户 alice**: `/user/alice/sockets/`
-- **普通用户 bob**: `/user/bob/sockets/`
+**Default save directory rules:**
+- **Local user**: `/user/local/sockets/`
+- **Regular user alice**: `/user/alice/sockets/`
+- **Regular user bob**: `/user/bob/sockets/`
 
-> 注意：普通用户无法保存到 `/system/` 或其他用户的目录，权限检查会返回 `INSUFFICIENT_PERMISSION` 错误。
+> Note: Regular users cannot save to `/system/` or other user directories; permission check returns `INSUFFICIENT_PERMISSION` error.
 
-**使用示例：**
+**Usage Examples:**
 ```fcl
-# TCP 服务器示例
+# TCP Server Example
 result = socket.createServer("127.0.0.1", 8080, "/user/local/sockets/")
 if result[0] == "SUCCESS" {
     serverId = int(result[1])
     
-    # 接受客户端连接
+    # Accept client connection
     clientResult = socket.accept(serverId, "/user/local/sockets/")
     if clientResult[0] == "SUCCESS" {
         clientId = int(clientResult[1])
         
-        # 接收数据（自动保存到文件）
+        # Receive data (auto-saved to file)
         recvResult = socket.receive(clientId)
         if recvResult[0] == "SUCCESS" {
-            filename = recvResult[1]  # 例如: "socket_2_20260321_201145_123.dat"
+            filename = recvResult[1]  # e.g., "socket_2_20260321_201145_123.dat"
         }
         
-        # 发送响应
+        # Send response
         socket.send(clientId, "Hello Client!")
         
-        # 关闭连接
+        # Close connection
         socket.close(clientId)
     }
     
     socket.close(serverId)
 }
 
-# TCP 客户端示例
+# TCP Client Example
 result = socket.connect("127.0.0.1", 8080, "/user/local/sockets/")
 if result[0] == "SUCCESS" {
     socketId = int(result[1])
     
-    # 发送数据
+    # Send data
     socket.send(socketId, "Hello Server!")
     
-    # 接收响应
+    # Receive response
     recvResult = socket.receive(socketId)
     if recvResult[0] == "SUCCESS" {
         filename = recvResult[1]
@@ -614,195 +614,195 @@ if result[0] == "SUCCESS" {
     socket.close(socketId)
 }
 
-# UDP 示例
+# UDP Example
 result = socket.createUdp("0.0.0.0", 0, "/user/local/sockets/")
 if result[0] == "SUCCESS" {
     udpSocket = int(result[1])
     
-    # 发送 UDP 数据包
+    # Send UDP packet
     socket.sendTo(udpSocket, "127.0.0.1", 9090, "Hello UDP!")
     
-    # 接收数据（自动保存）
+    # Receive data (auto-saved)
     recvResult = socket.receive(udpSocket)
     
     socket.close(udpSocket)
 }
 ```
 
-### 数学函数 API
+### Mathematical Functions API
 
-提供全面的数学计算功能，包括算术、三角函数、对数、随机数、统计、数论等。
+Comprehensive mathematical operations including arithmetic, trigonometric functions, logarithms, random numbers, statistics, number theory, and more.
 
-#### 基础算术
+#### Basic Arithmetic
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.abs(n)` | `n`: 数字 | `number` | 绝对值 |
-| `math.max(...numbers)` | `...numbers`: 数字列表 | `number` | 最大值 |
-| `math.min(...numbers)` | `...numbers`: 数字列表 | `number` | 最小值 |
-| `math.pow(base, exp)` | `base`: 底数, `exp`: 指数 | `number` | 幂运算 |
-| `math.sqrt(n)` | `n`: 数字 | `number` | 平方根 |
-| `math.cbrt(n)` | `n`: 数字 | `number` | 立方根 |
-| `math.round(n, decimals)` | `n`: 数字, `decimals`: 小数位(可选) | `number` | 四舍五入 |
-| `math.floor(n)` | `n`: 数字 | `number` | 向下取整 |
-| `math.ceil(n)` | `n`: 数字 | `number` | 向上取整 |
-| `math.mod(a, b)` | `a`: 被除数, `b`: 除数 | `number` | 取模 |
-| `math.sign(n)` | `n`: 数字 | `number` | 符号函数 (-1, 0, 1) |
-| `math.clamp(n, min, max)` | `n`: 数字, `min`: 最小值, `max`: 最大值 | `number` | 限制范围 |
-| `math.lerp(start, end, t)` | `start`: 起始值, `end`: 结束值, `t`: 插值系数(0-1) | `number` | 线性插值 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.abs(n)` | `n`: number | `number` | Absolute value |
+| `math.max(...numbers)` | `...numbers`: list of numbers | `number` | Maximum value |
+| `math.min(...numbers)` | `...numbers`: list of numbers | `number` | Minimum value |
+| `math.pow(base, exp)` | `base`: base, `exp`: exponent | `number` | Power operation |
+| `math.sqrt(n)` | `n`: number | `number` | Square root |
+| `math.cbrt(n)` | `n`: number | `number` | Cube root |
+| `math.round(n, decimals)` | `n`: number, `decimals`: decimal places (optional) | `number` | Rounding |
+| `math.floor(n)` | `n`: number | `number` | Floor (round down) |
+| `math.ceil(n)` | `n`: number | `number` | Ceiling (round up) |
+| `math.mod(a, b)` | `a`: dividend, `b`: divisor | `number` | Modulo |
+| `math.sign(n)` | `n`: number | `number` | Sign function (-1, 0, 1) |
+| `math.clamp(n, min, max)` | `n`: number, `min`: minimum, `max`: maximum | `number` | Clamp to range |
+| `math.lerp(start, end, t)` | `start`: start value, `end`: end value, `t`: interpolation factor (0-1) | `number` | Linear interpolation |
 
-#### 三角函数
+#### Trigonometric Functions
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.sin(rad)` | `rad`: 弧度 | `number` | 正弦 |
-| `math.cos(rad)` | `rad`: 弧度 | `number` | 余弦 |
-| `math.tan(rad)` | `rad`: 弧度 | `number` | 正切 |
-| `math.asin(n)` | `n`: 数字 | `number` | 反正弦 |
-| `math.acos(n)` | `n`: 数字 | `number` | 反余弦 |
-| `math.atan(n)` | `n`: 数字 | `number` | 反正切 |
-| `math.atan2(y, x)` | `y`: Y坐标, `x`: X坐标 | `number` | 反正切2 |
-| `math.sinh(n)` | `n`: 数字 | `number` | 双曲正弦 |
-| `math.cosh(n)` | `n`: 数字 | `number` | 双曲余弦 |
-| `math.tanh(n)` | `n`: 数字 | `number` | 双曲正切 |
-| `math.deg(rad)` | `rad`: 弧度 | `number` | 弧度转角度 |
-| `math.rad(deg)` | `deg`: 角度 | `number` | 角度转弧度 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.sin(rad)` | `rad`: radians | `number` | Sine |
+| `math.cos(rad)` | `rad`: radians | `number` | Cosine |
+| `math.tan(rad)` | `rad`: radians | `number` | Tangent |
+| `math.asin(n)` | `n`: number | `number` | Arc sine |
+| `math.acos(n)` | `n`: number | `number` | Arc cosine |
+| `math.atan(n)` | `n`: number | `number` | Arc tangent |
+| `math.atan2(y, x)` | `y`: Y coordinate, `x`: X coordinate | `number` | Arc tangent 2 |
+| `math.sinh(n)` | `n`: number | `number` | Hyperbolic sine |
+| `math.cosh(n)` | `n`: number | `number` | Hyperbolic cosine |
+| `math.tanh(n)` | `n`: number | `number` | Hyperbolic tangent |
+| `math.deg(rad)` | `rad`: radians | `number` | Radians to degrees |
+| `math.rad(deg)` | `deg`: degrees | `number` | Degrees to radians |
 
-#### 对数和指数
+#### Logarithms and Exponentials
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.log(base, n)` | `base`: 底数, `n`: 真数 | `number` | 对数 |
-| `math.log10(n)` | `n`: 数字 | `number` | 常用对数(底数10) |
-| `math.log2(n)` | `n`: 数字 | `number` | 二进制对数(底数2) |
-| `math.ln(n)` | `n`: 数字 | `number` | 自然对数(底数e) |
-| `math.exp(n)` | `n`: 数字 | `number` | e的n次方 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.log(base, n)` | `base`: base, `n`: number | `number` | Logarithm with base |
+| `math.log10(n)` | `n`: number | `number` | Base-10 logarithm |
+| `math.log2(n)` | `n`: number | `number` | Base-2 logarithm |
+| `math.ln(n)` | `n`: number | `number` | Natural logarithm (base e) |
+| `math.exp(n)` | `n`: number | `number` | e to the power of n |
 
-#### 随机数
+#### Random Numbers
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.random(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机数(0-1或指定范围) |
-| `math.randint(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `int` | 随机整数 |
-| `math.randfloat(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机浮点数 |
-| `math.randchoice(list)` | `list`: 数组 | `any` | 随机选择数组元素 |
-| `math.shuffle(list)` | `list`: 数组 | `array` | 随机打乱数组 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.random(min, max)` | `min`: minimum (optional), `max`: maximum (optional) | `number` | Random number (0-1 or specified range) |
+| `math.randint(min, max)` | `min`: minimum (optional), `max`: maximum (optional) | `int` | Random integer |
+| `math.randfloat(min, max)` | `min`: minimum (optional), `max`: maximum (optional) | `number` | Random float |
+| `math.randchoice(list)` | `list`: array | `any` | Random element from list |
+| `math.shuffle(list)` | `list`: array | `array` | Randomly shuffle list |
 
-#### 统计函数
+#### Statistical Functions
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.sum(...numbers)` | `...numbers`: 数字列表 | `number` | 求和 |
-| `math.avg(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值 |
-| `math.mean(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值(同avg) |
-| `math.median(...numbers)` | `...numbers`: 数字列表 | `number` | 中位数 |
-| `math.mode(...numbers)` | `...numbers`: 数字列表 | `number` | 众数 |
-| `math.var(...numbers)` | `...numbers`: 数字列表 | `number` | 方差 |
-| `math.std(...numbers)` | `...numbers`: 数字列表 | `number` | 标准差 |
-| `math.minarr(arr)` | `arr`: 数组 | `number` | 数组最小值 |
-| `math.maxarr(arr)` | `arr`: 数组 | `number` | 数组最大值 |
-| `math.range(start, end, step)` | `start`: 起始, `end`: 结束, `step`: 步长(可选) | `array` | 生成范围数组 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.sum(...numbers)` | `...numbers`: list of numbers | `number` | Sum |
+| `math.avg(...numbers)` | `...numbers`: list of numbers | `number` | Average (mean) |
+| `math.mean(...numbers)` | `...numbers`: list of numbers | `number` | Average (mean) |
+| `math.median(...numbers)` | `...numbers`: list of numbers | `number` | Median |
+| `math.mode(...numbers)` | `...numbers`: list of numbers | `number` | Mode (most frequent) |
+| `math.var(...numbers)` | `...numbers`: list of numbers | `number` | Variance |
+| `math.std(...numbers)` | `...numbers`: list of numbers | `number` | Standard deviation |
+| `math.minarr(arr)` | `arr`: array | `number` | Minimum in array |
+| `math.maxarr(arr)` | `arr`: array | `number` | Maximum in array |
+| `math.range(start, end, step)` | `start`: start, `end`: end, `step`: step (optional) | `array` | Generate range array |
 
-#### 数论函数
+#### Number Theory Functions
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.gcd(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最大公约数 |
-| `math.lcm(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最小公倍数 |
-| `math.prime(n)` | `n`: 整数 | `boolean` | 判断素数 |
-| `math.factors(n)` | `n`: 整数 | `array` | 获取所有因数 |
-| `math.fib(n)` | `n`: 整数 | `int` | 斐波那契数列第n项 |
-| `math.factorial(n)` | `n`: 整数 | `int` | 阶乘 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.gcd(a, b)` | `a`: integer, `b`: integer | `int` | Greatest common divisor |
+| `math.lcm(a, b)` | `a`: integer, `b`: integer | `int` | Least common multiple |
+| `math.prime(n)` | `n`: integer | `boolean` | Check if prime |
+| `math.factors(n)` | `n`: integer | `array` | Get all factors |
+| `math.fib(n)` | `n`: integer | `int` | nth Fibonacci number |
+| `math.factorial(n)` | `n`: integer | `int` | Factorial |
 
-#### 数学常数
+#### Mathematical Constants
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.pi` | 无 | `number` | π (3.14159...) |
-| `math.e` | 无 | `number` | 自然常数e (2.71828...) |
-| `math.tau` | 无 | `number` | 2π (6.28318...) |
-| `math.inf` | 无 | `number` | 正无穷 |
-| `math.nan` | 无 | `number` | 非数字 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.pi` | None | `number` | π (3.14159...) |
+| `math.e` | None | `number` | Euler's number e (2.71828...) |
+| `math.tau` | None | `number` | 2π (6.28318...) |
+| `math.inf` | None | `number` | Positive infinity |
+| `math.nan` | None | `number` | Not a number |
 
-#### 几何计算
+#### Geometric Functions
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.hypot(a, b)` | `a`: 直角边, `b`: 直角边 | `number` | 斜边长度 |
-| `math.dist(x1, y1, x2, y2)` | 两点坐标 | `number` | 两点间距离 |
-| `math.area.circle(radius)` | `radius`: 半径 | `number` | 圆面积 |
-| `math.area.rect(width, height)` | `width`: 宽, `height`: 高 | `number` | 矩形面积 |
-| `math.vol.sphere(radius)` | `radius`: 半径 | `number` | 球体积 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.hypot(a, b)` | `a`: leg, `b`: leg | `number` | Hypotenuse length |
+| `math.dist(x1, y1, x2, y2)` | two points coordinates | `number` | Distance between points |
+| `math.area.circle(radius)` | `radius`: radius | `number` | Circle area |
+| `math.area.rect(width, height)` | `width`: width, `height`: height | `number` | Rectangle area |
+| `math.vol.sphere(radius)` | `radius`: radius | `number` | Sphere volume |
 
-#### 位运算
+#### Bitwise Operations
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.bit.and(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位与 |
-| `math.bit.or(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位或 |
-| `math.bit.xor(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位异或 |
-| `math.bit.not(a)` | `a`: 整数 | `int` | 按位取反 |
-| `math.bit.shiftl(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 左移 |
-| `math.bit.shiftr(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 右移 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.bit.and(a, b)` | `a`: integer, `b`: integer | `int` | Bitwise AND |
+| `math.bit.or(a, b)` | `a`: integer, `b`: integer | `int` | Bitwise OR |
+| `math.bit.xor(a, b)` | `a`: integer, `b`: integer | `int` | Bitwise XOR |
+| `math.bit.not(a)` | `a`: integer | `int` | Bitwise NOT |
+| `math.bit.shiftl(a, bits)` | `a`: integer, `bits`: number of bits | `int` | Left shift |
+| `math.bit.shiftr(a, bits)` | `a`: integer, `bits`: number of bits | `int` | Right shift |
 
-#### 高级函数
+#### Advanced Functions
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.map(value, inMin, inMax, outMin, outMax)` | 输入值和范围 | `number` | 映射值到新范围 |
-| `math.norm(value, min, max)` | `value`: 值, `min`: 最小值, `max`: 最大值 | `number` | 归一化到0-1 |
-| `math.perlin(x, y)` | `x`: X坐标, `y`: Y坐标(可选) | `number` | Perlin噪声 |
-| `math.noise(x)` | `x`: 坐标 | `number` | 简单噪声 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `math.map(value, inMin, inMax, outMin, outMax)` | input value and ranges | `number` | Map value to new range |
+| `math.norm(value, min, max)` | `value`: value, `min`: minimum, `max`: maximum | `number` | Normalize to 0-1 |
+| `math.perlin(x, y)` | `x`: X coordinate, `y`: Y coordinate (optional) | `number` | Perlin noise |
+| `math.noise(x)` | `x`: coordinate | `number` | Simple noise |
 
-**使用示例：**
+**Usage Examples:**
 ```fcl
-# 基础算术
+# Basic arithmetic
 x = math.abs(-10)           # 10
 y = math.pow(2, 8)          # 256
 z = math.sqrt(16)           # 4
-w = math.clamp(x, 0, 100)   # 限制在0-100之间
+w = math.clamp(x, 0, 100)   # Clamp to 0-100
 
-# 三角函数
+# Trigonometry
 angle = math.rad(90)        # π/2
 s = math.sin(angle)         # 1.0
 
-# 随机数
-r = math.random()           # 0-1之间的随机数
- dice = math.randint(1, 6)   # 1-6的随机整数
+# Random numbers
+r = math.random()           # Random number 0-1
+dice = math.randint(1, 6)   # Random integer 1-6
 
-# 统计
+# Statistics
 data = [1, 2, 3, 4, 5]
 sum = math.sum(data)        # 15
 avg = math.avg(data)        # 3.0
-std = math.std(data)        # 标准差
+std = math.std(data)        # Standard deviation
 
-# 数论
-p = math.prime(17)          # true (是素数)
+# Number theory
+p = math.prime(17)          # true
 f = math.factors(12)        # [1, 2, 3, 4, 6, 12]
- fib10 = math.fib(10)        # 55
+fib10 = math.fib(10)        # 55
 
-# 几何
+# Geometry
 area = math.area.circle(5)  # 78.54...
 dist = math.dist(0, 0, 3, 4) # 5.0
 
-# 位运算
-result = math.bit.and(5, 3) # 1 (101 & 011 = 001)
+# Bitwise operations
+result = math.bit.and(5, 3) # 1
 ```
 
-### 工具函数 API
+### Utility Functions API
 
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `now()` | 无 | `int[]` | 获取当前时间 `[年,月,日,时,分,秒,毫秒]` |
-| `parseJson(jsonStr)` | `jsonStr`: JSON字符串 | `Object` | 解析JSON为对象 |
-| `toJson(obj)` | `obj`: 任意对象 | `String` | 将对象转为JSON字符串 |
-| `int(value)` | `value`: 字符串或数字 | `int` | 转换为整数 |
-| `str(value)` | `value`: 任意值 | `String` | 转换为字符串 |
-| `len(collection)` | `collection`: 数组/Map/字符串 | `int` | 获取长度 |
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `now()` | None | `int[]` | Get current time `[year, month, day, hour, minute, second, millisecond]` |
+| `parseJson(jsonStr)` | `jsonStr`: JSON string | `Object` | Parse JSON to object |
+| `toJson(obj)` | `obj`: any object | `String` | Convert object to JSON string |
+| `int(value)` | `value`: string or number | `int` | Convert to integer |
+| `str(value)` | `value`: any value | `String` | Convert to string |
+| `len(collection)` | `collection`: array/map/string | `int` | Get length |
 
-### 脚本语言语法
+### Script Language Syntax
 
-**变量声明：**
+**Variable Declaration:**
 ```
 int x = 10
 string name = "hello"
@@ -810,7 +810,7 @@ array arr = [1, 2, 3]
 map m = {a: 1, b: 2}
 ```
 
-**控制流：**
+**Control Flow:**
 ```
 if x > 5 {
     // do something
@@ -821,39 +821,39 @@ while running {
 }
 ```
 
-**函数定义：**
+**Function Definition:**
 ```
 func add(a, b) {
     return a + b
 }
 ```
 
-**导入脚本：**
+**Import Script:**
 ```
 import "script.txt"
 ```
 
-**数组/Map操作：**
+**Array/Map Operations:**
 ```
-arr[0] = 100          // 数组索引赋值
-m["key"] = "value"    // Map键值赋值
-x = arr[0]            // 索引访问
-len = #arr            // 获取长度（#前缀）
+arr[0] = 100          // Array index assignment
+m["key"] = "value"    // Map key assignment
+x = arr[0]            // Index access
+len = #arr            // Get length (# prefix)
 ```
 
 ---
 
-## 插件开发指南
+## Plugin Development Guide
 
-CilExec 使用插件系统来扩展脚本函数。开发者可以通过实现 `FunctionProvider` 接口来添加新的脚本函数。
+CilExec uses a plugin system to extend script functions. Developers can add new script functions by implementing the `FunctionProvider` interface.
 
-### 快速开始
+### Quick Start
 
-#### 方式一：添加到现有 Provider（推荐）
+#### Method 1: Add to Existing Provider (Recommended)
 
-如果新函数与现有功能相关（如添加数学函数到工具函数），直接修改现有 Provider：
+If the new function relates to existing functionality, modify the existing Provider directly:
 
-**1. 修改 `UtilFunctionProvider.java`**
+**1. Modify `UtilFunctionProvider.java`**
 
 ```java
 public class UtilFunctionProvider implements FunctionProvider {
@@ -861,9 +861,9 @@ public class UtilFunctionProvider implements FunctionProvider {
     @Override
     public Object call(String name, Object[] args, FunctionContext context) {
         switch (name) {
-            // ... 现有函数 ...
+            // ... existing functions ...
             
-            // 添加新函数
+            // Add new function
             case "math.add":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
                 return ((Number) args[0]).intValue() + ((Number) args[1]).intValue();
@@ -874,9 +874,9 @@ public class UtilFunctionProvider implements FunctionProvider {
     @Override
     public FunctionInfo[] getFunctions() {
         return new FunctionInfo[]{
-            // ... 现有函数信息 ...
+            // ... existing function info ...
             
-            // 添加新函数信息
+            // Add new function info
             new FunctionInfo("math.add", "Add two numbers", 
                 new String[]{"a: int", "b: int"}, "int", "Math")
         };
@@ -884,17 +884,17 @@ public class UtilFunctionProvider implements FunctionProvider {
 }
 ```
 
-**2. 完成！** 无需其他修改，脚本中立即可以使用：
+**2. Done!** No other modifications needed; immediately usable in scripts:
 
 ```fcl
 sum = math.add(10, 20)  # sum = 30
 ```
 
-#### 方式二：创建新 Provider
+#### Method 2: Create New Provider
 
-如果新功能较为独立，建议创建新的 Provider：
+If the new functionality is relatively independent, consider creating a new Provider:
 
-**1. 创建新文件 `src/main/java/com/follarce/plugin/RandomFunctionProvider.java`**
+**1. Create `src/main/java/com/follarce/plugin/RandomFunctionProvider.java`**
 
 ```java
 package com.follarce.plugin;
@@ -954,18 +954,18 @@ public class RandomFunctionProvider implements FunctionProvider {
 }
 ```
 
-**2. 在 `Main.java` 中注册**
+**2. Register in `Main.java`**
 
 ```java
 private static void registerFunctionProviders() {
-    // ... 现有 Provider ...
+    // ... existing Providers ...
     
-    // 注册新的 Provider
+    // Register new Provider
     FunctionRegistry.register(new RandomFunctionProvider());
 }
 ```
 
-**3. 完成！** 脚本中使用：
+**3. Done!** Use in scripts:
 
 ```fcl
 num1 = random()         # 0-99
@@ -973,45 +973,45 @@ num2 = random(10)       # 0-9
 num3 = random(5, 15)    # 5-14
 ```
 
-### 开发规范
+### Development Standards
 
-#### 函数命名规范
+#### Function Naming Convention
 
 ```
-file.read           # 文件操作
-process.fork        # 进程操作
-user.create         # 用户操作
-math.add            # 数学函数
-str.upper           # 字符串函数
-random.randint      # 随机数函数
+file.read           # File operations
+process.fork        # Process operations
+user.create         # User operations
+math.add            # Mathematical functions
+str.upper           # String functions
+random.randint      # Random number functions
 ```
 
-#### 返回值规范
+#### Return Value Standards
 
 ```java
-// 成功 - 直接返回数据
+// Success - return data directly
 return result;
 
-// 错误 - 返回标准错误格式
+// Error - return standard error format
 return new String[]{"ERROR", "ERROR_CODE"};
 
-// 常见错误码
-"INVALID_ARGUMENTS"         // 参数错误
-"INSUFFICIENT_PERMISSION"   // 权限不足
-"FILE_DOES_NOT_EXIST"       // 文件不存在
-"INVALID_RANGE"             // 范围无效
+// Common error codes
+"INVALID_ARGUMENTS"         // Invalid arguments
+"INSUFFICIENT_PERMISSION"   // Insufficient permission
+"FILE_DOES_NOT_EXIST"       // File does not exist
+"INVALID_RANGE"             // Invalid range
 ```
 
-#### 参数检查模板
+#### Parameter Check Template
 
 ```java
 case "myFunc":
-    // 检查参数数量
+    // Check parameter count
     if (args.length < 2) {
         return new String[]{"ERROR", "INVALID_ARGUMENTS"};
     }
     
-    // 检查参数类型
+    // Check parameter types
     if (!(args[0] instanceof String)) {
         return new String[]{"ERROR", "ARGUMENT_MUST_BE_STRING"};
     }
@@ -1019,58 +1019,58 @@ case "myFunc":
         return new String[]{"ERROR", "ARGUMENT_MUST_BE_NUMBER"};
     }
     
-    // 执行逻辑
+    // Execute logic
     String str = (String) args[0];
     int num = ((Number) args[1]).intValue();
     return doSomething(str, num);
 ```
 
-### FunctionContext 说明
+### FunctionContext Description
 
-`FunctionContext` 提供调用时的环境信息：
+`FunctionContext` provides environment information during calls:
 
 ```java
 public class FunctionContext {
-    public int getPid();           // 获取当前进程ID
-    public int getPpid();          // 获取父进程ID
-    public String getCurrentUser(); // 获取当前用户
-    public boolean isLocal();      // 检查是否是local用户
+    public int getPid();           // Get current process ID
+    public int getPpid();          // Get parent process ID
+    public String getCurrentUser(); // Get current user
+    public boolean isLocal();      // Check if local user
 }
 ```
 
-使用示例：
+Usage example:
 
 ```java
 @Override
 public Object call(String name, Object[] args, FunctionContext context) {
     switch (name) {
         case "getMyPid":
-            return context.getPid();  // 返回调用者的PID
+            return context.getPid();  // Return caller's PID
     }
     return null;
 }
 ```
 
-### 调试技巧
+### Debugging Tips
 
-**1. 使用 Logger**
+**1. Use Logger**
 
 ```java
-import com.follarce.util.Logger;
+import com.follarce.basicUtil.Logger;
 
 Logger.debug("Function called: " + name);
 Logger.info("Operation success");
 Logger.error("Error: " + e.getMessage());
 ```
 
-**2. 查看已注册函数**
+**2. View Registered Functions**
 
 ```java
-// 在 Main.java 中临时添加
+// Temporarily add in Main.java
 System.out.println(FunctionRegistry.generateDocumentation());
 ```
 
-**3. 测试脚本**
+**3. Test Scripts**
 
 ```fcl
 # test.fcl
@@ -1083,158 +1083,98 @@ if result == expected {
 }
 ```
 
-### 完整示例：MathFunctionProvider
+### Summary
 
-```java
-package com.follarce.plugin;
+| Operation | Effort | Use Case |
+|-----------|--------|----------|
+| Modify Existing Provider | 2 minutes | Add a few related functions |
+| Create New Provider | 5 minutes | Add a set of new functionality |
 
-public class MathFunctionProvider implements FunctionProvider {
+**Core Principle: Only modify Providers, leave other code untouched!**
 
-    @Override
-    public Object call(String name, Object[] args, FunctionContext context) {
-        switch (name) {
-            case "math.abs":
-                if (args.length < 1 || !(args[0] instanceof Number)) {
-                    return new String[]{"ERROR", "INVALID_ARGUMENTS"};
-                }
-                return Math.abs(((Number) args[0]).intValue());
-                
-            case "math.max":
-                if (args.length < 2 || !(args[0] instanceof Number) || !(args[1] instanceof Number)) {
-                    return new String[]{"ERROR", "INVALID_ARGUMENTS"};
-                }
-                return Math.max(((Number) args[0]).intValue(), ((Number) args[1]).intValue());
-                
-            case "math.min":
-                if (args.length < 2 || !(args[0] instanceof Number) || !(args[1] instanceof Number)) {
-                    return new String[]{"ERROR", "INVALID_ARGUMENTS"};
-                }
-                return Math.min(((Number) args[0]).intValue(), ((Number) args[1]).intValue());
-                
-            default:
-                return null;
-        }
-    }
+## Usage Examples
 
-    @Override
-    public FunctionInfo[] getFunctions() {
-        return new FunctionInfo[]{
-            new FunctionInfo("math.abs", "Absolute value", 
-                new String[]{"n: int"}, "int", "Math"),
-            new FunctionInfo("math.max", "Maximum of two numbers", 
-                new String[]{"a: int", "b: int"}, "int", "Math"),
-            new FunctionInfo("math.min", "Minimum of two numbers", 
-                new String[]{"a: int", "b: int"}, "int", "Math")
-        };
-    }
-
-    @Override
-    public String getProviderName() {
-        return "MathFunctionProvider";
-    }
-}
+### Example 1: Basic File Operations
 ```
-
-脚本使用：
-
-```fcl
-x = math.abs(-10)       # 10
-y = math.max(5, 8)      # 8
-z = math.min(3, 7)      # 3
-```
-
-### 总结
-
-| 操作 | 工作量 | 适用场景 |
-|------|--------|----------|
-| 修改现有 Provider | 2分钟 | 添加少量相关函数 |
-| 创建新 Provider | 5分钟 | 添加一组新功能 |
-
-**核心原则：只修改 Provider，不动其他代码！**
-
-## 使用示例
-
-### 示例1：基本文件操作
-```
-// 创建文件并写入内容
+// Create file and write content
 createFile("/user/local/app/", "test.txt")
 write("/user/local/app/test.txt", "Hello World")
 
-// 读取文件
+// Read file
 result = read("/user/local/app/test.txt")
 if result[0] == "SUCCESS" {
     content = result[1]
 }
 ```
 
-### 示例2：进程创建
+### Example 2: Process Creation
 ```
 pid = fork()
 if pid == 0 {
-    // 子进程
+    // Child process
     exec("/user/local/app/child.txt", [])
 } else {
-    // 父进程
+    // Parent process
     waitPID(pid)
 }
 ```
 
-### 示例3：交换池使用
+### Example 3: Swap Pool Usage
 ```
-// 创建交换池
+// Create swap pool
 swapPool.create("shared")
 
-// 添加变量（永久有效）
+// Add variable (permanent)
 swapPool.add("counter:0", "shared", ["always"])
 
-// 添加变量（限制读取3次）
+// Add variable (limit to 3 reads)
 swapPool.add("token:abc123", "shared", ["times(3)"])
 
-// 获取变量
+// Get variable
 value = swapPool.get("counter", "shared")
 ```
 
-### 示例4：网络下载
+### Example 4: Network Download
 ```
-// 下载图片到指定目录（文件名自动提取）
+// Download image to specified directory (filename auto-extracted)
 result = webget("https://example.com/image.png", "/user/local/downloads/")
 if result[0] == "SUCCESS" {
     filename = result[1]  // "image.png"
 }
 
-// 下载文件并设置30秒超时
+// Download file with 30-second timeout
 result = webget("https://example.com/archive.zip", "/user/local/downloads/", 30000)
 ```
 
-### 示例5：Socket TCP 通信
+### Example 5: Socket TCP Communication
 
 ```fcl
-# TCP 服务器（使用默认保存目录）
-# Local 用户默认: /user/local/sockets/
-# 普通用户 alice 默认: /user/alice/sockets/
+# TCP Server (using default save directory)
+# Local user default: /user/local/sockets/
+# Regular user alice default: /user/alice/sockets/
 result = socket.createServer("127.0.0.1", 8080)
 if result[0] == "SUCCESS" {
     serverId = int(result[1])
     
-    # 接受客户端连接
+    # Accept client connection
     clientResult = socket.accept(serverId)
     if clientResult[0] == "SUCCESS" {
         clientId = int(clientResult[1])
         
-        # 接收数据（自动保存到默认目录）
+        # Receive data (auto-saved to default directory)
         recvResult = socket.receive(clientId)
         if recvResult[0] == "SUCCESS" {
-            filename = recvResult[1]  # 例如: "socket_2_20260321_201145_123.dat"
+            filename = recvResult[1]  # e.g., "socket_2_20260321_201145_123.dat"
         }
         
-        # 发送响应
+        # Send response
         socket.send(clientId, "Hello Client!")
         socket.close(clientId)
     }
     socket.close(serverId)
 }
 
-# TCP 客户端（使用默认保存目录）
+# TCP Client (using default save directory)
 result = socket.connect("127.0.0.1", 8080)
 if result[0] == "SUCCESS" {
     socketId = int(result[1])
@@ -1243,23 +1183,23 @@ if result[0] == "SUCCESS" {
     socket.close(socketId)
 }
 
-# 普通用户尝试保存到 system 目录（会失败）
+# Regular user attempting to save to system directory (will fail)
 result = socket.createServer("127.0.0.1", 8081, "/system/data/")
-# 返回: ["ERROR", "INSUFFICIENT_PERMISSION"]
+# Returns: ["ERROR", "INSUFFICIENT_PERMISSION"]
 ```
 
-### 示例6：Socket UDP 通信
+### Example 6: Socket UDP Communication
 
 ```fcl
-# 创建 UDP socket（端口 0 表示自动分配，使用默认保存目录）
+# Create UDP socket (port 0 for auto-assign, using default save directory)
 result = socket.createUdp("0.0.0.0", 0)
 if result[0] == "SUCCESS" {
     udpSocket = int(result[1])
     
-    # 发送 UDP 数据包到指定地址
+    # Send UDP packet to specified address
     socket.sendTo(udpSocket, "127.0.0.1", 9090, "Hello UDP!")
     
-    # 接收数据（自动保存到默认目录）
+    # Receive data (auto-saved to default directory)
     recvResult = socket.receive(udpSocket)
     if recvResult[0] == "SUCCESS" {
         filename = recvResult[1]
@@ -1269,123 +1209,123 @@ if result[0] == "SUCCESS" {
 }
 ```
 
-## 返回值规范
+## Return Value Standards
 
-所有返回 `String[]` 的函数遵循统一格式：
-- 成功：`["SUCCESS", null]` 或 `["SUCCESS", data]`
-- 失败：`["ERROR", "ERROR_CODE"]`
+All functions returning `String[]` follow a unified format:
+- Success: `["SUCCESS", null]` or `["SUCCESS", data]`
+- Failure: `["ERROR", "ERROR_CODE"]`
 
-常见错误码：
+Common error codes:
 
-**文件操作错误码：**
-- `INVALID_PATH` - 无效路径
-- `FILE_DOES_NOT_EXIST` - 文件不存在
-- `DIRECTORY_DOES_NOT_EXIST` - 目录不存在
-- `FILE_EXIST` - 文件已存在
-- `DIRECTORY_EXIST` - 目录已存在
-- `INSUFFICIENT_PERMISSION` - 权限不足
-- `FILE_IS_LOCKED` - 文件被锁定
-- `DIRECTORY_IS_LOCKED` - 目录被锁定
-- `IS_NOT_FILE` - 路径不是文件
-- `IS_NOT_DIRECTORY` - 路径不是目录
-- `DIRECTORY_IS_NOT_EMPTY` - 目录不为空
+**File Operation Error Codes:**
+- `INVALID_PATH` - Invalid path
+- `FILE_DOES_NOT_EXIST` - File does not exist
+- `DIRECTORY_DOES_NOT_EXIST` - Directory does not exist
+- `FILE_EXIST` - File already exists
+- `DIRECTORY_EXIST` - Directory already exists
+- `INSUFFICIENT_PERMISSION` - Insufficient permission
+- `FILE_IS_LOCKED` - File is locked
+- `DIRECTORY_IS_LOCKED` - Directory is locked
+- `IS_NOT_FILE` - Path is not a file
+- `IS_NOT_DIRECTORY` - Path is not a directory
+- `DIRECTORY_IS_NOT_EMPTY` - Directory is not empty
 
-**进程操作错误码：**
-- `PROCESS_DOES_NOT_EXIST` - 进程不存在
-- `CANNOT_KILL_INIT` - 不能终止 INIT 进程
-- `INSUFFICIENT_PERMISSION` - 权限不足
+**Process Operation Error Codes:**
+- `PROCESS_DOES_NOT_EXIST` - Process does not exist
+- `CANNOT_KILL_INIT` - Cannot terminate INIT process
+- `INSUFFICIENT_PERMISSION` - Insufficient permission
 
-**用户管理错误码：**
-- `INVALID_USERNAME` - 无效用户名
-- `INVALID_PASSWORD` - 无效密码
-- `USER_EXISTS` - 用户已存在
-- `USER_NOT_EXISTS` - 用户不存在
-- `CANNOT_REMOVE_LOCAL` - 不能删除 local 用户
-- `SAVE_FAILED` - 保存失败
-- `READ_FAILED` - 读取失败
-- `INVALID_USER_DATA` - 用户数据无效
-- `USERNAME_MUST_BE_STRING` - 用户名必须是字符串
-- `PASSWORD_MUST_BE_STRING` - 密码必须是字符串
-- `ISLOCAL_MUST_BE_BOOLEAN` - isLocal 必须是布尔值
-- `TOO_MANY_ARGUMENTS` - 参数过多
-- `UNKNOWN_FUNCTION` - 未知函数
+**User Management Error Codes:**
+- `INVALID_USERNAME` - Invalid username
+- `INVALID_PASSWORD` - Invalid password
+- `USER_EXISTS` - User already exists
+- `USER_NOT_EXISTS` - User does not exist
+- `CANNOT_REMOVE_LOCAL` - Cannot remove local user
+- `SAVE_FAILED` - Save failed
+- `READ_FAILED` - Read failed
+- `INVALID_USER_DATA` - Invalid user data
+- `USERNAME_MUST_BE_STRING` - Username must be string
+- `PASSWORD_MUST_BE_STRING` - Password must be string
+- `ISLOCAL_MUST_BE_BOOLEAN` - isLocal must be boolean
+- `TOO_MANY_ARGUMENTS` - Too many arguments
+- `UNKNOWN_FUNCTION` - Unknown function
 
-**交换池错误码：**
-- `POOL_EXISTS` - 交换池已存在
-- `POOL_DOES_NOT_EXIST` - 交换池不存在
-- `VARIABLE_EXISTS` - 变量已存在
-- `VARIABLE_DOES_NOT_EXIST` - 变量不存在
-- `VARIABLE_IS_LOCKED` - 变量被锁定
-- `INSUFFICIENT_PERMISSION` - 权限不足
+**Swap Pool Error Codes:**
+- `POOL_EXISTS` - Swap pool already exists
+- `POOL_DOES_NOT_EXIST` - Swap pool does not exist
+- `VARIABLE_EXISTS` - Variable already exists
+- `VARIABLE_DOES_NOT_EXIST` - Variable does not exist
+- `VARIABLE_IS_LOCKED` - Variable is locked
+- `INSUFFICIENT_PERMISSION` - Insufficient permission
 
-**网络下载错误码：**
-- `INVALID_URL` - URL 为空或格式错误
-- `INVALID_SAVE_DIR` - 保存目录为空
-- `SAVE_DIR_MUST_BE_STRING` - 保存目录必须是字符串
-- `CANNOT_EXTRACT_FILENAME` - 无法从 URL 提取文件名
-- `TOO_MANY_REDIRECTS` - 重定向次数过多
+**Network Download Error Codes:**
+- `INVALID_URL` - URL is empty or malformed
+- `INVALID_SAVE_DIR` - Save directory is empty
+- `SAVE_DIR_MUST_BE_STRING` - Save directory must be string
+- `CANNOT_EXTRACT_FILENAME` - Cannot extract filename from URL
+- `TOO_MANY_REDIRECTS` - Too many redirects
 - `RESOURCE_NOT_FOUND` - HTTP 404
 - `ACCESS_FORBIDDEN` - HTTP 403
 - `UNAUTHORIZED` - HTTP 401
-- `SERVER_ERROR` - HTTP 5xx 错误
-- `CONNECTION_TIMEOUT` - 连接超时
-- `UNKNOWN_HOST` - 无法解析主机
-- `CONNECTION_REFUSED` - 连接被拒绝
-- `IO_ERROR` - I/O 错误
-- `DOWNLOAD_FAILED` - 下载失败
+- `SERVER_ERROR` - HTTP 5xx error
+- `CONNECTION_TIMEOUT` - Connection timeout
+- `UNKNOWN_HOST` - Cannot resolve host
+- `CONNECTION_REFUSED` - Connection refused
+- `IO_ERROR` - I/O error
+- `DOWNLOAD_FAILED` - Download failed
 
-**Socket 错误码：**
-- `INVALID_HOST` - 无效主机地址
-- `INVALID_PORT` - 无效端口号（1-65535）
-- `INVALID_SAVE_DIR` - 无效保存目录
-- `INVALID_DATA` - 无效数据
-- `INVALID_TIMEOUT` - 无效超时时间
-- `SOCKET_ID_MUST_BE_NUMBER` - socket ID 必须是数字
-- `HOST_MUST_BE_STRING` - 主机地址必须是字符串
-- `PORT_MUST_BE_NUMBER` - 端口必须是数字
-- `DATA_MUST_BE_STRING` - 数据必须是字符串
-- `SAVE_DIR_MUST_BE_STRING` - 保存目录必须是字符串
-- `SOCKET_DOES_NOT_EXIST` - socket 不存在
-- `SOCKET_CLOSED` - socket 已关闭
-- `NOT_SERVER_SOCKET` - 不是服务器 socket
-- `NOT_UDP_SOCKET` - 不是 UDP socket
-- `INVALID_SOCKET_TYPE` - 无效 socket 类型
-- `PORT_IN_USE` - 端口已被占用
-- `CREATE_SOCKET_FAILED` - 创建 socket 失败
-- `CONNECT_FAILED` - 连接失败
-- `ACCEPT_FAILED` - 接受连接失败
-- `ACCEPT_TIMEOUT` - 接受连接超时
-- `SEND_FAILED` - 发送失败
-- `RECEIVE_FAILED` - 接收失败
-- `RECEIVE_TIMEOUT` - 接收超时
-- `NO_DATA_RECEIVED` - 未接收到数据
-- `CONNECTION_REFUSED` - 连接被拒绝
+**Socket Error Codes:**
+- `INVALID_HOST` - Invalid host address
+- `INVALID_PORT` - Invalid port number (1-65535)
+- `INVALID_SAVE_DIR` - Invalid save directory
+- `INVALID_DATA` - Invalid data
+- `INVALID_TIMEOUT` - Invalid timeout
+- `SOCKET_ID_MUST_BE_NUMBER` - Socket ID must be number
+- `HOST_MUST_BE_STRING` - Host must be string
+- `PORT_MUST_BE_NUMBER` - Port must be number
+- `DATA_MUST_BE_STRING` - Data must be string
+- `SAVE_DIR_MUST_BE_STRING` - Save directory must be string
+- `SOCKET_DOES_NOT_EXIST` - Socket does not exist
+- `SOCKET_CLOSED` - Socket is closed
+- `NOT_SERVER_SOCKET` - Not a server socket
+- `NOT_UDP_SOCKET` - Not a UDP socket
+- `INVALID_SOCKET_TYPE` - Invalid socket type
+- `PORT_IN_USE` - Port already in use
+- `CREATE_SOCKET_FAILED` - Failed to create socket
+- `CONNECT_FAILED` - Failed to connect
+- `ACCEPT_FAILED` - Failed to accept connection
+- `ACCEPT_TIMEOUT` - Accept timeout
+- `SEND_FAILED` - Failed to send
+- `RECEIVE_FAILED` - Failed to receive
+- `RECEIVE_TIMEOUT` - Receive timeout
+- `NO_DATA_RECEIVED` - No data received
+- `CONNECTION_REFUSED` - Connection refused
 
-**通用错误码：**
-- `INVALID_ARGUMENTS` - 无效参数
-- `INVALID_JSON` - 无效 JSON 格式
-- `CREATE_FAILED` - 创建失败
-- `DELETE_FAILED` - 删除失败
-- `WRITE_FAILED` - 写入失败
-- `READ_FAILED` - 读取失败
-- `RENAME_FAILED` - 重命名失败
+**General Error Codes:**
+- `INVALID_ARGUMENTS` - Invalid arguments
+- `INVALID_JSON` - Invalid JSON format
+- `CREATE_FAILED` - Create failed
+- `DELETE_FAILED` - Delete failed
+- `WRITE_FAILED` - Write failed
+- `READ_FAILED` - Read failed
+- `RENAME_FAILED` - Rename failed
 
-## 日志系统
+## Logging System
 
-### 日志文件位置
+### Log File Location
 
-日志文件 `app.log` 位于程序运行目录（JAR 包所在目录）。
+Log file `app.log` is located in the program's run directory (same directory as the JAR file).
 
-### 日志格式
+### Log Format
 
 ```
 [2024-01-15 10:30:25] [INFO] Operation success
 [2024-01-15 10:30:26] [ERROR] Error: file not found
 ```
 
-### 启动和结束标记
+### Startup and Shutdown Markers
 
-每次程序运行会自动添加分隔线标记：
+Each program run automatically adds separator markers:
 
 ```
 ============================================================
@@ -1398,15 +1338,14 @@ if result[0] == "SUCCESS" {
 ============================================================
 ```
 
+### Log Levels
 
-### 日志级别
+- `DEBUG` - Debugging information
+- `INFO` - General information (default level)
+- `WARN` - Warning information
+- `ERROR` - Error information
 
-- `DEBUG` - 调试信息
-- `INFO` - 一般信息（默认级别）
-- `WARN` - 警告信息
-- `ERROR` - 错误信息
-
-### 使用方式
+### Usage
 
 ```java
 import com.follarce.basicUtil.Logger;
@@ -1418,13 +1357,13 @@ Logger.error("Error message");
 Logger.error("Error with exception", throwable);
 ```
 
-## 用途
+## Use Cases
 
-- 操作系统教学演示
-- 虚拟化技术研究
-- 脚本引擎开发参考
-- 嵌入式系统原型
+- Operating system teaching demonstrations
+- Virtualization technology research
+- Script engine development reference
+- Embedded system prototyping
 
-## 许可证
+## License
 
-本项目采用 [MIT License](LICENSE) 开源许可证。
+This project is open-sourced under the [MIT License](LICENSE).
