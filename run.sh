@@ -1,33 +1,33 @@
 #!/bin/bash
 
-echo "===============正在运行 CilExec==============="
+echo "=============== Running CilExec ==============="
 
-# 检查 target/classes 是否存在
+# Check if target/classes exists
 if [ ! -d "target/classes" ]; then
-    echo "未找到编译后的类文件，正在编译..."
+    echo "Compiled class files not found, compiling..."
     mvn clean compile
     if [ $? -ne 0 ]; then
-        echo "编译失败！"
+        echo "Compilation failed!"
         exit 1
     fi
 fi
 
-# 复制依赖到 target/dependency
-echo "检查依赖..."
+# Copy dependencies to target/dependency
+echo "Checking dependencies..."
 if [ ! -d "target/dependency" ]; then
     mvn dependency:copy-dependencies -q
 fi
 
-# 获取依赖 classpath
+# Get dependency classpath
 CLASSPATH="target/classes"
 
-# 添加依赖 jar 包
+# Add dependency jars
 for jar in target/dependency/*.jar; do
     CLASSPATH="$CLASSPATH:$jar"
 done
 
-# 运行程序
-echo "启动 CilExec..."
+# Run the program
+echo "Starting CilExec..."
 java -cp "$CLASSPATH" com.follarce.Main
 
-echo "===============运行结束==============="
+echo "=============== Execution Finished ==============="
