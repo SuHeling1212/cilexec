@@ -1,6 +1,6 @@
 # CilExec
 
-> **Disclaimer: This project is developed by AI (TREA, DeepSeek), including this documentation. I take no responsibility for code quality or any issues that may arise.**
+> **Disclaimer: This project is developed by AI (TREA, DeepSeek), including documentations. I take no responsibility for code quality or any issues that may arise.**
 
 A single-binary, disk-based teaching operating system implemented in Java.
 
@@ -20,6 +20,7 @@ CilExec takes Unix's "everything is a file" philosophy to the **extreme**:
 ### Single Executable File
 
 CilExec consists of **only one executable file** containing:
+
 - ✅ Installation
 - ✅ Startup
 - ✅ Hardware interaction APIs
@@ -31,19 +32,22 @@ Because **the JVM is too useful!** Users can manipulate hardware by calling CilE
 
 ## The "Benefits" of No Memory
 
-### 🛡️ "Best Null Safety!" 
+### 🛡️ "Best Null Safety!"
+
 > *just kidding*
 
-No memory = no pointers = no null pointer exceptions! 
+No memory = no pointers = no null pointer exceptions!
 
 Actually... variables, arrays, and methods are defined within process files, but you may still access non-existent variables.
 
 ### 🔒 "Best Data Security!"
+
 > *just kidding*
 
 No memory = no data loss from power outages!
 
 **But seriously:** Thanks to the memory-less design, you can directly modify "memory" data:
+
 1. Save state (files)
 2. Shut down the system
 3. Open files on the host system
@@ -54,6 +58,7 @@ No memory = no data loss from power outages!
 ## What It Actually Is
 
 CilExec is a proof-of-concept project demonstrating core operating system mechanisms in Java:
+
 - Process management
 - File system
 - Script engine
@@ -70,6 +75,7 @@ CilExec is a proof-of-concept project demonstrating core operating system mechan
 **`.fcl`** (Follarce CilExec Language) is the standard system script format.
 
 Example:
+
 ```fcl
 # This is a comment
 while true {
