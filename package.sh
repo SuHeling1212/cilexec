@@ -1,4 +1,14 @@
 #!/bin/bash
-echo "===============正在打包==============="
+echo "=============== Packaging ==============="
 mvn clean package
-echo "===============打包完成==============="
+
+if [ $? -eq 0 ]; then
+    echo "Packaging successful!"
+    echo "JAR file: target/cilexec-1.0.3-SNAPSHOT.jar"
+    echo ""
+    echo "Current time: $(java -cp target/cilexec-1.0.3-SNAPSHOT.jar com.follarce.Main)"
+else
+    echo "Packaging failed!"
+    exit 1
+fi
+echo "=============== Packaging Complete ==============="
