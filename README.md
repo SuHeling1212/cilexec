@@ -6,13 +6,13 @@ A single-binary, disk-based teaching operating system implemented in Java.
 
 ## What is CilExec?
 
-**Core Philosophy: Everything is a File, Nothing is Memory**
+**Core Philosophy: Everything is a File, State Persistence**
 
 CilExec takes Unix's "everything is a file" philosophy to the **extreme**:
 
-- ❌ **No memory concept** - Completely removed
-- 💾 **Disk-only I/O** - The disk is the ONLY read/write device
+- 💾 **Disk-based I/O** - The disk is the primary read/write device, all state persisted
 - 📁 **All state as files** - System states and processes are stored as files on disk
+- 🔄 **Transparent memory operations** - Runtime data is processed in memory but automatically synced to disk
 - 🚫 **Not bootable** - Cannot be BIOS/booted as a real OS (but that's fine, it's just for teaching) XD
 
 ## Architecture
@@ -30,23 +30,23 @@ CilExec consists of **only one executable file** containing:
 
 Because **the JVM is too useful!** Users can manipulate hardware by calling CilExec's APIs. Sure, efficiency decreases with disk I/O... but this is just a teaching system XD
 
-## The "Benefits" of No Memory
+## The "Benefits" of State Persistence
 
-### 🛡️ "Best Null Safety!"
+### 🛡️ "Better Null Safety!"
 
 > *just kidding*
 
-No memory = no pointers = no null pointer exceptions!
+No direct memory manipulation = no pointers = no null pointer exceptions!
 
 Actually... variables, arrays, and methods are defined within process files, but you may still access non-existent variables.
 
-### 🔒 "Best Data Security!"
+### 🔒 "Better Data Security!"
 
 > *just kidding*
 
-No memory = no data loss from power outages!
+State persistence = no data loss from power outages!
 
-**But seriously:** Thanks to the memory-less design, you can directly modify "memory" data:
+**But seriously:** Thanks to the state persistence design, you can directly modify process data:
 
 1. Save state (files)
 2. Shut down the system
