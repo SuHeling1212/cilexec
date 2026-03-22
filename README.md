@@ -449,7 +449,8 @@ SwapUtil.onProcessExit(pid);
 | 函数 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
 | `read(path)` | `path`: 文件路径 | `String[]` | 读取文件内容，返回 `["SUCCESS", content]` 或 `["ERROR", code]` |
-| `write(path, content)` | `path`: 文件路径, `content`: 内容 | `String[]` | 写入文件 |
+| `write(path, content)` | `path`: 文件路径, `content`: 内容 | `String[]` | 写入文件（覆盖原有内容） |
+| `append(path, content)` | `path`: 文件路径, `content`: 内容 | `String[]` | 追加内容到文件（在末尾添加新行） |
 | `createFile(path, name)` | `path`: 目录路径, `name`: 文件名 | `String[]` | 创建新文件 |
 | `removeFile(path)` | `path`: 文件路径 | `String[]` | 删除文件 |
 | `createDir(path, name)` | `path`: 父目录路径, `name`: 目录名 | `String[]` | 创建目录 |

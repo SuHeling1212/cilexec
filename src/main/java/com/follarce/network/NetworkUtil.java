@@ -7,6 +7,8 @@ import com.follarce.basicUtil.UserUtil;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 
 /**
@@ -63,7 +65,7 @@ public class NetworkUtil {
      */
     private static String extractFilenameFromUrl(String urlString) {
         try {
-            URL url = new URL(urlString);
+            URL url = new URI(urlString).toURL();
             String path = url.getPath();
 
             if (path == null || path.isEmpty() || path.equals("/")) {
@@ -107,7 +109,7 @@ public class NetworkUtil {
             }
 
             return filename;
-        } catch (MalformedURLException e) {
+        } catch (MalformedURLException | URISyntaxException e) {
             return null;
         }
     }
@@ -176,8 +178,8 @@ public class NetworkUtil {
             // Validate and create URL
             URL url;
             try {
-                url = new URL(urlString);
-            } catch (MalformedURLException e) {
+                url = new URI(urlString).toURL();
+            } catch (MalformedURLException | URISyntaxException e) {
                 return new String[]{"ERROR", "INVALID_URL"};
             }
 
@@ -198,8 +200,13 @@ public class NetworkUtil {
                 String location = connection.getHeaderField("Location");
                 if (location != null && !location.isEmpty()) {
                     if (!location.startsWith("http://") && !location.startsWith("https://")) {
-                        URL baseUrl = connection.getURL();
-                        location = new URL(baseUrl, location).toString();
+                        try {
+                            URL baseUrl = connection.getURL();
+                            location = baseUrl.toURI().resolve(location).toString();
+                        } catch (URISyntaxException e) {
+                            Logger.error("Invalid redirect URL: " + e.getMessage());
+                            return new String[]{"ERROR", "INVALID_REDIRECT"};
+                        }
                     }
                     Logger.info("Following redirect to: " + location);
                     return downloadToFile(location, saveDir, timeout, redirectCount + 1);

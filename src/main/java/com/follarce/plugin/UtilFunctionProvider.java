@@ -67,7 +67,27 @@ public class UtilFunctionProvider implements FunctionProvider {
                     return ((Object[]) obj).length;
                 }
                 return 1;
-                
+
+            // Sleep function
+            case "sleep":
+                if (args.length < 1) return error("INVALID_ARGUMENTS");
+                long millis = 0;
+                if (args[0] instanceof Number) {
+                    millis = ((Number) args[0]).longValue();
+                } else if (args[0] instanceof String) {
+                    try {
+                        millis = Long.parseLong((String) args[0]);
+                    } catch (NumberFormatException e) {
+                        return error("INVALID_ARGUMENTS");
+                    }
+                }
+                try {
+                    Thread.sleep(millis);
+                    return new String[]{"SUCCESS"};
+                } catch (InterruptedException e) {
+                    return error("INTERRUPTED");
+                }
+
             default:
                 return null;
         }
@@ -91,7 +111,9 @@ public class UtilFunctionProvider implements FunctionProvider {
             new FunctionInfo("str", "Convert to string",
                 new String[]{"value: any"}, "String", "Util"),
             new FunctionInfo("len", "Get length",
-                new String[]{"collection: array/map/string"}, "int", "Util")
+                new String[]{"collection: array/map/string"}, "int", "Util"),
+            new FunctionInfo("sleep", "Sleep for milliseconds",
+                new String[]{"millis: int"}, "String[]", "Util")
         };
     }
     

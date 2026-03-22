@@ -38,7 +38,11 @@ public class FileFunctionProvider implements FunctionProvider {
             case "writeMeta":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
                 return FileUtil.writeFileMetaData((String) args[0], (String) args[1]);
-                
+
+            case "append":
+                if (args.length < 2) return error("INVALID_ARGUMENTS");
+                return FileUtil.append((String) args[0], (String) args[1]);
+
             case "createFile":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
                 return FileUtil.createFile((String) args[0], (String) args[1]);
@@ -108,6 +112,8 @@ public class FileFunctionProvider implements FunctionProvider {
             new FunctionInfo("readMeta", "Read file metadata",
                 new String[]{"path: string"}, "String[]", "File"),
             new FunctionInfo("writeMeta", "Write file metadata",
+                new String[]{"path: string", "content: string"}, "String[]", "File"),
+            new FunctionInfo("append", "Append content to file",
                 new String[]{"path: string", "content: string"}, "String[]", "File")
         };
     }

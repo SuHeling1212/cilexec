@@ -1388,6 +1388,107 @@ public class FileUtil {
     }
 
     /**
+     * Append content to file (add new line)
+     *
+     * @param path    File path
+     * @param content Content to append
+     * @return String[] Array, [0] is status, [1] is error code (if any)
+     */
+    public static String[] append(String path, String content) {
+        // 1. Validate file with write permission check
+        Object[] validateResult = validateFile(path, true, true, "write");
+        if (validateResult[1] != null) {
+            return (String[]) validateResult[1];
+        }
+        File file = (File) validateResult[0];
+
+        // 2. Check if parent directory is locked
+        File parentDir = file.getParentFile();
+        if (parentDir != null) {
+            String[] parentLockCheck = checkDirectoryLock(parentDir);
+            if (parentLockCheck != null) {
+                return parentLockCheck;
+            }
+        }
+
+        try {
+            // 3. Read existing file content
+            String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+
+            // 4. Check lock status
+            String[] lockCheck = checkLock(file);
+            if (lockCheck != null) {
+                return lockCheck;
+            }
+
+            // 5. Extract metadata and body
+            String metaJson = "{}";
+            String bodyContent = "";
+            String[] metaResult = extractMetaContent(fullContent);
+            if (metaResult[0].equals("SUCCESS")) {
+                metaJson = metaResult[1];
+                bodyContent = extractBodyContent(fullContent);
+            }
+
+            // 6. Parse metadata
+            Object metaObj = JsonUtil.readJson(metaJson);
+            Map<String, Object> metaMap;
+
+            if (metaObj instanceof Map) {
+                metaMap = (Map<String, Object>) metaObj;
+            } else {
+                metaMap = new HashMap<>();
+            }
+
+            // 7. Ensure locked field exists
+            if (!metaMap.containsKey("locked")) {
+                Map<String, Object> lockMap = new HashMap<>();
+                lockMap.put("isLocked", false);
+                lockMap.put("lockedBy", null);
+                metaMap.put("locked", lockMap);
+            }
+
+            // 8. Update time in metadata
+            Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
+            if (time == null) {
+                time = new HashMap<>();
+                metaMap.put("Time", time);
+            }
+            int[] now = TimeUtil.getTime();
+            time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+
+            // 9. Ensure create time exists
+            if (!time.containsKey("createTime")) {
+                time.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+            }
+
+            // 10. Append content to body (add newline if body not empty)
+            String newBodyContent;
+            if (bodyContent.isEmpty()) {
+                newBodyContent = content;
+            } else {
+                newBodyContent = bodyContent + "\n" + content;
+            }
+
+            // 11. Reassemble file
+            String newMetaJson = JsonUtil.toJson(metaMap);
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + newBodyContent;
+
+            // 12. Write back to file
+            Files.write(file.toPath(), newFullContent.getBytes());
+
+            // 13. Update file size metadata
+            updateFileSize(file, metaMap);
+
+            return new String[] { "SUCCESS", null };
+
+        } catch (IOException e) {
+            LOGGER.warning("Failed to append to file: " + e.getMessage());
+            return new String[] { "ERROR", "APPEND_FAILED" };
+        }
+    }
+
+    /**
      * Lock file
      *
      * @param path File path
