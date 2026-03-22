@@ -203,7 +203,17 @@ public class FileUtil {
     }
 
     /**
-     * Check if directory is locked
+     * Check if a process exists by checking if its process file exists
+     */
+    private static boolean isProcessExists(int pid) {
+        String processPath = "/system/process/" + pid + ".json";
+        String root = getVfsRoot();
+        File processFile = new File(root + processPath.replace('/', File.separatorChar));
+        return processFile.exists();
+    }
+
+    /**
+     * Check if directory is locked, auto-unlock if locker process is dead
      */
     private static String[] checkDirectoryLock(File dir) {
         File metaFile = new File(dir, ".META");
@@ -223,6 +233,33 @@ public class FileUtil {
                     if (locked != null) {
                         Boolean isLocked = (Boolean) locked.get("isLocked");
                         if (isLocked != null && isLocked) {
+                            // Check if locker process still exists
+                            Object lockedBy = locked.get("lockedBy");
+                            if (lockedBy instanceof Number) {
+                                int lockerPid = ((Number) lockedBy).intValue();
+                                if (!isProcessExists(lockerPid)) {
+                                    // Locker process is dead, auto-unlock
+                                    LOGGER.info("Auto-unlocking directory " + dir.getPath() + " (locker PID " + lockerPid + " is dead)");
+                                    locked.put("isLocked", false);
+                                    locked.put("lockedBy", null);
+                                    
+                                    // Update time
+                                    Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
+                                    if (time == null) {
+                                        time = new HashMap<>();
+                                        metaMap.put("Time", time);
+                                    }
+                                    int[] now = TimeUtil.getTime();
+                                    time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+                                    
+                                    // Save back
+                                    String newMetaJson = JsonUtil.toJson(metaMap);
+                                    String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n";
+                                    Files.write(metaFile.toPath(), newFullContent.getBytes());
+                                    
+                                    return null; // Lock released, no error
+                                }
+                            }
                             return new String[] { "ERROR", "DIRECTORY_IS_LOCKED" };
                         }
                     }
@@ -449,7 +486,7 @@ public class FileUtil {
     }
 
     /**
-     * Check if file is locked
+     * Check if file is locked, auto-unlock if locker process is dead
      */
     private static String[] checkLock(File file) {
         try {
@@ -464,6 +501,36 @@ public class FileUtil {
                     if (locked != null) {
                         Boolean isLocked = (Boolean) locked.get("isLocked");
                         if (isLocked != null && isLocked) {
+                            // Check if locker process still exists
+                            Object lockedBy = locked.get("lockedBy");
+                            if (lockedBy instanceof Number) {
+                                int lockerPid = ((Number) lockedBy).intValue();
+                                if (!isProcessExists(lockerPid)) {
+                                    // Locker process is dead, auto-unlock
+                                    LOGGER.info("Auto-unlocking file " + file.getPath() + " (locker PID " + lockerPid + " is dead)");
+                                    
+                                    String bodyContent = extractBodyContent(fullContent);
+                                    
+                                    locked.put("isLocked", false);
+                                    locked.put("lockedBy", null);
+                                    
+                                    // Update time
+                                    Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
+                                    if (time == null) {
+                                        time = new HashMap<>();
+                                        metaMap.put("Time", time);
+                                    }
+                                    int[] now = TimeUtil.getTime();
+                                    time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+                                    
+                                    // Save back
+                                    String newMetaJson = JsonUtil.toJson(metaMap);
+                                    String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
+                                    Files.write(file.toPath(), newFullContent.getBytes());
+                                    
+                                    return null; // Lock released, no error
+                                }
+                            }
                             return new String[] { "ERROR", "FILE_IS_LOCKED" };
                         }
                     }
