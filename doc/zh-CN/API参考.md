@@ -129,19 +129,6 @@ String[] result = SwapUtil.swapPoolUpdate("varName", "poolName", "newValue");
 Object allVars = SwapUtil.swapPoolGetAll("poolName");  // Map<String, Object>
 ```
 
-### NetworkUtil - 网络下载
-
-```java
-// 下载文件到指定目录（文件名自动从 URL 提取）
-String[] result = NetworkUtil.webget("https://example.com/image.png", "/user/local/downloads/");
-if ("SUCCESS".equals(result[0])) {
-    String filename = result[1];  // "image.png"
-}
-
-// 自定义超时（30秒）
-String[] result = NetworkUtil.webget("https://example.com/file.zip", "/user/local/downloads/", 30000);
-```
-
 ### JsonUtil - JSON 处理
 
 ```java
@@ -329,173 +316,6 @@ SwapUtil.onProcessExit(pid);
 | `isLocal()` | 无 | `boolean` | 检查当前用户是否为local |
 | `getListOfUsers()` | 无 | `Map<String, Object>` | 获取所有用户列表 |
 
-### 网络下载 API
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `webget(url, saveDir)` | `url`: 下载地址, `saveDir`: 保存目录 | `String[]` | 下载文件到指定目录，文件名自动从 URL 提取，返回 `["SUCCESS", filename]` 或 `["ERROR", code]` |
-| `webget(url, saveDir, timeout)` | `url`: 下载地址, `saveDir`: 保存目录, `timeout`: 超时时间(毫秒) | `String[]` | 带超时设置的下载 |
-
-**文件名提取规则：**
-- `https://example.com/image.png` → `image.png`
-- `https://example.com/path/file.zip` → `file.zip`
-- `https://example.com/` → `index.html`
-- `https://example.com/page.html?foo=bar` → `page.html`
-
-### Socket API
-
-提供 TCP 和 UDP 网络通信功能，支持服务器/客户端模式，接收的数据自动保存为文件。
-
-#### TCP 服务器/客户端
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `socket.createServer(host, port, saveDir)` | `host`: 绑定地址, `port`: 端口, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 创建 TCP 服务器，返回 `["SUCCESS", socketId]` |
-| `socket.accept(serverId, saveDir)` | `serverId`: 服务器 socket ID, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 接受客户端连接，返回 `["SUCCESS", clientSocketId]` |
-| `socket.connect(host, port, saveDir)` | `host`: 服务器地址, `port`: 端口, `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 连接 TCP 服务器，返回 `["SUCCESS", socketId]` |
-| `socket.send(socketId, data)` | `socketId`: socket ID, `data`: 要发送的数据 | `String[]` | 发送数据 |
-| `socket.receive(socketId, saveDir)` | `socketId`: socket ID, `saveDir`: 保存目录(可选，默认使用 socket 创建时的目录) | `String[]` | 接收数据并保存到文件，返回 `["SUCCESS", filename]` |
-| `socket.close(socketId)` | `socketId`: socket ID | `String[]` | 关闭 socket |
-| `socket.getInfo(socketId)` | `socketId`: socket ID | `Map` | 获取 socket 信息 |
-| `socket.list()` | 无 | `Map` | 列出当前进程的所有 socket |
-
-#### UDP 通信
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `socket.createUdp(host, port, saveDir)` | `host`: 绑定地址, `port`: 端口(0表示自动分配), `saveDir`: 数据保存目录(可选，默认根据用户自动选择) | `String[]` | 创建 UDP socket，返回 `["SUCCESS", socketId]` |
-| `socket.sendTo(socketId, host, port, data)` | `socketId`: socket ID, `host`: 目标地址, `port`: 目标端口, `data`: 数据 | `String[]` | 发送 UDP 数据包 |
-
-**默认保存目录规则：**
-- **Local 用户**: `/user/local/sockets/`
-- **普通用户 alice**: `/user/alice/sockets/`
-- **普通用户 bob**: `/user/bob/sockets/`
-
-### 数学函数 API
-
-提供全面的数学计算功能，包括算术、三角函数、对数、随机数、统计、数论等。
-
-#### 基础算术
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.abs(n)` | `n`: 数字 | `number` | 绝对值 |
-| `math.max(...numbers)` | `...numbers`: 数字列表 | `number` | 最大值 |
-| `math.min(...numbers)` | `...numbers`: 数字列表 | `number` | 最小值 |
-| `math.pow(base, exp)` | `base`: 底数, `exp`: 指数 | `number` | 幂运算 |
-| `math.sqrt(n)` | `n`: 数字 | `number` | 平方根 |
-| `math.cbrt(n)` | `n`: 数字 | `number` | 立方根 |
-| `math.round(n, decimals)` | `n`: 数字, `decimals`: 小数位(可选) | `number` | 四舍五入 |
-| `math.floor(n)` | `n`: 数字 | `number` | 向下取整 |
-| `math.ceil(n)` | `n`: 数字 | `number` | 向上取整 |
-| `math.mod(a, b)` | `a`: 被除数, `b`: 除数 | `number` | 取模 |
-| `math.sign(n)` | `n`: 数字 | `number` | 符号函数 (-1, 0, 1) |
-| `math.clamp(n, min, max)` | `n`: 数字, `min`: 最小值, `max`: 最大值 | `number` | 限制范围 |
-| `math.lerp(start, end, t)` | `start`: 起始值, `end`: 结束值, `t`: 插值系数(0-1) | `number` | 线性插值 |
-
-#### 三角函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.sin(rad)` | `rad`: 弧度 | `number` | 正弦 |
-| `math.cos(rad)` | `rad`: 弧度 | `number` | 余弦 |
-| `math.tan(rad)` | `rad`: 弧度 | `number` | 正切 |
-| `math.asin(n)` | `n`: 数字 | `number` | 反正弦 |
-| `math.acos(n)` | `n`: 数字 | `number` | 反余弦 |
-| `math.atan(n)` | `n`: 数字 | `number` | 反正切 |
-| `math.atan2(y, x)` | `y`: Y坐标, `x`: X坐标 | `number` | 反正切2 |
-| `math.sinh(n)` | `n`: 数字 | `number` | 双曲正弦 |
-| `math.cosh(n)` | `n`: 数字 | `number` | 双曲余弦 |
-| `math.tanh(n)` | `n`: 数字 | `number` | 双曲正切 |
-| `math.deg(rad)` | `rad`: 弧度 | `number` | 弧度转角度 |
-| `math.rad(deg)` | `deg`: 角度 | `number` | 角度转弧度 |
-
-#### 对数和指数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.log(base, n)` | `base`: 底数, `n`: 真数 | `number` | 对数 |
-| `math.log10(n)` | `n`: 数字 | `number` | 常用对数(底数10) |
-| `math.log2(n)` | `n`: 数字 | `number` | 二进制对数(底数2) |
-| `math.ln(n)` | `n`: 数字 | `number` | 自然对数(底数e) |
-| `math.exp(n)` | `n`: 数字 | `number` | e的n次方 |
-
-#### 随机数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.random(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机数(0-1或指定范围) |
-| `math.randint(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `int` | 随机整数 |
-| `math.randfloat(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机浮点数 |
-| `math.randchoice(list)` | `list`: 数组 | `any` | 随机选择数组元素 |
-| `math.shuffle(list)` | `list`: 数组 | `array` | 随机打乱数组 |
-
-#### 统计函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.sum(...numbers)` | `...numbers`: 数字列表 | `number` | 求和 |
-| `math.avg(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值 |
-| `math.mean(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值(同avg) |
-| `math.median(...numbers)` | `...numbers`: 数字列表 | `number` | 中位数 |
-| `math.mode(...numbers)` | `...numbers`: 数字列表 | `number` | 众数 |
-| `math.var(...numbers)` | `...numbers`: 数字列表 | `number` | 方差 |
-| `math.std(...numbers)` | `...numbers`: 数字列表 | `number` | 标准差 |
-| `math.minarr(arr)` | `arr`: 数组 | `number` | 数组最小值 |
-| `math.maxarr(arr)` | `arr`: 数组 | `number` | 数组最大值 |
-| `math.range(start, end, step)` | `start`: 起始, `end`: 结束, `step`: 步长(可选) | `array` | 生成范围数组 |
-
-#### 数论函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.gcd(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最大公约数 |
-| `math.lcm(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最小公倍数 |
-| `math.prime(n)` | `n`: 整数 | `boolean` | 判断素数 |
-| `math.factors(n)` | `n`: 整数 | `array` | 获取所有因数 |
-| `math.fib(n)` | `n`: 整数 | `int` | 斐波那契数列第n项 |
-| `math.factorial(n)` | `n`: 整数 | `int` | 阶乘 |
-
-#### 数学常数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.pi` | 无 | `number` | π (3.14159...) |
-| `math.e` | 无 | `number` | 自然常数e (2.71828...) |
-| `math.tau` | 无 | `number` | 2π (6.28318...) |
-| `math.inf` | 无 | `number` | 正无穷 |
-| `math.nan` | 无 | `number` | 非数字 |
-
-#### 几何计算
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.hypot(a, b)` | `a`: 直角边, `b`: 直角边 | `number` | 斜边长度 |
-| `math.dist(x1, y1, x2, y2)` | 两点坐标 | `number` | 两点间距离 |
-| `math.area.circle(radius)` | `radius`: 半径 | `number` | 圆面积 |
-| `math.area.rect(width, height)` | `width`: 宽, `height`: 高 | `number` | 矩形面积 |
-| `math.vol.sphere(radius)` | `radius`: 半径 | `number` | 球体积 |
-
-#### 位运算
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.bit.and(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位与 |
-| `math.bit.or(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位或 |
-| `math.bit.xor(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位异或 |
-| `math.bit.not(a)` | `a`: 整数 | `int` | 按位取反 |
-| `math.bit.shiftl(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 左移 |
-| `math.bit.shiftr(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 右移 |
-
-#### 高级函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.map(value, inMin, inMax, outMin, outMax)` | 输入值和范围 | `number` | 映射值到新范围 |
-| `math.norm(value, min, max)` | `value`: 值, `min`: 最小值, `max`: 最大值 | `number` | 归一化到0-1 |
-| `math.perlin(x, y)` | `x`: X坐标, `y`: Y坐标(可选) | `number` | Perlin噪声 |
-| `math.noise(x)` | `x`: 坐标 | `number` | 简单噪声 |
-
 ### 工具函数 API
 
 | 函数 | 参数 | 返回值 | 说明 |
@@ -506,6 +326,7 @@ SwapUtil.onProcessExit(pid);
 | `int(value)` | `value`: 字符串或数字 | `int` | 转换为整数 |
 | `str(value)` | `value`: 任意值 | `String` | 转换为字符串 |
 | `len(collection)` | `collection`: 数组/Map/字符串 | `int` | 获取长度 |
+| `sleep(millis)` | `millis`: 毫秒数 | `String[]` | 休眠指定毫秒 |
 
 ### 脚本语言语法
 

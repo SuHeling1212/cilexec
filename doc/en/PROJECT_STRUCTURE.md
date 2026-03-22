@@ -11,11 +11,6 @@ src/main/java/com/follarce/
 │   ├── ProcessRunner.java    # Script execution engine
 │   ├── ProcessFunc.java      # Process operation functions
 │   └── SwapUtil.java         # Inter-process data exchange
-├── network/                  # Network functionality
-│   ├── NetworkUtil.java      # Network download utilities
-│   ├── NetworkFunctionProvider.java # Network function provider
-│   ├── SocketUtil.java       # Socket utilities
-│   └── SocketFunctionProvider.java  # Socket function provider
 ├── plugin/                   # Plugin system
 │   ├── FunctionProvider.java # Function provider interface
 │   ├── FunctionContext.java  # Function call context
@@ -24,8 +19,7 @@ src/main/java/com/follarce/
 │   ├── FileFunctionProvider.java    # File operation functions
 │   ├── ProcessFunctionProvider.java # Process management functions
 │   ├── UserFunctionProvider.java    # User management functions
-│   ├── UtilFunctionProvider.java    # Utility functions
-│   └── MathFunctionProvider.java    # Mathematical function library
+│   └── UtilFunctionProvider.java    # Utility functions
 └── basicUtil/                # Basic utility classes
     ├── FileUtil.java         # Virtual file system
     ├── JsonUtil.java         # JSON utilities

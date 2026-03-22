@@ -6,13 +6,11 @@ createFile("/user/local", "hello.log")
 
 int counter = 0
 
-while true {
-    # Sleep 500ms
-    sleep(500)
-    
-    # Increment counter
-    counter = counter + 1
-    
-    # Append HELLO_WORLD line to file
-    append("/user/local/hello.log", "HELLO_WORLD")
+while (counter < 3) {
+    counter=counter+1
+    append("/user/local/hello.log",counter)
+}
+while (counter < 6) {
+    counter=counter+1
+    append("/user/local/hello.log",counter)
 }

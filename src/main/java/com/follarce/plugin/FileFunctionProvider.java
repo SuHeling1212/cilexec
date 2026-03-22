@@ -25,7 +25,8 @@ public class FileFunctionProvider implements FunctionProvider {
                 
             case "write":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.write((String) args[0], (String) args[1]);
+                String writeContent = args[1] instanceof String ? (String) args[1] : String.valueOf(args[1]);
+                return FileUtil.write((String) args[0], writeContent);
                 
             case "listDir":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
@@ -41,7 +42,8 @@ public class FileFunctionProvider implements FunctionProvider {
 
             case "append":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.append((String) args[0], (String) args[1]);
+                String appendContent = args[1] instanceof String ? (String) args[1] : String.valueOf(args[1]);
+                return FileUtil.append((String) args[0], appendContent);
 
             case "createFile":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");

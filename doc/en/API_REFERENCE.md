@@ -129,19 +129,6 @@ String[] result = SwapUtil.swapPoolUpdate("varName", "poolName", "newValue");
 Object allVars = SwapUtil.swapPoolGetAll("poolName");  // Map<String, Object>
 ```
 
-### NetworkUtil - Network Download
-
-```java
-// Download file to specified directory (filename auto-extracted from URL)
-String[] result = NetworkUtil.webget("https://example.com/image.png", "/user/local/downloads/");
-if ("SUCCESS".equals(result[0])) {
-    String filename = result[1];  // "image.png"
-}
-
-// Custom timeout (30 seconds)
-String[] result = NetworkUtil.webget("https://example.com/file.zip", "/user/local/downloads/", 30000);
-```
-
 ### JsonUtil - JSON Processing
 
 ```java
@@ -329,173 +316,6 @@ SwapUtil.onProcessExit(pid);
 | `isLocal()` | None | `boolean` | Check if current user is local |
 | `getListOfUsers()` | None | `Map<String, Object>` | Get all user list |
 
-### Network Download API
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `webget(url, saveDir)` | `url`: download URL, `saveDir`: save directory | `String[]` | Download file to specified directory, filename auto-extracted from URL, returns `["SUCCESS", filename]` or `["ERROR", code]` |
-| `webget(url, saveDir, timeout)` | `url`: download URL, `saveDir`: save directory, `timeout`: timeout (ms) | `String[]` | Download with timeout setting |
-
-**Filename extraction rules:**
-- `https://example.com/image.png` → `image.png`
-- `https://example.com/path/file.zip` → `file.zip`
-- `https://example.com/` → `index.html`
-- `https://example.com/page.html?foo=bar` → `page.html`
-
-### Socket API
-
-Provides TCP and UDP network communication functionality, supporting server/client modes with auto-save of received data to files.
-
-#### TCP Server/Client
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `socket.createServer(host, port, saveDir)` | `host`: bind address, `port`: port, `saveDir`: data save directory (optional, auto-selects based on user) | `String[]` | Create TCP server, returns `["SUCCESS", socketId]` |
-| `socket.accept(serverId, saveDir)` | `serverId`: server socket ID, `saveDir`: data save directory (optional) | `String[]` | Accept client connection, returns `["SUCCESS", clientSocketId]` |
-| `socket.connect(host, port, saveDir)` | `host`: server address, `port`: port, `saveDir`: data save directory (optional) | `String[]` | Connect to TCP server, returns `["SUCCESS", socketId]` |
-| `socket.send(socketId, data)` | `socketId`: socket ID, `data`: data to send | `String[]` | Send data |
-| `socket.receive(socketId, saveDir)` | `socketId`: socket ID, `saveDir`: save directory (optional, uses socket's default) | `String[]` | Receive data and save to file, returns `["SUCCESS", filename]` |
-| `socket.close(socketId)` | `socketId`: socket ID | `String[]` | Close socket |
-| `socket.getInfo(socketId)` | `socketId`: socket ID | `Map` | Get socket information |
-| `socket.list()` | None | `Map` | List all sockets owned by current process |
-
-#### UDP Communication
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `socket.createUdp(host, port, saveDir)` | `host`: bind address, `port`: port (0 for auto-assign), `saveDir`: data save directory (optional) | `String[]` | Create UDP socket, returns `["SUCCESS", socketId]` |
-| `socket.sendTo(socketId, host, port, data)` | `socketId`: socket ID, `host`: target address, `port`: target port, `data`: data | `String[]` | Send UDP packet |
-
-**Default save directory rules:**
-- **Local user**: `/user/local/sockets/`
-- **Regular user alice**: `/user/alice/sockets/`
-- **Regular user bob**: `/user/bob/sockets/`
-
-### Mathematical Functions API
-
-Comprehensive mathematical operations including arithmetic, trigonometric functions, logarithms, random numbers, statistics, number theory, and more.
-
-#### Basic Arithmetic
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.abs(n)` | `n`: number | `number` | Absolute value |
-| `math.max(...numbers)` | `...numbers`: list of numbers | `number` | Maximum value |
-| `math.min(...numbers)` | `...numbers`: list of numbers | `number` | Minimum value |
-| `math.pow(base, exp)` | `base`: base, `exp`: exponent | `number` | Power operation |
-| `math.sqrt(n)` | `n`: number | `number` | Square root |
-| `math.cbrt(n)` | `n`: number | `number` | Cube root |
-| `math.round(n, decimals)` | `n`: number, `decimals`: decimal places (optional) | `number` | Rounding |
-| `math.floor(n)` | `n`: number | `number` | Floor (round down) |
-| `math.ceil(n)` | `n`: number | `number` | Ceiling (round up) |
-| `math.mod(a, b)` | `a`: dividend, `b`: divisor | `number` | Modulo |
-| `math.sign(n)` | `n`: number | `number` | Sign function (-1, 0, 1) |
-| `math.clamp(n, min, max)` | `n`: number, `min`: minimum, `max`: maximum | `number` | Clamp to range |
-| `math.lerp(start, end, t)` | `start`: start value, `end`: end value, `t`: interpolation factor (0-1) | `number` | Linear interpolation |
-
-#### Trigonometric Functions
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.sin(rad)` | `rad`: radians | `number` | Sine |
-| `math.cos(rad)` | `rad`: radians | `number` | Cosine |
-| `math.tan(rad)` | `rad`: radians | `number` | Tangent |
-| `math.asin(n)` | `n`: number | `number` | Arc sine |
-| `math.acos(n)` | `n`: number | `number` | Arc cosine |
-| `math.atan(n)` | `n`: number | `number` | Arc tangent |
-| `math.atan2(y, x)` | `y`: Y coordinate, `x`: X coordinate | `number` | Arc tangent 2 |
-| `math.sinh(n)` | `n`: number | `number` | Hyperbolic sine |
-| `math.cosh(n)` | `n`: number | `number` | Hyperbolic cosine |
-| `math.tanh(n)` | `n`: number | `number` | Hyperbolic tangent |
-| `math.deg(rad)` | `rad`: radians | `number` | Radians to degrees |
-| `math.rad(deg)` | `deg`: degrees | `number` | Degrees to radians |
-
-#### Logarithms and Exponentials
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.log(base, n)` | `base`: base, `n`: number | `number` | Logarithm with base |
-| `math.log10(n)` | `n`: number | `number` | Base-10 logarithm |
-| `math.log2(n)` | `n`: number | `number` | Base-2 logarithm |
-| `math.ln(n)` | `n`: number | `number` | Natural logarithm (base e) |
-| `math.exp(n)` | `n`: number | `number` | e to the power of n |
-
-#### Random Numbers
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.random(min, max)` | `min`: minimum (optional), `max`: maximum (optional) | `number` | Random number (0-1 or specified range) |
-| `math.randint(min, max)` | `min`: minimum (optional), `max`: maximum (optional) | `int` | Random integer |
-| `math.randfloat(min, max)` | `min`: minimum (optional), `max`: maximum (optional) | `number` | Random float |
-| `math.randchoice(list)` | `list`: array | `any` | Random element from list |
-| `math.shuffle(list)` | `list`: array | `array` | Randomly shuffle list |
-
-#### Statistical Functions
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.sum(...numbers)` | `...numbers`: list of numbers | `number` | Sum |
-| `math.avg(...numbers)` | `...numbers`: list of numbers | `number` | Average (mean) |
-| `math.mean(...numbers)` | `...numbers`: list of numbers | `number` | Average (mean) |
-| `math.median(...numbers)` | `...numbers`: list of numbers | `number` | Median |
-| `math.mode(...numbers)` | `...numbers`: list of numbers | `number` | Mode (most frequent) |
-| `math.var(...numbers)` | `...numbers`: list of numbers | `number` | Variance |
-| `math.std(...numbers)` | `...numbers`: list of numbers | `number` | Standard deviation |
-| `math.minarr(arr)` | `arr`: array | `number` | Minimum in array |
-| `math.maxarr(arr)` | `arr`: array | `number` | Maximum in array |
-| `math.range(start, end, step)` | `start`: start, `end`: end, `step`: step (optional) | `array` | Generate range array |
-
-#### Number Theory Functions
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.gcd(a, b)` | `a`: integer, `b`: integer | `int` | Greatest common divisor |
-| `math.lcm(a, b)` | `a`: integer, `b`: integer | `int` | Least common multiple |
-| `math.prime(n)` | `n`: integer | `boolean` | Check if prime |
-| `math.factors(n)` | `n`: integer | `array` | Get all factors |
-| `math.fib(n)` | `n`: integer | `int` | nth Fibonacci number |
-| `math.factorial(n)` | `n`: integer | `int` | Factorial |
-
-#### Mathematical Constants
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.pi` | None | `number` | π (3.14159...) |
-| `math.e` | None | `number` | Euler's number e (2.71828...) |
-| `math.tau` | None | `number` | 2π (6.28318...) |
-| `math.inf` | None | `number` | Positive infinity |
-| `math.nan` | None | `number` | Not a number |
-
-#### Geometric Functions
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.hypot(a, b)` | `a`: leg, `b`: leg | `number` | Hypotenuse length |
-| `math.dist(x1, y1, x2, y2)` | two points coordinates | `number` | Distance between points |
-| `math.area.circle(radius)` | `radius`: radius | `number` | Circle area |
-| `math.area.rect(width, height)` | `width`: width, `height`: height | `number` | Rectangle area |
-| `math.vol.sphere(radius)` | `radius`: radius | `number` | Sphere volume |
-
-#### Bitwise Operations
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.bit.and(a, b)` | `a`: integer, `b`: integer | `int` | Bitwise AND |
-| `math.bit.or(a, b)` | `a`: integer, `b`: integer | `int` | Bitwise OR |
-| `math.bit.xor(a, b)` | `a`: integer, `b`: integer | `int` | Bitwise XOR |
-| `math.bit.not(a)` | `a`: integer | `int` | Bitwise NOT |
-| `math.bit.shiftl(a, bits)` | `a`: integer, `bits`: number of bits | `int` | Left shift |
-| `math.bit.shiftr(a, bits)` | `a`: integer, `bits`: number of bits | `int` | Right shift |
-
-#### Advanced Functions
-
-| Function | Parameters | Return Value | Description |
-|----------|------------|--------------|-------------|
-| `math.map(value, inMin, inMax, outMin, outMax)` | input value and ranges | `number` | Map value to new range |
-| `math.norm(value, min, max)` | `value`: value, `min`: minimum, `max`: maximum | `number` | Normalize to 0-1 |
-| `math.perlin(x, y)` | `x`: X coordinate, `y`: Y coordinate (optional) | `number` | Perlin noise |
-| `math.noise(x)` | `x`: coordinate | `number` | Simple noise |
-
 ### Utility Functions API
 
 | Function | Parameters | Return Value | Description |
@@ -506,6 +326,7 @@ Comprehensive mathematical operations including arithmetic, trigonometric functi
 | `int(value)` | `value`: string or number | `int` | Convert to integer |
 | `str(value)` | `value`: any value | `String` | Convert to string |
 | `len(collection)` | `collection`: array/map/string | `int` | Get length |
+| `sleep(millis)` | `millis`: milliseconds | `String[]` | Sleep for specified milliseconds |
 
 ### Script Language Syntax
 

@@ -29,11 +29,15 @@ public class ProcessInit {
         if (!processExists(1)) {
             createInitProcess();
         } else {
-            // If exists, start runner for existing process
-            ProcessRunner runner = new ProcessRunner(1);
-            runners.put(1, runner);
-            new Thread(runner).start();
-            Logger.debug("Started runner for existing PID: 1");
+            // If exists and Status is true, start runner
+            if (isProcessRunning(1)) {
+                ProcessRunner runner = new ProcessRunner(1);
+                runners.put(1, runner);
+                new Thread(runner).start();
+                Logger.debug("Started runner for existing PID: 1");
+            } else {
+                Logger.debug("PID 1 exists but Status is false, not starting");
+            }
         }
         
         // Start the scheduler
@@ -59,6 +63,26 @@ public class ProcessInit {
     private static boolean processExists(int pid) {
         String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
         return readResult[0].equals("SUCCESS");
+    }
+
+    /**
+     * Check if a process is running (Status is true)
+     */
+    private static boolean isProcessRunning(int pid) {
+        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
+        if (!readResult[0].equals("SUCCESS")) {
+            return false;
+        }
+        try {
+            Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+            Object statusObj = process.get("Status");
+            if (statusObj instanceof Boolean) {
+                return (Boolean) statusObj;
+            }
+        } catch (Exception e) {
+            Logger.error("Failed to check process status: " + e.getMessage());
+        }
+        return false;
     }
     
     /**
@@ -178,8 +202,8 @@ public class ProcessInit {
                                     int pid = Integer.parseInt(name.replace(".json", ""));
                                     currentPids.add(pid);
                                     
-                                    // Create runner if not exists
-                                    if (!runners.containsKey(pid)) {
+                                    // Create runner if not exists and process is running
+                                    if (!runners.containsKey(pid) && isProcessRunning(pid)) {
                                         ProcessRunner runner = new ProcessRunner(pid);
                                         runners.put(pid, runner);
                                         new Thread(runner).start();

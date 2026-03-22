@@ -28,6 +28,9 @@ public class ProcessRunner implements Runnable {
         this.whileStack = new Stack<>();
         loadFromFile();
 
+        // loadFromFile() sets running based on file's Status
+        // If Status is false, running will be false and process won't execute
+
         if (owner != null) {
             UserUtil.setCurrentUser(owner);
         }
@@ -156,12 +159,29 @@ public class ProcessRunner implements Runnable {
         } else {
             this.currentLine = 0;
         }
+        
+        // Restore whileStack from file
+        this.whileStack.clear();
+        Object whileStackObj = code.get("WhileStack");
+        if (whileStackObj instanceof List) {
+            List<?> whileStackList = (List<?>) whileStackObj;
+            for (Object item : whileStackList) {
+                if (item instanceof Number) {
+                    this.whileStack.push(((Number) item).intValue());
+                }
+            }
+        }
+        
         // Note: Don't reset currentLine here - let executeLine handle process termination
         // when currentLine >= codeLines.size()
     }
 
     @SuppressWarnings("unchecked")
     private void saveToFile() {
+        saveToFile(false);
+    }
+
+    private void saveToFile(boolean updateStatus) {
         String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
         if (!readResult[0].equals("SUCCESS")) {
             return;
@@ -178,8 +198,15 @@ public class ProcessRunner implements Runnable {
 
         Map<String, Object> code = (Map<String, Object>) program.get("Code");
         code.put("runningCodeLine", this.currentLine);
+        
+        // Save whileStack to persist loop state
+        List<Integer> whileStackList = new ArrayList<>(this.whileStack);
+        code.put("WhileStack", whileStackList);
 
-        process.put("Status", this.running);
+        // Only update Status if explicitly requested (to avoid overwriting during shutdown)
+        if (updateStatus) {
+            process.put("Status", this.running);
+        }
 
         FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
     }
@@ -197,7 +224,7 @@ public class ProcessRunner implements Runnable {
                 Logger.error("Process " + pid + " crashed: " + e.getMessage());
                 data.put("_error", "Process crashed: " + e.getMessage());
                 running = false;
-                saveToFile();
+                saveToFile(true);
             }
             try {
                 Thread.sleep(10);
@@ -219,7 +246,7 @@ public class ProcessRunner implements Runnable {
 
         if (currentLine >= codeLines.size()) {
             running = false;
-            saveToFile();
+            saveToFile(true);
             return;
         }
 
@@ -296,7 +323,7 @@ public class ProcessRunner implements Runnable {
         if (currentLine == lineBefore) {
             currentLine++;
         }
-        saveToFile();
+        saveToFile(running == false);
     }
 
     private void executeStatement(String line) {
@@ -445,7 +472,21 @@ public class ProcessRunner implements Runnable {
     }
 
     private void handleWhile(String line) {
-        String condition = line.substring(5, line.length() - 1).trim();
+        // Extract condition from while statement
+        // Support both: while condition {  and  while (condition) {
+        String condition;
+        String afterWhile = line.substring(5).trim(); // Remove "while"
+        
+        if (afterWhile.endsWith("{")) {
+            afterWhile = afterWhile.substring(0, afterWhile.length() - 1).trim(); // Remove "{"
+        }
+        
+        // Remove parentheses if present
+        if (afterWhile.startsWith("(") && afterWhile.endsWith(")")) {
+            condition = afterWhile.substring(1, afterWhile.length() - 1).trim();
+        } else {
+            condition = afterWhile;
+        }
 
         if (!isTrue(evaluate(condition))) {
             // Condition is false, skip the entire while block
@@ -820,6 +861,34 @@ public class ProcessRunner implements Runnable {
             Object left = evaluate(parts[0].trim());
             Object right = evaluate(parts[1].trim());
             return !Objects.equals(left, right);
+        }
+
+        if (expr.contains("<=")) {
+            String[] parts = expr.split("<=", 2);
+            Object left = evaluate(parts[0].trim());
+            Object right = evaluate(parts[1].trim());
+            return ((Number) left).doubleValue() <= ((Number) right).doubleValue();
+        }
+
+        if (expr.contains(">=")) {
+            String[] parts = expr.split(">=", 2);
+            Object left = evaluate(parts[0].trim());
+            Object right = evaluate(parts[1].trim());
+            return ((Number) left).doubleValue() >= ((Number) right).doubleValue();
+        }
+
+        if (expr.contains("<")) {
+            String[] parts = expr.split("<", 2);
+            Object left = evaluate(parts[0].trim());
+            Object right = evaluate(parts[1].trim());
+            return ((Number) left).doubleValue() < ((Number) right).doubleValue();
+        }
+
+        if (expr.contains(">")) {
+            String[] parts = expr.split(">", 2);
+            Object left = evaluate(parts[0].trim());
+            Object right = evaluate(parts[1].trim());
+            return ((Number) left).doubleValue() > ((Number) right).doubleValue();
         }
 
         if (expr.contains("+")) {

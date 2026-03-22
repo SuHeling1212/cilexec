@@ -11,7 +11,6 @@ import com.follarce.basicUtil.JsonUtil;
 import com.follarce.basicUtil.Logger;
 import com.follarce.basicUtil.TimeUtil;
 import com.follarce.basicUtil.UserUtil;
-import com.follarce.network.SocketUtil;
 
 public class ProcessFunc {
 
@@ -310,10 +309,7 @@ public class ProcessFunc {
             }
         }
 
-        // 3. Clean up sockets owned by this process
-        SocketUtil.onProcessExit(pid);
-
-        // 4. LAST: Delete the process file
+        // 3. Delete the process file
         FileUtil.removeFile("/system/process/" + pid + ".json");
 
         return new String[] { "SUCCESS", null };

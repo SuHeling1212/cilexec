@@ -6,12 +6,43 @@ import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.List;
 import java.util.ArrayList;
 
 public class JsonUtil {
 
     private static final Gson gson = new Gson();
+
+    /**
+     * Convert Double values to Integer if they represent whole numbers
+     * Recursively processes Maps and Lists
+     */
+    @SuppressWarnings("unchecked")
+    private static Object convertNumbers(Object obj) {
+        if (obj instanceof Double) {
+            Double d = (Double) obj;
+            if (d == d.intValue()) {
+                return d.intValue();
+            }
+            return d;
+        } else if (obj instanceof Map) {
+            Map<String, Object> map = (Map<String, Object>) obj;
+            Map<String, Object> newMap = new HashMap<>();
+            for (Map.Entry<String, Object> entry : map.entrySet()) {
+                newMap.put(entry.getKey(), convertNumbers(entry.getValue()));
+            }
+            return newMap;
+        } else if (obj instanceof List) {
+            List<Object> list = (List<Object>) obj;
+            List<Object> newList = new ArrayList<>();
+            for (Object item : list) {
+                newList.add(convertNumbers(item));
+            }
+            return newList;
+        }
+        return obj;
+    }
  
     /**
      * Check if string is valid JSON
@@ -55,11 +86,13 @@ public class JsonUtil {
             if (trimmed.startsWith("{")) {
                 Type type = new TypeToken<Map<String, Object>>() {
                 }.getType();
-                return gson.fromJson(content, type);
+                Map<String, Object> map = gson.fromJson(content, type);
+                return convertNumbers(map);
             } else if (trimmed.startsWith("[")) {
                 Type type = new TypeToken<List<Object>>() {
                 }.getType();
-                return gson.fromJson(content, type);
+                List<Object> list = gson.fromJson(content, type);
+                return convertNumbers(list);
             } else if (trimmed.startsWith("\"")) {
                 return gson.fromJson(content, String.class);
             } else if (trimmed.equals("true") || trimmed.equals("false")) {
@@ -67,11 +100,14 @@ public class JsonUtil {
             } else if (trimmed.equals("null")) {
                 return null;
             } else {
-                // Number type
-                try {
-                    return gson.fromJson(content, Integer.class);
-                } catch (Exception e) {
-                    return gson.fromJson(content, Double.class);
+                // Number type - parse as Number first, then determine if it's integer or double
+                Number num = gson.fromJson(content, Number.class);
+                if (num.doubleValue() == num.intValue()) {
+                    // It's an integer value
+                    return num.intValue();
+                } else {
+                    // It's a decimal value
+                    return num.doubleValue();
                 }
             }
         } catch (JsonSyntaxException e) {
