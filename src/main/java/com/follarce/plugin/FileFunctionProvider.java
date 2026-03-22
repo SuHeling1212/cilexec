@@ -27,7 +27,7 @@ public class FileFunctionProvider implements FunctionProvider {
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
                 return FileUtil.write((String) args[0], (String) args[1]);
                 
-            case "listdir":
+            case "listDir":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
                 return FileUtil.getListOfFileAndDirectory((String) args[0]);
                 

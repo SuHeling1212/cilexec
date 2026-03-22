@@ -1,5 +1,16 @@
 #<META>{"Owner":"local","Permission":{"Owner":"rwx","Others":"rwx"}}</META>
-while true {
+# INIT Process - System initialization
 
+while true {
+    # Create a test file
+    createFile("/user/local", "hello.txt")
     
+    # List directory contents
+    arr = listDir("/user/local")
+    
+    # Download a web page (optional - may fail without network)
+    webget("http://example.com", "/user/local/")
+    
+    # Keep the process running
+    break
 }

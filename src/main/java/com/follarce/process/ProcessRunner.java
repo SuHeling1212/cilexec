@@ -137,6 +137,9 @@ public class ProcessRunner implements Runnable {
             running = false;
             return;
         }
+        
+        // Remove null elements from codeLines
+        this.codeLines.removeIf(Objects::isNull);
 
         // Load currentLine from file on every load to ensure correct position
         // This is important for fork() - child process needs to start from correct line
@@ -188,7 +191,14 @@ public class ProcessRunner implements Runnable {
         }
 
         while (running) {
-            executeLine();
+            try {
+                executeLine();
+            } catch (Exception e) {
+                Logger.error("Process " + pid + " crashed: " + e.getMessage());
+                data.put("_error", "Process crashed: " + e.getMessage());
+                running = false;
+                saveToFile();
+            }
             try {
                 Thread.sleep(10);
             } catch (InterruptedException e) {
@@ -253,6 +263,7 @@ public class ProcessRunner implements Runnable {
             } catch (Exception e) {
                 running = false;
                 data.put("_error", e.getMessage());
+                Logger.error("Process " + pid + " error at line " + currentLine + ": " + e.getMessage());
             }
             return;
         }
@@ -266,19 +277,25 @@ public class ProcessRunner implements Runnable {
             } catch (Exception e) {
                 running = false;
                 data.put("_error", e.getMessage());
+                Logger.error("Process " + pid + " error at line " + currentLine + ": " + e.getMessage());
             }
             return;
         }
 
         // Normal execution for other statements
+        int lineBefore = currentLine;
         try {
             executeStatement(line);
         } catch (Exception e) {
             running = false;
             data.put("_error", e.getMessage());
+            Logger.error("Process " + pid + " error at line " + currentLine + ": " + e.getMessage());
         }
 
-        currentLine++;
+        // Only increment if executeStatement didn't change currentLine (e.g., break already set it)
+        if (currentLine == lineBefore) {
+            currentLine++;
+        }
         saveToFile();
     }
 
@@ -303,12 +320,39 @@ public class ProcessRunner implements Runnable {
             return;
         }
 
+        if (line.equals("break")) {
+            handleBreak();
+            return;
+        }
+
         if (line.contains("=")) {
             handleAssignment(line);
             return;
         }
 
         evaluate(line);
+    }
+
+    private void handleBreak() {
+        // Exit the current while loop
+        // Find the matching closing brace and jump to the line after it
+        int braceCount = 1;
+        int i = currentLine + 1;
+        while (i < codeLines.size() && braceCount > 0) {
+            String l = codeLines.get(i).trim();
+            if (l.equals("{"))
+                braceCount++;
+            if (l.equals("}"))
+                braceCount--;
+            i++;
+        }
+        // Pop the while stack since we're breaking out
+        if (!whileStack.isEmpty()) {
+            whileStack.pop();
+        }
+        // Set currentLine to the line after the closing brace
+        // Make sure it doesn't exceed code length
+        currentLine = Math.min(i, codeLines.size());
     }
 
     private void handleImport(String line) {
@@ -631,6 +675,7 @@ public class ProcessRunner implements Runnable {
             return ret;
         }
 
+        Logger.error("Process " + pid + " unknown function: " + funcName);
         throw new RuntimeException("Unknown function: " + funcName);
     }
 

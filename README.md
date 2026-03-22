@@ -54,8 +54,7 @@ src/main/java/com/follarce/
 │   ├── ProcessFunctionProvider.java # 进程管理函数
 │   ├── UserFunctionProvider.java    # 用户管理函数
 │   ├── UtilFunctionProvider.java    # 工具函数
-│   ├── MathFunctionProvider.java    # 数学函数库
-│   └── RandomFunctionProvider.java  # 随机数函数示例
+│   └── MathFunctionProvider.java    # 数学函数库
 └── basicUtil/                # 基础工具类
     ├── FileUtil.java         # 虚拟文件系统
     ├── JsonUtil.java         # JSON 工具
