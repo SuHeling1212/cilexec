@@ -69,7 +69,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class SocketUtil {
 
-    private static final String SOCKET_DIR = "/system/sockets/";
+    private static String getSocketDir() {
+        String currentUser = com.follarce.basicUtil.UserUtil.getCurrentUser();
+        return "/user/" + currentUser + "/sockets/";
+    }
+    
+    private static String SOCKET_DIR = getSocketDir();
     private static final int DEFAULT_TIMEOUT = 10000; // 10 seconds
     private static final int BUFFER_SIZE = 8192; // 8KB buffer
     
@@ -111,7 +116,17 @@ public class SocketUtil {
         // Ensure socket directory exists
         String[] listResult = FileUtil.getListOfFileAndDirectory(SOCKET_DIR);
         if (!listResult[0].equals("SUCCESS")) {
-            FileUtil.createDirectory("/system/", "sockets");
+            // Create user-specific socket directory
+            String dirPath = SOCKET_DIR;
+            if (dirPath.endsWith("/")) {
+                dirPath = dirPath.substring(0, dirPath.length() - 1);
+            }
+            int lastSlash = dirPath.lastIndexOf('/');
+            if (lastSlash > 0) {
+                String parentPath = dirPath.substring(0, lastSlash);
+                String dirName = dirPath.substring(lastSlash + 1);
+                FileUtil.createDirectory(parentPath, dirName);
+            }
         }
         Logger.info("Socket system initialized");
     }

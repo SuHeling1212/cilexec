@@ -1,4 +1,4 @@
-package com.follarce.network;
+package com.follarce.plugin;
 
 import com.follarce.basicUtil.FileUtil;
 import com.follarce.basicUtil.Logger;
@@ -212,6 +212,24 @@ public class NetworkFunctionProvider implements FunctionProvider {
             }
 
             // Open connection
+            if (url.getProtocol().equals("https")) {
+                // Create SSL context that trusts all certificates
+                try {
+                    javax.net.ssl.SSLContext sslContext = javax.net.ssl.SSLContext.getInstance("TLS");
+                    sslContext.init(null, new javax.net.ssl.TrustManager[]{new javax.net.ssl.X509TrustManager() {
+                        public java.security.cert.X509Certificate[] getAcceptedIssuers() { return null; }
+                        public void checkClientTrusted(java.security.cert.X509Certificate[] certs, String authType) { }
+                        public void checkServerTrusted(java.security.cert.X509Certificate[] certs, String authType) { }
+                    }}, new java.security.SecureRandom());
+                    
+                    javax.net.ssl.HttpsURLConnection.setDefaultSSLSocketFactory(sslContext.getSocketFactory());
+                    javax.net.ssl.HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+                } catch (Exception e) {
+                    Logger.error("SSL initialization failed: " + e.getMessage());
+                    // Continue without SSL trust management
+                }
+            }
+            
             connection = (HttpURLConnection) url.openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(timeout);
@@ -272,10 +290,72 @@ public class NetworkFunctionProvider implements FunctionProvider {
                 return createResult;
             }
 
+            // Check if file exists and get its size for resume
+            String realPath = FileUtil.getVfsRoot() + dirPath + fileName;
+            java.io.File targetFile = new java.io.File(realPath);
+            long downloadedSize = 0;
+            boolean resume = false;
+
+            if (targetFile.exists()) {
+                downloadedSize = targetFile.length();
+                if (downloadedSize > 0) {
+                    resume = true;
+                    Logger.info("Resuming download from " + downloadedSize + " bytes for " + fileName);
+                }
+            }
+
+            // Open connection with range request if resuming
+            if (resume) {
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(timeout);
+                connection.setReadTimeout(timeout);
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestProperty("User-Agent", "CilExec/1.0");
+                connection.setRequestProperty("Range", "bytes=" + downloadedSize + "-");
+                connection.connect();
+                responseCode = connection.getResponseCode();
+
+                // Check if server supports range requests
+                if (responseCode != HttpURLConnection.HTTP_PARTIAL) {
+                    Logger.warn("Server does not support range requests, starting download from beginning");
+                    resume = false;
+                    // Reopen connection without range header
+                    connection.disconnect();
+                    connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("GET");
+                    connection.setConnectTimeout(timeout);
+                    connection.setReadTimeout(timeout);
+                    connection.setInstanceFollowRedirects(false);
+                    connection.setRequestProperty("User-Agent", "CilExec/1.0");
+                    connection.connect();
+                    responseCode = connection.getResponseCode();
+                }
+            }
+
+            // Check for HTTP errors after resume attempt
+            if (responseCode >= 400) {
+                switch (responseCode) {
+                    case 404:
+                        return new String[]{"ERROR", "RESOURCE_NOT_FOUND"};
+                    case 403:
+                        return new String[]{"ERROR", "ACCESS_FORBIDDEN"};
+                    case 401:
+                        return new String[]{"ERROR", "UNAUTHORIZED"};
+                    case 500:
+                    case 502:
+                    case 503:
+                    case 504:
+                        return new String[]{"ERROR", "SERVER_ERROR"};
+                    default:
+                        return new String[]{"ERROR", "HTTP_ERROR_" + responseCode};
+                }
+            }
+
             // Download and save content using binary stream
             inputStream = connection.getInputStream();
-            String realPath = FileUtil.getVfsRoot() + dirPath + fileName;
-            outputStream = new FileOutputStream(realPath);
+            // Open file in append mode if resuming, otherwise overwrite
+            outputStream = new FileOutputStream(realPath, resume);
 
             byte[] buffer = new byte[BUFFER_SIZE];
             int bytesRead;
@@ -284,7 +364,11 @@ public class NetworkFunctionProvider implements FunctionProvider {
             }
             outputStream.flush();
 
-            Logger.info("Successfully downloaded " + fileName + " to: " + dirPath);
+            if (resume) {
+                Logger.info("Successfully resumed download of " + fileName + " to: " + dirPath);
+            } else {
+                Logger.info("Successfully downloaded " + fileName + " to: " + dirPath);
+            }
             return new String[]{"SUCCESS", fileName};
 
         } catch (java.net.SocketTimeoutException e) {

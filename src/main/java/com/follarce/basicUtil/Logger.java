@@ -14,7 +14,7 @@ import java.time.format.DateTimeFormatter;
 public class Logger {
 
     private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final String LOG_FILE_NAME = "app.log";
+    private static final String LOG_FILE_NAME = "cilexec.log";
     private static PrintWriter logWriter;
 
     static {

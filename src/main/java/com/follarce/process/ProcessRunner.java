@@ -600,7 +600,48 @@ public class ProcessRunner implements Runnable {
             return Double.parseDouble(expr);
         }
         if (expr.startsWith("\"") && expr.endsWith("\"")) {
-            return expr.substring(1, expr.length() - 1);
+            if (expr.length() < 2) {
+                return "";
+            }
+            // Handle escape sequences in strings
+            StringBuilder sb = new StringBuilder();
+            int pos = 1;
+            while (pos < expr.length() - 1) {
+                char current = expr.charAt(pos);
+                if (current == '\\') {
+                    // Handle escape sequences
+                    if (pos + 1 < expr.length() - 1) {
+                        char next = expr.charAt(pos + 1);
+                        switch (next) {
+                            case 'n':
+                                sb.append('\n');
+                                break;
+                            case 't':
+                                sb.append('\t');
+                                break;
+                            case 'r':
+                                sb.append('\r');
+                                break;
+                            case '"':
+                                sb.append('"');
+                                break;
+                            case '\\':
+                                sb.append('\\');
+                                break;
+                            default:
+                                sb.append(next);
+                        }
+                        pos += 2;
+                    } else {
+                        throw new RuntimeException("Unclosed escape sequence");
+                    }
+                } else {
+                    // Regular character
+                    sb.append(current);
+                    pos++;
+                }
+            }
+            return sb.toString();
         }
         if (expr.equals("true"))
             return true;
@@ -627,8 +668,15 @@ public class ProcessRunner implements Runnable {
             throw new RuntimeException("Cannot get length");
         }
 
+        // Check if this is a function call (identifier followed by parenthesis)
+        // Don't treat expressions like "10 / (2 + 3)" as function calls
         if (expr.contains("(") && !expr.startsWith("\"") && !expr.startsWith("'")) {
-            return handleFunctionCall(expr);
+            int parenIndex = expr.indexOf('(');
+            String potentialFuncName = expr.substring(0, parenIndex).trim();
+            // Check if potentialFuncName is a valid identifier (starts with letter or underscore)
+            if (!potentialFuncName.isEmpty() && (Character.isLetter(potentialFuncName.charAt(0)) || potentialFuncName.charAt(0) == '_')) {
+                return handleFunctionCall(expr);
+            }
         }
 
         if (data.containsKey(expr)) {
@@ -645,6 +693,12 @@ public class ProcessRunner implements Runnable {
     private Object handleFunctionCall(String expr) {
         int parenIndex = expr.indexOf('(');
         String funcName = expr.substring(0, parenIndex).trim();
+        
+        // If funcName is empty, this is likely a parenthesized expression, not a function call
+        if (funcName.isEmpty()) {
+            return evaluateOperator(expr);
+        }
+        
         String argsStr = expr.substring(parenIndex + 1, expr.length() - 1).trim();
 
         List<Object> args = new ArrayList<>();
@@ -658,14 +712,22 @@ public class ProcessRunner implements Runnable {
                 if (c == ')')
                     depth--;
                 if (c == ',' && depth == 0) {
-                    args.add(evaluate(current.toString().trim()));
+                    String argStr = current.toString().trim();
+                    if (!argStr.isEmpty()) {
+                        args.add(evaluate(argStr));
+                    } else {
+                        args.add("");
+                    }
                     current = new StringBuilder();
                 } else {
                     current.append(c);
                 }
             }
-            if (current.length() > 0) {
-                args.add(evaluate(current.toString().trim()));
+            String argStr = current.toString().trim();
+            if (!argStr.isEmpty()) {
+                args.add(evaluate(argStr));
+            } else {
+                args.add("");
             }
         }
 
@@ -830,113 +892,410 @@ public class ProcessRunner implements Runnable {
         return result;
     }
 
+    // Token types for expression parsing
+    private enum TokenType {
+        NUMBER, STRING, BOOLEAN, IDENTIFIER, OPERATOR, LEFT_PAREN, RIGHT_PAREN, END
+    }
+
+    // Token class
+    private static class Token {
+        TokenType type;
+        String value;
+        
+        Token(TokenType type, String value) {
+            this.type = type;
+            this.value = value;
+        }
+    }
+
+    // AST node types
+    private static class ASTNode {
+        String type;
+        Object value;
+        ASTNode left;
+        ASTNode right;
+        
+        ASTNode(String type, Object value) {
+            this.type = type;
+            this.value = value;
+        }
+        
+        ASTNode(String type, Object value, ASTNode left, ASTNode right) {
+            this.type = type;
+            this.value = value;
+            this.left = left;
+            this.right = right;
+        }
+    }
+
+    // Operator precedence (higher number = higher precedence)
+    private static final Map<String, Integer> PRECEDENCE = new HashMap<>();
+    static {
+        // Logical operators (lowest precedence)
+        PRECEDENCE.put("or", 1);
+        PRECEDENCE.put("and", 2);
+        PRECEDENCE.put("not", 3);
+        
+        // Comparison operators
+        PRECEDENCE.put("==", 4);
+        PRECEDENCE.put("!=", 4);
+        PRECEDENCE.put("<", 5);
+        PRECEDENCE.put(">", 5);
+        PRECEDENCE.put("<=", 5);
+        PRECEDENCE.put(">=", 5);
+        
+        // Arithmetic operators
+        PRECEDENCE.put("".concat("+"), 6);
+        PRECEDENCE.put("-", 6);
+        PRECEDENCE.put("*".concat(""), 7);
+        PRECEDENCE.put("/", 7);
+        PRECEDENCE.put("%", 7);
+    }
+
+    // Tokenize an expression
+    private List<Token> tokenize(String expr) {
+        List<Token> tokens = new ArrayList<>();
+        int pos = 0;
+        
+        while (pos < expr.length()) {
+            char c = expr.charAt(pos);
+            
+            if (Character.isWhitespace(c)) {
+                pos++;
+            } else if (Character.isDigit(c) || (c == '.' && pos + 1 < expr.length() && Character.isDigit(expr.charAt(pos + 1)))) {
+                // Number
+                int start = pos;
+                while (pos < expr.length() && (Character.isDigit(expr.charAt(pos)) || expr.charAt(pos) == '.')) {
+                    pos++;
+                }
+                tokens.add(new Token(TokenType.NUMBER, expr.substring(start, pos)));
+            } else if (c == '"') {
+                // String
+                int start = pos + 1;
+                StringBuilder sb = new StringBuilder();
+                pos = start;
+                while (pos < expr.length()) {
+                    char current = expr.charAt(pos);
+                    if (current == '\\') {
+                        // Handle escape sequences
+                        if (pos + 1 < expr.length()) {
+                            char next = expr.charAt(pos + 1);
+                            switch (next) {
+                                case 'n':
+                                    sb.append('\n');
+                                    break;
+                                case 't':
+                                    sb.append('\t');
+                                    break;
+                                case 'r':
+                                    sb.append('\r');
+                                    break;
+                                case '"':
+                                    sb.append('"');
+                                    break;
+                                case '\\':
+                                    sb.append('\\');
+                                    break;
+                                default:
+                                    sb.append(next);
+                            }
+                            pos += 2;
+                        } else {
+                            throw new RuntimeException("Unclosed escape sequence");
+                        }
+                    } else if (current == '"') {
+                        // End of string
+                        break;
+                    } else {
+                        // Regular character
+                        sb.append(current);
+                        pos++;
+                    }
+                }
+                if (pos >= expr.length()) {
+                    throw new RuntimeException("Unclosed string");
+                }
+                tokens.add(new Token(TokenType.STRING, sb.toString()));
+                pos++;
+            } else if (c == '(') {
+                tokens.add(new Token(TokenType.LEFT_PAREN, "("));
+                pos++;
+            } else if (c == ')') {
+                tokens.add(new Token(TokenType.RIGHT_PAREN, ")"));
+                pos++;
+            } else if (c == '+' || c == '-' || c == '*' || c == '/' || c == '%') {
+                // Arithmetic operator
+                tokens.add(new Token(TokenType.OPERATOR, String.valueOf(c)));
+                pos++;
+            } else if (c == '=') {
+                // == operator
+                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
+                    tokens.add(new Token(TokenType.OPERATOR, "=="));
+                    pos += 2;
+                } else {
+                    throw new RuntimeException("Invalid operator: " + c);
+                }
+            } else if (c == '!') {
+                // != operator
+                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
+                    tokens.add(new Token(TokenType.OPERATOR, "!="));
+                    pos += 2;
+                } else {
+                    throw new RuntimeException("Invalid operator: " + c);
+                }
+            } else if (c == '<') {
+                // < or <= operator
+                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
+                    tokens.add(new Token(TokenType.OPERATOR, "<="));
+                    pos += 2;
+                } else {
+                    tokens.add(new Token(TokenType.OPERATOR, "<"));
+                    pos++;
+                }
+            } else if (c == '>') {
+                // > or >= operator
+                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
+                    tokens.add(new Token(TokenType.OPERATOR, ">="));
+                    pos += 2;
+                } else {
+                    tokens.add(new Token(TokenType.OPERATOR, ">") );
+                    pos++;
+                }
+            } else if (Character.isLetter(c) || c == '_') {
+                // Identifier or boolean
+                int start = pos;
+                while (pos < expr.length() && (Character.isLetterOrDigit(expr.charAt(pos)) || expr.charAt(pos) == '_')) {
+                    pos++;
+                }
+                String value = expr.substring(start, pos);
+                if (value.equals("true") || value.equals("false")) {
+                    tokens.add(new Token(TokenType.BOOLEAN, value));
+                } else if (value.equals("and") || value.equals("or") || value.equals("not")) {
+                    tokens.add(new Token(TokenType.OPERATOR, value));
+                } else {
+                    tokens.add(new Token(TokenType.IDENTIFIER, value));
+                }
+            } else {
+                throw new RuntimeException("Unexpected character: " + c);
+            }
+        }
+        
+        tokens.add(new Token(TokenType.END, ""));
+        return tokens;
+    }
+
+    // Parser class for building AST
+    private class Parser {
+        private List<Token> tokens;
+        private int pos;
+        
+        Parser(List<Token> tokens) {
+            this.tokens = tokens;
+            this.pos = 0;
+        }
+        
+        private Token peek() {
+            return tokens.get(pos);
+        }
+        
+        private Token consume() {
+            return tokens.get(pos++);
+        }
+        
+        private boolean match(TokenType type) {
+            if (peek().type == type) {
+                consume();
+                return true;
+            }
+            return false;
+        }
+        
+        // Parse expressions with operator precedence
+        public ASTNode parse() {
+            return parseExpression(0);
+        }
+        
+        // Recursive descent parser with precedence
+        private ASTNode parseExpression(int precedence) {
+            ASTNode left = parsePrimary();
+            
+            while (true) {
+                Token token = peek();
+                if (token.type != TokenType.OPERATOR) break;
+                
+                int opPrecedence = PRECEDENCE.getOrDefault(token.value, 0);
+                if (opPrecedence <= precedence) break;
+                
+                consume(); // Consume the operator
+                String op = token.value;
+                
+                // For unary operators like "not"
+                if (op.equals("not")) {
+                    ASTNode right = parseExpression(opPrecedence);
+                    left = new ASTNode("unary", op, null, right);
+                } else {
+                    // For binary operators
+                    ASTNode right = parseExpression(opPrecedence);
+                    left = new ASTNode("binary", op, left, right);
+                }
+            }
+            
+            return left;
+        }
+        
+        private ASTNode parsePrimary() {
+            Token token = peek();
+            
+            if (match(TokenType.NUMBER)) {
+                if (token.value.contains(".")) {
+                    return new ASTNode("number", Double.parseDouble(token.value));
+                } else {
+                    return new ASTNode("number", Integer.parseInt(token.value));
+                }
+            }
+            
+            if (match(TokenType.STRING)) {
+                return new ASTNode("string", token.value);
+            }
+            
+            if (match(TokenType.BOOLEAN)) {
+                return new ASTNode("boolean", Boolean.parseBoolean(token.value));
+            }
+            
+            if (match(TokenType.IDENTIFIER)) {
+                return new ASTNode("identifier", token.value);
+            }
+            
+            if (match(TokenType.LEFT_PAREN)) {
+                ASTNode expr = parseExpression(0);
+                if (!match(TokenType.RIGHT_PAREN)) {
+                    throw new RuntimeException("Expected closing parenthesis");
+                }
+                return expr;
+            }
+            
+            throw new RuntimeException("Expected expression");
+        }
+    }
+
+    // Evaluate an AST node
+    private Object evaluateAST(ASTNode node) {
+        switch (node.type) {
+            case "number":
+            case "string":
+            case "boolean":
+                return node.value;
+            
+            case "identifier":
+                String varName = (String) node.value;
+                if (data.containsKey(varName)) {
+                    return data.get(varName);
+                } else {
+                    throw new RuntimeException("Variable not defined: " + varName);
+                }
+            
+            case "unary":
+                String unaryOp = (String) node.value;
+                Object right = evaluateAST(node.right);
+                if (unaryOp.equals("not")) {
+                    return !isTrue(right);
+                } else if (unaryOp.equals("-")) {
+                    if (right instanceof Number) {
+                        return -((Number) right).doubleValue();
+                    } else {
+                        throw new RuntimeException("Unary minus only applies to numbers");
+                    }
+                }
+                break;
+            
+            case "binary":
+                String op = (String) node.value;
+                Object leftVal = evaluateAST(node.left);
+                Object rightVal = evaluateAST(node.right);
+                
+                switch (op) {
+                    // Logical operators
+                    case "and":
+                        return isTrue(leftVal) && isTrue(rightVal);
+                    case "or":
+                        return isTrue(leftVal) || isTrue(rightVal);
+                    
+                    // Comparison operators
+                    case "==":
+                        return Objects.equals(leftVal, rightVal);
+                    case "!=":
+                        return !Objects.equals(leftVal, rightVal);
+                    case "<":
+                        ensureNumbers(leftVal, rightVal);
+                        return ((Number) leftVal).doubleValue() < ((Number) rightVal).doubleValue();
+                    case ">":
+                        ensureNumbers(leftVal, rightVal);
+                        return ((Number) leftVal).doubleValue() > ((Number) rightVal).doubleValue();
+                    case "<=":
+                        ensureNumbers(leftVal, rightVal);
+                        return ((Number) leftVal).doubleValue() <= ((Number) rightVal).doubleValue();
+                    case ">=":
+                        ensureNumbers(leftVal, rightVal);
+                        return ((Number) leftVal).doubleValue() >= ((Number) rightVal).doubleValue();
+                    
+                    // Arithmetic operators
+                    case "+":
+                        if (leftVal instanceof Number && rightVal instanceof Number) {
+                            return ((Number) leftVal).doubleValue() + ((Number) rightVal).doubleValue();
+                        } else {
+                            return leftVal.toString() + rightVal.toString();
+                        }
+                    case "-":
+                        ensureNumbers(leftVal, rightVal);
+                        return ((Number) leftVal).doubleValue() - ((Number) rightVal).doubleValue();
+                    case "*":
+                        ensureNumbers(leftVal, rightVal);
+                        return ((Number) leftVal).doubleValue() * ((Number) rightVal).doubleValue();
+                    case "/":
+                        ensureNumbers(leftVal, rightVal);
+                        if (((Number) rightVal).doubleValue() == 0) {
+                            throw new RuntimeException("Division by zero");
+                        }
+                        return ((Number) leftVal).doubleValue() / ((Number) rightVal).doubleValue();
+                    case "%":
+                        ensureNumbers(leftVal, rightVal);
+                        if (((Number) rightVal).intValue() == 0) {
+                            throw new RuntimeException("Modulo by zero");
+                        }
+                        return ((Number) leftVal).intValue() % ((Number) rightVal).intValue();
+                }
+                break;
+        }
+        
+        throw new RuntimeException("Cannot evaluate AST node: " + node.type);
+    }
+
+    // Ensure both values are numbers
+    private void ensureNumbers(Object left, Object right) {
+        if (!(left instanceof Number) || !(right instanceof Number)) {
+            throw new RuntimeException("Operands must be numbers");
+        }
+    }
+
+    // New evaluateOperator method using AST
     private Object evaluateOperator(String expr) {
-        if (expr.contains(" and ")) {
-            String[] parts = expr.split(" and ", 2);
-            boolean left = isTrue(evaluate(parts[0].trim()));
-            boolean right = isTrue(evaluate(parts[1].trim()));
-            return left && right;
-        }
-
-        if (expr.contains(" or ")) {
-            String[] parts = expr.split(" or ", 2);
-            boolean left = isTrue(evaluate(parts[0].trim()));
-            boolean right = isTrue(evaluate(parts[1].trim()));
-            return left || right;
-        }
-
-        if (expr.startsWith("not ")) {
-            return !isTrue(evaluate(expr.substring(4).trim()));
-        }
-
-        if (expr.contains("==")) {
-            String[] parts = expr.split("==", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return Objects.equals(left, right);
-        }
-
-        if (expr.contains("!=")) {
-            String[] parts = expr.split("!=", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return !Objects.equals(left, right);
-        }
-
-        if (expr.contains("<=")) {
-            String[] parts = expr.split("<=", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return ((Number) left).doubleValue() <= ((Number) right).doubleValue();
-        }
-
-        if (expr.contains(">=")) {
-            String[] parts = expr.split(">=", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return ((Number) left).doubleValue() >= ((Number) right).doubleValue();
-        }
-
-        if (expr.contains("<")) {
-            String[] parts = expr.split("<", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return ((Number) left).doubleValue() < ((Number) right).doubleValue();
-        }
-
-        if (expr.contains(">")) {
-            String[] parts = expr.split(">", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return ((Number) left).doubleValue() > ((Number) right).doubleValue();
-        }
-
-        if (expr.contains("+")) {
-            String[] parts = expr.split("\\+", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-
-            if (left instanceof Number && right instanceof Number) {
-                return ((Number) left).doubleValue() + ((Number) right).doubleValue();
+        try {
+            String trimmedExpr = expr.trim();
+            if (trimmedExpr.isEmpty()) {
+                return "";
             }
-            return left.toString() + right.toString();
-        }
-
-        if (expr.contains("-") && !expr.startsWith("-")) {
-            String[] parts = expr.split("-", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return ((Number) left).doubleValue() - ((Number) right).doubleValue();
-        }
-
-        if (expr.contains("*")) {
-            String[] parts = expr.split("\\*", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            return ((Number) left).doubleValue() * ((Number) right).doubleValue();
-        }
-
-        if (expr.contains("/")) {
-            String[] parts = expr.split("/", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            if (((Number) right).doubleValue() == 0) {
-                throw new RuntimeException("Division by zero");
+            // Handle cases with only parentheses
+            if (trimmedExpr.equals("()")) {
+                return "";
             }
-            return ((Number) left).doubleValue() / ((Number) right).doubleValue();
+            List<Token> tokens = tokenize(trimmedExpr);
+            Parser parser = new Parser(tokens);
+            ASTNode ast = parser.parse();
+            return evaluateAST(ast);
+        } catch (Exception e) {
+            // If parsing fails, return the original expression as a string
+            return expr;
         }
-
-        if (expr.contains("%")) {
-            String[] parts = expr.split("%", 2);
-            Object left = evaluate(parts[0].trim());
-            Object right = evaluate(parts[1].trim());
-            if (((Number) right).intValue() == 0) {
-                throw new RuntimeException("Modulo by zero");
-            }
-            return ((Number) left).intValue() % ((Number) right).intValue();
-        }
-
-        throw new RuntimeException("Cannot parse expression: " + expr);
     }
 
     private boolean isTrue(Object obj) {

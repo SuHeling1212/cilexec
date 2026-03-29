@@ -74,10 +74,18 @@ public class ProcessInit {
             return false;
         }
         try {
-            Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
-            Object statusObj = process.get("Status");
-            if (statusObj instanceof Boolean) {
-                return (Boolean) statusObj;
+            Object result = JsonUtil.readJson(readResult[1]);
+            // Check if result is a Map (success case) or String[] (error case)
+            if (result instanceof Map) {
+                Map<String, Object> process = (Map<String, Object>) result;
+                Object statusObj = process.get("Status");
+                if (statusObj instanceof Boolean) {
+                    return (Boolean) statusObj;
+                }
+            } else if (result instanceof String[]) {
+                // JSON parsing failed, log the error
+                String[] error = (String[]) result;
+                Logger.error("JSON parsing error: " + error[1]);
             }
         } catch (Exception e) {
             Logger.error("Failed to check process status: " + e.getMessage());

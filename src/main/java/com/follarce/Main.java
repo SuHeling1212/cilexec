@@ -1,8 +1,6 @@
 package com.follarce;
 
 import com.follarce.init.*;
-import com.follarce.network.NetworkFunctionProvider;
-import com.follarce.network.SocketFunctionProvider;
 import com.follarce.network.SocketUtil;
 import com.follarce.plugin.*;
 import com.follarce.basicUtil.*;
