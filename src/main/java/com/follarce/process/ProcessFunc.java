@@ -40,11 +40,24 @@ public class ProcessFunc {
                 return -1;
             }
 
-            Map<String, Object> parentProcess = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+            Object parentProcessObj = JsonUtil.readJson(readResult[1]);
+            if (parentProcessObj == null || !(parentProcessObj instanceof Map)) {
+                Logger.warn("Fork failed: invalid parent process JSON for PID " + parentPid);
+                return -1;
+            }
+            Map<String, Object> parentProcess = (Map<String, Object>) parentProcessObj;
 
             // Get parent's current code line
             Map<String, Object> parentProgram = (Map<String, Object>) parentProcess.get("Program");
+            if (parentProgram == null) {
+                Logger.warn("Fork failed: parent process has no Program section");
+                return -1;
+            }
             Map<String, Object> parentCode = (Map<String, Object>) parentProgram.get("Code");
+            if (parentCode == null) {
+                Logger.warn("Fork failed: parent process has no Code section");
+                return -1;
+            }
             int parentRunningLine = 0;
             Object runningLineObj = parentCode.get("runningCodeLine");
             if (runningLineObj instanceof Number) {
@@ -79,8 +92,24 @@ public class ProcessFunc {
             // Child continues from the line AFTER fork() call
             code.put("runningCodeLine", parentRunningLine + 1);
             
-            // Clear the return value register for the child process
+            // Clear return value register for child process
             program.put("returnValue", null);
+
+            // Inherit environment variables from parent
+            Map<String, String> parentEnvVars = com.follarce.basicUtil.EnvVarUtil.getEnvVarsForProcess(parentPid);
+            Map<String, Object> childData = (Map<String, Object>) program.get("Data");
+            if (childData == null) {
+                childData = new HashMap<>();
+                program.put("Data", childData);
+            }
+            Map<String, Object> childEnvVars = (Map<String, Object>) childData.get("__ENV_");
+            if (childEnvVars == null) {
+                childEnvVars = new HashMap<>();
+                childData.put("__ENV_", childEnvVars);
+            }
+            for (Map.Entry<String, String> entry : parentEnvVars.entrySet()) {
+                childEnvVars.put(entry.getKey(), entry.getValue());
+            }
 
             // 5. Write child process file
             FileUtil.createFile("/system/process/", childPid + ".json");
@@ -175,7 +204,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(procResult[1]);
+        Object processObj = JsonUtil.readJson(procResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
 
         // 4. Update process info
         process.put("Path", path);
@@ -221,7 +254,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
         Map<String, Object> children = (Map<String, Object>) process.get("Child");
 
         if (children == null || children.isEmpty()) {
@@ -231,9 +268,14 @@ public class ProcessFunc {
         // Build result map: child name -> PID
         Map<String, Integer> result = new HashMap<>();
         for (Map.Entry<String, Object> entry : children.entrySet()) {
-            Map<String, Object> child = (Map<String, Object>) entry.getValue();
+            Object childValue = entry.getValue();
+            if (!(childValue instanceof Map)) continue;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> child = (Map<String, Object>) childValue;
             String name = (String) child.get("Name");
-            int pid = ((Number) child.get("PID")).intValue();
+            Object pidObj = child.get("PID");
+            if (!(pidObj instanceof Number)) continue;
+            int pid = ((Number) pidObj).intValue();
             result.put(name, pid);
         }
 
@@ -254,7 +296,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_DOES_NOT_EXIST" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
 
         // 1. FIRST: Adopt orphaned children to INIT (PID 1)
         Map<String, Object> children = (Map<String, Object>) process.get("Child");
@@ -262,29 +308,41 @@ public class ProcessFunc {
             // Read INIT process
             String[] initResult = FileUtil.read("/system/process/1.json");
             if (initResult[0].equals("SUCCESS")) {
-                Map<String, Object> initProcess = (Map<String, Object>) JsonUtil.readJson(initResult[1]);
-                Map<String, Object> initChildren = (Map<String, Object>) initProcess.get("Child");
+                Object initProcessObj = JsonUtil.readJson(initResult[1]);
+                if (initProcessObj == null || !(initProcessObj instanceof Map)) {
+                    Logger.warn("Failed to parse INIT process JSON");
+                } else {
+                    Map<String, Object> initProcess = (Map<String, Object>) initProcessObj;
+                    Map<String, Object> initChildren = (Map<String, Object>) initProcess.get("Child");
                 if (initChildren == null) {
                     initChildren = new HashMap<>();
                     initProcess.put("Child", initChildren);
                 }
 
                 for (Map.Entry<String, Object> entry : children.entrySet()) {
-                    Map<String, Object> child = (Map<String, Object>) entry.getValue();
-                    int childPid = ((Number) child.get("PID")).intValue();
+                    Object childValue = entry.getValue();
+                    if (!(childValue instanceof Map)) continue;
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> child = (Map<String, Object>) childValue;
+                    Object pidObj = child.get("PID");
+                    if (!(pidObj instanceof Number)) continue;
+                    int childPid = ((Number) pidObj).intValue();
 
                     // Update child's parent to INIT
                     String[] childResult = FileUtil.read("/system/process/" + childPid + ".json");
                     if (childResult[0].equals("SUCCESS")) {
-                        Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+                        Object childProcessObj = JsonUtil.readJson(childResult[1]);
+                        if (childProcessObj != null && childProcessObj instanceof Map) {
+                            Map<String, Object> childProcess = (Map<String, Object>) childProcessObj;
 
-                        Map<String, Object> parentInfo = new HashMap<>();
+                            Map<String, Object> parentInfo = new HashMap<>();
                         parentInfo.put("Name", "INIT");
                         parentInfo.put("PID", 1);
                         parentInfo.put("Path", "");
-                        childProcess.put("Parent", parentInfo);
+                            childProcess.put("Parent", parentInfo);
 
-                        FileUtil.write("/system/process/" + childPid + ".json", JsonUtil.toJson(childProcess));
+                            FileUtil.write("/system/process/" + childPid + ".json", JsonUtil.toJson(childProcess));
+                        }
                     }
 
                     // Add to INIT's child list
@@ -292,21 +350,28 @@ public class ProcessFunc {
                 }
 
                 FileUtil.write("/system/process/1.json", JsonUtil.toJson(initProcess));
+                }
             }
         }
 
         // 2. SECOND: Remove from parent's child list
         Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
         if (parent != null && parent.containsKey("PID")) {
-            int parentPid = ((Number) parent.get("PID")).intValue();
-            String[] parentResult = FileUtil.read("/system/process/" + parentPid + ".json");
-            if (parentResult[0].equals("SUCCESS")) {
-                Map<String, Object> parentProcess = (Map<String, Object>) JsonUtil.readJson(parentResult[1]);
-                Map<String, Object> parentChildren = (Map<String, Object>) parentProcess.get("Child");
-                if (parentChildren != null) {
-                    parentChildren.remove(String.valueOf(pid));
+            Object parentPidObj = parent.get("PID");
+            if (parentPidObj instanceof Number) {
+                int parentPid = ((Number) parentPidObj).intValue();
+                String[] parentResult = FileUtil.read("/system/process/" + parentPid + ".json");
+                if (parentResult[0].equals("SUCCESS")) {
+                    Object parentProcessObj = JsonUtil.readJson(parentResult[1]);
+                    if (parentProcessObj != null && parentProcessObj instanceof Map) {
+                        Map<String, Object> parentProcess = (Map<String, Object>) parentProcessObj;
+                        Map<String, Object> parentChildren = (Map<String, Object>) parentProcess.get("Child");
+                        if (parentChildren != null) {
+                            parentChildren.remove(String.valueOf(pid));
+                        }
+                        FileUtil.write("/system/process/" + parentPid + ".json", JsonUtil.toJson(parentProcess));
+                    }
                 }
-                FileUtil.write("/system/process/" + parentPid + ".json", JsonUtil.toJson(parentProcess));
             }
         }
 
@@ -333,7 +398,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
         Map<String, Object> children = (Map<String, Object>) process.get("Child");
 
         // Check if there are any children
@@ -350,7 +419,13 @@ public class ProcessFunc {
                 // Check child status
                 String[] childResult = FileUtil.read("/system/process/" + childPid + ".json");
                 if (childResult[0].equals("SUCCESS")) {
-                    Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+                    Object childProcessObj = JsonUtil.readJson(childResult[1]);
+                    if (childProcessObj == null || !(childProcessObj instanceof Map)) {
+                        children.remove(String.valueOf(childPid));
+                        FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(process));
+                        return new String[] { "SUCCESS", null };
+                    }
+                    Map<String, Object> childProcess = (Map<String, Object>) childProcessObj;
                     Boolean status = (Boolean) childProcess.get("Status");
 
                     if (status == null || !status) {
@@ -382,7 +457,11 @@ public class ProcessFunc {
             if (!readResult[0].equals("SUCCESS")) {
                 return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
             }
-            process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+            processObj = JsonUtil.readJson(readResult[1]);
+            if (processObj == null || !(processObj instanceof Map)) {
+                return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+            }
+            process = (Map<String, Object>) processObj;
             children = (Map<String, Object>) process.get("Child");
 
             if (children == null || children.isEmpty()) {
@@ -405,7 +484,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> currentProcess = (Map<String, Object>) JsonUtil.readJson(currentResult[1]);
+        Object currentProcessObj = JsonUtil.readJson(currentResult[1]);
+        if (currentProcessObj == null || !(currentProcessObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> currentProcess = (Map<String, Object>) currentProcessObj;
         Boolean isLocal = (Boolean) currentProcess.get("Local");
         if (isLocal == null || !isLocal) {
             return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
@@ -425,9 +508,14 @@ public class ProcessFunc {
                     int pid = Integer.parseInt(name.replace(".json", ""));
                     String[] procResult = FileUtil.read("/system/process/" + pid + ".json");
                     if (procResult[0].equals("SUCCESS")) {
-                        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(procResult[1]);
-                        String procName = (String) process.get("Name");
-                        result.put(procName, pid);
+                        Object procObj = JsonUtil.readJson(procResult[1]);
+                        if (procObj != null && procObj instanceof Map) {
+                            Map<String, Object> process = (Map<String, Object>) procObj;
+                            String procName = (String) process.get("Name");
+                            if (procName != null) {
+                                result.put(procName, pid);
+                            }
+                        }
                     }
                 } catch (NumberFormatException e) {
                     // Ignore
@@ -459,7 +547,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> currentProcess = (Map<String, Object>) JsonUtil.readJson(currentResult[1]);
+        Object currentProcessObj = JsonUtil.readJson(currentResult[1]);
+        if (currentProcessObj == null || !(currentProcessObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> currentProcess = (Map<String, Object>) currentProcessObj;
         Map<String, Object> children = (Map<String, Object>) currentProcess.get("Child");
 
         // Check if pid is a child process
@@ -477,7 +569,13 @@ public class ProcessFunc {
                 return new String[] { "SUCCESS", null };
             }
 
-            Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+            Object childProcessObj = JsonUtil.readJson(childResult[1]);
+            if (childProcessObj == null || !(childProcessObj instanceof Map)) {
+                children.remove(String.valueOf(pid));
+                FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(currentProcess));
+                return new String[] { "SUCCESS", null };
+            }
+            Map<String, Object> childProcess = (Map<String, Object>) childProcessObj;
             Boolean status = (Boolean) childProcess.get("Status");
 
             if (status == null || !status) {
@@ -514,7 +612,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_DOES_NOT_EXIST" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
 
         // Check if already paused (Status is Boolean false when paused)
         Object statusObj = process.get("Status");
@@ -542,14 +644,22 @@ public class ProcessFunc {
             return 0;
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return 0;
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
         Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
 
         if (parent == null || !parent.containsKey("PID")) {
             return 0;
         }
 
-        return ((Number) parent.get("PID")).intValue();
+        Object parentPidObj = parent.get("PID");
+        if (!(parentPidObj instanceof Number)) {
+            return 0;
+        }
+        return ((Number) parentPidObj).intValue();
     }
 
     /**
@@ -570,7 +680,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_DOES_NOT_EXIST" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
 
         // Check if already running
         Object statusObj = process.get("Status");
@@ -675,14 +789,22 @@ public class ProcessFunc {
             return 0;
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return 0;
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
         Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
 
         if (parent == null || !parent.containsKey("PID")) {
             return 0;
         }
 
-        return ((Number) parent.get("PID")).intValue();
+        Object parentPidObj = parent.get("PID");
+        if (!(parentPidObj instanceof Number)) {
+            return 0;
+        }
+        return ((Number) parentPidObj).intValue();
     }
     
     private static String[] waitProcessInternal(int pid) {
@@ -692,7 +814,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
         Map<String, Object> children = (Map<String, Object>) process.get("Child");
 
         // Check if there are any children
@@ -704,12 +830,20 @@ public class ProcessFunc {
         while (true) {
             for (Object childInfo : children.values()) {
                 Map<String, Object> child = (Map<String, Object>) childInfo;
-                int childPid = ((Number) child.get("PID")).intValue();
+                Object childPidObj = child.get("PID");
+                if (!(childPidObj instanceof Number)) continue;
+                int childPid = ((Number) childPidObj).intValue();
 
                 // Check child status
                 String[] childResult = FileUtil.read("/system/process/" + childPid + ".json");
                 if (childResult[0].equals("SUCCESS")) {
-                    Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+                    Object childProcessObj = JsonUtil.readJson(childResult[1]);
+                    if (childProcessObj == null || !(childProcessObj instanceof Map)) {
+                        children.remove(String.valueOf(childPid));
+                        FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
+                        return new String[] { "SUCCESS", null };
+                    }
+                    Map<String, Object> childProcess = (Map<String, Object>) childProcessObj;
                     Boolean status = (Boolean) childProcess.get("Status");
 
                     if (status == null || !status) {
@@ -741,7 +875,11 @@ public class ProcessFunc {
             if (!readResult[0].equals("SUCCESS")) {
                 return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
             }
-            process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+            processObj = JsonUtil.readJson(readResult[1]);
+            if (processObj == null || !(processObj instanceof Map)) {
+                return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+            }
+            process = (Map<String, Object>) processObj;
             children = (Map<String, Object>) process.get("Child");
 
             if (children == null || children.isEmpty()) {
@@ -763,7 +901,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> currentProcess = (Map<String, Object>) JsonUtil.readJson(currentResult[1]);
+        Object currentProcessObj = JsonUtil.readJson(currentResult[1]);
+        if (currentProcessObj == null || !(currentProcessObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> currentProcess = (Map<String, Object>) currentProcessObj;
         Map<String, Object> children = (Map<String, Object>) currentProcess.get("Child");
 
         // Check if pid is a child process
@@ -781,7 +923,13 @@ public class ProcessFunc {
                 return new String[] { "SUCCESS", null };
             }
 
-            Map<String, Object> childProcess = (Map<String, Object>) JsonUtil.readJson(childResult[1]);
+            Object childProcessObj = JsonUtil.readJson(childResult[1]);
+            if (childProcessObj == null || !(childProcessObj instanceof Map)) {
+                children.remove(String.valueOf(targetPid));
+                FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(currentProcess));
+                return new String[] { "SUCCESS", null };
+            }
+            Map<String, Object> childProcess = (Map<String, Object>) childProcessObj;
             Boolean status = (Boolean) childProcess.get("Status");
 
             if (status == null || !status) {
@@ -807,7 +955,11 @@ public class ProcessFunc {
             return new String[] { "ERROR", "PROCESS_NOT_FOUND" };
         }
 
-        Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
+        Object processObj = JsonUtil.readJson(readResult[1]);
+        if (processObj == null || !(processObj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
+        }
+        Map<String, Object> process = (Map<String, Object>) processObj;
         Map<String, Object> children = (Map<String, Object>) process.get("Child");
 
         if (children == null || children.isEmpty()) {
@@ -817,10 +969,16 @@ public class ProcessFunc {
         // Build result map: child name -> PID
         Map<String, Integer> result = new HashMap<>();
         for (Map.Entry<String, Object> entry : children.entrySet()) {
-            Map<String, Object> child = (Map<String, Object>) entry.getValue();
+            Object childValue = entry.getValue();
+            if (!(childValue instanceof Map)) continue;
+            Map<String, Object> child = (Map<String, Object>) childValue;
             String name = (String) child.get("Name");
-            int childPid = ((Number) child.get("PID")).intValue();
-            result.put(name, childPid);
+            Object childPidObj = child.get("PID");
+            if (!(childPidObj instanceof Number)) continue;
+            int childPid = ((Number) childPidObj).intValue();
+            if (name != null) {
+                result.put(name, childPid);
+            }
         }
 
         return result;

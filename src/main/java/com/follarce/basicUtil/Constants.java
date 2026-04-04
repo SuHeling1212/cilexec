@@ -47,4 +47,21 @@ public class Constants {
 
     // Time format
     public static final int TIME_ARRAY_SIZE = 7; // Year, Month, Day, Hour, Minute, Second, Millisecond
+
+    // Process configuration
+    public static final int PROCESS_TICK_MS = 10; // Process execution interval in milliseconds
+    public static final int TIME_DIVISOR = 1000; // Divisor for converting milliseconds to seconds
+
+    // Socket configuration
+    public static final int DEFAULT_TIMEOUT = 10000; // Default connection timeout in milliseconds (10 seconds)
+    public static final int BUFFER_SIZE = 8192; // Socket buffer size in bytes (8KB)
+    public static final int SERVER_SOCKET_TIMEOUT = 1000; // Server socket accept timeout in milliseconds
+    public static final int SOCKET_READ_TIMEOUT = 5000; // Socket read timeout in milliseconds (5 seconds)
+    public static final int RECEIVE_THREAD_SLEEP_MS = 100; // Receive thread sleep interval in milliseconds
+
+    // File size units
+    public static final int SIZE_UNIT_KB = 1024; // Kilobyte in bytes
+    public static final int SIZE_UNIT_MB = 1024 * 1024; // Megabyte in bytes
+    public static final int SIZE_UNIT_GB = 1024 * 1024 * 1024; // Gigabyte in bytes
+
 }

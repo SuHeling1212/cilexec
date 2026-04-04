@@ -11,24 +11,46 @@ All functions returning `String[]` follow a unified format:
 | Error Code | Description |
 |------------|-------------|
 | `INVALID_PATH` | Invalid path |
+| `INVALID_SOURCE_PATH` | Invalid source path |
+| `INVALID_NAME` | Invalid name |
+| `INVALID_NEW_NAME` | Invalid new name |
+| `PATH_TRAVERSAL_DETECTED` | Path traversal attack detected |
 | `FILE_DOES_NOT_EXIST` | File does not exist |
+| `SOURCE_FILE_DOES_NOT_EXIST` | Source file does not exist |
 | `DIRECTORY_DOES_NOT_EXIST` | Directory does not exist |
 | `FILE_EXIST` | File already exists |
 | `DIRECTORY_EXIST` | Directory already exists |
 | `INSUFFICIENT_PERMISSION` | Insufficient permission |
 | `FILE_IS_LOCKED` | File is locked |
+| `FILE_IS_NOT_LOCKED` | File is not locked |
 | `DIRECTORY_IS_LOCKED` | Directory is locked |
 | `IS_NOT_FILE` | Path is not a file |
 | `IS_NOT_DIRECTORY` | Path is not a directory |
 | `DIRECTORY_IS_NOT_EMPTY` | Directory is not empty |
+| `CREATE_LINK_FAILED` | Failed to create symbolic link |
+| `RENAME_FAILED` | Rename failed |
+| `CHECK_LOCK_FAILED` | Failed to check lock status |
+| `LOCK_FAILED` | Failed to lock |
+| `UNLOCK_FAILED` | Failed to unlock |
+| `META_DATA_FILE_DOES_NOT_EXIST` | Metadata file does not exist |
+| `INVALID_META_FORMAT` | Invalid metadata format |
+| `META_NOT_CLOSED` | Metadata is not closed |
+| `NO_META` | No metadata |
+| `APPEND_FAILED` | Append failed |
 
 ## Process Operation Error Codes
 
 | Error Code | Description |
 |------------|-------------|
+| `PROCESS_NOT_FOUND` | Process not found |
 | `PROCESS_DOES_NOT_EXIST` | Process does not exist |
+| `PROCESS_IS_PAUSED` | Process is paused |
+| `PROCESS_IS_RUNNING` | Process is running |
+| `CHILD_PROCESS_DOES_NOT_EXIST` | Child process does not exist |
+| `PID_DOES_NOT_CHILD_PROCESS` | PID is not a child process |
 | `CANNOT_KILL_INIT` | Cannot terminate INIT process |
 | `INSUFFICIENT_PERMISSION` | Insufficient permission |
+| `INTERRUPTED` | Operation interrupted |
 
 ## User Management Error Codes
 
@@ -52,12 +74,29 @@ All functions returning `String[]` follow a unified format:
 
 | Error Code | Description |
 |------------|-------------|
-| `POOL_EXISTS` | Swap pool already exists |
-| `POOL_DOES_NOT_EXIST` | Swap pool does not exist |
+| `SWAP_POOL_EXIST` | Swap pool already exists |
+| `SWAP_POOL_DOES_NOT_EXIST` | Swap pool does not exist |
+| `INVALID_SWAP_POOL` | Invalid swap pool |
 | `VARIABLE_EXISTS` | Variable already exists |
 | `VARIABLE_DOES_NOT_EXIST` | Variable does not exist |
 | `VARIABLE_IS_LOCKED` | Variable is locked |
+| `SOME_VAR_IS_LOCKED` | Some variables are locked |
+| `VARIABLE_EXPIRED` | Variable has expired |
+| `INVALID_PARAMETER` | Invalid parameter |
 | `INSUFFICIENT_PERMISSION` | Insufficient permission |
+
+## Environment Variable Error Codes
+
+| Error Code | Description |
+|------------|-------------|
+| `INVALID_ENV_NAME` | Invalid environment variable name |
+| `INVALID_ENV_VALUE` | Invalid environment variable value |
+| `ENV_VAR_NOT_FOUND` | Environment variable not found |
+| `SET_ENV_FAILED` | Failed to set environment variable |
+| `GET_ENV_FAILED` | Failed to get environment variable |
+| `LIST_ENV_FAILED` | Failed to list environment variables |
+| `DELETE_ENV_FAILED` | Failed to delete environment variable |
+| `PROCESS_NOT_FOUND` | Process not found |
 
 ## Network Download Error Codes
 
@@ -119,3 +158,99 @@ All functions returning `String[]` follow a unified format:
 | `WRITE_FAILED` | Write failed |
 | `READ_FAILED` | Read failed |
 | `RENAME_FAILED` | Rename failed |
+
+## Detailed Error Code Descriptions
+
+### Path Validation Error Codes
+
+#### `PATH_TRAVERSAL_DETECTED`
+
+**Description**: Path traversal attack detected, access denied by the system.
+
+**Causes**:
+- Path contains directory traversal characters like `..`, attempting to access files outside the Virtual File System (VFS) root directory
+- Normalized path exceeds the VFS root directory scope
+- Path contains special characters like `~`
+
+**Solutions**:
+1. Check if the path contains special characters like `..` or `~`
+2. Ensure the path is within the VFS root directory scope
+3. When using relative paths, verify the base path is correct
+4. Avoid constructing file paths directly from user input
+
+**Examples**:
+```
+Invalid: /user/../../../etc/passwd
+Valid:   /user/local/app/data.txt
+```
+
+#### `INVALID_PATH`
+
+**Description**: Path format is invalid or empty.
+
+**Causes**:
+- Path is an empty string or null
+- Path format does not conform to specifications
+- Path contains illegal characters (non-alphanumeric, underscore, hyphen, or dot)
+
+**Solutions**:
+1. Ensure the path is not empty
+2. Check if the path format is correct (should start with `/`)
+3. Ensure path components only contain allowed characters: letters, digits, `_`, `-`, `.`
+
+**Examples**:
+```
+Invalid: user/data (missing leading /)
+Invalid: /user/data@file (contains illegal character @)
+Valid:   /user/local/app/data.txt
+```
+
+#### `INVALID_NAME`
+
+**Description**: File name or directory name is invalid.
+
+**Causes**:
+- Name is empty or contains only whitespace
+- Name starts with `.` (hidden file)
+- Name contains illegal characters (non-alphanumeric, underscore, hyphen, or dot)
+- Name contains path separators `/` or `\`
+
+**Solutions**:
+1. Ensure the name is not empty
+2. Name cannot start with `.`
+3. Name can only contain letters, digits, `_`, `-`, `.`
+4. Do not include path separators in the name
+
+**Examples**:
+```
+Invalid: .hidden (starts with dot)
+Invalid: file@name (contains illegal character @)
+Invalid: dir/file (contains path separator)
+Valid:   data_file-2024.txt
+```
+
+#### `INVALID_SOURCE_PATH`
+
+**Description**: Source path is invalid.
+
+**Causes**:
+- Source path is empty or has incorrect format
+- Source path contains illegal characters
+
+**Solutions**:
+1. Check the source path format
+2. Ensure the source path conforms to path naming conventions
+3. Refer to the solutions for `INVALID_PATH`
+
+#### `INVALID_NEW_NAME`
+
+**Description**: New name is invalid.
+
+**Causes**:
+- New name does not conform to naming conventions
+- New name contains illegal characters
+- New name starts with `.`
+
+**Solutions**:
+1. Refer to the solutions for `INVALID_NAME`
+2. Ensure the new name conforms to naming conventions

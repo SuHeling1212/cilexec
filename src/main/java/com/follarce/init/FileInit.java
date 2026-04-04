@@ -143,16 +143,13 @@ public class FileInit {
             return;
         }
 
-        try {
-            // Read INIT.fcl from resources
-            InputStream is = FileInit.class.getResourceAsStream("/INIT.fcl");
+        try (InputStream is = FileInit.class.getResourceAsStream("/INIT.fcl")) {
             if (is == null) {
                 Logger.warn("INIT.fcl not found in resources");
                 return;
             }
 
             String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            is.close();
 
             // Write to VFS
             writeFile(initFclPath, content);

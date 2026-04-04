@@ -101,6 +101,50 @@ Object all = ProcessFunc.getListOfProcess();            // Map<String, Integer>
 Object result = ProcessFunc.call("fork", new Object[]{});
 ```
 
+### ShellUtil - Shell 系统
+
+```java
+// 切换工作目录
+String[] result = ShellUtil.cd(pid, "/path/to/dir");
+
+// 获取当前工作目录
+String[] result = ShellUtil.pwd(pid);
+
+// 清屏
+String[] result = ShellUtil.clear();
+
+// 获取命令历史
+String[] result = ShellUtil.history(pid);
+
+// 清除命令历史
+String[] result = ShellUtil.clearHistory(pid);
+
+// 函数分派（脚本引擎内部使用）
+Object result = ShellUtil.call("cd", new Object[]{"/path/to/dir"}, pid);
+```
+
+### EnvVarUtil - 环境变量
+
+```java
+// 设置环境变量
+String[] result = EnvVarUtil.setEnv("VAR_NAME", "value");
+
+// 获取环境变量
+String[] result = EnvVarUtil.getEnv("VAR_NAME");
+if ("SUCCESS".equals(result[0])) {
+    String value = result[1];
+}
+
+// 列出所有环境变量
+String[] result = EnvVarUtil.listEnv();
+if ("SUCCESS".equals(result[0])) {
+    Map<String, String> envVars = (Map<String, String>) JsonUtil.readJson(result[1]);
+}
+
+// 删除环境变量
+String[] result = EnvVarUtil.deleteEnv("VAR_NAME");
+```
+
 ### SwapUtil - 交换池
 
 ```java
@@ -506,6 +550,43 @@ SwapUtil.onProcessExit(pid);
 | `int(value)` | `value`: 字符串或数字 | `int` | 转换为整数 |
 | `str(value)` | `value`: 任意值 | `String` | 转换为字符串 |
 | `len(collection)` | `collection`: 数组/Map/字符串 | `int` | 获取长度 |
+
+### Shell 系统 API
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `cd(path)` | `path`: 目录路径 | `String[]` | 切换工作目录，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
+| `pwd()` | 无 | `String[]` | 获取当前工作目录，返回 `["SUCCESS", path]` |
+| `clear()` | 无 | `String[]` | 清屏，返回 `["SUCCESS"]` |
+| `history()` | 无 | `String[]` | 获取命令历史，返回 `["SUCCESS", historyArray]` |
+| `clearHistory()` | 无 | `String[]` | 清除命令历史，返回 `["SUCCESS"]` |
+
+### 环境变量 API
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `setEnv(name, value)` | `name`: 变量名, `value`: 变量值 | `String[]` | 设置环境变量，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
+| `getEnv(name)` | `name`: 变量名 | `String[]` | 获取环境变量，返回 `["SUCCESS", value]` 或 `["ERROR", code]` |
+| `listEnv()` | 无 | `String[]` | 列出所有环境变量，返回 `["SUCCESS", json]` |
+| `deleteEnv(name)` | `name`: 变量名 | `String[]` | 删除环境变量，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
+
+### 终端 IO API
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `print(...values)` | `...values`: 要输出的值（可变参数） | `String[]` | 输出到控制台（不换行），返回 `["SUCCESS"]` |
+| `println(...values)` | `...values`: 要输出的值（可变参数） | `String[]` | 输出到控制台（换行），返回 `["SUCCESS"]` |
+| `printf(format, ...args)` | `format`: 格式化字符串, `...args`: 格式化参数 | `String[]` | 格式化输出，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
+| `input(prompt)` | `prompt`: 提示符（可选） | `String` | 从控制台读取输入（提示符在同一行） |
+| `inputLine(prompt)` | `prompt`: 提示符（可选） | `String` | 从控制台读取输入（提示符在新行） |
+| `printErr(...values)` | `...values`: 要输出的值（可变参数） | `String[]` | 输出到错误流，返回 `["SUCCESS"]` |
+
+**printf 支持的格式说明符：**
+- `%s` - 字符串
+- `%d` - 整数
+- `%f` - 浮点数
+- `%n` - 换行符
+- `%%` - 百分号
 
 ### 脚本语言语法
 

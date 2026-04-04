@@ -4,62 +4,47 @@ import com.follarce.init.*;
 import com.follarce.network.SocketUtil;
 import com.follarce.plugin.*;
 import com.follarce.basicUtil.*;
-
+import com.follarce.process.ProcessRunner;
 
 public class Main {
 
+    private static IOFunctionProvider ioProvider;
+
     public static void main(String[] args) {
-        // Add shutdown hook to log when application ends (including Ctrl+C)
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             Logger.logShutdown();
             Logger.close();
         }));
 
-        // Log application startup
         Logger.logStartup();
-
-        // Initialize system components
         FileInit.init();
-        
-        // Register function providers for script engine
+
+        ioProvider = new IOFunctionProvider();
         registerFunctionProviders();
-        
+
         ProcessInit.init();
         SocketUtil.init();
+
+        ProcessRunner initProcess = new ProcessRunner(0);
+        initProcess.run();
+
+        Logger.logShutdown();
+        Logger.close();
     }
-    
-    /**
-     * Register all function providers to FunctionRegistry
-     * This is the core of the plugin system where all script-callable functions are registered
-     */
+
     private static void registerFunctionProviders() {
-        // File operations
         FunctionRegistry.register(new FileFunctionProvider());
-        
-        // Process management
         FunctionRegistry.register(new ProcessFunctionProvider());
-        
-        // User management
+
+        FunctionRegistry.register(new SwapFunctionProvider());
         FunctionRegistry.register(new UserFunctionProvider());
-        
-        // Utility functions (time, JSON, type conversion, etc.)
         FunctionRegistry.register(new UtilFunctionProvider());
-        
-        // Network functions (HTTP download, etc.)
         FunctionRegistry.register(new NetworkFunctionProvider());
-        
-        // Socket functions (TCP/UDP)
         FunctionRegistry.register(new SocketFunctionProvider());
-        
-        // Math functions (comprehensive mathematical operations)
         FunctionRegistry.register(new MathFunctionProvider());
-        
-        // IO functions (console input/output)
-        FunctionRegistry.register(new IOFunctionProvider());
-        
-        // Swap pool functions (if exists)
-        // FunctionRegistry.register(new SwapFunctionProvider());
-        
+        FunctionRegistry.register(ioProvider);
+        FunctionRegistry.register(new EnvVarFunctionProvider());
+
         Logger.info("Registered " + FunctionRegistry.getProviderCount() + " function providers");
     }
 }

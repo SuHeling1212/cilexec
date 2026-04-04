@@ -507,6 +507,17 @@ Comprehensive mathematical operations including arithmetic, trigonometric functi
 | `str(value)` | `value`: any value | `String` | Convert to string |
 | `len(collection)` | `collection`: array/map/string | `int` | Get length |
 
+### Environment Variable Functions API
+
+Manages process environment variables. These variables persist only for the current process and are automatically cleaned up when the process exits.
+
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `env.set(name, value)` | `name`: variable name, `value`: variable value | `String[]` | Set environment variable |
+| `env.get(name)` | `name`: variable name | `String[]` | Get environment variable, returns `["SUCCESS", value]` |
+| `env.list()` | None | `String[]` | List all environment variables, returns `["SUCCESS", json]` |
+| `env.delete(name)` | `name`: variable name | `String[]` | Delete environment variable |
+
 ### Script Language Syntax
 
 **Variable Declaration:**

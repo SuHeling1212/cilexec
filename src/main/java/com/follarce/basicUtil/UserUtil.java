@@ -6,6 +6,46 @@ public class UserUtil {
 
     private static ThreadLocal<String> currentUser = ThreadLocal.withInitial(() -> "local");
 
+    public static class PermissionResult {
+        private final boolean success;
+        private final String errorMessage;
+        private final String errorContext;
+
+        public PermissionResult(boolean success, String errorMessage, String errorContext) {
+            this.success = success;
+            this.errorMessage = errorMessage;
+            this.errorContext = errorContext;
+        }
+
+        public static PermissionResult success() {
+            return new PermissionResult(true, null, null);
+        }
+
+        public static PermissionResult failure(String errorMessage, String errorContext) {
+            return new PermissionResult(false, errorMessage, errorContext);
+        }
+
+        public boolean isSuccess() {
+            return success;
+        }
+
+        public String getErrorMessage() {
+            return errorMessage;
+        }
+
+        public String getErrorContext() {
+            return errorContext;
+        }
+
+        @Override
+        public String toString() {
+            if (success) {
+                return "PermissionResult[SUCCESS]";
+            }
+            return String.format("PermissionResult[FAILED: %s, Context: %s]", errorMessage, errorContext);
+        }
+    }
+
     public static void setCurrentUser(String user) {
         currentUser.set(user);
     }
@@ -20,94 +60,78 @@ public class UserUtil {
     
     /**
      * Normalize path (handle .. and .)
+     * Delegates to FileUtil to avoid code duplication
      */
     private static String normalizePath(String path) {
-        if (path == null || path.isEmpty()) {
-            return "/";
-        }
-        
-        String unified = path.replace('\\', '/');
-        String[] parts = unified.split("/");
-        Stack<String> stack = new Stack<>();
-        
-        for (String part : parts) {
-            if (part.equals("") || part.equals(".")) {
-                continue;
-            }
-            if (part.equals("..")) {
-                if (!stack.isEmpty()) {
-                    stack.pop();
-                }
-            } else {
-                stack.push(part);
-            }
-        }
-        
-        StringBuilder result = new StringBuilder();
-        for (String part : stack) {
-            result.append("/").append(part);
-        }
-        
-        return result.length() > 0 ? result.toString() : "/";
+        return FileUtil.normalizePath(path);
     }
     
     /**
-     * Check file permission (direct file read, no recursion)
+     * Validate file permission with detailed error information
      */
-    public static boolean checkFilePermission(String path, String operation) {
-        // Local user can do anything
+    public static PermissionResult validatePermission(String path, String operation) {
+        String context = String.format("Path: %s, Operation: %s, User: %s", path, operation, getCurrentUser());
+
         if (isLocal()) {
-            return true;
+            return PermissionResult.success();
         }
 
-        // Get real path
         String root = FileUtil.getVfsRoot();
         String normalized = normalizePath(path);
         String realPath = root + normalized.replace('/', java.io.File.separatorChar);
         java.io.File file = new java.io.File(realPath);
 
         if (!file.exists()) {
-            return false;
+            return PermissionResult.failure("File does not exist", context + ", RealPath: " + realPath);
         }
 
-        // Parse metadata from file content
         try {
             String content = new String(java.nio.file.Files.readAllBytes(file.toPath()),
                                         java.nio.charset.StandardCharsets.UTF_8);
             String[] metaResult = extractMetaContent(content);
             if (!metaResult[0].equals("SUCCESS")) {
-                return false;
+                return PermissionResult.failure("Failed to extract metadata", context);
             }
 
             Map<String, Object> meta = (Map<String, Object>) JsonUtil.readJson(metaResult[1]);
             String owner = (String) meta.get("Owner");
             String currentUserStr = getCurrentUser();
 
-            // Get permission map
             Map<String, String> perm = (Map<String, String>) meta.get("Permission");
             if (perm == null) {
-                return false;
+                return PermissionResult.failure("Permission metadata missing", context);
             }
 
-            // Check owner permission
             if (owner != null && owner.equals(currentUserStr)) {
                 String ownerPerm = perm.get("Owner");
                 if (ownerPerm != null && ownerPerm.contains(operation)) {
-                    return true;
+                    return PermissionResult.success();
                 }
-                return false; // Owner exists but doesn't have permission
+                return PermissionResult.failure(
+                    "Owner permission denied",
+                    context + String.format(", Owner: %s, OwnerPermission: %s", owner, ownerPerm)
+                );
             }
 
-            // Check others permission
             String othersPerm = perm.get("Others");
             if (othersPerm != null && othersPerm.contains(operation)) {
-                return true;
+                return PermissionResult.success();
             }
-        } catch (Exception e) {
-            return false;
-        }
 
-        return false;
+            return PermissionResult.failure(
+                "Others permission denied",
+                context + String.format(", OthersPermission: %s", othersPerm)
+            );
+        } catch (Exception e) {
+            return PermissionResult.failure("Permission check exception: " + e.getMessage(), context);
+        }
+    }
+
+    /**
+     * Check file permission (direct file read, no recursion)
+     */
+    public static boolean checkFilePermission(String path, String operation) {
+        return validatePermission(path, operation).isSuccess();
     }
     
     /**
@@ -119,24 +143,47 @@ public class UserUtil {
     }
     
     /**
-     * Check process permission
+     * Validate process permission with detailed error information
      */
-    public static boolean checkProcessPermission(int pid) {
+    public static PermissionResult validateProcessPermission(int pid) {
+        String context = String.format("PID: %d, User: %s", pid, getCurrentUser());
+
         if (isLocal()) {
-            return true;
+            return PermissionResult.success();
         }
-        
-        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
+
+        String processPath = "/system/process/" + pid + ".json";
+        String[] readResult = FileUtil.read(processPath);
         if (!readResult[0].equals("SUCCESS")) {
-            return false;
+            return PermissionResult.failure("Failed to read process file", context + ", Path: " + processPath);
         }
-        
+
         try {
             Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
             String owner = (String) process.get("Owner");
-            return owner != null && owner.equals(currentUser);
+            String currentUserStr = getCurrentUser();
+
+            if (owner == null) {
+                return PermissionResult.failure("Process owner information missing", context);
+            }
+
+            if (!owner.equals(currentUserStr)) {
+                return PermissionResult.failure(
+                    "Process ownership mismatch",
+                    context + String.format(", Owner: %s", owner)
+                );
+            }
+
+            return PermissionResult.success();
         } catch (Exception e) {
-            return false;
+            return PermissionResult.failure("Process permission check exception: " + e.getMessage(), context);
         }
+    }
+
+    /**
+     * Check process permission
+     */
+    public static boolean checkProcessPermission(int pid) {
+        return validateProcessPermission(pid).isSuccess();
     }
 }

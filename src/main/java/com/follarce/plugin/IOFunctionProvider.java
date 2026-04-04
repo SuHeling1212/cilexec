@@ -6,10 +6,6 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 
-/**
- * IO function provider
- * Provides console input/output operations for scripts
- */
 public class IOFunctionProvider implements FunctionProvider {
 
     private final BufferedReader reader;
@@ -21,7 +17,6 @@ public class IOFunctionProvider implements FunctionProvider {
     @Override
     public Object call(String name, Object[] args, FunctionContext context) {
         switch (name) {
-            // Output functions
             case "print":
                 return handlePrint(args, false);
             case "println":
@@ -29,13 +24,11 @@ public class IOFunctionProvider implements FunctionProvider {
             case "printf":
                 return handlePrintf(args);
 
-            // Input functions
             case "input":
                 return handleInput(args);
             case "inputLine":
                 return handleInputLine(args);
 
-            // Error output
             case "printErr":
                 return handlePrintErr(args);
 
@@ -44,13 +37,10 @@ public class IOFunctionProvider implements FunctionProvider {
         }
     }
 
-    /**
-     * Print to console (without newline)
-     */
     private Object handlePrint(Object[] args, boolean newline) {
         if (args.length < 1) {
             if (newline) {
-                System.out.println();
+                System.out.println("");
             }
             return new String[]{"SUCCESS"};
         }
@@ -72,9 +62,6 @@ public class IOFunctionProvider implements FunctionProvider {
         return new String[]{"SUCCESS"};
     }
 
-    /**
-     * Formatted print
-     */
     private Object handlePrintf(Object[] args) {
         if (args.length < 1) {
             return error("INVALID_ARGUMENTS");
@@ -89,20 +76,22 @@ public class IOFunctionProvider implements FunctionProvider {
         System.arraycopy(args, 1, formatArgs, 0, formatArgs.length);
 
         try {
-            System.out.printf(format, formatArgs);
+            String result = String.format(format, formatArgs);
+            System.out.print(result);
             return new String[]{"SUCCESS"};
         } catch (Exception e) {
             return error("FORMAT_ERROR");
         }
     }
 
-    /**
-     * Read a line from console
-     */
     private Object handleInput(Object[] args) {
-        // Print prompt if provided
+        String prompt = "";
         if (args.length >= 1 && args[0] != null) {
-            System.out.print(args[0].toString());
+            prompt = args[0].toString();
+        }
+
+        if (!prompt.isEmpty()) {
+            System.out.print(prompt);
         }
 
         try {
@@ -114,13 +103,14 @@ public class IOFunctionProvider implements FunctionProvider {
         }
     }
 
-    /**
-     * Read a line from console (with prompt)
-     */
     private Object handleInputLine(Object[] args) {
-        // Print prompt if provided
+        String prompt = "";
         if (args.length >= 1 && args[0] != null) {
-            System.out.println(args[0].toString());
+            prompt = args[0].toString();
+        }
+
+        if (!prompt.isEmpty()) {
+            System.out.println(prompt);
         }
 
         try {
@@ -132,9 +122,6 @@ public class IOFunctionProvider implements FunctionProvider {
         }
     }
 
-    /**
-     * Print to error stream
-     */
     private Object handlePrintErr(Object[] args) {
         if (args.length < 1) {
             return new String[]{"SUCCESS"};
@@ -149,6 +136,7 @@ public class IOFunctionProvider implements FunctionProvider {
         }
 
         System.err.println(sb.toString());
+
         return new String[]{"SUCCESS"};
     }
 

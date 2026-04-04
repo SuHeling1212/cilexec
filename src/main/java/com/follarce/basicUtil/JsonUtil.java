@@ -87,21 +87,32 @@ public class JsonUtil {
                 Type type = new TypeToken<Map<String, Object>>() {
                 }.getType();
                 Map<String, Object> map = gson.fromJson(content, type);
+                if (map == null) {
+                    map = new HashMap<>();
+                }
                 return convertNumbers(map);
             } else if (trimmed.startsWith("[")) {
                 Type type = new TypeToken<List<Object>>() {
                 }.getType();
                 List<Object> list = gson.fromJson(content, type);
+                if (list == null) {
+                    list = new ArrayList<>();
+                }
                 return convertNumbers(list);
             } else if (trimmed.startsWith("\"")) {
-                return gson.fromJson(content, String.class);
+                String str = gson.fromJson(content, String.class);
+                return str != null ? str : "";
             } else if (trimmed.equals("true") || trimmed.equals("false")) {
-                return gson.fromJson(content, Boolean.class);
+                Boolean bool = gson.fromJson(content, Boolean.class);
+                return bool != null ? bool : false;
             } else if (trimmed.equals("null")) {
                 return null;
             } else {
                 // Number type - parse as Number first, then determine if it's integer or double
                 Number num = gson.fromJson(content, Number.class);
+                if (num == null) {
+                    return 0;
+                }
                 if (num.doubleValue() == num.intValue()) {
                     // It's an integer value
                     return num.intValue();

@@ -1,5 +1,6 @@
 package com.follarce.network;
 
+import com.follarce.basicUtil.Constants;
 import com.follarce.basicUtil.FileUtil;
 import com.follarce.basicUtil.JsonUtil;
 import com.follarce.basicUtil.Logger;
@@ -75,8 +76,6 @@ public class SocketUtil {
     }
     
     private static String SOCKET_DIR = getSocketDir();
-    private static final int DEFAULT_TIMEOUT = 10000; // 10 seconds
-    private static final int BUFFER_SIZE = 8192; // 8KB buffer
     
     // Socket registry: socketId -> SocketInfo
     private static final Map<Integer, SocketInfo> sockets = new ConcurrentHashMap<>();
@@ -162,10 +161,11 @@ public class SocketUtil {
             return dirResult;
         }
         
+        ServerSocket serverSocket = null;
         try {
-            ServerSocket serverSocket = new ServerSocket();
+            serverSocket = new ServerSocket();
             serverSocket.bind(new InetSocketAddress(host, port));
-            serverSocket.setSoTimeout(1000); // 1 second timeout for accept
+            serverSocket.setSoTimeout(Constants.SERVER_SOCKET_TIMEOUT);
             
             int socketId = socketIdGenerator.getAndIncrement();
             int currentPid = ProcessFunc.getPID();
@@ -174,16 +174,27 @@ public class SocketUtil {
             info.serverSocket = serverSocket;
             sockets.put(socketId, info);
             
-            // Save socket info to file
             saveSocketInfo(info);
             
             Logger.info("Created TCP server socket " + socketId + " on " + host + ":" + port);
             return new String[]{"SUCCESS", String.valueOf(socketId)};
             
         } catch (BindException e) {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                try { serverSocket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Port already in use: " + port);
             return new String[]{"ERROR", "PORT_IN_USE"};
         } catch (IOException e) {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                try { serverSocket.close(); } catch (IOException ignored) {}
+            }
+            Logger.error("Failed to create server socket: " + e.getMessage());
+            return new String[]{"ERROR", "CREATE_SOCKET_FAILED"};
+        } catch (Exception e) {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                try { serverSocket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Failed to create server socket: " + e.getMessage());
             return new String[]{"ERROR", "CREATE_SOCKET_FAILED"};
         }
@@ -212,8 +223,9 @@ public class SocketUtil {
             return new String[]{"ERROR", "NOT_SERVER_SOCKET"};
         }
         
+        Socket clientSocket = null;
         try {
-            Socket clientSocket = serverInfo.serverSocket.accept();
+            clientSocket = serverInfo.serverSocket.accept();
             
             int clientSocketId = socketIdGenerator.getAndIncrement();
             String clientHost = clientSocket.getInetAddress().getHostAddress();
@@ -223,18 +235,28 @@ public class SocketUtil {
             clientInfo.socket = clientSocket;
             sockets.put(clientSocketId, clientInfo);
             
-            // Start receive thread
             startReceiveThread(clientInfo);
             
-            // Save socket info
             saveSocketInfo(clientInfo);
             
             Logger.info("Accepted client connection " + clientSocketId + " from " + clientHost + ":" + clientPort);
             return new String[]{"SUCCESS", String.valueOf(clientSocketId)};
             
         } catch (SocketTimeoutException e) {
+            if (clientSocket != null && !clientSocket.isClosed()) {
+                try { clientSocket.close(); } catch (IOException ignored) {}
+            }
             return new String[]{"ERROR", "ACCEPT_TIMEOUT"};
         } catch (IOException e) {
+            if (clientSocket != null && !clientSocket.isClosed()) {
+                try { clientSocket.close(); } catch (IOException ignored) {}
+            }
+            Logger.error("Failed to accept connection: " + e.getMessage());
+            return new String[]{"ERROR", "ACCEPT_FAILED"};
+        } catch (Exception e) {
+            if (clientSocket != null && !clientSocket.isClosed()) {
+                try { clientSocket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Failed to accept connection: " + e.getMessage());
             return new String[]{"ERROR", "ACCEPT_FAILED"};
         }
@@ -271,9 +293,10 @@ public class SocketUtil {
             return dirResult;
         }
         
+        Socket socket = null;
         try {
-            Socket socket = new Socket();
-            socket.connect(new InetSocketAddress(host, port), DEFAULT_TIMEOUT);
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(host, port), Constants.DEFAULT_TIMEOUT);
             
             int socketId = socketIdGenerator.getAndIncrement();
             int currentPid = ProcessFunc.getPID();
@@ -282,25 +305,41 @@ public class SocketUtil {
             info.socket = socket;
             sockets.put(socketId, info);
             
-            // Start receive thread
             startReceiveThread(info);
             
-            // Save socket info
             saveSocketInfo(info);
             
             Logger.info("Connected to " + host + ":" + port + " with socket " + socketId);
             return new String[]{"SUCCESS", String.valueOf(socketId)};
             
         } catch (UnknownHostException e) {
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Unknown host: " + host);
             return new String[]{"ERROR", "UNKNOWN_HOST"};
         } catch (ConnectException e) {
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Connection refused: " + host + ":" + port);
             return new String[]{"ERROR", "CONNECTION_REFUSED"};
         } catch (SocketTimeoutException e) {
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Connection timeout: " + host + ":" + port);
             return new String[]{"ERROR", "CONNECTION_TIMEOUT"};
         } catch (IOException e) {
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (IOException ignored) {}
+            }
+            Logger.error("Failed to connect: " + e.getMessage());
+            return new String[]{"ERROR", "CONNECT_FAILED"};
+        } catch (Exception e) {
+            if (socket != null && !socket.isClosed()) {
+                try { socket.close(); } catch (IOException ignored) {}
+            }
             Logger.error("Failed to connect: " + e.getMessage());
             return new String[]{"ERROR", "CONNECT_FAILED"};
         }
@@ -442,16 +481,15 @@ public class SocketUtil {
                 
                 // Read data and save to file
                 String realPath = FileUtil.getVfsRoot() + filePath.replace('/', java.io.File.separatorChar);
-                FileOutputStream fos = new FileOutputStream(realPath);
                 
-                byte[] buffer = new byte[BUFFER_SIZE];
+                byte[] buffer = new byte[Constants.BUFFER_SIZE];
                 int bytesRead;
                 int totalBytes = 0;
                 
                 // Set socket timeout for this read
-                info.socket.setSoTimeout(5000); // 5 second timeout
+                info.socket.setSoTimeout(Constants.SOCKET_READ_TIMEOUT); // 5 second timeout
                 
-                try {
+                try (FileOutputStream fos = new FileOutputStream(realPath)) {
                     while ((bytesRead = in.read(buffer)) != -1) {
                         fos.write(buffer, 0, bytesRead);
                         totalBytes += bytesRead;
@@ -465,8 +503,6 @@ public class SocketUtil {
                     // Timeout is OK, return what we have
                 }
                 
-                fos.close();
-                
                 if (totalBytes == 0) {
                     // Delete empty file
                     new File(realPath).delete();
@@ -478,10 +514,10 @@ public class SocketUtil {
                 
             } else if ("udp".equals(info.type) && info.datagramSocket != null) {
                 // UDP receive
-                byte[] buffer = new byte[BUFFER_SIZE];
+                byte[] buffer = new byte[Constants.BUFFER_SIZE];
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 
-                info.datagramSocket.setSoTimeout(5000);
+                info.datagramSocket.setSoTimeout(Constants.SOCKET_READ_TIMEOUT);
                 info.datagramSocket.receive(packet);
                 
                 // Save to file
@@ -489,9 +525,9 @@ public class SocketUtil {
                 String filePath = targetDir + filename;
                 String realPath = FileUtil.getVfsRoot() + filePath.replace('/', java.io.File.separatorChar);
                 
-                FileOutputStream fos = new FileOutputStream(realPath);
-                fos.write(packet.getData(), 0, packet.getLength());
-                fos.close();
+                try (FileOutputStream fos = new FileOutputStream(realPath)) {
+                    fos.write(packet.getData(), 0, packet.getLength());
+                }
                 
                 Logger.info("Received UDP packet " + packet.getLength() + " bytes from socket " + socketId);
                 return new String[]{"SUCCESS", filename};
@@ -637,14 +673,14 @@ public class SocketUtil {
             return dirResult;
         }
         
+        DatagramSocket datagramSocket = null;
         try {
-            DatagramSocket datagramSocket;
             if (port == 0) {
                 datagramSocket = new DatagramSocket();
             } else {
                 datagramSocket = new DatagramSocket(port, InetAddress.getByName(host));
             }
-            datagramSocket.setSoTimeout(1000);
+            datagramSocket.setSoTimeout(Constants.SERVER_SOCKET_TIMEOUT);
             
             int socketId = socketIdGenerator.getAndIncrement();
             int currentPid = ProcessFunc.getPID();
@@ -654,19 +690,29 @@ public class SocketUtil {
             info.datagramSocket = datagramSocket;
             sockets.put(socketId, info);
             
-            // Start receive thread for UDP
             startUdpReceiveThread(info);
             
-            // Save socket info
             saveSocketInfo(info);
             
             Logger.info("Created UDP socket " + socketId + " on " + host + ":" + actualPort);
             return new String[]{"SUCCESS", String.valueOf(socketId)};
             
         } catch (BindException e) {
+            if (datagramSocket != null && !datagramSocket.isClosed()) {
+                datagramSocket.close();
+            }
             Logger.error("Port already in use: " + port);
             return new String[]{"ERROR", "PORT_IN_USE"};
         } catch (IOException e) {
+            if (datagramSocket != null && !datagramSocket.isClosed()) {
+                datagramSocket.close();
+            }
+            Logger.error("Failed to create UDP socket: " + e.getMessage());
+            return new String[]{"ERROR", "CREATE_SOCKET_FAILED"};
+        } catch (Exception e) {
+            if (datagramSocket != null && !datagramSocket.isClosed()) {
+                datagramSocket.close();
+            }
             Logger.error("Failed to create UDP socket: " + e.getMessage());
             return new String[]{"ERROR", "CREATE_SOCKET_FAILED"};
         }
@@ -726,7 +772,7 @@ public class SocketUtil {
         info.receiveThread = new Thread(() -> {
             try {
                 InputStream in = info.socket.getInputStream();
-                byte[] buffer = new byte[BUFFER_SIZE];
+                byte[] buffer = new byte[Constants.BUFFER_SIZE];
                 
                 while (info.isRunning && !info.socket.isClosed()) {
                     try {
@@ -737,24 +783,24 @@ public class SocketUtil {
                             String filePath = info.saveDir + filename;
                             String realPath = FileUtil.getVfsRoot() + filePath.replace('/', java.io.File.separatorChar);
                             
-                            FileOutputStream fos = new FileOutputStream(realPath);
-                            int bytesRead;
-                            int totalBytes = 0;
-                            
-                            while ((bytesRead = in.read(buffer)) != -1) {
-                                fos.write(buffer, 0, bytesRead);
-                                totalBytes += bytesRead;
+                            try (FileOutputStream fos = new FileOutputStream(realPath)) {
+                                int bytesRead;
+                                int totalBytes = 0;
                                 
-                                if (in.available() == 0) {
-                                    break;
+                                while ((bytesRead = in.read(buffer)) != -1) {
+                                    fos.write(buffer, 0, bytesRead);
+                                    totalBytes += bytesRead;
+                                    
+                                    if (in.available() == 0) {
+                                        break;
+                                    }
                                 }
+                                
+                                Logger.info("Auto-saved " + totalBytes + " bytes from socket " + info.id + " to " + filename);
                             }
-                            
-                            fos.close();
-                            Logger.info("Auto-saved " + totalBytes + " bytes from socket " + info.id + " to " + filename);
                         }
                         
-                        Thread.sleep(100);
+                        Thread.sleep(Constants.RECEIVE_THREAD_SLEEP_MS);
                     } catch (InterruptedException e) {
                         // Thread interrupted
                         break;
@@ -780,7 +826,7 @@ public class SocketUtil {
      */
     private static void startUdpReceiveThread(SocketInfo info) {
         info.receiveThread = new Thread(() -> {
-            byte[] buffer = new byte[BUFFER_SIZE];
+            byte[] buffer = new byte[Constants.BUFFER_SIZE];
             
             while (info.isRunning && !info.datagramSocket.isClosed()) {
                 try {
@@ -792,9 +838,9 @@ public class SocketUtil {
                     String filePath = info.saveDir + filename;
                     String realPath = FileUtil.getVfsRoot() + filePath.replace('/', java.io.File.separatorChar);
                     
-                    FileOutputStream fos = new FileOutputStream(realPath);
-                    fos.write(packet.getData(), 0, packet.getLength());
-                    fos.close();
+                    try (FileOutputStream fos = new FileOutputStream(realPath)) {
+                        fos.write(packet.getData(), 0, packet.getLength());
+                    }
                     
                     Logger.info("Auto-saved UDP packet " + packet.getLength() + " bytes from socket " + info.id);
                     

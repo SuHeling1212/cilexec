@@ -15,10 +15,29 @@ public class FileUtil {
     private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger("FileUtil");
 
     /**
-     * Check if filename is valid (cannot start with .)
+     * Check if path character is valid (whitelist validation)
+     * Only allows letters, digits, underscores, hyphens, and dots
+     */
+    private static boolean isValidPathCharacter(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return false;
+        }
+        
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_' && c != '-' && c != '.') {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * Check if filename is valid (cannot start with ., must pass whitelist validation)
      */
     private static boolean isValidName(String name) {
-        return name != null && !name.trim().isEmpty() && !name.startsWith(".");
+        return name != null && !name.trim().isEmpty() && !name.startsWith(".") && isValidPathCharacter(name);
     }
 
     /**
@@ -38,15 +57,18 @@ public class FileUtil {
                 Object metaObj = JsonUtil.readJson(metaResult[1]);
                 if (metaObj instanceof Map) {
                     Map<String, Object> metaMap = (Map<String, Object>) metaObj;
-                    String linkTarget = (String) metaMap.get("Link");
-                    if (linkTarget != null && !linkTarget.isEmpty()) {
-                        // If relative path, based on current file directory
-                        if (!linkTarget.startsWith("/")) {
-                            String fileDir = realPath.substring(0, realPath.lastIndexOf(File.separator) + 1);
-                            return fileDir + linkTarget.replace('/', File.separatorChar);
+                    Object linkTargetObj = metaMap.get("Link");
+                    if (linkTargetObj instanceof String) {
+                        String linkTarget = (String) linkTargetObj;
+                        if (linkTarget != null && !linkTarget.isEmpty()) {
+                            // If relative path, based on current file directory
+                            if (!linkTarget.startsWith("/")) {
+                                String fileDir = realPath.substring(0, realPath.lastIndexOf(File.separator) + 1);
+                                return fileDir + linkTarget.replace('/', File.separatorChar);
+                            }
+                            // If absolute path, add VFS root directory
+                            return getVfsRoot() + linkTarget.replace('/', File.separatorChar);
                         }
-                        // If absolute path, add VFS root directory
-                        return getVfsRoot() + linkTarget.replace('/', File.separatorChar);
                     }
                 }
             }
@@ -85,7 +107,7 @@ public class FileUtil {
     /**
      * Normalize path (supports Windows backslash, handles .. and .)
      */
-    private static String normalizePath(String path) {
+    static String normalizePath(String path) {
         if (path == null || path.isEmpty()) {
             return "/";
         }
@@ -104,6 +126,11 @@ public class FileUtil {
                     stack.pop();
                 }
             } else {
+                // Security check: validate each path component against whitelist
+                if (!isValidPathCharacter(part)) {
+                    LOGGER.warning("Invalid path component detected: " + part);
+                    return "/";
+                }
                 stack.push(part);
             }
         }
@@ -216,59 +243,7 @@ public class FileUtil {
      * Check if directory is locked, auto-unlock if locker process is dead
      */
     private static String[] checkDirectoryLock(File dir) {
-        File metaFile = new File(dir, ".META");
-        if (!metaFile.exists()) {
-            return null;
-        }
-
-        try {
-            String fullContent = new String(Files.readAllBytes(metaFile.toPath()), StandardCharsets.UTF_8);
-            String[] metaResult = extractMetaContent(fullContent);
-
-            if (metaResult[0].equals("SUCCESS")) {
-                Object metaObj = JsonUtil.readJson(metaResult[1]);
-                if (metaObj instanceof Map) {
-                    Map<String, Object> metaMap = (Map<String, Object>) metaObj;
-                    Map<String, Object> locked = (Map<String, Object>) metaMap.get("locked");
-                    if (locked != null) {
-                        Boolean isLocked = (Boolean) locked.get("isLocked");
-                        if (isLocked != null && isLocked) {
-                            // Check if locker process still exists
-                            Object lockedBy = locked.get("lockedBy");
-                            if (lockedBy instanceof Number) {
-                                int lockerPid = ((Number) lockedBy).intValue();
-                                if (!isProcessExists(lockerPid)) {
-                                    // Locker process is dead, auto-unlock
-                                    LOGGER.info("Auto-unlocking directory " + dir.getPath() + " (locker PID " + lockerPid + " is dead)");
-                                    locked.put("isLocked", false);
-                                    locked.put("lockedBy", null);
-                                    
-                                    // Update time
-                                    Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
-                                    if (time == null) {
-                                        time = new HashMap<>();
-                                        metaMap.put("Time", time);
-                                    }
-                                    int[] now = TimeUtil.getTime();
-                                    time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
-                                    
-                                    // Save back
-                                    String newMetaJson = JsonUtil.toJson(metaMap);
-                                    String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n";
-                                    Files.write(metaFile.toPath(), newFullContent.getBytes());
-                                    
-                                    return null; // Lock released, no error
-                                }
-                            }
-                            return new String[] { "ERROR", "DIRECTORY_IS_LOCKED" };
-                        }
-                    }
-                }
-            }
-        } catch (IOException e) {
-            LOGGER.warning("Failed to check directory lock status: " + e.getMessage());
-        }
-        return null;
+        return checkAndValidateLock(dir, true);
     }
 
     /**
@@ -489,58 +464,7 @@ public class FileUtil {
      * Check if file is locked, auto-unlock if locker process is dead
      */
     private static String[] checkLock(File file) {
-        try {
-            String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-            String[] metaResult = extractMetaContent(fullContent);
-
-            if (metaResult[0].equals("SUCCESS")) {
-                Object metaObj = JsonUtil.readJson(metaResult[1]);
-                if (metaObj instanceof Map) {
-                    Map<String, Object> metaMap = (Map<String, Object>) metaObj;
-                    Map<String, Object> locked = (Map<String, Object>) metaMap.get("locked");
-                    if (locked != null) {
-                        Boolean isLocked = (Boolean) locked.get("isLocked");
-                        if (isLocked != null && isLocked) {
-                            // Check if locker process still exists
-                            Object lockedBy = locked.get("lockedBy");
-                            if (lockedBy instanceof Number) {
-                                int lockerPid = ((Number) lockedBy).intValue();
-                                if (!isProcessExists(lockerPid)) {
-                                    // Locker process is dead, auto-unlock
-                                    LOGGER.info("Auto-unlocking file " + file.getPath() + " (locker PID " + lockerPid + " is dead)");
-                                    
-                                    String bodyContent = extractBodyContent(fullContent);
-                                    
-                                    locked.put("isLocked", false);
-                                    locked.put("lockedBy", null);
-                                    
-                                    // Update time
-                                    Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
-                                    if (time == null) {
-                                        time = new HashMap<>();
-                                        metaMap.put("Time", time);
-                                    }
-                                    int[] now = TimeUtil.getTime();
-                                    time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
-                                    
-                                    // Save back
-                                    String newMetaJson = JsonUtil.toJson(metaMap);
-                                    String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
-                                    Files.write(file.toPath(), newFullContent.getBytes());
-                                    
-                                    return null; // Lock released, no error
-                                }
-                            }
-                            return new String[] { "ERROR", "FILE_IS_LOCKED" };
-                        }
-                    }
-                }
-            }
-        } catch (IOException e) {
-            LOGGER.warning("Failed to check lock status: " + e.getMessage());
-            return new String[] { "ERROR", "CHECK_LOCK_FAILED" };
-        }
-        return null;
+        return checkAndValidateLock(file, false);
     }
 
     /**
@@ -624,10 +548,9 @@ public class FileUtil {
 
         // 7. Check write permission on parent directory
         String parentPath = path.substring(0, path.lastIndexOf('/', path.length() - 2) + 1);
-        if (!parentPath.isEmpty() && !parentPath.equals("/")) {
-            if (!UserUtil.checkFilePermission(parentPath, "write")) {
-                return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
-            }
+        String[] permCheck = checkAndValidatePermission(parentPath, "write");
+        if (permCheck != null) {
+            return permCheck;
         }
 
         // 8. Check if directory is locked
@@ -713,8 +636,9 @@ public class FileUtil {
         }
 
         // 9. Check write permission on parent directory
-        if (!UserUtil.checkFilePermission(path, "write")) {
-            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        String[] permCheck = checkAndValidatePermission(path, "write");
+        if (permCheck != null) {
+            return permCheck;
         }
 
         // 10. Check if parent directory is locked
@@ -838,8 +762,9 @@ public class FileUtil {
         }
 
         // 9. Check write permission on parent directory
-        if (!UserUtil.checkFilePermission(path, "write")) {
-            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        String[] permCheck = checkAndValidatePermission(path, "write");
+        if (permCheck != null) {
+            return permCheck;
         }
 
         // 10. Check if directory is locked
@@ -1415,7 +1340,8 @@ public class FileUtil {
             }
 
             // 7. Ensure locked field exists
-            if (!metaMap.containsKey("locked")) {
+            Object lockedObj = metaMap.get("locked");
+            if (!(lockedObj instanceof Map)) {
                 Map<String, Object> lockMap = new HashMap<>();
                 lockMap.put("isLocked", false);
                 lockMap.put("lockedBy", null);
@@ -1508,7 +1434,8 @@ public class FileUtil {
             }
 
             // 7. Ensure locked field exists
-            if (!metaMap.containsKey("locked")) {
+            Object lockedObj = metaMap.get("locked");
+            if (!(lockedObj instanceof Map)) {
                 Map<String, Object> lockMap = new HashMap<>();
                 lockMap.put("isLocked", false);
                 lockMap.put("lockedBy", null);
@@ -1608,8 +1535,11 @@ public class FileUtil {
             }
 
             // 6. Get or create locked field
-            Map<String, Object> locked = (Map<String, Object>) metaMap.get("locked");
-            if (locked == null) {
+            Object lockedObj = metaMap.get("locked");
+            Map<String, Object> locked;
+            if (lockedObj instanceof Map) {
+                locked = (Map<String, Object>) lockedObj;
+            } else {
                 locked = new HashMap<>();
                 metaMap.put("locked", locked);
             }
@@ -1697,10 +1627,11 @@ public class FileUtil {
             Map<String, Object> metaMap = (Map<String, Object>) metaObj;
 
             // 6. Get locked field
-            Map<String, Object> locked = (Map<String, Object>) metaMap.get("locked");
-            if (locked == null) {
+            Object lockedObj = metaMap.get("locked");
+            if (!(lockedObj instanceof Map)) {
                 return new String[] { "ERROR", "FILE_IS_NOT_LOCKED" };
             }
+            Map<String, Object> locked = (Map<String, Object>) lockedObj;
 
             // 7. Check if already locked
             Boolean isLocked = (Boolean) locked.get("isLocked");
@@ -1793,8 +1724,9 @@ public class FileUtil {
         }
 
         // 8. Check read permission
-        if (!UserUtil.checkFilePermission(path, "read")) {
-            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        String[] permCheck = checkAndValidatePermission(path, "read");
+        if (permCheck != null) {
+            return permCheck;
         }
 
         // 9. Read file
@@ -1933,11 +1865,14 @@ public class FileUtil {
 
             if (obj instanceof Map) {
                 Map<String, Object> map = (Map<String, Object>) obj;
-                String root = (String) map.get("root");
-                if (root != null && !root.isEmpty()) {
-                    VFS_ROOT = root;
-                    LOGGER.info("Read VFS root from config file: " + VFS_ROOT);
-                    return VFS_ROOT;
+                Object rootObj = map.get("root");
+                if (rootObj instanceof String) {
+                    String root = (String) rootObj;
+                    if (root != null && !root.isEmpty()) {
+                        VFS_ROOT = root;
+                        LOGGER.info("Read VFS root from config file: " + VFS_ROOT);
+                        return VFS_ROOT;
+                    }
                 }
             }
 
@@ -2096,14 +2031,158 @@ public class FileUtil {
      * @return Object array [size, unit]
      */
     private static Object[] formatSize(int bytes) {
-        if (bytes < 1024) {
+        if (bytes < Constants.SIZE_UNIT_KB) {
             return new Object[] { bytes, "B" };
-        } else if (bytes < 1024 * 1024) {
-            return new Object[] { bytes / 1024, "KB" };
-        } else if (bytes < 1024 * 1024 * 1024) {
-            return new Object[] { bytes / (1024 * 1024), "MB" };
+        } else if (bytes < Constants.SIZE_UNIT_MB) {
+            return new Object[] { bytes / Constants.SIZE_UNIT_KB, "KB" };
+        } else if (bytes < Constants.SIZE_UNIT_GB) {
+            return new Object[] { bytes / Constants.SIZE_UNIT_MB, "MB" };
         } else {
-            return new Object[] { bytes / (1024 * 1024 * 1024), "GB" };
+            return new Object[] { bytes / Constants.SIZE_UNIT_GB, "GB" };
+        }
+    }
+
+    /**
+     * Check and validate file/directory permission
+     * 
+     * @param path File or directory path
+     * @param operation Operation type (read/write/execute)
+     * @return null if permission granted, error array if denied
+     */
+    private static String[] checkAndValidatePermission(String path, String operation) {
+        if (path == null || path.trim().isEmpty()) {
+            return null;
+        }
+        
+        if (!UserUtil.checkFilePermission(path, operation)) {
+            return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
+        }
+        
+        return null;
+    }
+
+    /**
+     * Check and validate lock status for file or directory
+     * Auto-unlock if locker process is dead
+     * 
+     * @param file File or directory to check
+     * @param isDirectory true if checking directory, false if checking file
+     * @return null if not locked or lock released, error array if locked
+     */
+    private static String[] checkAndValidateLock(File file, boolean isDirectory) {
+        try {
+            File metaFile;
+            String fullContent;
+            
+            if (isDirectory) {
+                metaFile = new File(file, ".META");
+                if (!metaFile.exists()) {
+                    return null;
+                }
+                fullContent = new String(Files.readAllBytes(metaFile.toPath()), StandardCharsets.UTF_8);
+            } else {
+                if (!file.exists()) {
+                    return null;
+                }
+                fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            }
+            
+            String[] metaResult = extractMetaContent(fullContent);
+            
+            if (metaResult[0].equals("SUCCESS")) {
+                Object metaObj = JsonUtil.readJson(metaResult[1]);
+                if (metaObj instanceof Map) {
+                    Map<String, Object> metaMap = (Map<String, Object>) metaObj;
+                    Object lockedObj = metaMap.get("locked");
+                    if (lockedObj instanceof Map) {
+                        Map<String, Object> locked = (Map<String, Object>) lockedObj;
+                        Boolean isLocked = (Boolean) locked.get("isLocked");
+                        if (isLocked != null && isLocked) {
+                            Object lockedBy = locked.get("lockedBy");
+                            if (lockedBy instanceof Number) {
+                                int lockerPid = ((Number) lockedBy).intValue();
+                                if (!isProcessExists(lockerPid)) {
+                                    String entityType = isDirectory ? "directory" : "file";
+                                    LOGGER.info("Auto-unlocking " + entityType + " " + file.getPath() + 
+                                              " (locker PID " + lockerPid + " is dead)");
+                                    
+                                    locked.put("isLocked", false);
+                                    locked.put("lockedBy", null);
+                                    
+                                    Map<String, Object> updates = new HashMap<>();
+                                    updates.put("Time.lastEditTime", new int[] { 0, 0, 0, 0, 0, 0, 0 });
+                                    updateMetadata(file, metaMap, updates, isDirectory);
+                                    
+                                    return null;
+                                }
+                            }
+                            return new String[] { "ERROR", isDirectory ? "DIRECTORY_IS_LOCKED" : "FILE_IS_LOCKED" };
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            LOGGER.warning("Failed to check lock status: " + e.getMessage());
+            return new String[] { "ERROR", "CHECK_LOCK_FAILED" };
+        }
+        return null;
+    }
+
+    /**
+     * Update metadata for file or directory
+     * 
+     * @param file File or directory to update
+     * @param metaMap Existing metadata map
+     * @param updates Map of updates to apply (supports nested keys like "Time.lastEditTime")
+     * @param isDirectory true if updating directory metadata, false if updating file metadata
+     * @throws IOException if update fails
+     */
+    private static void updateMetadata(File file, Map<String, Object> metaMap, 
+                                      Map<String, Object> updates, boolean isDirectory) throws IOException {
+        int[] now = TimeUtil.getTime();
+        
+        for (Map.Entry<String, Object> entry : updates.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            
+            if (key.contains(".")) {
+                String[] parts = key.split("\\.", 2);
+                String parentKey = parts[0];
+                String childKey = parts[1];
+                
+                Map<String, Object> parentMap = (Map<String, Object>) metaMap.get(parentKey);
+                if (parentMap == null) {
+                    parentMap = new HashMap<>();
+                    metaMap.put(parentKey, parentMap);
+                }
+                
+                if (value instanceof int[] && ((int[]) value).length == 7 && 
+                    ((int[]) value)[0] == 0) {
+                    parentMap.put(childKey, new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+                } else {
+                    parentMap.put(childKey, value);
+                }
+            } else {
+                if (value instanceof int[] && ((int[]) value).length == 7 && 
+                    ((int[]) value)[0] == 0) {
+                    metaMap.put(key, new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
+                } else {
+                    metaMap.put(key, value);
+                }
+            }
+        }
+        
+        String newMetaJson = JsonUtil.toJson(metaMap);
+        
+        if (isDirectory) {
+            File metaFile = new File(file, ".META");
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n";
+            Files.write(metaFile.toPath(), newFullContent.getBytes(StandardCharsets.UTF_8));
+        } else {
+            String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            String bodyContent = extractBodyContent(fullContent);
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + bodyContent;
+            Files.write(file.toPath(), newFullContent.getBytes(StandardCharsets.UTF_8));
         }
     }
 

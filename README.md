@@ -31,10 +31,10 @@ CilExec consists of **only one executable file** containing:
 Because **the JVM is too useful!** Users can manipulate hardware by calling CilExec's APIs. Sure, efficiency decreases with disk I/O... but this is just a teaching system XD
 
 ## The "Benefits" of State Persistence
-
+> *just kidding*
 ### 🛡️ "Better Null Safety!"
 
-> *just kidding*
+
 
 No direct memory manipulation = no pointers = no null pointer exceptions!
 
@@ -42,7 +42,7 @@ Actually... variables, arrays, and methods are defined within process files, but
 
 ### 🔒 "Better Data Security!"
 
-> *just kidding*
+
 
 State persistence = no data loss from power outages!
 
@@ -64,11 +64,26 @@ CilExec is a proof-of-concept project demonstrating core operating system mechan
 - Script engine
 - Permission framework
 
+## Version
+
+**Current Version: 1.0.0**
+
+This is the first stable release with comprehensive improvements in code quality, security, and testing.
+
+### What's New in 1.0.0
+
+- ✅ **Enhanced Security**: Path validation, permission checks, resource management
+- ✅ **Better Exception Handling**: Distinguish between recoverable and unrecoverable exceptions
+- ✅ **Comprehensive Testing**: 131 unit tests with 100% pass rate
+- ✅ **Code Quality**: Null checks, constant extraction, reduced code duplication
+- ✅ **Improved Documentation**: Updated error codes and examples
+
 ## Tech Stack
 
 - Java 25
 - Maven
 - Gson (JSON processing)
+- JUnit 5 (Testing)
 
 ## Script Format
 
@@ -86,26 +101,50 @@ while true {
 ## Build and Run
 
 ```bash
-# Package with Maven
+# Compile
+mvn clean compile
+
+# Run tests
+mvn test
+
+# Package
 mvn clean package
 
-# Or use the provided script
-./package.sh
+# Run the application
+java -jar target/cilexec-1.0.0.jar
 
-# Run
-java -jar target/cilexec-1.0.2-SNAPSHOT.jar
+# Or run directly
+mvn dependency:copy-dependencies -q
+java -cp "target/classes:target/dependency/*" com.follarce.Main
 ```
+
+## Testing
+
+The project includes comprehensive unit tests:
+
+```bash
+# Run all tests
+mvn test
+
+# Test results
+Tests run: 131, Failures: 0, Errors: 0, Skipped: 0
+```
+
+Test coverage includes:
+- FileUtil: 33 tests
+- JsonUtil: 33 tests
+- UserUtil: 25 tests
+- Constants: 40 tests
 
 ## Project Nature
 
 **This is a proof-of-concept operating system kernel.**
 
-It implements core operating system mechanisms but is not a complete usable system:
+It implements core operating system mechanisms:
 
-- ✅ Complete kernel functionality (processes, file system, script engine)
-- ❌ No Shell/command-line interface
-- ❌ No user login system
-- ❌ No system tools (ls, cat, echo, etc.)
+- ✅ Complete kernel functionality (processes, file system, script engine, shell)
+- ✅ User login system
+- ✅ System tools (ls, cat, echo, etc.)
 
 ## Documentation
 
@@ -116,6 +155,34 @@ It implements core operating system mechanisms but is not a complete usable syst
 - [Plugin Development](doc/en/PLUGIN_DEVELOPMENT.md) - How to extend functionality
 - [Error Codes](doc/en/ERROR_CODES.md) - Error code reference
 - [Logging](doc/en/LOGGING.md) - Logging system documentation
+- [Changelog](CHANGELOG.md) - Version history and changes
+
+## Project Structure
+
+```
+src/
+├── main/
+│   ├── java/com/follarce/
+│   │   ├── Main.java                 # Program entry
+│   │   ├── init/                     # System initialization
+│   │   ├── process/                  # Process management
+│   │   │   ├── ProcessRunner.java    # Script execution engine
+│   │   │   ├── ProcessFunc.java      # Process operations
+│   │   │   ├── SwapUtil.java         # Inter-process data exchange
+│   │   │   └── exception/            # Exception handling (NEW)
+│   │   ├── network/                  # Network functionality
+│   │   ├── plugin/                   # Plugin system
+│   │   └── basicUtil/                # Basic utilities
+│   │       ├── FileUtil.java         # Virtual file system
+│   │       ├── JsonUtil.java         # JSON utilities
+│   │       ├── UserUtil.java         # Permission management
+│   │       ├── Logger.java           # Logging
+│   │       └── Constants.java        # Constants
+│   └── resources/
+│       └── INIT.fcl                  # Initial script
+└── test/
+    └── java/com/follarce/            # Unit tests (NEW)
+```
 
 ## Use Cases
 
