@@ -74,7 +74,7 @@ This is the first stable release with comprehensive improvements in code quality
 
 - ✅ **Enhanced Security**: Path validation, permission checks, resource management
 - ✅ **Better Exception Handling**: Distinguish between recoverable and unrecoverable exceptions
-- ✅ **Comprehensive Testing**: 131 unit tests with 100% pass rate
+- ✅ **Comprehensive Testing**: Added 131 unit tests
 - ✅ **Code Quality**: Null checks, constant extraction, reduced code duplication
 - ✅ **Improved Documentation**: Updated error codes and examples
 
@@ -126,8 +126,6 @@ The project includes comprehensive unit tests:
 # Run all tests
 mvn test
 
-# Test results
-Tests run: 131, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 Test coverage includes:
@@ -142,9 +140,8 @@ Test coverage includes:
 
 It implements core operating system mechanisms:
 
-- ✅ Complete kernel functionality (processes, file system, script engine, shell)
+- ✅ Complete kernel functionality (processes, file system, script engine)
 - ✅ User login system
-- ✅ System tools (ls, cat, echo, etc.)
 
 ## Documentation
 
@@ -155,7 +152,6 @@ It implements core operating system mechanisms:
 - [Plugin Development](doc/en/PLUGIN_DEVELOPMENT.md) - How to extend functionality
 - [Error Codes](doc/en/ERROR_CODES.md) - Error code reference
 - [Logging](doc/en/LOGGING.md) - Logging system documentation
-- [Changelog](CHANGELOG.md) - Version history and changes
 
 ## Project Structure
 

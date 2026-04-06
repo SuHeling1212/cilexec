@@ -1129,10 +1129,19 @@ public class ProcessRunner implements Runnable {
         
         // Recursive descent parser with precedence
         private ASTNode parseExpression(int precedence) {
+            // Check for unary operators at the beginning
+            Token token = peek();
+            if (token.type == TokenType.OPERATOR && token.value.equals("not")) {
+                consume(); // Consume the "not" operator
+                String op = "not";
+                ASTNode right = parseExpression(PRECEDENCE.get(op));
+                return new ASTNode("unary", op, null, right);
+            }
+            
             ASTNode left = parsePrimary();
             
             while (true) {
-                Token token = peek();
+                token = peek();
                 if (token.type != TokenType.OPERATOR) break;
                 
                 int opPrecedence = PRECEDENCE.getOrDefault(token.value, 0);
@@ -1141,15 +1150,9 @@ public class ProcessRunner implements Runnable {
                 consume(); // Consume the operator
                 String op = token.value;
                 
-                // For unary operators like "not"
-                if (op.equals("not")) {
-                    ASTNode right = parseExpression(opPrecedence);
-                    left = new ASTNode("unary", op, null, right);
-                } else {
-                    // For binary operators
-                    ASTNode right = parseExpression(opPrecedence);
-                    left = new ASTNode("binary", op, left, right);
-                }
+                // For binary operators only (unary "not" is handled above)
+                ASTNode right = parseExpression(opPrecedence);
+                left = new ASTNode("binary", op, left, right);
             }
             
             return left;
