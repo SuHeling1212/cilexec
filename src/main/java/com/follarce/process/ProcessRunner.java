@@ -532,16 +532,7 @@ public class ProcessRunner implements Runnable {
     }
 
     private void handleAssignment(String line) {
-        String assignLine = line;
-        String[] typeKeywords = { "int ", "string ", "array ", "map " };
-        for (String type : typeKeywords) {
-            if (line.startsWith(type)) {
-                assignLine = line.substring(type.length());
-                break;
-            }
-        }
-
-        String[] parts = assignLine.split("=", 2);
+        String[] parts = line.split("=", 2);
         if (parts.length < 2) {
             throw wrapException("Invalid assignment syntax", "assignment");
         }
