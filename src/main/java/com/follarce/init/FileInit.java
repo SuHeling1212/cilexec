@@ -2,9 +2,13 @@ package com.follarce.init;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.HashMap;
+import java.util.Map;
 
 import com.follarce.basicUtil.Logger;
 import com.follarce.basicUtil.TimeUtil;
+import com.follarce.basicUtil.JsonUtil;
 
 public class FileInit {
 
@@ -14,7 +18,6 @@ public class FileInit {
         String workDir = getWorkDirectory();
         String vfsPath = workDir + File.separator + VFS_ROOT;
 
-        // Check if file structure already exists and is valid
         if (isValidFileStructure(vfsPath)) {
             Logger.debug("File structure already exists and is valid, skipping initialization");
             return;
@@ -25,11 +28,7 @@ public class FileInit {
         copyInitFile(vfsPath);
     }
 
-    /**
-     * Check if file structure exists and is valid
-     */
     private static boolean isValidFileStructure(String vfsPath) {
-        // Check if all required directories exist
         String[][] requiredDirs = {
             {"system", "app"},
             {"system", "config"},
@@ -48,16 +47,17 @@ public class FileInit {
             }
         }
 
-        // Check if required files exist
         String initJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "init.json";
         String localJsonPath = vfsPath + File.separator + "user" + File.separator + "local" + File.separator + "local.json";
         String usersJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "users.json";
         String initFclPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "INIT.fcl";
+        String envJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "env.json";
 
         return new File(initJsonPath).exists() &&
                new File(localJsonPath).exists() &&
                new File(usersJsonPath).exists() &&
-               new File(initFclPath).exists();
+               new File(initFclPath).exists() &&
+               new File(envJsonPath).exists();
     }
 
     private static String getWorkDirectory() {
@@ -76,21 +76,64 @@ public class FileInit {
 
     private static void createDirectories(String vfsPath) {
         String[][] dirs = {
+            {"system"},
             {"system", "app"},
             {"system", "config"},
             {"system", "process"},
             {"system", "swap"},
+            {"user"},
+            {"user", "local"},
             {"user", "local", "app"}
         };
 
         new File(vfsPath).mkdirs();
+
+        int[] time = TimeUtil.getTime();
 
         for (String[] dirParts : dirs) {
             String dirPath = vfsPath;
             for (String part : dirParts) {
                 dirPath += File.separator + part;
             }
-            new File(dirPath).mkdirs();
+            File dir = new File(dirPath);
+            dir.mkdirs();
+            createDirectoryMeta(dir, time);
+        }
+    }
+
+    private static void createDirectoryMeta(File dir, int[] time) {
+        File metaFile = new File(dir, ".META");
+        if (metaFile.exists()) {
+            return;
+        }
+
+        try {
+            Map<String, Object> metaMap = new HashMap<>();
+
+            Map<String, Object> timeMap = new HashMap<>();
+            timeMap.put("createTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
+            timeMap.put("lastEditTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
+            timeMap.put("lastOpenTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
+            metaMap.put("Time", timeMap);
+
+            metaMap.put("Owner", "local");
+
+            Map<String, String> permMap = new HashMap<>();
+            permMap.put("Owner", "read, write");
+            permMap.put("Others", "read");
+            metaMap.put("Permission", permMap);
+
+            Map<String, Object> lockMap = new HashMap<>();
+            lockMap.put("isLocked", false);
+            lockMap.put("lockedBy", null);
+            metaMap.put("locked", lockMap);
+
+            String metaJson = JsonUtil.toJson(metaMap);
+            String fileContent = "#<META>\n" + metaJson + "\n<META>#\n";
+
+            Files.write(metaFile.toPath(), fileContent.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            Logger.error("Error creating directory metadata: " + e.getMessage());
         }
     }
 
@@ -99,12 +142,10 @@ public class FileInit {
         String timeStr = String.format("[%d,%d,%d,%d,%d,%d,%d]",
             time[0], time[1], time[2], time[3], time[4], time[5], time[6]);
 
-        // init.json - VFS root configuration (only if not exists)
         String initJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "init.json";
         String initContent = "{\n    \"root\": \"" + vfsPath.replace("\\", "\\\\") + "\"\n}";
-        writeFileIfNotExists(initJsonPath, initContent);
+        writeFileWithMeta(initJsonPath, initContent, time);
 
-        // local.json - local user configuration (only if not exists)
         String localJsonPath = vfsPath + File.separator + "user" + File.separator + "local" + File.separator + "local.json";
         String localContent = "{\n" +
             "    \"name\": \"local\",\n" +
@@ -114,9 +155,8 @@ public class FileInit {
             "    \"createTime\": " + timeStr + ",\n" +
             "    \"process\": []\n" +
             "}";
-        writeFileIfNotExists(localJsonPath, localContent);
+        writeFileWithMeta(localJsonPath, localContent, time);
 
-        // users.json - user database (only if not exists)
         String usersJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "users.json";
         String usersContent = "{\n" +
             "    \"currentUser\": \"local\",\n" +
@@ -129,16 +169,26 @@ public class FileInit {
             "        }\n" +
             "    }\n" +
             "}";
-        writeFileIfNotExists(usersJsonPath, usersContent);
+        writeFileWithMeta(usersJsonPath, usersContent, time);
+
+        String envJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "env.json";
+        String envContent = "{\n" +
+            "    \"pathAliases\": {\n" +
+            "        \"~\": \"/user/local\",\n" +
+            "        \"$HOME\": \"/user/local\",\n" +
+            "        \"$SYSTEM\": \"/system\"\n" +
+            "    },\n" +
+            "    \"envVars\": {\n" +
+            "        \"PATH\": \"/system/app:~/app\",\n" +
+            "        \"HOME\": \"/user/local\"\n" +
+            "    }\n" +
+            "}";
+        writeFileWithMeta(envJsonPath, envContent, time);
     }
 
-    /**
-     * Copy INIT.fcl from resources to VFS (if not exists)
-     */
     private static void copyInitFile(String vfsPath) {
         String initFclPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "INIT.fcl";
         
-        // Only create if not exists
         if (new File(initFclPath).exists()) {
             return;
         }
@@ -150,30 +200,50 @@ public class FileInit {
             }
 
             String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-
-            // Write to VFS
-            writeFile(initFclPath, content);
+            int[] time = TimeUtil.getTime();
+            writeFileWithMeta(initFclPath, content, time);
         } catch (IOException e) {
             Logger.error("Error copying INIT.fcl: " + e.getMessage());
         }
     }
 
-    private static void writeFile(String path, String content) {
+    private static void writeFileWithMeta(String path, String content, int[] time) {
+        File file = new File(path);
+        if (file.exists()) {
+            return;
+        }
+
         try {
-            File file = new File(path);
             file.getParentFile().mkdirs();
-            try (FileWriter writer = new FileWriter(file)) {
-                writer.write(content);
-            }
+
+            Map<String, Object> metaMap = new HashMap<>();
+
+            Map<String, Object> timeMap = new HashMap<>();
+            timeMap.put("createTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
+            timeMap.put("lastEditTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
+            timeMap.put("lastOpenTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
+            metaMap.put("Time", timeMap);
+
+            metaMap.put("Owner", "local");
+
+            Map<String, String> permMap = new HashMap<>();
+            permMap.put("Owner", "read, write");
+            permMap.put("Others", "read");
+            metaMap.put("Permission", permMap);
+
+            Map<String, Object> lockMap = new HashMap<>();
+            lockMap.put("isLocked", false);
+            lockMap.put("lockedBy", null);
+            metaMap.put("locked", lockMap);
+
+            metaMap.put("Size", new Object[] { content.getBytes(StandardCharsets.UTF_8).length, "B" });
+
+            String metaJson = JsonUtil.toJson(metaMap);
+            String fullContent = "#<META>\n" + metaJson + "\n<META>#\n" + content;
+
+            Files.write(file.toPath(), fullContent.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             Logger.error("Error writing file " + path + ": " + e.getMessage());
-        }
-    }
-
-    private static void writeFileIfNotExists(String path, String content) {
-        File file = new File(path);
-        if (!file.exists()) {
-            writeFile(path, content);
         }
     }
 }

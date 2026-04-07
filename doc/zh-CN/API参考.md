@@ -9,6 +9,73 @@ CilExec 提供两种使用方式：
 
 ---
 
+## 脚本语言语法
+
+### 变量声明
+
+```
+int x = 10
+string name = "hello"
+array arr = [1, 2, 3]
+map m = {a: 1, b: 2}
+```
+
+### 控制流
+
+```
+if x > 5 {
+    // do something
+}
+
+while running {
+    // loop
+}
+```
+
+### 函数定义
+
+```
+func add(a, b) {
+    return a + b
+}
+```
+
+### 导入脚本
+
+```
+import "script.txt"
+```
+
+### 数组/Map操作
+
+```
+arr[0] = 100          // 数组索引赋值
+m["key"] = "value"    // Map键值赋值
+x = arr[0]            // 索引访问
+len = #arr            // 获取长度（#前缀）
+```
+
+### 嵌套数据结构访问
+
+```
+// 定义嵌套结构
+nested = {"data": {"data": {"a": 1}}, "users": [{"name": "Alice", "age": 30}]}
+
+// 连续索引访问
+nested["data"]["data"]["a"]           // 返回 1
+nested["users"][0]["name"]            // 返回 "Alice"
+
+// 连续索引赋值
+nested["data"]["data"]["b"] = 2       // 添加新字段
+nested["users"][0]["age"] = 31        // 修改嵌套值
+
+// 查看数据结构
+println(toJson(nested))               // 紧凑格式
+println(toJsonPretty(nested))         // 格式化输出（推荐）
+```
+
+---
+
 ## Java API
 
 ### FileUtil - 虚拟文件系统
@@ -172,8 +239,11 @@ String[] result = NetworkUtil.webget("https://example.com/file.zip", "/user/loca
 // 解析 JSON
 Object obj = JsonUtil.readJson(jsonString);  // 返回 Map/List/String/Number/Boolean
 
-// 转换为 JSON
+// 转换为 JSON（紧凑格式）
 String json = JsonUtil.toJson(object);
+
+// 转换为 JSON（格式化输出，带缩进）
+String prettyJson = JsonUtil.toJsonPretty(object);
 
 // 验证 JSON
 boolean valid = JsonUtil.isValidJson(jsonString);
@@ -303,6 +373,29 @@ SwapUtil.onProcessExit(pid);
 | `readMeta(path)` | `path`: 文件路径 | `String[]` | 读取文件元数据（JSON格式） |
 | `writeMeta(path, content)` | `path`: 文件路径, `content`: JSON元数据 | `String[]` | 写入文件元数据 |
 
+**示例：**
+```fcl
+// 创建文件并写入内容
+createFile("/user/local/app/", "test.txt")
+write("/user/local/app/test.txt", "Hello World")
+
+// 读取文件
+result = read("/user/local/app/test.txt")
+if result[0] == "SUCCESS" {
+    content = result[1]
+    println("文件内容: " + content)
+}
+
+// 追加内容
+append("/user/local/app/test.txt", "Second line")
+
+// 列出目录
+dirList = listdir("/user/local/")
+if dirList[0] == "SUCCESS" {
+    println("目录内容: " + toJson(dirList))
+}
+```
+
 ### 进程管理 API
 
 | 函数 | 参数 | 返回值 | 说明 |
@@ -318,6 +411,22 @@ SwapUtil.onProcessExit(pid);
 | `Continue(pid)` | `pid`: 进程ID | `String[]` | 继续暂停的进程 |
 | `getListOfChildProcess()` | 无 | `Map<String, Integer>` | 获取子进程列表 |
 | `getListOfProcess()` | 无 | `Map<String, Integer>` | 获取所有进程列表（需要local权限） |
+
+**示例：**
+```fcl
+// 创建子进程
+pid = fork()
+if pid == 0 {
+    // 子进程
+    println("我是子进程")
+    exec("/user/local/app/child.txt", [])
+} else {
+    // 父进程
+    println("父进程等待子进程: " + str(pid))
+    waitPID(pid)
+    println("子进程结束")
+}
+```
 
 ### 交换池 API
 
@@ -339,6 +448,30 @@ SwapUtil.onProcessExit(pid);
 - `"sync"` - 同步变量，变更时通知读取者
 - `"whitelist{pid1,pid2,...}"` - 白名单访问控制
 - `"blacklist{pid1,pid2,...}"` - 黑名单访问控制
+
+**示例：**
+```fcl
+// 创建交换池
+swapPool.create("shared")
+
+// 添加变量（永久有效）
+swapPool.add("counter:0", "shared", ["always"])
+
+// 添加变量（限制读取3次）
+swapPool.add("token:abc123", "shared", ["times(3)"])
+
+// 获取变量
+value = swapPool.get("counter", "shared")
+println("计数器: " + str(value))
+
+// 更新变量
+swapPool.update("counter", "shared", "10")
+
+// 锁定变量
+swapPool.lock("counter", "shared")
+// ... 执行操作
+swapPool.unlock("counter", "shared")
+```
 
 ### 用户管理 API
 
@@ -365,6 +498,24 @@ SwapUtil.onProcessExit(pid);
 - `https://example.com/path/file.zip` → `file.zip`
 - `https://example.com/` → `index.html`
 - `https://example.com/page.html?foo=bar` → `page.html`
+
+**示例：**
+```fcl
+// 下载图片到指定目录（文件名自动提取）
+result = webget("https://example.com/image.png", "/user/local/downloads/")
+if result[0] == "SUCCESS" {
+    filename = result[1]  // "image.png"
+    println("下载成功: " + filename)
+}
+
+// 下载文件并设置30秒超时
+result = webget("https://example.com/archive.zip", "/user/local/downloads/", 30000)
+if result[0] == "SUCCESS" {
+    println("文件已下载")
+} else {
+    println("下载失败: " + result[1])
+}
+```
 
 ### Socket API
 
@@ -395,130 +546,61 @@ SwapUtil.onProcessExit(pid);
 - **普通用户 alice**: `/user/alice/sockets/`
 - **普通用户 bob**: `/user/bob/sockets/`
 
-### 数学函数 API
+**TCP 示例：**
+```fcl
+# TCP 服务器（使用默认保存目录）
+result = socket.createServer("127.0.0.1", 8080)
+if result[0] == "SUCCESS" {
+    serverId = int(result[1])
+    
+    # 接受客户端连接
+    clientResult = socket.accept(serverId)
+    if clientResult[0] == "SUCCESS" {
+        clientId = int(clientResult[1])
+        
+        # 接收数据（自动保存到默认目录）
+        recvResult = socket.receive(clientId)
+        if recvResult[0] == "SUCCESS" {
+            filename = recvResult[1]
+            println("收到数据: " + filename)
+        }
+        
+        # 发送响应
+        socket.send(clientId, "Hello Client!")
+        socket.close(clientId)
+    }
+    socket.close(serverId)
+}
 
-提供全面的数学计算功能，包括算术、三角函数、对数、随机数、统计、数论等。
+# TCP 客户端
+result = socket.connect("127.0.0.1", 8080)
+if result[0] == "SUCCESS" {
+    socketId = int(result[1])
+    socket.send(socketId, "Hello Server!")
+    recvResult = socket.receive(socketId)
+    socket.close(socketId)
+}
+```
 
-#### 基础算术
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.abs(n)` | `n`: 数字 | `number` | 绝对值 |
-| `math.max(...numbers)` | `...numbers`: 数字列表 | `number` | 最大值 |
-| `math.min(...numbers)` | `...numbers`: 数字列表 | `number` | 最小值 |
-| `math.pow(base, exp)` | `base`: 底数, `exp`: 指数 | `number` | 幂运算 |
-| `math.sqrt(n)` | `n`: 数字 | `number` | 平方根 |
-| `math.cbrt(n)` | `n`: 数字 | `number` | 立方根 |
-| `math.round(n, decimals)` | `n`: 数字, `decimals`: 小数位(可选) | `number` | 四舍五入 |
-| `math.floor(n)` | `n`: 数字 | `number` | 向下取整 |
-| `math.ceil(n)` | `n`: 数字 | `number` | 向上取整 |
-| `math.mod(a, b)` | `a`: 被除数, `b`: 除数 | `number` | 取模 |
-| `math.sign(n)` | `n`: 数字 | `number` | 符号函数 (-1, 0, 1) |
-| `math.clamp(n, min, max)` | `n`: 数字, `min`: 最小值, `max`: 最大值 | `number` | 限制范围 |
-| `math.lerp(start, end, t)` | `start`: 起始值, `end`: 结束值, `t`: 插值系数(0-1) | `number` | 线性插值 |
-
-#### 三角函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.sin(rad)` | `rad`: 弧度 | `number` | 正弦 |
-| `math.cos(rad)` | `rad`: 弧度 | `number` | 余弦 |
-| `math.tan(rad)` | `rad`: 弧度 | `number` | 正切 |
-| `math.asin(n)` | `n`: 数字 | `number` | 反正弦 |
-| `math.acos(n)` | `n`: 数字 | `number` | 反余弦 |
-| `math.atan(n)` | `n`: 数字 | `number` | 反正切 |
-| `math.atan2(y, x)` | `y`: Y坐标, `x`: X坐标 | `number` | 反正切2 |
-| `math.sinh(n)` | `n`: 数字 | `number` | 双曲正弦 |
-| `math.cosh(n)` | `n`: 数字 | `number` | 双曲余弦 |
-| `math.tanh(n)` | `n`: 数字 | `number` | 双曲正切 |
-| `math.deg(rad)` | `rad`: 弧度 | `number` | 弧度转角度 |
-| `math.rad(deg)` | `deg`: 角度 | `number` | 角度转弧度 |
-
-#### 对数和指数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.log(base, n)` | `base`: 底数, `n`: 真数 | `number` | 对数 |
-| `math.log10(n)` | `n`: 数字 | `number` | 常用对数(底数10) |
-| `math.log2(n)` | `n`: 数字 | `number` | 二进制对数(底数2) |
-| `math.ln(n)` | `n`: 数字 | `number` | 自然对数(底数e) |
-| `math.exp(n)` | `n`: 数字 | `number` | e的n次方 |
-
-#### 随机数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.random(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机数(0-1或指定范围) |
-| `math.randint(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `int` | 随机整数 |
-| `math.randfloat(min, max)` | `min`: 最小值(可选), `max`: 最大值(可选) | `number` | 随机浮点数 |
-| `math.randchoice(list)` | `list`: 数组 | `any` | 随机选择数组元素 |
-| `math.shuffle(list)` | `list`: 数组 | `array` | 随机打乱数组 |
-
-#### 统计函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.sum(...numbers)` | `...numbers`: 数字列表 | `number` | 求和 |
-| `math.avg(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值 |
-| `math.mean(...numbers)` | `...numbers`: 数字列表 | `number` | 平均值(同avg) |
-| `math.median(...numbers)` | `...numbers`: 数字列表 | `number` | 中位数 |
-| `math.mode(...numbers)` | `...numbers`: 数字列表 | `number` | 众数 |
-| `math.var(...numbers)` | `...numbers`: 数字列表 | `number` | 方差 |
-| `math.std(...numbers)` | `...numbers`: 数字列表 | `number` | 标准差 |
-| `math.minarr(arr)` | `arr`: 数组 | `number` | 数组最小值 |
-| `math.maxarr(arr)` | `arr`: 数组 | `number` | 数组最大值 |
-| `math.range(start, end, step)` | `start`: 起始, `end`: 结束, `step`: 步长(可选) | `array` | 生成范围数组 |
-
-#### 数论函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.gcd(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最大公约数 |
-| `math.lcm(a, b)` | `a`: 整数, `b`: 整数 | `int` | 最小公倍数 |
-| `math.prime(n)` | `n`: 整数 | `boolean` | 判断素数 |
-| `math.factors(n)` | `n`: 整数 | `array` | 获取所有因数 |
-| `math.fib(n)` | `n`: 整数 | `int` | 斐波那契数列第n项 |
-| `math.factorial(n)` | `n`: 整数 | `int` | 阶乘 |
-
-#### 数学常数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.pi` | 无 | `number` | π (3.14159...) |
-| `math.e` | 无 | `number` | 自然常数e (2.71828...) |
-| `math.tau` | 无 | `number` | 2π (6.28318...) |
-| `math.inf` | 无 | `number` | 正无穷 |
-| `math.nan` | 无 | `number` | 非数字 |
-
-#### 几何计算
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.hypot(a, b)` | `a`: 直角边, `b`: 直角边 | `number` | 斜边长度 |
-| `math.dist(x1, y1, x2, y2)` | 两点坐标 | `number` | 两点间距离 |
-| `math.area.circle(radius)` | `radius`: 半径 | `number` | 圆面积 |
-| `math.area.rect(width, height)` | `width`: 宽, `height`: 高 | `number` | 矩形面积 |
-| `math.vol.sphere(radius)` | `radius`: 半径 | `number` | 球体积 |
-
-#### 位运算
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.bit.and(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位与 |
-| `math.bit.or(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位或 |
-| `math.bit.xor(a, b)` | `a`: 整数, `b`: 整数 | `int` | 按位异或 |
-| `math.bit.not(a)` | `a`: 整数 | `int` | 按位取反 |
-| `math.bit.shiftl(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 左移 |
-| `math.bit.shiftr(a, bits)` | `a`: 整数, `bits`: 位数 | `int` | 右移 |
-
-#### 高级函数
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `math.map(value, inMin, inMax, outMin, outMax)` | 输入值和范围 | `number` | 映射值到新范围 |
-| `math.norm(value, min, max)` | `value`: 值, `min`: 最小值, `max`: 最大值 | `number` | 归一化到0-1 |
-| `math.perlin(x, y)` | `x`: X坐标, `y`: Y坐标(可选) | `number` | Perlin噪声 |
-| `math.noise(x)` | `x`: 坐标 | `number` | 简单噪声 |
+**UDP 示例：**
+```fcl
+# 创建 UDP socket（端口 0 表示自动分配）
+result = socket.createUdp("0.0.0.0", 0)
+if result[0] == "SUCCESS" {
+    udpSocket = int(result[1])
+    
+    # 发送 UDP 数据包到指定地址
+    socket.sendTo(udpSocket, "127.0.0.1", 9090, "Hello UDP!")
+    
+    # 接收数据
+    recvResult = socket.receive(udpSocket)
+    if recvResult[0] == "SUCCESS" {
+        filename = recvResult[1]
+    }
+    
+    socket.close(udpSocket)
+}
+```
 
 ### 工具函数 API
 
@@ -526,12 +608,83 @@ SwapUtil.onProcessExit(pid);
 |------|------|--------|------|
 | `now()` | 无 | `int[]` | 获取当前时间 `[年,月,日,时,分,秒,毫秒]` |
 | `parseJson(jsonStr)` | `jsonStr`: JSON字符串 | `Object` | 解析JSON为对象 |
-| `toJson(obj)` | `obj`: 任意对象 | `String` | 将对象转为JSON字符串 |
+| `toJson(obj)` | `obj`: 任意对象 | `String` | 将对象转为JSON字符串（紧凑格式） |
+| `toJsonPretty(obj)` | `obj`: 任意对象 | `String` | 将对象转为格式化的JSON字符串（带缩进换行） |
 | `int(value)` | `value`: 字符串或数字 | `int` | 转换为整数 |
 | `str(value)` | `value`: 任意值 | `String` | 转换为字符串 |
 | `len(collection)` | `collection`: 数组/Map/字符串 | `int` | 获取长度 |
 
+**示例：**
+```fcl
+// 获取当前时间
+time = now()
+println("当前时间: " + str(time[0]) + "年" + str(time[1]) + "月" + str(time[2]) + "日")
 
+// JSON 转换
+data = {"name": "Alice", "age": 30}
+jsonStr = toJson(data)           // 紧凑格式
+jsonPretty = toJsonPretty(data)  // 格式化输出
+
+// 解析 JSON
+parsed = parseJson("{\"key\": \"value\"}")
+println(parsed["key"])
+
+// 类型转换
+num = int("42")        // 字符串转整数
+text = str(123)        // 整数转字符串
+
+// 获取长度
+arr = [1, 2, 3, 4, 5]
+println("数组长度: " + str(len(arr)))
+```
+
+> **注意**: 数学函数已移至单独文档 [数学函数.md](数学函数.md)
+
+### 路径管理 API
+
+| 函数 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `resolvePath(path)` | `path`: 路径 | `String` | 解析路径别名（如 `~` → `/user/local`） |
+| `getPathAlias(alias)` | `alias`: 别名 | `String` | 获取别名的目标路径 |
+| `listPathAliases()` | 无 | `Map` | 列出所有路径别名 |
+| `setPathAlias(alias, target)` | `alias`: 别名, `target`: 目标路径 | `String[]` | 设置路径别名 |
+| `getSysEnv(name)` | `name`: 变量名 | `String` | 获取系统环境变量 |
+| `listSysEnv()` | 无 | `Map` | 列出所有系统环境变量 |
+| `setSysEnv(name, value)` | `name`: 变量名, `value`: 变量值 | `String[]` | 设置系统环境变量 |
+
+**默认路径别名：**
+- `~` → `/user/local`
+- `$HOME` → `/user/local`
+
+**示例：**
+```fcl
+// 解析路径别名
+path = resolvePath("~/app/config.txt")
+// 结果: "/user/local/app/config.txt"
+
+// 设置自定义路径别名
+result = setPathAlias("@app", "/user/local/myapp")
+if result[0] == "SUCCESS" {
+    println("别名设置成功")
+}
+
+// 使用自定义别名
+path = resolvePath("@app/data.txt")
+// 结果: "/user/local/myapp/data.txt"
+
+// 列出所有路径别名
+aliases = listPathAliases()
+println("所有别名: " + toJson(aliases))
+
+// 获取系统环境变量
+home = getSysEnv("HOME")
+println("HOME: " + home)
+```
+
+**注意事项：**
+- 路径别名必须以路径分隔符（`/` 或 `\`）结尾或为完整路径
+- 支持多个别名组合（如 `@app/@data/file.txt`）
+- 配置保存在 `/system/config/env.json`
 
 ### 环境变量 API
 
@@ -541,6 +694,39 @@ SwapUtil.onProcessExit(pid);
 | `getEnv(name)` | `name`: 变量名 | `String[]` | 获取环境变量，返回 `["SUCCESS", value]` 或 `["ERROR", code]` |
 | `listEnv()` | 无 | `String[]` | 列出所有环境变量，返回 `["SUCCESS", json]` |
 | `deleteEnv(name)` | `name`: 变量名 | `String[]` | 删除环境变量，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
+
+**示例：**
+```fcl
+// 设置环境变量
+result = setEnv("APP_NAME", "MyApp")
+if result[0] == "SUCCESS" {
+    println("环境变量设置成功")
+}
+
+// 获取环境变量
+result = getEnv("APP_NAME")
+if result[0] == "SUCCESS" {
+    println("APP_NAME = " + result[1])
+}
+
+// 获取系统环境变量（如 PATH）
+result = getEnv("PATH")
+if result[0] == "SUCCESS" {
+    println("PATH 长度: " + str(len(result[1])))
+}
+
+// 列出所有环境变量
+result = listEnv()
+if result[0] == "SUCCESS" {
+    println("所有环境变量: " + result[1])
+}
+
+// 删除环境变量
+result = deleteEnv("APP_NAME")
+if result[0] == "SUCCESS" {
+    println("环境变量删除成功")
+}
+```
 
 ### 终端 IO API
 
@@ -560,43 +746,58 @@ SwapUtil.onProcessExit(pid);
 - `%n` - 换行符
 - `%%` - 百分号
 
-### 脚本语言语法
+**示例：**
+```fcl
+// 基本输出
+print("Hello ")
+print("World")
+// 输出: Hello World
 
-**变量声明：**
-```
-int x = 10
-string name = "hello"
-array arr = [1, 2, 3]
-map m = {a: 1, b: 2}
-```
+println("Hello World")
+// 输出: Hello World（带换行）
 
-**控制流：**
-```
-if x > 5 {
-    // do something
+// 格式化输出
+name = "Alice"
+age = 25
+printf("姓名: %s, 年龄: %d%n", name, age)
+// 输出: 姓名: Alice, 年龄: 25
+
+// 读取用户输入（提示符在同一行）
+name = input("请输入你的名字: ")
+println("你好, " + name + "!")
+
+// 读取用户输入（提示符在新行）
+name = inputLine("请输入你的名字:")
+println("你好, " + name + "!")
+
+// 错误输出
+printErr("错误: 文件未找到")
+
+// 综合示例：简单的交互式程序
+println("=== 简单计算器 ===")
+print("请输入第一个数字: ")
+num1Str = input()
+num1 = int(num1Str)
+
+print("请输入第二个数字: ")
+num2Str = input()
+num2 = int(num2Str)
+
+print("请输入操作符 (+, -, *, /): ")
+op = input()
+
+result = 0
+if op == "+" {
+    result = num1 + num2
+} elif op == "-" {
+    result = num1 - num2
+} elif op == "*" {
+    result = num1 * num2
+} elif op == "/" {
+    result = num1 / num2
 }
 
-while running {
-    // loop
-}
+printf("结果: %d %s %d = %d%n", num1, op, num2, result)
+println("计算完成！")
 ```
 
-**函数定义：**
-```
-func add(a, b) {
-    return a + b
-}
-```
-
-**导入脚本：**
-```
-import "script.txt"
-```
-
-**数组/Map操作：**
-```
-arr[0] = 100          // 数组索引赋值
-m["key"] = "value"    // Map键值赋值
-x = arr[0]            // 索引访问
-len = #arr            // 获取长度（#前缀）
-```

@@ -32,12 +32,14 @@ src/
 │   │   │   ├── ProcessFunctionProvider.java # Process management functions
 │   │   │   ├── UserFunctionProvider.java    # User management functions
 │   │   │   ├── UtilFunctionProvider.java    # Utility functions
+│   │   │   ├── PathFunctionProvider.java    # Path management functions
 │   │   │   └── MathFunctionProvider.java    # Mathematical function library
 │   │   └── basicUtil/                # Basic utility classes
 │   │       ├── FileUtil.java         # Virtual file system
 │   │       ├── JsonUtil.java         # JSON utilities
 │   │       ├── TimeUtil.java         # Time utilities
 │   │       ├── UserUtil.java         # Permission management
+│   │       ├── PathUtil.java         # Path alias management
 │   │       ├── Logger.java           # Logging utilities
 │   │       ├── Constants.java        # Constant definitions
 │   │       └── EnvVarUtil.java       # Environment variable utilities

@@ -26,25 +26,24 @@ public class ProcessFunctionProvider implements FunctionProvider {
                 return ProcessFunc.fork(context.getPid());
                 
             case "exec":
-                if (args.length < 2 || !(args[0] instanceof String)) {
+                if (args.length < 1 || !(args[0] instanceof String)) {
                     return error("INVALID_ARGUMENTS");
                 }
-                // Convert arguments to String[]
-                String[] stringParams;
-                if (args[1] instanceof List) {
-                    List<?> paramList = (List<?>) args[1];
-                    stringParams = new String[paramList.size()];
-                    for (int i = 0; i < paramList.size(); i++) {
-                        stringParams[i] = paramList.get(i).toString();
+                String[] stringParams = null;
+                if (args.length >= 2 && args[1] != null) {
+                    if (args[1] instanceof List) {
+                        List<?> paramList = (List<?>) args[1];
+                        stringParams = new String[paramList.size()];
+                        for (int i = 0; i < paramList.size(); i++) {
+                            stringParams[i] = paramList.get(i).toString();
+                        }
+                    } else if (args[1] instanceof Object[]) {
+                        Object[] paramArray = (Object[]) args[1];
+                        stringParams = new String[paramArray.length];
+                        for (int i = 0; i < paramArray.length; i++) {
+                            stringParams[i] = paramArray[i].toString();
+                        }
                     }
-                } else if (args[1] instanceof Object[]) {
-                    Object[] paramArray = (Object[]) args[1];
-                    stringParams = new String[paramArray.length];
-                    for (int i = 0; i < paramArray.length; i++) {
-                        stringParams[i] = paramArray[i].toString();
-                    }
-                } else {
-                    return error("INVALID_ARGUMENTS");
                 }
                 return ProcessFunc.exec((String) args[0], stringParams);
                 
@@ -100,7 +99,7 @@ public class ProcessFunctionProvider implements FunctionProvider {
             new FunctionInfo("fork", "Create child process",
                 new String[]{}, "int", "Process"),
             new FunctionInfo("exec", "Execute program to replace current process",
-                new String[]{"path: string", "params: array"}, "String[]", "Process"),
+                new String[]{"path: string", "params: array (optional)"}, "String[]", "Process"),
             new FunctionInfo("kill", "Terminate process",
                 new String[]{"pid: int"}, "String[]", "Process"),
             new FunctionInfo("wait", "Wait for any child process to end",

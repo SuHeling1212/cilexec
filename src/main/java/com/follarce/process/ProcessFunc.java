@@ -1,5 +1,6 @@
 package com.follarce.process;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -94,22 +95,6 @@ public class ProcessFunc {
             
             // Clear return value register for child process
             program.put("returnValue", null);
-
-            // Inherit environment variables from parent
-            Map<String, String> parentEnvVars = com.follarce.basicUtil.EnvVarUtil.getEnvVarsForProcess(parentPid);
-            Map<String, Object> childData = (Map<String, Object>) program.get("Data");
-            if (childData == null) {
-                childData = new HashMap<>();
-                program.put("Data", childData);
-            }
-            Map<String, Object> childEnvVars = (Map<String, Object>) childData.get("__ENV_");
-            if (childEnvVars == null) {
-                childEnvVars = new HashMap<>();
-                childData.put("__ENV_", childEnvVars);
-            }
-            for (Map.Entry<String, String> entry : parentEnvVars.entrySet()) {
-                childEnvVars.put(entry.getKey(), entry.getValue());
-            }
 
             // 5. Write child process file
             FileUtil.createFile("/system/process/", childPid + ".json");
@@ -219,8 +204,22 @@ public class ProcessFunc {
         // 5. Reset Program section
         Map<String, Object> program = new HashMap<>();
 
-        // Data section (reset)
-        program.put("Data", new HashMap<>());
+        // Data section (reset, but add command line arguments)
+        Map<String, Object> data = new HashMap<>();
+        
+        // Store command line arguments
+        // argv[0] is the program path, argv[1..n] are the params
+        List<String> argv = new ArrayList<>();
+        argv.add(path);
+        if (params != null) {
+            for (String param : params) {
+                argv.add(param);
+            }
+        }
+        data.put("argv", argv);
+        data.put("argc", argv.size());
+        
+        program.put("Data", data);
 
         // Code section (load from script)
         Map<String, Object> code = new HashMap<>();
@@ -229,13 +228,16 @@ public class ProcessFunc {
         // Split script content into lines
         String scriptContent = readResult[1];
         String[] lines = scriptContent.split("\n");
-        code.put("Code", Arrays.asList(lines));
+        List<String> codeList = new ArrayList<>(Arrays.asList(lines));
+        code.put("Code", codeList);
 
         program.put("Code", code);
         process.put("Program", program);
 
         // 6. Save back
-        FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(process));
+        Logger.info("Exec: Saving process file with " + codeList.size() + " code lines");
+        String[] writeResult = FileUtil.write("/system/process/" + currentPid + ".json", JsonUtil.toJson(process));
+        Logger.info("Exec: Write result: " + writeResult[0]);
 
         return new String[] { "SUCCESS", scriptContent };
     }

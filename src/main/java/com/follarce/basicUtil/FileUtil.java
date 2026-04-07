@@ -162,8 +162,11 @@ public class FileUtil {
             return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
         }
 
+        // Resolve path aliases (e.g., ~ -> /user/local)
+        String resolvedPath = PathUtil.resolvePath(path);
+
         String root = getVfsRoot();
-        String normalized = normalizePath(path);
+        String normalized = normalizePath(resolvedPath);
 
         // Handle root path special case
         if (normalized.equals("/")) {
@@ -172,7 +175,7 @@ public class FileUtil {
         }
 
         // Security check: ensure normalized path doesn't escape VFS root
-        if (normalized.contains("..") || normalized.contains("~")) {
+        if (normalized.contains("..")) {
             return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
         }
 
@@ -1861,6 +1864,10 @@ public class FileUtil {
             }
 
             String content = new String(Files.readAllBytes(initFile.toPath()), StandardCharsets.UTF_8);
+            
+            // Strip metadata header if present
+            content = extractBodyContent(content);
+            
             Object obj = JsonUtil.readJson(content);
 
             if (obj instanceof Map) {

@@ -43,7 +43,7 @@ public class Main {
         FunctionRegistry.register(new SocketFunctionProvider());
         FunctionRegistry.register(new MathFunctionProvider());
         FunctionRegistry.register(ioProvider);
-        FunctionRegistry.register(new EnvVarFunctionProvider());
+        FunctionRegistry.register(new PathFunctionProvider());
 
         Logger.info("Registered " + FunctionRegistry.getProviderCount() + " function providers");
     }

@@ -1,6 +1,9 @@
 package com.follarce.plugin;
 
 import com.follarce.basicUtil.FileUtil;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * File operation function provider
@@ -21,69 +24,79 @@ public class FileFunctionProvider implements FunctionProvider {
         switch (name) {
             case "read":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.read((String) args[0]);
+                return stringArrayToList(FileUtil.read((String) args[0]));
                 
             case "write":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
                 String writeContent = args[1] instanceof String ? (String) args[1] : String.valueOf(args[1]);
-                return FileUtil.write((String) args[0], writeContent);
+                return stringArrayToList(FileUtil.write((String) args[0], writeContent));
                 
             case "listDir":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.getListOfFileAndDirectory((String) args[0]);
+                return stringArrayToList(FileUtil.getListOfFileAndDirectory((String) args[0]));
                 
             case "readMeta":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.readFileMetaData((String) args[0]);
+                return stringArrayToList(FileUtil.readFileMetaData((String) args[0]));
                 
             case "writeMeta":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.writeFileMetaData((String) args[0], (String) args[1]);
+                return stringArrayToList(FileUtil.writeFileMetaData((String) args[0], (String) args[1]));
 
             case "append":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
                 String appendContent = args[1] instanceof String ? (String) args[1] : String.valueOf(args[1]);
-                return FileUtil.append((String) args[0], appendContent);
+                return stringArrayToList(FileUtil.append((String) args[0], appendContent));
 
             case "createFile":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.createFile((String) args[0], (String) args[1]);
+                return stringArrayToList(FileUtil.createFile((String) args[0], (String) args[1]));
                 
             case "removeFile":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.removeFile((String) args[0]);
+                return stringArrayToList(FileUtil.removeFile((String) args[0]));
                 
             case "createDir":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.createDirectory((String) args[0], (String) args[1]);
+                return stringArrayToList(FileUtil.createDirectory((String) args[0], (String) args[1]));
                 
             case "removeDir":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.removeDirectory((String) args[0]);
+                return stringArrayToList(FileUtil.removeDirectory((String) args[0]));
                 
             case "rename":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.Rename((String) args[0], (String) args[1]);
+                return stringArrayToList(FileUtil.Rename((String) args[0], (String) args[1]));
                 
             case "link":
                 if (args.length < 2) return error("INVALID_ARGUMENTS");
-                return FileUtil.Link((String) args[0], (String) args[1]);
+                return stringArrayToList(FileUtil.Link((String) args[0], (String) args[1]));
                 
             case "lock":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.lock((String) args[0]);
+                return stringArrayToList(FileUtil.lock((String) args[0]));
                 
             case "unlock":
                 if (args.length < 1) return error("INVALID_ARGUMENTS");
-                return FileUtil.unlock((String) args[0]);
+                return stringArrayToList(FileUtil.unlock((String) args[0]));
                 
             default:
                 return null;
         }
     }
     
-    private String[] error(String code) {
-        return new String[]{"ERROR", code};
+    private List<String> stringArrayToList(String[] arr) {
+        if (arr == null) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(Arrays.asList(arr));
+    }
+    
+    private List<String> error(String code) {
+        List<String> result = new ArrayList<>();
+        result.add("ERROR");
+        result.add(code);
+        return result;
     }
     
     @Override

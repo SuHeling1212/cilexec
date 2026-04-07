@@ -2,6 +2,7 @@ package com.follarce.basicUtil;
 
 import com.follarce.basicUtil.*;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
@@ -13,6 +14,7 @@ import java.util.ArrayList;
 public class JsonUtil {
 
     private static final Gson gson = new Gson();
+    private static final Gson prettyGson = new GsonBuilder().setPrettyPrinting().create();
 
     /**
      * Convert Double values to Integer if they represent whole numbers
@@ -137,5 +139,15 @@ public class JsonUtil {
      */
     public static String toJson(Object obj) {
         return gson.toJson(obj);
+    }
+    
+    /**
+     * Convert object to formatted JSON string with pretty printing
+     *
+     * @param obj Object to convert
+     * @return Formatted JSON string with indentation
+     */
+    public static String toJsonPretty(Object obj) {
+        return prettyGson.toJson(obj);
     }
 }

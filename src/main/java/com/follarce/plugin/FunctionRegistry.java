@@ -31,13 +31,30 @@ public class FunctionRegistry {
      * @return Function return value, returns null if function does not exist
      */
     public static Object call(String name, Object[] args, FunctionContext context) {
+        Object lastError = null;
         for (FunctionProvider provider : providers) {
             Object result = provider.call(name, args, context);
             if (result != null) {
+                if (isErrorResult(result)) {
+                    lastError = result;
+                    continue;
+                }
                 return result;
             }
         }
-        return null;
+        return lastError;
+    }
+    
+    private static boolean isErrorResult(Object result) {
+        if (result instanceof Object[]) {
+            Object[] arr = (Object[]) result;
+            return arr.length >= 1 && "ERROR".equals(arr[0]);
+        }
+        if (result instanceof String[]) {
+            String[] arr = (String[]) result;
+            return arr.length >= 1 && "ERROR".equals(arr[0]);
+        }
+        return false;
     }
     
     /**

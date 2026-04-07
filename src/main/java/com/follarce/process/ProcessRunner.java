@@ -184,6 +184,9 @@ public class ProcessRunner implements Runnable {
             }
         }
         
+        // Parse function definitions (don't remove them, will skip during execution)
+        parseFunctionDefinitions();
+
         // Note: Don't reset currentLine here - let executeLine handle process termination
         // when currentLine >= codeLines.size()
     }
@@ -214,6 +217,7 @@ public class ProcessRunner implements Runnable {
 
         Map<String, Object> code = (Map<String, Object>) program.get("Code");
         code.put("runningCodeLine", this.currentLine);
+        code.put("Code", this.codeLines);
         
         // Save whileStack to persist loop state
         List<Integer> whileStackList = new ArrayList<>(this.whileStack);
@@ -331,6 +335,10 @@ public class ProcessRunner implements Runnable {
     }
 
     private void executeStatement(String line) {
+        if (line.startsWith("func ")) {
+            return;
+        }
+
         if (line.startsWith("import ")) {
             handleImport(line);
             return;
@@ -356,12 +364,104 @@ public class ProcessRunner implements Runnable {
             return;
         }
 
-        if (line.contains("=")) {
+        // Check if this is an assignment (variable = value)
+        // Must be: identifier = expression, not inside quotes or parentheses
+        if (isAssignment(line)) {
             handleAssignment(line);
             return;
         }
 
         evaluate(line);
+    }
+    
+    private boolean isAssignment(String line) {
+        int eqIndex = line.indexOf('=');
+        if (eqIndex == -1) {
+            return false;
+        }
+        
+        // Check if there's a second '=' (comparison operator ==)
+        if (eqIndex + 1 < line.length() && line.charAt(eqIndex + 1) == '=') {
+            return false;
+        }
+        
+        // Check if '=' is inside quotes
+        boolean inQuotes = false;
+        for (int i = 0; i < eqIndex; i++) {
+            char c = line.charAt(i);
+            if (c == '"' && (i == 0 || line.charAt(i - 1) != '\\')) {
+                inQuotes = !inQuotes;
+            }
+        }
+        if (inQuotes) {
+            return false;
+        }
+        
+        // Check if '=' is inside parentheses
+        int parenDepth = 0;
+        for (int i = 0; i < eqIndex; i++) {
+            char c = line.charAt(i);
+            if (c == '(') parenDepth++;
+            if (c == ')') parenDepth--;
+        }
+        if (parenDepth > 0) {
+            return false;
+        }
+        
+        // Check if left side is a valid identifier (possibly with index access)
+        String left = line.substring(0, eqIndex).trim();
+        if (left.isEmpty()) {
+            return false;
+        }
+        
+        // Valid identifier: starts with letter or underscore, contains only alphanumeric, underscore, and brackets
+        if (left.contains("[") && left.contains("]")) {
+            // Index access: identifier[expr]
+            int bracketIndex = left.indexOf('[');
+            String baseName = left.substring(0, bracketIndex).trim();
+            return isValidIdentifier(baseName);
+        }
+        
+        return isValidIdentifier(left);
+    }
+    
+    private boolean isValidIdentifier(String name) {
+        if (name.isEmpty()) {
+            return false;
+        }
+        if (!Character.isLetter(name.charAt(0)) && name.charAt(0) != '_') {
+            return false;
+        }
+        for (int i = 1; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isStandaloneFunctionCall(String expr) {
+        expr = expr.trim();
+        if (expr.isEmpty() || expr.contains(" ")) {
+            return false;
+        }
+        
+        int parenIndex = expr.indexOf('(');
+        if (parenIndex <= 0) {
+            return false;
+        }
+        
+        String funcName = expr.substring(0, parenIndex).trim();
+        if (!isValidIdentifier(funcName)) {
+            return false;
+        }
+        
+        if (!expr.endsWith(")")) {
+            return false;
+        }
+        
+        return true;
     }
 
     private void handleBreak() {
@@ -396,16 +496,20 @@ public class ProcessRunner implements Runnable {
         String fileName = m.group(1);
         String importPath;
 
-        String currentScript = (String) data.get("__current_script");
-        if (currentScript != null) {
-            int lastSlash = currentScript.lastIndexOf('/');
-            if (lastSlash >= 0) {
-                importPath = currentScript.substring(0, lastSlash + 1) + fileName;
-            } else {
-                importPath = fileName;
-            }
+        if (fileName.startsWith("/") || fileName.startsWith("~") || fileName.startsWith("$")) {
+            importPath = fileName;
         } else {
-            importPath = "/user/local/app/" + fileName;
+            String currentScript = (String) data.get("__current_script");
+            if (currentScript != null) {
+                int lastSlash = currentScript.lastIndexOf('/');
+                if (lastSlash >= 0) {
+                    importPath = currentScript.substring(0, lastSlash + 1) + fileName;
+                } else {
+                    importPath = fileName;
+                }
+            } else {
+                importPath = "~/app/" + fileName;
+            }
         }
 
         String[] readResult = FileUtil.read(importPath);
@@ -446,6 +550,51 @@ public class ProcessRunner implements Runnable {
                         if (braceCount > 0) {
                             body.add(bodyLine);
                         }
+                    }
+
+                    functions.put(name, new FunctionDef(params, body));
+                    continue;
+                }
+            }
+            i++;
+        }
+    }
+
+    private void parseFunctionDefinitions() {
+        if (codeLines == null || codeLines.isEmpty()) {
+            return;
+        }
+
+        // Clear existing functions and re-parse
+        functions.clear();
+
+        int i = 0;
+        while (i < codeLines.size()) {
+            String line = codeLines.get(i).trim();
+
+            if (line.startsWith("func ")) {
+                Pattern p = Pattern.compile("func\\s+(\\w+)\\((.*)\\)\\s*\\{");
+                Matcher m = p.matcher(line);
+                if (m.find()) {
+                    String name = m.group(1);
+                    String paramsStr = m.group(2).trim();
+                    List<String> params = paramsStr.isEmpty() ? new ArrayList<>()
+                            : Arrays.asList(paramsStr.split("\\s*,\\s*"));
+
+                    List<String> body = new ArrayList<>();
+                    int braceCount = 1;
+                    i++;
+
+                    while (i < codeLines.size() && braceCount > 0) {
+                        String bodyLine = codeLines.get(i);
+                        if (bodyLine.contains("{"))
+                            braceCount++;
+                        if (bodyLine.contains("}"))
+                            braceCount--;
+                        if (braceCount > 0) {
+                            body.add(bodyLine);
+                        }
+                        i++;
                     }
 
                     functions.put(name, new FunctionDef(params, body));
@@ -513,6 +662,9 @@ public class ProcessRunner implements Runnable {
 
     private void handleReturn(String line) {
         String expr = line.substring(7).trim();
+        if (expr.endsWith(";")) {
+            expr = expr.substring(0, expr.length() - 1).trim();
+        }
         if (expr.isEmpty()) {
             returnValue = null;
         } else {
@@ -540,6 +692,10 @@ public class ProcessRunner implements Runnable {
         String left = parts[0].trim();
         String right = parts[1].trim();
 
+        if (left.startsWith("_")) {
+            throw wrapException("Variable names cannot start with underscore (reserved for system use): " + left, "reserved_variable");
+        }
+
         if (left.contains("[")) {
             handleIndexAssignment(left, right);
             return;
@@ -551,43 +707,177 @@ public class ProcessRunner implements Runnable {
 
     @SuppressWarnings("unchecked")
     private void handleIndexAssignment(String left, String right) {
-        Pattern p = Pattern.compile("(\\w+)\\[(.*)\\]");
-        Matcher m = p.matcher(left);
-        if (!m.find()) {
+        int firstBracket = left.indexOf('[');
+        if (firstBracket <= 0) {
             throw wrapException("Invalid index syntax", "index_assignment");
         }
-
-        String containerName = m.group(1);
-        String indexExpr = m.group(2).trim();
-
+        
+        String containerName = left.substring(0, firstBracket);
         Object container = data.get(containerName);
         if (container == null) {
             throw UnrecoverableException.undefinedVariable(containerName, pid, currentLine);
         }
-
-        Object index = evaluate(indexExpr);
+        
+        String indexExpr = left.substring(firstBracket);
         Object value = evaluate(right);
-
-        if (container instanceof List && index instanceof Number) {
-            List<Object> list = (List<Object>) container;
-            int idx = ((Number) index).intValue();
-            if (idx < 0)
-                idx = list.size() + idx;
-            if (idx < 0 || idx >= list.size()) {
-                throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
-            }
-            list.set(idx, value);
-        } else if (container instanceof Map) {
-            Map<Object, Object> map = (Map<Object, Object>) container;
-            map.put(index, value);
-        } else {
-            throw UnrecoverableException.typeError("array or map", 
-                container.getClass().getSimpleName(), pid, currentLine);
+        
+        handleIndexAssignmentRecursive(container, indexExpr, value);
+    }
+    
+    @SuppressWarnings("unchecked")
+    private void handleIndexAssignmentRecursive(Object container, String indexExpr, Object value) {
+        if (!indexExpr.startsWith("[")) {
+            return;
         }
+        
+        int depth = 0;
+        int closeBracket = -1;
+        for (int i = 0; i < indexExpr.length(); i++) {
+            char c = indexExpr.charAt(i);
+            if (c == '[' || c == '{')
+                depth++;
+            else if (c == ']' || c == '}')
+                depth--;
+            
+            if (c == ']' && depth == 0) {
+                closeBracket = i;
+                break;
+            }
+        }
+        
+        if (closeBracket == -1) {
+            throw wrapException("Invalid index syntax: missing closing bracket", "index_assignment");
+        }
+        
+        String indexContent = indexExpr.substring(1, closeBracket).trim();
+        Object index = evaluate(indexContent);
+        
+        String remaining = indexExpr.substring(closeBracket + 1).trim();
+        
+        if (remaining.startsWith("[")) {
+            Object nextContainer;
+            if (container instanceof List && index instanceof Number) {
+                List<?> list = (List<?>) container;
+                int idx = ((Number) index).intValue();
+                if (idx < 0)
+                    idx = list.size() + idx;
+                if (idx < 0 || idx >= list.size()) {
+                    throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
+                }
+                nextContainer = list.get(idx);
+            } else if (container instanceof Map) {
+                Map<?, ?> map = (Map<?, ?>) container;
+                nextContainer = map.get(index);
+            } else {
+                throw UnrecoverableException.typeError("array or map", 
+                    container.getClass().getSimpleName(), pid, currentLine);
+            }
+            
+            if (nextContainer == null) {
+                throw wrapException("Cannot access index of null value", "index_assignment");
+            }
+            
+            handleIndexAssignmentRecursive(nextContainer, remaining, value);
+        } else {
+            if (container instanceof List && index instanceof Number) {
+                List<Object> list = (List<Object>) container;
+                int idx = ((Number) index).intValue();
+                if (idx < 0)
+                    idx = list.size() + idx;
+                if (idx < 0 || idx >= list.size()) {
+                    throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
+                }
+                list.set(idx, value);
+            } else if (container instanceof Map) {
+                Map<Object, Object> map = (Map<Object, Object>) container;
+                map.put(index, value);
+            } else {
+                throw UnrecoverableException.typeError("array or map", 
+                    container.getClass().getSimpleName(), pid, currentLine);
+            }
+        }
+    }
+
+    private String preprocessFunctionCalls(String expr) {
+        StringBuilder result = new StringBuilder();
+        int i = 0;
+        while (i < expr.length()) {
+            char c = expr.charAt(i);
+            
+            if (c == '"') {
+                // Copy string literal as-is
+                result.append(c);
+                i++;
+                while (i < expr.length()) {
+                    char sc = expr.charAt(i);
+                    result.append(sc);
+                    if (sc == '\\' && i + 1 < expr.length()) {
+                        i++;
+                        result.append(expr.charAt(i));
+                    } else if (sc == '"') {
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+            } else if (Character.isLetter(c) || c == '_') {
+                // Potential function name
+                int start = i;
+                while (i < expr.length() && (Character.isLetterOrDigit(expr.charAt(i)) || expr.charAt(i) == '_')) {
+                    i++;
+                }
+                String name = expr.substring(start, i);
+                
+                // Check if followed by '('
+                int savedI = i;
+                while (i < expr.length() && Character.isWhitespace(expr.charAt(i))) {
+                    i++;
+                }
+                
+                if (i < expr.length() && expr.charAt(i) == '(') {
+                    // This is a function call - find the matching closing parenthesis
+                    int parenCount = 1;
+                    int funcEnd = i + 1;
+                    while (funcEnd < expr.length() && parenCount > 0) {
+                        char fc = expr.charAt(funcEnd);
+                        if (fc == '(') parenCount++;
+                        if (fc == ')') parenCount--;
+                        funcEnd++;
+                    }
+                    // Extract the full function call expression
+                    String funcCallExpr = expr.substring(start, funcEnd);
+                    Object funcResult = handleFunctionCall(funcCallExpr);
+                    i = funcEnd;
+                    result.append(funcResult != null ? funcResult.toString() : "null");
+                } else {
+                    i = savedI; // Restore i to position after identifier
+                    result.append(name);
+                }
+            } else {
+                result.append(c);
+                i++;
+            }
+        }
+        return result.toString();
     }
 
     private Object evaluate(String expr) {
         expr = expr.trim();
+        
+        // Remove trailing semicolon if present
+        if (expr.endsWith(";")) {
+            expr = expr.substring(0, expr.length() - 1).trim();
+        }
+
+        // Check if this is a standalone function call first
+        // A standalone function call is: functionName(arguments) with no other operators
+        if (isStandaloneFunctionCall(expr)) {
+            return handleFunctionCall(expr);
+        }
+
+        // Pre-process: find and evaluate function calls in the expression
+        // This is for complex expressions like "result: " + read(path)
+        expr = preprocessFunctionCalls(expr);
 
         if (expr.matches("-?\\d+")) {
             return Integer.parseInt(expr);
@@ -691,8 +981,14 @@ public class ProcessRunner implements Runnable {
             return data.get(expr);
         }
 
+        // Check if this is an index access: identifier[expr]
+        // Must match pattern: word[expr]
         if (expr.contains("[")) {
-            return handleIndexAccess(expr);
+            Pattern indexPattern = Pattern.compile("(\\w+)\\[(.*)\\]");
+            Matcher indexMatcher = indexPattern.matcher(expr);
+            if (indexMatcher.matches()) {
+                return handleIndexAccess(expr);
+            }
         }
 
         return evaluateOperator(expr);
@@ -707,35 +1003,50 @@ public class ProcessRunner implements Runnable {
             return evaluateOperator(expr);
         }
         
-        String argsStr = expr.substring(parenIndex + 1, expr.length() - 1).trim();
+        // Find the matching closing parenthesis
+        int depth = 1;
+        int closeParenIndex = parenIndex + 1;
+        while (closeParenIndex < expr.length() && depth > 0) {
+            char c = expr.charAt(closeParenIndex);
+            if (c == '(') depth++;
+            if (c == ')') depth--;
+            if (depth > 0) closeParenIndex++;
+        }
+        
+        String argsStr = expr.substring(parenIndex + 1, closeParenIndex).trim();
 
         List<Object> args = new ArrayList<>();
         if (!argsStr.isEmpty()) {
-            int depth = 0;
+            int argDepth = 0;
+            boolean inString = false;
             StringBuilder current = new StringBuilder();
             for (int i = 0; i < argsStr.length(); i++) {
                 char c = argsStr.charAt(i);
-                if (c == '(')
-                    depth++;
-                if (c == ')')
-                    depth--;
-                if (c == ',' && depth == 0) {
-                    String argStr = current.toString().trim();
-                    if (!argStr.isEmpty()) {
-                        args.add(evaluate(argStr));
-                    } else {
-                        args.add("");
-                    }
-                    current = new StringBuilder();
-                } else {
-                    current.append(c);
+                
+                // Track string literals
+                if (c == '"' && (i == 0 || argsStr.charAt(i - 1) != '\\')) {
+                    inString = !inString;
                 }
+                
+                if (!inString) {
+                    if (c == '(')
+                        argDepth++;
+                    if (c == ')')
+                        argDepth--;
+                    if (c == ',' && argDepth == 0) {
+                        String argStr = current.toString().trim();
+                        if (!argStr.isEmpty()) {
+                            args.add(evaluate(argStr));
+                        }
+                        current = new StringBuilder();
+                        continue;
+                    }
+                }
+                current.append(c);
             }
             String argStr = current.toString().trim();
             if (!argStr.isEmpty()) {
                 args.add(evaluate(argStr));
-            } else {
-                args.add("");
             }
         }
 
@@ -790,22 +1101,48 @@ public class ProcessRunner implements Runnable {
     }
 
     private Object handleIndexAccess(String expr) {
-        Pattern p = Pattern.compile("(\\w+)\\[(.*)\\]");
-        Matcher m = p.matcher(expr);
-        if (!m.find()) {
+        int firstBracket = expr.indexOf('[');
+        if (firstBracket <= 0) {
             throw wrapException("Invalid index syntax", "index_access");
         }
-
-        String containerName = m.group(1);
-        String indexExpr = m.group(2).trim();
-
+        
+        String containerName = expr.substring(0, firstBracket);
         Object container = data.get(containerName);
         if (container == null) {
             throw UnrecoverableException.undefinedVariable(containerName, pid, currentLine);
         }
-
-        Object index = evaluate(indexExpr);
-
+        
+        return handleIndexAccessRecursive(container, expr.substring(firstBracket));
+    }
+    
+    private Object handleIndexAccessRecursive(Object container, String indexExpr) {
+        if (!indexExpr.startsWith("[")) {
+            return container;
+        }
+        
+        int depth = 0;
+        int closeBracket = -1;
+        for (int i = 0; i < indexExpr.length(); i++) {
+            char c = indexExpr.charAt(i);
+            if (c == '[' || c == '{')
+                depth++;
+            else if (c == ']' || c == '}')
+                depth--;
+            
+            if (c == ']' && depth == 0) {
+                closeBracket = i;
+                break;
+            }
+        }
+        
+        if (closeBracket == -1) {
+            throw wrapException("Invalid index syntax: missing closing bracket", "index_access");
+        }
+        
+        String indexContent = indexExpr.substring(1, closeBracket).trim();
+        Object index = evaluate(indexContent);
+        
+        Object result;
         if (container instanceof List && index instanceof Number) {
             List<?> list = (List<?>) container;
             int idx = ((Number) index).intValue();
@@ -814,14 +1151,21 @@ public class ProcessRunner implements Runnable {
             if (idx < 0 || idx >= list.size()) {
                 throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
             }
-            return list.get(idx);
+            result = list.get(idx);
         } else if (container instanceof Map) {
             Map<?, ?> map = (Map<?, ?>) container;
-            return map.get(index);
+            result = map.get(index);
         } else {
             throw UnrecoverableException.typeError("array or map", 
                 container.getClass().getSimpleName(), pid, currentLine);
         }
+        
+        String remaining = indexExpr.substring(closeBracket + 1).trim();
+        if (remaining.startsWith("[")) {
+            return handleIndexAccessRecursive(result, remaining);
+        }
+        
+        return result;
     }
 
     private List<Object> parseArray(String expr) {
@@ -833,9 +1177,9 @@ public class ProcessRunner implements Runnable {
             StringBuilder current = new StringBuilder();
             for (int i = 0; i < content.length(); i++) {
                 char c = content.charAt(i);
-                if (c == '[')
+                if (c == '[' || c == '{')
                     depth++;
-                if (c == ']')
+                if (c == ']' || c == '}')
                     depth--;
                 if (c == ',' && depth == 0) {
                     result.add(evaluate(current.toString().trim()));

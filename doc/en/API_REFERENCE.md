@@ -9,6 +9,73 @@ CilExec provides two ways to use its functionality:
 
 ---
 
+## Script Language Syntax
+
+### Variable Declaration
+
+```
+int x = 10
+string name = "hello"
+array arr = [1, 2, 3]
+map m = {a: 1, b: 2}
+```
+
+### Control Flow
+
+```
+if x > 5 {
+    // do something
+}
+
+while running {
+    // loop
+}
+```
+
+### Function Definition
+
+```
+func add(a, b) {
+    return a + b
+}
+```
+
+### Import Script
+
+```
+import "script.txt"
+```
+
+### Array/Map Operations
+
+```
+arr[0] = 100          // Array index assignment
+m["key"] = "value"    // Map key assignment
+x = arr[0]            // Index access
+len = #arr            // Get length (# prefix)
+```
+
+### Nested Data Structure Access
+
+```
+// Define nested structure
+nested = {"data": {"data": {"a": 1}}, "users": [{"name": "Alice", "age": 30}]}
+
+// Chained index access
+nested["data"]["data"]["a"]           // Returns 1
+nested["users"][0]["name"]            // Returns "Alice"
+
+// Chained index assignment
+nested["data"]["data"]["b"] = 2       // Add new field
+nested["users"][0]["age"] = 31        // Modify nested value
+
+// View data structure
+println(toJson(nested))               // Compact format
+println(toJsonPretty(nested))         // Formatted output (recommended)
+```
+
+---
+
 ## Java API
 
 ### FileUtil - Virtual File System
@@ -148,8 +215,11 @@ String[] result = NetworkUtil.webget("https://example.com/file.zip", "/user/loca
 // Parse JSON
 Object obj = JsonUtil.readJson(jsonString);  // Returns Map/List/String/Number/Boolean
 
-// Convert to JSON
+// Convert to JSON (compact format)
 String json = JsonUtil.toJson(object);
+
+// Convert to JSON (formatted output with indentation)
+String prettyJson = JsonUtil.toJsonPretty(object);
 
 // Validate JSON
 boolean valid = JsonUtil.isValidJson(jsonString);
@@ -371,6 +441,18 @@ Provides TCP and UDP network communication functionality, supporting server/clie
 - **Regular user alice**: `/user/alice/sockets/`
 - **Regular user bob**: `/user/bob/sockets/`
 
+### Utility Functions API
+
+| Function | Parameters | Return Value | Description |
+|----------|------------|--------------|-------------|
+| `now()` | None | `int[]` | Get current time `[year, month, day, hour, minute, second, millisecond]` |
+| `parseJson(jsonStr)` | `jsonStr`: JSON string | `Object` | Parse JSON to object |
+| `toJson(obj)` | `obj`: any object | `String` | Convert object to JSON string (compact format) |
+| `toJsonPretty(obj)` | `obj`: any object | `String` | Convert object to formatted JSON string (with indentation and line breaks) |
+| `int(value)` | `value`: string or number | `int` | Convert to integer |
+| `str(value)` | `value`: any value | `String` | Convert to string |
+| `len(collection)` | `collection`: array/map/string | `int` | Get length |
+
 ### Mathematical Functions API
 
 Comprehensive mathematical operations including arithmetic, trigonometric functions, logarithms, random numbers, statistics, number theory, and more.
@@ -496,16 +578,53 @@ Comprehensive mathematical operations including arithmetic, trigonometric functi
 | `math.perlin(x, y)` | `x`: X coordinate, `y`: Y coordinate (optional) | `number` | Perlin noise |
 | `math.noise(x)` | `x`: coordinate | `number` | Simple noise |
 
-### Utility Functions API
+> **Note**: Mathematical functions have been moved to a separate document [MATHEMATICAL_FUNCTIONS.md](MATHEMATICAL_FUNCTIONS.md)
+
+### Path Management API
 
 | Function | Parameters | Return Value | Description |
 |----------|------------|--------------|-------------|
-| `now()` | None | `int[]` | Get current time `[year, month, day, hour, minute, second, millisecond]` |
-| `parseJson(jsonStr)` | `jsonStr`: JSON string | `Object` | Parse JSON to object |
-| `toJson(obj)` | `obj`: any object | `String` | Convert object to JSON string |
-| `int(value)` | `value`: string or number | `int` | Convert to integer |
-| `str(value)` | `value`: any value | `String` | Convert to string |
-| `len(collection)` | `collection`: array/map/string | `int` | Get length |
+| `resolvePath(path)` | `path`: path | `String` | Resolve path aliases (e.g., `~` → `/user/local`) |
+| `getPathAlias(alias)` | `alias`: alias | `String` | Get target path of an alias |
+| `listPathAliases()` | None | `Map` | List all path aliases |
+| `setPathAlias(alias, target)` | `alias`: alias, `target`: target path | `String[]` | Set path alias |
+| `getSysEnv(name)` | `name`: variable name | `String` | Get system environment variable |
+| `listSysEnv()` | None | `Map` | List all system environment variables |
+| `setSysEnv(name, value)` | `name`: variable name, `value`: variable value | `String[]` | Set system environment variable |
+
+**Default Path Aliases:**
+- `~` → `/user/local`
+- `$HOME` → `/user/local`
+
+**Examples:**
+```fcl
+// Resolve path alias
+path = resolvePath("~/app/config.txt")
+// Result: "/user/local/app/config.txt"
+
+// Set custom path alias
+result = setPathAlias("@app", "/user/local/myapp")
+if result[0] == "SUCCESS" {
+    println("Alias set successfully")
+}
+
+// Use custom alias
+path = resolvePath("@app/data.txt")
+// Result: "/user/local/myapp/data.txt"
+
+// List all path aliases
+aliases = listPathAliases()
+println("All aliases: " + toJson(aliases))
+
+// Get system environment variable
+home = getSysEnv("HOME")
+println("HOME: " + home)
+```
+
+**Notes:**
+- Path aliases must end with a path separator (`/` or `\`) or be a complete path
+- Supports multiple alias combinations (e.g., `@app/@data/file.txt`)
+- Configuration is saved in `/system/config/env.json`
 
 ### Environment Variable Functions API
 
@@ -518,43 +637,3 @@ Manages process environment variables. These variables persist only for the curr
 | `env.list()` | None | `String[]` | List all environment variables, returns `["SUCCESS", json]` |
 | `env.delete(name)` | `name`: variable name | `String[]` | Delete environment variable |
 
-### Script Language Syntax
-
-**Variable Declaration:**
-```
-int x = 10
-string name = "hello"
-array arr = [1, 2, 3]
-map m = {a: 1, b: 2}
-```
-
-**Control Flow:**
-```
-if x > 5 {
-    // do something
-}
-
-while running {
-    // loop
-}
-```
-
-**Function Definition:**
-```
-func add(a, b) {
-    return a + b
-}
-```
-
-**Import Script:**
-```
-import "script.txt"
-```
-
-**Array/Map Operations:**
-```
-arr[0] = 100          // Array index assignment
-m["key"] = "value"    // Map key assignment
-x = arr[0]            // Index access
-len = #arr            // Get length (# prefix)
-```

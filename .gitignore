@@ -10,6 +10,7 @@ cilexec_root/
 .idea/
 *.iml
 .vscode/
+.trae/
 
 .DS_Store
 Thumbs.db
