@@ -1,6 +1,5 @@
 package com.follarce.basicUtil;
 
-import com.follarce.basicUtil.*;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonSyntaxException;
@@ -108,7 +107,7 @@ public class JsonUtil {
                 Boolean bool = gson.fromJson(content, Boolean.class);
                 return bool != null ? bool : false;
             } else if (trimmed.equals("null")) {
-                return null;
+                return new String[]{"NULL"};
             } else {
                 // Number type - parse as Number first, then determine if it's integer or double
                 Number num = gson.fromJson(content, Number.class);

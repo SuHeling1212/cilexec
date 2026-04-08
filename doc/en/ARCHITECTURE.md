@@ -26,8 +26,8 @@ CilExec's core design principle is **all system state is persisted to the file s
 
 **Reason**:
 1. Java Socket objects cannot be serialized (`java.net.Socket` does not implement `Serializable`)
-2. Socket connections are operating system kernel resources, not pure Java objects
-3. The OS kernel does not persist TCP connection state; all sockets are forcibly closed when a process terminates
+2. Socket connections are real OS kernel resources, not pure Java objects
+3. Real OS kernels do not persist TCP connection state; all sockets are forcibly closed when a process terminates
 4. The TCP protocol itself is connection-oriented with state; after disconnection, the three-way handshake must be re-established
 
 **Impact**:

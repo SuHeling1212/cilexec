@@ -14,8 +14,8 @@ import java.time.format.DateTimeFormatter;
 public class Logger {
 
     private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final String LOG_FILE_NAME = "cilexec.log";
     private static PrintWriter logWriter;
+    private static String customLogPath = null;
 
     static {
         initLogFile();
@@ -37,8 +37,20 @@ public class Logger {
 
     private static void initLogFile() {
         try {
-            String workDir = getWorkDirectory();
-            String logPath = workDir + File.separator + LOG_FILE_NAME;
+            String logPath;
+            if (customLogPath != null && !customLogPath.isEmpty()) {
+                logPath = customLogPath;
+            } else {
+                String workDir = getWorkDirectory();
+                logPath = workDir + File.separator + Constants.DEFAULT_LOG_FILE_NAME;
+            }
+            
+            File logFile = new File(logPath);
+            File parentDir = logFile.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs();
+            }
+            
             logWriter = new PrintWriter(new FileWriter(logPath, true));
         } catch (IOException e) {
             System.err.println("Failed to initialize log file: " + e.getMessage());
@@ -53,6 +65,15 @@ public class Logger {
 
     public static void setLevel(Level level) {
         currentLevel = level;
+    }
+
+    public static void setLogPath(String path) {
+        if (logWriter != null) {
+            logWriter.close();
+            logWriter = null;
+        }
+        customLogPath = path;
+        initLogFile();
     }
 
     public static void debug(String message) {
@@ -111,7 +132,7 @@ public class Logger {
     }
 
     public static void logStartup() {
-        String separator = "=".repeat(60);
+        String separator = "=".repeat(Constants.LOG_SEPARATOR_LENGTH);
         String timestamp = LocalDateTime.now().format(formatter);
         if (logWriter != null) {
             logWriter.println();
@@ -123,7 +144,7 @@ public class Logger {
     }
 
     public static void logShutdown() {
-        String separator = "=".repeat(60);
+        String separator = "=".repeat(Constants.LOG_SEPARATOR_LENGTH);
         String timestamp = LocalDateTime.now().format(formatter);
         if (logWriter != null) {
             logWriter.println(separator);

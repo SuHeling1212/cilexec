@@ -26,12 +26,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * limitations:
  *
  * 1. Java Socket objects cannot be serialized (java.net.Socket does not implement
- *    Serializable). Socket connections are operating system kernel resources,
+ *    Serializable). Socket connections are real OS kernel resources,
  *    not pure Java objects.
  *
- * 2. The operating system kernel does not persist TCP connection state. When a
+ * 2. Real OS kernels do not persist TCP connection state. When a
  *    process terminates, all its socket connections are forcibly closed by the
- *    kernel.
+ *    real kernel.
  *
  * 3. The TCP protocol itself is connection-oriented with state (sequence numbers,
  *    window sizes, buffer data). Once disconnected, the connection cannot be
@@ -127,7 +127,34 @@ public class SocketUtil {
                 FileUtil.createDirectory(parentPath, dirName);
             }
         }
-        Logger.info("Socket system initialized");
+        
+        // Scan existing socket files to find max ID
+        int maxSocketId = 0;
+        String[] files = FileUtil.getListOfFileAndDirectory(SOCKET_DIR);
+        if (files[0].equals("SUCCESS") && files.length > 1) {
+            for (int i = 1; i < files.length; i++) {
+                String filename = files[i];
+                if (filename.endsWith(".json")) {
+                    try {
+                        String idStr = filename.substring(0, filename.length() - 5);
+                        int id = Integer.parseInt(idStr);
+                        if (id > maxSocketId) {
+                            maxSocketId = id;
+                        }
+                    } catch (NumberFormatException e) {
+                        // Ignore files that don't match the pattern
+                    }
+                }
+            }
+        }
+        
+        // Initialize socketIdGenerator from max existing ID
+        if (maxSocketId > 0) {
+            socketIdGenerator.set(maxSocketId + 1);
+            Logger.info("Socket system initialized with next ID: " + (maxSocketId + 1));
+        } else {
+            Logger.info("Socket system initialized");
+        }
     }
     
     /**

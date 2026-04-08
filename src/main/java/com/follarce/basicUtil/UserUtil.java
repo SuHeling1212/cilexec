@@ -1,5 +1,6 @@
 package com.follarce.basicUtil;
 
+import java.io.IOException;
 import java.util.*;
 
 public class UserUtil {
@@ -122,8 +123,10 @@ public class UserUtil {
                 "Others permission denied",
                 context + String.format(", OthersPermission: %s", othersPerm)
             );
-        } catch (Exception e) {
-            return PermissionResult.failure("Permission check exception: " + e.getMessage(), context);
+        } catch (IOException e) {
+            return PermissionResult.failure("Permission check IO error: " + e.getMessage(), context);
+        } catch (ClassCastException e) {
+            return PermissionResult.failure("Permission check error: invalid metadata format", context);
         }
     }
 
@@ -175,8 +178,8 @@ public class UserUtil {
             }
 
             return PermissionResult.success();
-        } catch (Exception e) {
-            return PermissionResult.failure("Process permission check exception: " + e.getMessage(), context);
+        } catch (ClassCastException e) {
+            return PermissionResult.failure("Process permission check error: invalid JSON structure", context);
         }
     }
 

@@ -87,6 +87,8 @@ public class ProcessInit {
                 String[] error = (String[]) result;
                 Logger.error("JSON parsing error: " + error[1]);
             }
+        } catch (ClassCastException e) {
+            Logger.error("Failed to check process status: invalid JSON structure");
         } catch (Exception e) {
             Logger.error("Failed to check process status: " + e.getMessage());
         }
@@ -240,7 +242,7 @@ public class ProcessInit {
                 
                 // Sleep before next scan
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(Constants.SCHEDULER_SLEEP_MS);
                 } catch (InterruptedException e) {
                     break;
                 }

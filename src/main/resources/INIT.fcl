@@ -1,0 +1,11 @@
+createFile("/user/local/app/","1.txt")
+lock("/user/local/app/1.txt")
+a = getPID() 
+fork()
+
+if getPID() != a{
+    println(getPID())
+    result = append("/user/local/app/1.txt","hello")
+}
+println(getPID())
+append("/user/local/app/1.txt","hello1")

@@ -11,6 +11,27 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ProcessRunner implements Runnable {
 
+    private enum BlockType {
+        WHILE, IF, FUNCTION
+    }
+
+    private static class BlockInfo {
+        BlockType type;
+        int startLine;
+        String condition; // Only for WHILE blocks
+
+        BlockInfo(BlockType type, int startLine) {
+            this.type = type;
+            this.startLine = startLine;
+        }
+
+        BlockInfo(BlockType type, int startLine, String condition) {
+            this.type = type;
+            this.startLine = startLine;
+            this.condition = condition;
+        }
+    }
+
     private int pid;
     private boolean running;
     private Map<String, Object> data;
@@ -20,14 +41,14 @@ public class ProcessRunner implements Runnable {
     private Object returnValue;
     private long startTimeMs;
     private String owner;
-    private Deque<Integer> whileStack; // Track while loop start positions
+    private Deque<BlockInfo> blockStack; // Track block types and positions
     private FunctionContext functionContext; // Function call context
 
     public ProcessRunner(int pid) {
         this.pid = pid;
         this.running = true;
         this.functions = new HashMap<>();
-        this.whileStack = new ArrayDeque<>();
+        this.blockStack = new ArrayDeque<>();
         loadFromFile();
 
         // loadFromFile() sets running based on file's Status
@@ -42,6 +63,9 @@ public class ProcessRunner implements Runnable {
         String currentUser = owner != null ? owner : UserInit.getCurrentUser();
         if (currentUser == null) currentUser = "local";
         this.functionContext = new FunctionContext(pid, ppid, currentUser);
+
+        // Set thread-local PID for process isolation
+        ProcessFunc.setCurrentPid(pid);
     }
     
     private int getParentPid() {
@@ -172,14 +196,22 @@ public class ProcessRunner implements Runnable {
             this.currentLine = 0;
         }
         
-        // Restore whileStack from file
-        this.whileStack.clear();
-        Object whileStackObj = code.get("WhileStack");
-        if (whileStackObj instanceof List) {
-            List<?> whileStackList = (List<?>) whileStackObj;
-            for (Object item : whileStackList) {
-                if (item instanceof Number) {
-                    this.whileStack.push(((Number) item).intValue());
+        // Restore blockStack from file
+        this.blockStack.clear();
+        Object blockStackObj = code.get("BlockStack");
+        if (blockStackObj instanceof List) {
+            List<?> blockStackList = (List<?>) blockStackObj;
+            for (Object item : blockStackList) {
+                if (item instanceof Map) {
+                    Map<?, ?> blockMap = (Map<?, ?>) item;
+                    String typeStr = (String) blockMap.get("type");
+                    Number startLineNum = (Number) blockMap.get("startLine");
+                    String condition = (String) blockMap.get("condition");
+                    if (typeStr != null && startLineNum != null) {
+                        BlockType type = BlockType.valueOf(typeStr);
+                        BlockInfo blockInfo = new BlockInfo(type, startLineNum.intValue(), condition);
+                        this.blockStack.push(blockInfo);
+                    }
                 }
             }
         }
@@ -219,16 +251,25 @@ public class ProcessRunner implements Runnable {
         code.put("runningCodeLine", this.currentLine);
         code.put("Code", this.codeLines);
         
-        // Save whileStack to persist loop state
-        List<Integer> whileStackList = new ArrayList<>(this.whileStack);
-        code.put("WhileStack", whileStackList);
+        // Save blockStack to persist block state
+        List<Map<String, Object>> blockStackList = new ArrayList<>();
+        for (BlockInfo block : this.blockStack) {
+            Map<String, Object> blockMap = new HashMap<>();
+            blockMap.put("type", block.type.name());
+            blockMap.put("startLine", block.startLine);
+            if (block.condition != null) {
+                blockMap.put("condition", block.condition);
+            }
+            blockStackList.add(blockMap);
+        }
+        code.put("BlockStack", blockStackList);
 
         // Only update Status if explicitly requested (to avoid overwriting during shutdown)
         if (updateStatus) {
             process.put("Status", this.running);
         }
 
-        FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJson(process));
+        FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJsonPretty(process));
     }
 
     @Override
@@ -259,10 +300,13 @@ public class ProcessRunner implements Runnable {
 
         loadFromFile();
 
-        if (!running || codeLines == null)
-            return;
-
         if (currentLine >= codeLines.size()) {
+            running = false;
+            saveToFile(true);
+            return;
+        }
+
+        if (!running || codeLines == null) {
             running = false;
             saveToFile(true);
             return;
@@ -283,16 +327,25 @@ public class ProcessRunner implements Runnable {
         }
         
         if (line.equals("}")) {
-            // Check if this is the end of a while block
-            if (!whileStack.isEmpty()) {
-                // Pop the while line and jump back to it
-                int whileLine = whileStack.pop();
-                currentLine = whileLine;
-                saveToFile();
-                // Don't increment currentLine here - we want to go back to while line
-                return;
+            if (!blockStack.isEmpty()) {
+                BlockInfo block = blockStack.peek();
+                if (block.type == BlockType.WHILE) {
+                    String condition = block.condition;
+                    if (isTrue(evaluate(condition))) {
+                        currentLine = block.startLine;
+                    } else {
+                        blockStack.pop();
+                        currentLine++;
+                    }
+                } else {
+                    blockStack.pop();
+                    currentLine++;
+                }
             } else {
                 currentLine++;
+            }
+            if (currentLine >= codeLines.size()) {
+                running = false;
             }
             saveToFile();
             return;
@@ -315,6 +368,7 @@ public class ProcessRunner implements Runnable {
             try {
                 executeStatement(line);
                 loadFromFile();
+                saveToFile();
             } catch (Exception e) {
                 handleException(e, "exec_operation");
             }
@@ -465,8 +519,6 @@ public class ProcessRunner implements Runnable {
     }
 
     private void handleBreak() {
-        // Exit the current while loop
-        // Find the matching closing brace and jump to the line after it
         int braceCount = 1;
         int i = currentLine + 1;
         while (i < codeLines.size() && braceCount > 0) {
@@ -477,12 +529,9 @@ public class ProcessRunner implements Runnable {
                 braceCount--;
             i++;
         }
-        // Pop the while stack since we're breaking out
-        if (!whileStack.isEmpty()) {
-            whileStack.pop();
+        if (!blockStack.isEmpty() && blockStack.peek().type == BlockType.WHILE) {
+            blockStack.pop();
         }
-        // Set currentLine to the line after the closing brace
-        // Make sure it doesn't exceed code length
         currentLine = Math.min(i, codeLines.size());
     }
 
@@ -609,7 +658,9 @@ public class ProcessRunner implements Runnable {
         String condition = line.substring(2, line.length() - 1).trim();
         boolean result = isTrue(evaluate(condition));
 
-        if (!result) {
+        if (result) {
+            blockStack.push(new BlockInfo(BlockType.IF, currentLine, null));
+        } else {
             int braceCount = 1;
             int i = currentLine + 1;
             while (i < codeLines.size() && braceCount > 0) {
@@ -625,24 +676,41 @@ public class ProcessRunner implements Runnable {
     }
 
     private void handleWhile(String line) {
-        // Extract condition from while statement
-        // Support both: while condition {  and  while (condition) {
         String condition;
-        String afterWhile = line.substring(5).trim(); // Remove "while"
+        String afterWhile = line.substring(5).trim();
         
         if (afterWhile.endsWith("{")) {
-            afterWhile = afterWhile.substring(0, afterWhile.length() - 1).trim(); // Remove "{"
+            afterWhile = afterWhile.substring(0, afterWhile.length() - 1).trim();
         }
         
-        // Remove parentheses if present
         if (afterWhile.startsWith("(") && afterWhile.endsWith(")")) {
             condition = afterWhile.substring(1, afterWhile.length() - 1).trim();
         } else {
             condition = afterWhile;
         }
 
+        if (!blockStack.isEmpty()) {
+            BlockInfo top = blockStack.peek();
+            if (top.type == BlockType.WHILE && top.startLine == currentLine) {
+                if (!isTrue(evaluate(condition))) {
+                    blockStack.pop();
+                    int braceCount = 1;
+                    int i = currentLine + 1;
+                    while (i < codeLines.size() && braceCount > 0) {
+                        String l = codeLines.get(i).trim();
+                        if (l.equals("{"))
+                            braceCount++;
+                        if (l.equals("}"))
+                            braceCount--;
+                        i++;
+                    }
+                    currentLine = i - 1;
+                }
+                return;
+            }
+        }
+
         if (!isTrue(evaluate(condition))) {
-            // Condition is false, skip the entire while block
             int braceCount = 1;
             int i = currentLine + 1;
             while (i < codeLines.size() && braceCount > 0) {
@@ -655,8 +723,7 @@ public class ProcessRunner implements Runnable {
             }
             currentLine = i - 1;
         } else {
-            // Condition is true, push while line onto stack and enter block
-            whileStack.push(currentLine);
+            blockStack.push(new BlockInfo(BlockType.WHILE, currentLine, condition));
         }
     }
 

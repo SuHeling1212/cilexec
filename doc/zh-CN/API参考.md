@@ -7,75 +7,6 @@ CilExec 提供两种使用方式：
 1. **脚本语言调用** - 在 CilExec 脚本中直接调用函数
 2. **Java API 调用** - 在 Java 代码中直接调用工具类方法
 
----
-
-## 脚本语言语法
-
-### 变量声明
-
-```
-int x = 10
-string name = "hello"
-array arr = [1, 2, 3]
-map m = {a: 1, b: 2}
-```
-
-### 控制流
-
-```
-if x > 5 {
-    // do something
-}
-
-while running {
-    // loop
-}
-```
-
-### 函数定义
-
-```
-func add(a, b) {
-    return a + b
-}
-```
-
-### 导入脚本
-
-```
-import "script.txt"
-```
-
-### 数组/Map操作
-
-```
-arr[0] = 100          // 数组索引赋值
-m["key"] = "value"    // Map键值赋值
-x = arr[0]            // 索引访问
-len = #arr            // 获取长度（#前缀）
-```
-
-### 嵌套数据结构访问
-
-```
-// 定义嵌套结构
-nested = {"data": {"data": {"a": 1}}, "users": [{"name": "Alice", "age": 30}]}
-
-// 连续索引访问
-nested["data"]["data"]["a"]           // 返回 1
-nested["users"][0]["name"]            // 返回 "Alice"
-
-// 连续索引赋值
-nested["data"]["data"]["b"] = 2       // 添加新字段
-nested["users"][0]["age"] = 31        // 修改嵌套值
-
-// 查看数据结构
-println(toJson(nested))               // 紧凑格式
-println(toJsonPretty(nested))         // 格式化输出（推荐）
-```
-
----
-
 ## Java API
 
 ### FileUtil - 虚拟文件系统
@@ -352,9 +283,77 @@ SwapUtil.onProcessExit(pid);
 
 ---
 
-## 脚本语言 API
+## 脚本语言
 
-### 文件操作
+---
+
+### 脚本语言语法
+
+#### 变量声明
+
+```
+x = 10
+name = "hello"
+arr = [1, 2, 3]
+m = {a: 1, b: 2}
+```
+
+#### 控制流
+
+```
+if x > 5 {
+    // do something
+}
+
+while running {
+    // loop
+}
+```
+
+#### 函数定义
+
+```
+func add(a, b) {
+    return a + b
+}
+```
+
+#### 导入脚本
+
+```
+import "script.txt"
+```
+
+#### 数组/Map操作
+
+```
+arr[0] = 100          // 数组索引赋值
+m["key"] = "value"    // Map键值赋值
+x = arr[0]            // 索引访问
+len = #arr            // 获取长度（#前缀）
+```
+
+#### 嵌套数据结构访问
+
+```
+// 定义嵌套结构
+nested = {"data": {"data": {"a": 1}}, "users": [{"name": "Alice", "age": 30}]}
+
+// 连续索引访问
+nested["data"]["data"]["a"]           // 返回 1
+nested["users"][0]["name"]            // 返回 "Alice"
+
+// 连续索引赋值
+nested["data"]["data"]["b"] = 2       // 添加新字段
+nested["users"][0]["age"] = 31        // 修改嵌套值
+
+// 查看数据结构
+println(toJson(nested))               // 紧凑格式
+println(toJsonPretty(nested))         // 格式化输出（推荐）
+```
+
+---
+### 文件操作API
 
 | 函数 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
@@ -685,48 +684,6 @@ println("HOME: " + home)
 - 路径别名必须以路径分隔符（`/` 或 `\`）结尾或为完整路径
 - 支持多个别名组合（如 `@app/@data/file.txt`）
 - 配置保存在 `/system/config/env.json`
-
-### 环境变量 API
-
-| 函数 | 参数 | 返回值 | 说明 |
-|------|------|--------|------|
-| `setEnv(name, value)` | `name`: 变量名, `value`: 变量值 | `String[]` | 设置环境变量，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
-| `getEnv(name)` | `name`: 变量名 | `String[]` | 获取环境变量，返回 `["SUCCESS", value]` 或 `["ERROR", code]` |
-| `listEnv()` | 无 | `String[]` | 列出所有环境变量，返回 `["SUCCESS", json]` |
-| `deleteEnv(name)` | `name`: 变量名 | `String[]` | 删除环境变量，返回 `["SUCCESS"]` 或 `["ERROR", code]` |
-
-**示例：**
-```fcl
-// 设置环境变量
-result = setEnv("APP_NAME", "MyApp")
-if result[0] == "SUCCESS" {
-    println("环境变量设置成功")
-}
-
-// 获取环境变量
-result = getEnv("APP_NAME")
-if result[0] == "SUCCESS" {
-    println("APP_NAME = " + result[1])
-}
-
-// 获取系统环境变量（如 PATH）
-result = getEnv("PATH")
-if result[0] == "SUCCESS" {
-    println("PATH 长度: " + str(len(result[1])))
-}
-
-// 列出所有环境变量
-result = listEnv()
-if result[0] == "SUCCESS" {
-    println("所有环境变量: " + result[1])
-}
-
-// 删除环境变量
-result = deleteEnv("APP_NAME")
-if result[0] == "SUCCESS" {
-    println("环境变量删除成功")
-}
-```
 
 ### 终端 IO API
 

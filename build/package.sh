@@ -4,9 +4,9 @@ mvn clean package
 
 if [ $? -eq 0 ]; then
     echo "Packaging successful!"
-    echo "JAR file: target/cilexec-1.0.0-ALPHA.jar"
+    echo "JAR file: target/cilexec-1.0.0-ALPHA-3.jar"
     echo ""
-    echo "Current time: $(java -cp target/cilexec-1.0.0-ALPHA.jar com.follarce.Main)"   
+    echo "Current time: $(java -cp target/cilexec-1.0.0-ALPHA-3.jar com.follarce.Main)"   
 else
     echo "Packaging failed!"
     exit 1

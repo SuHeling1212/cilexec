@@ -189,7 +189,7 @@ public class FileUtil {
             if (!canonicalPath.startsWith(canonicalRoot)) {
                 return new Object[] { null, new String[] { "ERROR", "PATH_TRAVERSAL_DETECTED" } };
             }
-        } catch (Exception e) {
+        } catch (IOException e) {
             return new Object[] { null, new String[] { "ERROR", "INVALID_PATH" } };
         }
 
@@ -712,7 +712,7 @@ public class FileUtil {
             } else {
                 return new String[] { "ERROR", "DELETE_FAILED" };
             }
-        } catch (Exception e) {
+        } catch (SecurityException e) {
             LOGGER.warning("Failed to delete file: " + e.getMessage());
             return new String[] { "ERROR", "DELETE_FAILED" };
         }
@@ -1888,8 +1888,7 @@ public class FileUtil {
             LOGGER.info("Parse failed, using default VFS root: " + VFS_ROOT);
             return VFS_ROOT;
 
-        } catch (Exception e) {
-            // Use default path on error
+        } catch (IOException e) {
             VFS_ROOT = getJarDirectory() + File.separator + "cilexec_root";
             LOGGER.warning("Error reading config file: " + e.getMessage() + ", using default VFS root: " + VFS_ROOT);
             return VFS_ROOT;
@@ -1908,6 +1907,9 @@ public class FileUtil {
                     .getPath();
             File jarFile = new File(path);
             return jarFile.getParent();
+        } catch (java.net.URISyntaxException e) {
+            LOGGER.warning("Failed to get JAR directory: " + e.getMessage());
+            return System.getProperty("user.dir");
         } catch (Exception e) {
             LOGGER.warning("Failed to get JAR directory: " + e.getMessage());
             return System.getProperty("user.dir");
@@ -2108,18 +2110,22 @@ public class FileUtil {
                             Object lockedBy = locked.get("lockedBy");
                             if (lockedBy instanceof Number) {
                                 int lockerPid = ((Number) lockedBy).intValue();
+                                int currentPid = com.follarce.process.ProcessFunc.getPID();
+                                if (lockerPid == currentPid) {
+                                    return null;
+                                }
                                 if (!isProcessExists(lockerPid)) {
                                     String entityType = isDirectory ? "directory" : "file";
-                                    LOGGER.info("Auto-unlocking " + entityType + " " + file.getPath() + 
+                                    LOGGER.info("Auto-unlocking " + entityType + " " + file.getPath() +
                                               " (locker PID " + lockerPid + " is dead)");
-                                    
+
                                     locked.put("isLocked", false);
                                     locked.put("lockedBy", null);
-                                    
+
                                     Map<String, Object> updates = new HashMap<>();
                                     updates.put("Time.lastEditTime", new int[] { 0, 0, 0, 0, 0, 0, 0 });
                                     updateMetadata(file, metaMap, updates, isDirectory);
-                                    
+
                                     return null;
                                 }
                             }

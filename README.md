@@ -2,7 +2,7 @@
 
 > **Disclaimer: This project is developed by AI (TREA, DeepSeek), including documentations. I take no responsibility for code quality or any issues that may arise.**
 
-A single-binary, disk-based teaching operating system implemented in Java.
+A single-binary, disk-based teaching simulated operating system implemented in Java.
 
 ## What is CilExec?
 
@@ -57,7 +57,7 @@ State persistence = no data loss from power outages!
 
 ## What It Actually Is
 
-CilExec is a proof-of-concept project demonstrating core operating system mechanisms in Java:
+CilExec is a proof-of-concept project demonstrating core simulated operating system mechanisms in Java:
 
 - Process management
 - File system
@@ -66,7 +66,7 @@ CilExec is a proof-of-concept project demonstrating core operating system mechan
 
 ## Version
 
-**Current Version: 1.0.0**
+**Current Version: 1.0.0-ALPHA-3**
 
 This is the first stable release with comprehensive improvements in code quality, security, and testing.
 
@@ -111,7 +111,7 @@ mvn test
 mvn clean package
 
 # Run the application
-java -jar target/cilexec-1.0.0.jar
+java -jar target/cilexec-1.0.0-ALPHA-3.jar
 
 # Or run directly
 mvn dependency:copy-dependencies -q
@@ -136,9 +136,9 @@ Test coverage includes:
 
 ## Project Nature
 
-**This is a proof-of-concept operating system kernel.**
+**This is a proof-of-concept simulated operating system kernel.**
 
-It implements core operating system mechanisms:
+It implements core simulated operating system mechanisms:
 
 - ✅ Complete kernel functionality (processes, file system, script engine)
 - ✅ User login system
@@ -182,7 +182,7 @@ src/
 
 ## Use Cases
 
-- Operating system teaching demonstrations
+- Simulated operating system teaching demonstrations
 - Virtualization technology research
 - Script engine development reference
 - Embedded system prototyping

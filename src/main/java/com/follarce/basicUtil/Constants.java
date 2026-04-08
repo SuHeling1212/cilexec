@@ -64,4 +64,14 @@ public class Constants {
     public static final int SIZE_UNIT_MB = 1024 * 1024; // Megabyte in bytes
     public static final int SIZE_UNIT_GB = 1024 * 1024 * 1024; // Gigabyte in bytes
 
+    // Time conversion
+    public static final int NANOS_TO_MILLIS = 1_000_000; // Nanoseconds to milliseconds divisor
+
+    // Scheduler configuration
+    public static final int SCHEDULER_SLEEP_MS = 100; // Scheduler thread sleep interval in milliseconds
+
+    // Logging configuration
+    public static final int LOG_SEPARATOR_LENGTH = 60; // Log separator repeat count
+    public static final String DEFAULT_LOG_FILE_NAME = "cilexec.log"; // Default log file name
+
 }

@@ -6,7 +6,7 @@
 
     <groupId>com.follarce</groupId>
     <artifactId>cilexec</artifactId>
-    <version>1.0.0-ALPHA</version>
+    <version>1.0.0-ALPHA-3</version>
     <packaging>jar</packaging>
 
     <properties>

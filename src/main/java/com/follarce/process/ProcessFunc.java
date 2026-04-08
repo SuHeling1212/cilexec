@@ -5,7 +5,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+
 
 import com.follarce.basicUtil.FileUtil;
 import com.follarce.basicUtil.JsonUtil;
@@ -16,7 +16,7 @@ import com.follarce.network.SocketUtil;
 
 public class ProcessFunc {
 
-    private static AtomicInteger currentPid = new AtomicInteger(1);
+    private static final ThreadLocal<Integer> currentPid = ThreadLocal.withInitial(() -> 1);
 
     public static void setCurrentPid(int pid) {
         currentPid.set(pid);
@@ -98,7 +98,7 @@ public class ProcessFunc {
 
             // 5. Write child process file
             FileUtil.createFile("/system/process/", childPid + ".json");
-            FileUtil.write("/system/process/" + childPid + ".json", JsonUtil.toJson(childProcess));
+            FileUtil.write("/system/process/" + childPid + ".json", JsonUtil.toJsonPretty(childProcess));
 
             // 6. Update parent's Child list
             Map<String, Object> childInfo = new HashMap<>();
@@ -113,7 +113,7 @@ public class ProcessFunc {
             }
             parentChild.put(String.valueOf(childPid), childInfo);
 
-            FileUtil.write("/system/process/" + parentPid + ".json", JsonUtil.toJson(parentProcess));
+            FileUtil.write("/system/process/" + parentPid + ".json", JsonUtil.toJsonPretty(parentProcess));
 
             Logger.info("Process forked: parent PID " + parentPid + " -> child PID " + childPid);
 
@@ -132,7 +132,7 @@ public class ProcessFunc {
      * @return child PID for parent, -1 on failure
      */
     public static int fork() {
-        return fork(currentPid.get());
+        return fork(getPID());
     }
 
     private static synchronized int allocatePid() {
@@ -782,7 +782,7 @@ public class ProcessFunc {
      * Dispatch function calls from script engine (backward compatibility)
      */
     public static Object call(String name, Object[] args) {
-        return call(name, args, currentPid.get());
+        return call(name, args, getPID());
     }
     
     private static int getPPIDInternal(int pid) {

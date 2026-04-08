@@ -23,7 +23,7 @@ public class TimeUtil {
         int second = now.getSecond();
         int nano = now.getNano();
         // Convert nanoseconds to milliseconds
-        int millis = nano / 1_000_000;
+        int millis = nano / Constants.NANOS_TO_MILLIS;
         // Return time component array
         return new int[] { year, month, day, hour, minute, second, millis };
     }

@@ -1,6 +1,7 @@
 package com.follarce.init;
 
 import java.io.*;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.HashMap;
@@ -69,6 +70,8 @@ public class FileInit {
                 .getPath();
             File jarFile = new File(path);
             return jarFile.getParent();
+        } catch (URISyntaxException e) {
+            return System.getProperty("user.dir");
         } catch (Exception e) {
             return System.getProperty("user.dir");
         }

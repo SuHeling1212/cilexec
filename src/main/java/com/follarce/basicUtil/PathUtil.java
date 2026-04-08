@@ -1,6 +1,7 @@
 package com.follarce.basicUtil;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.HashMap;
@@ -73,7 +74,7 @@ public class PathUtil {
             }
 
             lastLoadTime = now;
-        } catch (Exception e) {
+        } catch (IOException e) {
             Logger.error("Failed to load env.json: " + e.getMessage());
         }
     }
@@ -216,7 +217,7 @@ public class PathUtil {
 
             lastLoadTime = 0;
             return new String[] { "SUCCESS", null };
-        } catch (Exception e) {
+        } catch (IOException e) {
             Logger.error("Failed to save env.json: " + e.getMessage());
             return new String[] { "ERROR", "SAVE_FAILED" };
         }
