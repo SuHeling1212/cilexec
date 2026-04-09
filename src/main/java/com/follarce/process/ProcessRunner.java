@@ -57,24 +57,27 @@ public class ProcessRunner implements Runnable {
         if (owner != null) {
             UserUtil.setCurrentUser(owner);
         }
-        
+
         // Initialize function call context
         int ppid = getParentPid();
         String currentUser = owner != null ? owner : UserInit.getCurrentUser();
-        if (currentUser == null) currentUser = "local";
+        if (currentUser == null)
+            currentUser = "local";
         this.functionContext = new FunctionContext(pid, ppid, currentUser);
 
         // Set thread-local PID for process isolation
         ProcessFunc.setCurrentPid(pid);
     }
-    
+
     private int getParentPid() {
         String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
-        if (!readResult[0].equals("SUCCESS")) return 0;
-        
+        if (!readResult[0].equals("SUCCESS"))
+            return 0;
+
         try {
             Object processObj = JsonUtil.readJson(readResult[1]);
-            if (!(processObj instanceof Map)) return 0;
+            if (!(processObj instanceof Map))
+                return 0;
             Map<String, Object> process = (Map<String, Object>) processObj;
             Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
             if (parent != null && parent.containsKey("PID")) {
@@ -120,7 +123,7 @@ public class ProcessRunner implements Runnable {
             running = false;
             return;
         }
-        
+
         // Handle status: Boolean (true/false)
         if (statusObj instanceof Boolean) {
             running = (Boolean) statusObj;
@@ -153,7 +156,7 @@ public class ProcessRunner implements Runnable {
             running = false;
             return;
         }
-        
+
         this.data = (Map<String, Object>) program.get("Data");
         if (this.data == null) {
             this.data = new HashMap<>();
@@ -170,13 +173,13 @@ public class ProcessRunner implements Runnable {
             running = false;
             return;
         }
-        
+
         this.codeLines = (List<String>) code.get("Code");
         if (this.codeLines == null) {
             running = false;
             return;
         }
-        
+
         // Remove null elements from codeLines
         this.codeLines.removeIf(Objects::isNull);
 
@@ -195,7 +198,7 @@ public class ProcessRunner implements Runnable {
         } else {
             this.currentLine = 0;
         }
-        
+
         // Restore blockStack from file
         this.blockStack.clear();
         Object blockStackObj = code.get("BlockStack");
@@ -215,11 +218,12 @@ public class ProcessRunner implements Runnable {
                 }
             }
         }
-        
+
         // Parse function definitions (don't remove them, will skip during execution)
         parseFunctionDefinitions();
 
-        // Note: Don't reset currentLine here - let executeLine handle process termination
+        // Note: Don't reset currentLine here - let executeLine handle process
+        // termination
         // when currentLine >= codeLines.size()
     }
 
@@ -250,7 +254,7 @@ public class ProcessRunner implements Runnable {
         Map<String, Object> code = (Map<String, Object>) program.get("Code");
         code.put("runningCodeLine", this.currentLine);
         code.put("Code", this.codeLines);
-        
+
         // Save blockStack to persist block state
         List<Map<String, Object>> blockStackList = new ArrayList<>();
         for (BlockInfo block : this.blockStack) {
@@ -264,7 +268,8 @@ public class ProcessRunner implements Runnable {
         }
         code.put("BlockStack", blockStackList);
 
-        // Only update Status if explicitly requested (to avoid overwriting during shutdown)
+        // Only update Status if explicitly requested (to avoid overwriting during
+        // shutdown)
         if (updateStatus) {
             process.put("Status", this.running);
         }
@@ -294,12 +299,15 @@ public class ProcessRunner implements Runnable {
     }
 
     public void executeLine() {
+        System.out
+                .println("[PID " + pid + "] Executing line " + currentLine + ": " + codeLines.get(currentLine).trim());
         if (owner != null) {
             UserUtil.setCurrentUser(owner);
         }
 
         loadFromFile();
-
+System.out
+                .println("[PID " + pid + "] Executing line " + currentLine + ": " + codeLines.get(currentLine).trim());
         if (currentLine >= codeLines.size()) {
             running = false;
             saveToFile(true);
@@ -325,7 +333,7 @@ public class ProcessRunner implements Runnable {
             saveToFile();
             return;
         }
-        
+
         if (line.equals("}")) {
             if (!blockStack.isEmpty()) {
                 BlockInfo block = blockStack.peek();
@@ -427,18 +435,18 @@ public class ProcessRunner implements Runnable {
 
         evaluate(line);
     }
-    
+
     private boolean isAssignment(String line) {
         int eqIndex = line.indexOf('=');
         if (eqIndex == -1) {
             return false;
         }
-        
+
         // Check if there's a second '=' (comparison operator ==)
         if (eqIndex + 1 < line.length() && line.charAt(eqIndex + 1) == '=') {
             return false;
         }
-        
+
         // Check if '=' is inside quotes
         boolean inQuotes = false;
         for (int i = 0; i < eqIndex; i++) {
@@ -450,35 +458,38 @@ public class ProcessRunner implements Runnable {
         if (inQuotes) {
             return false;
         }
-        
+
         // Check if '=' is inside parentheses
         int parenDepth = 0;
         for (int i = 0; i < eqIndex; i++) {
             char c = line.charAt(i);
-            if (c == '(') parenDepth++;
-            if (c == ')') parenDepth--;
+            if (c == '(')
+                parenDepth++;
+            if (c == ')')
+                parenDepth--;
         }
         if (parenDepth > 0) {
             return false;
         }
-        
+
         // Check if left side is a valid identifier (possibly with index access)
         String left = line.substring(0, eqIndex).trim();
         if (left.isEmpty()) {
             return false;
         }
-        
-        // Valid identifier: starts with letter or underscore, contains only alphanumeric, underscore, and brackets
+
+        // Valid identifier: starts with letter or underscore, contains only
+        // alphanumeric, underscore, and brackets
         if (left.contains("[") && left.contains("]")) {
             // Index access: identifier[expr]
             int bracketIndex = left.indexOf('[');
             String baseName = left.substring(0, bracketIndex).trim();
             return isValidIdentifier(baseName);
         }
-        
+
         return isValidIdentifier(left);
     }
-    
+
     private boolean isValidIdentifier(String name) {
         if (name.isEmpty()) {
             return false;
@@ -497,25 +508,41 @@ public class ProcessRunner implements Runnable {
 
     private boolean isStandaloneFunctionCall(String expr) {
         expr = expr.trim();
-        if (expr.isEmpty() || expr.contains(" ")) {
+        if (expr.isEmpty()) {
             return false;
         }
-        
+
         int parenIndex = expr.indexOf('(');
         if (parenIndex <= 0) {
             return false;
         }
-        
+
         String funcName = expr.substring(0, parenIndex).trim();
-        if (!isValidIdentifier(funcName)) {
+        // Function name can only contain letters, digits, underscore, and dots (for
+        // namespace)
+        if (!funcName.matches("[a-zA-Z_][a-zA-Z0-9_.]*")) {
             return false;
         }
-        
+
         if (!expr.endsWith(")")) {
             return false;
         }
-        
+
         return true;
+    }
+
+    private int findMatchingParen(String str, int openParen) {
+        int depth = 1;
+        for (int i = openParen + 1; i < str.length(); i++) {
+            char c = str.charAt(i);
+            if (c == '(')
+                depth++;
+            else if (c == ')')
+                depth--;
+            if (depth == 0)
+                return i;
+        }
+        return -1;
     }
 
     private void handleBreak() {
@@ -678,11 +705,11 @@ public class ProcessRunner implements Runnable {
     private void handleWhile(String line) {
         String condition;
         String afterWhile = line.substring(5).trim();
-        
+
         if (afterWhile.endsWith("{")) {
             afterWhile = afterWhile.substring(0, afterWhile.length() - 1).trim();
         }
-        
+
         if (afterWhile.startsWith("(") && afterWhile.endsWith(")")) {
             condition = afterWhile.substring(1, afterWhile.length() - 1).trim();
         } else {
@@ -760,7 +787,8 @@ public class ProcessRunner implements Runnable {
         String right = parts[1].trim();
 
         if (left.startsWith("_")) {
-            throw wrapException("Variable names cannot start with underscore (reserved for system use): " + left, "reserved_variable");
+            throw wrapException("Variable names cannot start with underscore (reserved for system use): " + left,
+                    "reserved_variable");
         }
 
         if (left.contains("[")) {
@@ -778,25 +806,25 @@ public class ProcessRunner implements Runnable {
         if (firstBracket <= 0) {
             throw wrapException("Invalid index syntax", "index_assignment");
         }
-        
+
         String containerName = left.substring(0, firstBracket);
         Object container = data.get(containerName);
         if (container == null) {
             throw UnrecoverableException.undefinedVariable(containerName, pid, currentLine);
         }
-        
+
         String indexExpr = left.substring(firstBracket);
         Object value = evaluate(right);
-        
+
         handleIndexAssignmentRecursive(container, indexExpr, value);
     }
-    
+
     @SuppressWarnings("unchecked")
     private void handleIndexAssignmentRecursive(Object container, String indexExpr, Object value) {
         if (!indexExpr.startsWith("[")) {
             return;
         }
-        
+
         int depth = 0;
         int closeBracket = -1;
         for (int i = 0; i < indexExpr.length(); i++) {
@@ -805,22 +833,22 @@ public class ProcessRunner implements Runnable {
                 depth++;
             else if (c == ']' || c == '}')
                 depth--;
-            
+
             if (c == ']' && depth == 0) {
                 closeBracket = i;
                 break;
             }
         }
-        
+
         if (closeBracket == -1) {
             throw wrapException("Invalid index syntax: missing closing bracket", "index_assignment");
         }
-        
+
         String indexContent = indexExpr.substring(1, closeBracket).trim();
         Object index = evaluate(indexContent);
-        
+
         String remaining = indexExpr.substring(closeBracket + 1).trim();
-        
+
         if (remaining.startsWith("[")) {
             Object nextContainer;
             if (container instanceof List && index instanceof Number) {
@@ -836,14 +864,14 @@ public class ProcessRunner implements Runnable {
                 Map<?, ?> map = (Map<?, ?>) container;
                 nextContainer = map.get(index);
             } else {
-                throw UnrecoverableException.typeError("array or map", 
-                    container.getClass().getSimpleName(), pid, currentLine);
+                throw UnrecoverableException.typeError("array or map",
+                        container.getClass().getSimpleName(), pid, currentLine);
             }
-            
+
             if (nextContainer == null) {
                 throw wrapException("Cannot access index of null value", "index_assignment");
             }
-            
+
             handleIndexAssignmentRecursive(nextContainer, remaining, value);
         } else {
             if (container instanceof List && index instanceof Number) {
@@ -859,8 +887,8 @@ public class ProcessRunner implements Runnable {
                 Map<Object, Object> map = (Map<Object, Object>) container;
                 map.put(index, value);
             } else {
-                throw UnrecoverableException.typeError("array or map", 
-                    container.getClass().getSimpleName(), pid, currentLine);
+                throw UnrecoverableException.typeError("array or map",
+                        container.getClass().getSimpleName(), pid, currentLine);
             }
         }
     }
@@ -870,7 +898,7 @@ public class ProcessRunner implements Runnable {
         int i = 0;
         while (i < expr.length()) {
             char c = expr.charAt(i);
-            
+
             if (c == '"') {
                 // Copy string literal as-is
                 result.append(c);
@@ -888,34 +916,52 @@ public class ProcessRunner implements Runnable {
                     i++;
                 }
             } else if (Character.isLetter(c) || c == '_') {
-                // Potential function name
+                // Potential function name (may include namespace like "swapPool.create")
                 int start = i;
-                while (i < expr.length() && (Character.isLetterOrDigit(expr.charAt(i)) || expr.charAt(i) == '_')) {
+                while (i < expr.length() && (Character.isLetterOrDigit(expr.charAt(i)) || expr.charAt(i) == '_'
+                        || expr.charAt(i) == '.')) {
                     i++;
                 }
+                // Don't allow '.' as last character
+                if (i > start && expr.charAt(i - 1) == '.') {
+                    i--; // Back up one position
+                }
                 String name = expr.substring(start, i);
-                
+
                 // Check if followed by '('
                 int savedI = i;
                 while (i < expr.length() && Character.isWhitespace(expr.charAt(i))) {
                     i++;
                 }
-                
+
                 if (i < expr.length() && expr.charAt(i) == '(') {
                     // This is a function call - find the matching closing parenthesis
                     int parenCount = 1;
                     int funcEnd = i + 1;
                     while (funcEnd < expr.length() && parenCount > 0) {
                         char fc = expr.charAt(funcEnd);
-                        if (fc == '(') parenCount++;
-                        if (fc == ')') parenCount--;
+                        if (fc == '(')
+                            parenCount++;
+                        if (fc == ')')
+                            parenCount--;
                         funcEnd++;
                     }
                     // Extract the full function call expression
                     String funcCallExpr = expr.substring(start, funcEnd);
                     Object funcResult = handleFunctionCall(funcCallExpr);
                     i = funcEnd;
-                    result.append(funcResult != null ? funcResult.toString() : "null");
+                    result.append(formatValueForPrint(funcResult));
+                } else if (name.contains(".")) {
+                    // This is a dot-separated identifier like math.pi or swapPool.create
+                    // Try treating it as a function call with empty arguments
+                    // This handles cases like math.pi where the function takes no arguments
+                    Object funcResult = handleFunctionCall(name + "()");
+                    if (funcResult != null) {
+                        result.append(formatValueForPrint(funcResult));
+                    } else {
+                        // If function call failed, treat as property access
+                        result.append(name);
+                    }
                 } else {
                     i = savedI; // Restore i to position after identifier
                     result.append(name);
@@ -930,14 +976,37 @@ public class ProcessRunner implements Runnable {
 
     private Object evaluate(String expr) {
         expr = expr.trim();
-        
+
         // Remove trailing semicolon if present
         if (expr.endsWith(";")) {
             expr = expr.substring(0, expr.length() - 1).trim();
         }
 
+        // Check if this is a function call followed by index access: func()[index]
+        // This must be handled before preprocessFunctionCalls to preserve array type
+        int firstBracket = expr.indexOf('[');
+        if (firstBracket > 0) {
+            String beforeBracket = expr.substring(0, firstBracket).trim();
+            int firstParen = beforeBracket.lastIndexOf('(');
+            if (firstParen > 0) {
+                String possibleFuncName = beforeBracket.substring(0, firstParen).trim();
+                if (possibleFuncName.matches("[a-zA-Z_][a-zA-Z0-9_.]*")) {
+                    int lastParen = findMatchingParen(beforeBracket, firstParen);
+                    if (lastParen > firstParen) {
+                        String funcCall = beforeBracket.substring(0, lastParen + 1);
+                        String indexExpr = expr.substring(firstBracket);
+                        if (isStandaloneFunctionCall(funcCall)) {
+                            Object funcResult = handleFunctionCall(funcCall);
+                            return handleIndexAccessRecursive(funcResult, indexExpr);
+                        }
+                    }
+                }
+            }
+        }
+
         // Check if this is a standalone function call first
-        // A standalone function call is: functionName(arguments) with no other operators
+        // A standalone function call is: functionName(arguments) with no other
+        // operators
         if (isStandaloneFunctionCall(expr)) {
             return handleFunctionCall(expr);
         }
@@ -964,7 +1033,8 @@ public class ProcessRunner implements Runnable {
                     quoteCount++;
                 }
             }
-            // If there are more than 2 unescaped quotes, it's an expression with multiple strings
+            // If there are more than 2 unescaped quotes, it's an expression with multiple
+            // strings
             if (quoteCount > 2) {
                 return evaluateOperator(expr);
             }
@@ -1029,8 +1099,8 @@ public class ProcessRunner implements Runnable {
                 return ((Map<?, ?>) val).size();
             if (val instanceof String)
                 return ((String) val).length();
-            throw wrapException("Cannot get length of " + 
-                (val != null ? val.getClass().getSimpleName() : "null"), "length_operation");
+            throw wrapException("Cannot get length of " +
+                    (val != null ? val.getClass().getSimpleName() : "null"), "length_operation");
         }
 
         // Check if this is a function call (identifier followed by parenthesis)
@@ -1038,8 +1108,10 @@ public class ProcessRunner implements Runnable {
         if (expr.contains("(") && !expr.startsWith("\"") && !expr.startsWith("'")) {
             int parenIndex = expr.indexOf('(');
             String potentialFuncName = expr.substring(0, parenIndex).trim();
-            // Check if potentialFuncName is a valid identifier (starts with letter or underscore)
-            if (!potentialFuncName.isEmpty() && (Character.isLetter(potentialFuncName.charAt(0)) || potentialFuncName.charAt(0) == '_')) {
+            // Check if potentialFuncName is a valid identifier (starts with letter or
+            // underscore)
+            if (!potentialFuncName.isEmpty()
+                    && (Character.isLetter(potentialFuncName.charAt(0)) || potentialFuncName.charAt(0) == '_')) {
                 return handleFunctionCall(expr);
             }
         }
@@ -1058,28 +1130,108 @@ public class ProcessRunner implements Runnable {
             }
         }
 
+        // Handle string concatenation: "text" + var + "text"
+        // Also handles mixed cases like "text" + var[index]
+        if (expr.contains("+")) {
+            return evaluateStringConcat(expr);
+        }
+
         return evaluateOperator(expr);
+    }
+
+    private Object evaluateStringConcat(String expr) {
+        List<Object> parts = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inString = false;
+
+        for (int i = 0; i < expr.length(); i++) {
+            char c = expr.charAt(i);
+
+            if (c == '"') {
+                if (i == 0 || expr.charAt(i - 1) != '\\') {
+                    inString = !inString;
+                }
+                current.append(c);
+            } else if (c == '+' && !inString) {
+                String part = current.toString().trim();
+                if (!part.isEmpty()) {
+                    // Remove surrounding quotes if this is a string literal
+                    if (part.startsWith("\"") && part.endsWith("\"")) {
+                        parts.add(part.substring(1, part.length() - 1));
+                    } else {
+                        // Variable or expression
+                        parts.add(evaluate(part));
+                    }
+                }
+                current = new StringBuilder();
+            } else {
+                current.append(c);
+            }
+        }
+
+        String lastPart = current.toString().trim();
+        if (!lastPart.isEmpty()) {
+            // Remove surrounding quotes if this is a string literal
+            if (lastPart.startsWith("\"") && lastPart.endsWith("\"")) {
+                parts.add(lastPart.substring(1, lastPart.length() - 1));
+            } else {
+                parts.add(evaluate(lastPart));
+            }
+        }
+
+        // Concatenate all parts
+        StringBuilder result = new StringBuilder();
+        for (Object part : parts) {
+            result.append(formatValueForPrint(part));
+        }
+        return result.toString();
+    }
+
+    private String formatValueForPrint(Object obj) {
+        if (obj == null) {
+            return "null";
+        }
+        if (obj instanceof Object[] || obj instanceof String[]) {
+            return JsonUtil.toJson(obj);
+        }
+        if (obj instanceof List || obj instanceof Map) {
+            return JsonUtil.toJson(obj);
+        }
+        return obj.toString();
     }
 
     private Object handleFunctionCall(String expr) {
         int parenIndex = expr.indexOf('(');
-        String funcName = expr.substring(0, parenIndex).trim();
-        
-        // If funcName is empty, this is likely a parenthesized expression, not a function call
-        if (funcName.isEmpty()) {
+        String fullFuncName = expr.substring(0, parenIndex).trim();
+
+        // If fullFuncName is empty, this is likely a parenthesized expression, not a
+        // function call
+        if (fullFuncName.isEmpty()) {
             return evaluateOperator(expr);
         }
-        
+
+        // Handle namespace.function syntax (e.g., swapPool.create)
+        String funcName = fullFuncName;
+        String namespace = null;
+        if (fullFuncName.contains(".")) {
+            int dotIndex = fullFuncName.lastIndexOf('.');
+            namespace = fullFuncName.substring(0, dotIndex);
+            funcName = fullFuncName.substring(dotIndex + 1);
+        }
+
         // Find the matching closing parenthesis
         int depth = 1;
         int closeParenIndex = parenIndex + 1;
         while (closeParenIndex < expr.length() && depth > 0) {
             char c = expr.charAt(closeParenIndex);
-            if (c == '(') depth++;
-            if (c == ')') depth--;
-            if (depth > 0) closeParenIndex++;
+            if (c == '(')
+                depth++;
+            if (c == ')')
+                depth--;
+            if (depth > 0)
+                closeParenIndex++;
         }
-        
+
         String argsStr = expr.substring(parenIndex + 1, closeParenIndex).trim();
 
         List<Object> args = new ArrayList<>();
@@ -1089,12 +1241,12 @@ public class ProcessRunner implements Runnable {
             StringBuilder current = new StringBuilder();
             for (int i = 0; i < argsStr.length(); i++) {
                 char c = argsStr.charAt(i);
-                
+
                 // Track string literals
                 if (c == '"' && (i == 0 || argsStr.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 }
-                
+
                 if (!inString) {
                     if (c == '(')
                         argDepth++;
@@ -1119,8 +1271,11 @@ public class ProcessRunner implements Runnable {
 
         Object[] argArray = args.toArray();
 
+        // Build full function name with namespace if present
+        String fullName = (namespace != null) ? namespace + "." + funcName : funcName;
+
         // Use new plugin system to call functions
-        Object result = FunctionRegistry.call(funcName, argArray, functionContext);
+        Object result = FunctionRegistry.call(fullName, argArray, functionContext);
         if (result != null) {
             return result;
         }
@@ -1172,21 +1327,21 @@ public class ProcessRunner implements Runnable {
         if (firstBracket <= 0) {
             throw wrapException("Invalid index syntax", "index_access");
         }
-        
+
         String containerName = expr.substring(0, firstBracket);
         Object container = data.get(containerName);
         if (container == null) {
             throw UnrecoverableException.undefinedVariable(containerName, pid, currentLine);
         }
-        
+
         return handleIndexAccessRecursive(container, expr.substring(firstBracket));
     }
-    
+
     private Object handleIndexAccessRecursive(Object container, String indexExpr) {
         if (!indexExpr.startsWith("[")) {
             return container;
         }
-        
+
         int depth = 0;
         int closeBracket = -1;
         for (int i = 0; i < indexExpr.length(); i++) {
@@ -1195,20 +1350,20 @@ public class ProcessRunner implements Runnable {
                 depth++;
             else if (c == ']' || c == '}')
                 depth--;
-            
+
             if (c == ']' && depth == 0) {
                 closeBracket = i;
                 break;
             }
         }
-        
+
         if (closeBracket == -1) {
             throw wrapException("Invalid index syntax: missing closing bracket", "index_access");
         }
-        
+
         String indexContent = indexExpr.substring(1, closeBracket).trim();
         Object index = evaluate(indexContent);
-        
+
         Object result;
         if (container instanceof List && index instanceof Number) {
             List<?> list = (List<?>) container;
@@ -1223,15 +1378,15 @@ public class ProcessRunner implements Runnable {
             Map<?, ?> map = (Map<?, ?>) container;
             result = map.get(index);
         } else {
-            throw UnrecoverableException.typeError("array or map", 
-                container.getClass().getSimpleName(), pid, currentLine);
+            throw UnrecoverableException.typeError("array or map",
+                    container.getClass().getSimpleName(), pid, currentLine);
         }
-        
+
         String remaining = indexExpr.substring(closeBracket + 1).trim();
         if (remaining.startsWith("[")) {
             return handleIndexAccessRecursive(result, remaining);
         }
-        
+
         return result;
     }
 
@@ -1320,7 +1475,7 @@ public class ProcessRunner implements Runnable {
     private static class Token {
         TokenType type;
         String value;
-        
+
         Token(TokenType type, String value) {
             this.type = type;
             this.value = value;
@@ -1333,12 +1488,12 @@ public class ProcessRunner implements Runnable {
         Object value;
         ASTNode left;
         ASTNode right;
-        
+
         ASTNode(String type, Object value) {
             this.type = type;
             this.value = value;
         }
-        
+
         ASTNode(String type, Object value, ASTNode left, ASTNode right) {
             this.type = type;
             this.value = value;
@@ -1354,7 +1509,7 @@ public class ProcessRunner implements Runnable {
         PRECEDENCE.put("or", 1);
         PRECEDENCE.put("and", 2);
         PRECEDENCE.put("not", 3);
-        
+
         // Comparison operators
         PRECEDENCE.put("==", 4);
         PRECEDENCE.put("!=", 4);
@@ -1362,7 +1517,7 @@ public class ProcessRunner implements Runnable {
         PRECEDENCE.put(">", 5);
         PRECEDENCE.put("<=", 5);
         PRECEDENCE.put(">=", 5);
-        
+
         // Arithmetic operators
         PRECEDENCE.put("+", 6);
         PRECEDENCE.put("-", 6);
@@ -1375,13 +1530,14 @@ public class ProcessRunner implements Runnable {
     private List<Token> tokenize(String expr) {
         List<Token> tokens = new ArrayList<>();
         int pos = 0;
-        
+
         while (pos < expr.length()) {
             char c = expr.charAt(pos);
-            
+
             if (Character.isWhitespace(c)) {
                 pos++;
-            } else if (Character.isDigit(c) || (c == '.' && pos + 1 < expr.length() && Character.isDigit(expr.charAt(pos + 1)))) {
+            } else if (Character.isDigit(c)
+                    || (c == '.' && pos + 1 < expr.length() && Character.isDigit(expr.charAt(pos + 1)))) {
                 // Number
                 int start = pos;
                 while (pos < expr.length() && (Character.isDigit(expr.charAt(pos)) || expr.charAt(pos) == '.')) {
@@ -1434,15 +1590,15 @@ public class ProcessRunner implements Runnable {
                 }
                 tokens.add(new Token(TokenType.STRING, sb.toString()));
                 pos++;
-        } else if (c == '(') {
-            tokens.add(new Token(TokenType.LEFT_PAREN, "("));
-            pos++;
-        } else if (c == ')') {
-            tokens.add(new Token(TokenType.RIGHT_PAREN, ")"));
-            pos++;
-        } else if (c == '+' || c == '-' || c == '*' || c == '/' || c == '%') {
-            tokens.add(new Token(TokenType.OPERATOR, String.valueOf(c)));
-            pos++;
+            } else if (c == '(') {
+                tokens.add(new Token(TokenType.LEFT_PAREN, "("));
+                pos++;
+            } else if (c == ')') {
+                tokens.add(new Token(TokenType.RIGHT_PAREN, ")"));
+                pos++;
+            } else if (c == '+' || c == '-' || c == '*' || c == '/' || c == '%') {
+                tokens.add(new Token(TokenType.OPERATOR, String.valueOf(c)));
+                pos++;
             } else if (c == '=') {
                 if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
                     tokens.add(new Token(TokenType.OPERATOR, "=="));
@@ -1472,13 +1628,14 @@ public class ProcessRunner implements Runnable {
                     tokens.add(new Token(TokenType.OPERATOR, ">="));
                     pos += 2;
                 } else {
-                    tokens.add(new Token(TokenType.OPERATOR, ">") );
+                    tokens.add(new Token(TokenType.OPERATOR, ">"));
                     pos++;
                 }
             } else if (Character.isLetter(c) || c == '_') {
                 // Identifier or boolean
                 int start = pos;
-                while (pos < expr.length() && (Character.isLetterOrDigit(expr.charAt(pos)) || expr.charAt(pos) == '_')) {
+                while (pos < expr.length()
+                        && (Character.isLetterOrDigit(expr.charAt(pos)) || expr.charAt(pos) == '_')) {
                     pos++;
                 }
                 String value = expr.substring(start, pos);
@@ -1493,7 +1650,7 @@ public class ProcessRunner implements Runnable {
                 throw wrapException("Unexpected character: " + c, "tokenize");
             }
         }
-        
+
         tokens.add(new Token(TokenType.END, ""));
         return tokens;
     }
@@ -1502,20 +1659,20 @@ public class ProcessRunner implements Runnable {
     private class Parser {
         private List<Token> tokens;
         private int pos;
-        
+
         Parser(List<Token> tokens) {
             this.tokens = tokens;
             this.pos = 0;
         }
-        
+
         private Token peek() {
             return tokens.get(pos);
         }
-        
+
         private Token consume() {
             return tokens.get(pos++);
         }
-        
+
         private boolean match(TokenType type) {
             if (peek().type == type) {
                 consume();
@@ -1523,12 +1680,12 @@ public class ProcessRunner implements Runnable {
             }
             return false;
         }
-        
+
         // Parse expressions with operator precedence
         public ASTNode parse() {
             return parseExpression(0);
         }
-        
+
         // Recursive descent parser with precedence
         private ASTNode parseExpression(int precedence) {
             // Check for unary operators at the beginning
@@ -1539,30 +1696,32 @@ public class ProcessRunner implements Runnable {
                 ASTNode right = parseExpression(PRECEDENCE.get(op));
                 return new ASTNode("unary", op, null, right);
             }
-            
+
             ASTNode left = parsePrimary();
-            
+
             while (true) {
                 token = peek();
-                if (token.type != TokenType.OPERATOR) break;
-                
+                if (token.type != TokenType.OPERATOR)
+                    break;
+
                 int opPrecedence = PRECEDENCE.getOrDefault(token.value, 0);
-                if (opPrecedence <= precedence) break;
-                
+                if (opPrecedence <= precedence)
+                    break;
+
                 consume(); // Consume the operator
                 String op = token.value;
-                
+
                 // For binary operators only (unary "not" is handled above)
                 ASTNode right = parseExpression(opPrecedence);
                 left = new ASTNode("binary", op, left, right);
             }
-            
+
             return left;
         }
-        
+
         private ASTNode parsePrimary() {
             Token token = peek();
-            
+
             if (match(TokenType.NUMBER)) {
                 if (token.value.contains(".")) {
                     return new ASTNode("number", Double.parseDouble(token.value));
@@ -1570,19 +1729,19 @@ public class ProcessRunner implements Runnable {
                     return new ASTNode("number", Integer.parseInt(token.value));
                 }
             }
-            
+
             if (match(TokenType.STRING)) {
                 return new ASTNode("string", token.value);
             }
-            
+
             if (match(TokenType.BOOLEAN)) {
                 return new ASTNode("boolean", Boolean.parseBoolean(token.value));
             }
-            
+
             if (match(TokenType.IDENTIFIER)) {
                 return new ASTNode("identifier", token.value);
             }
-            
+
             if (match(TokenType.LEFT_PAREN)) {
                 ASTNode expr = parseExpression(0);
                 if (!match(TokenType.RIGHT_PAREN)) {
@@ -1590,7 +1749,7 @@ public class ProcessRunner implements Runnable {
                 }
                 return expr;
             }
-            
+
             throw wrapException("Expected expression", "expression_parsing");
         }
     }
@@ -1602,7 +1761,7 @@ public class ProcessRunner implements Runnable {
             case "string":
             case "boolean":
                 return node.value;
-            
+
             case "identifier":
                 String varName = (String) node.value;
                 if (data.containsKey(varName)) {
@@ -1610,7 +1769,7 @@ public class ProcessRunner implements Runnable {
                 } else {
                     throw UnrecoverableException.undefinedVariable(varName, pid, currentLine);
                 }
-            
+
             case "unary":
                 String unaryOp = (String) node.value;
                 Object right = evaluateAST(node.right);
@@ -1620,24 +1779,24 @@ public class ProcessRunner implements Runnable {
                     if (right instanceof Number) {
                         return -((Number) right).doubleValue();
                     } else {
-                        throw UnrecoverableException.typeError("number", 
-                            right != null ? right.getClass().getSimpleName() : "null", pid, currentLine);
+                        throw UnrecoverableException.typeError("number",
+                                right != null ? right.getClass().getSimpleName() : "null", pid, currentLine);
                     }
                 }
                 break;
-            
+
             case "binary":
                 String op = (String) node.value;
                 Object leftVal = evaluateAST(node.left);
                 Object rightVal = evaluateAST(node.right);
-                
+
                 switch (op) {
                     // Logical operators
                     case "and":
                         return isTrue(leftVal) && isTrue(rightVal);
                     case "or":
                         return isTrue(leftVal) || isTrue(rightVal);
-                    
+
                     // Comparison operators
                     case "==":
                         return Objects.equals(leftVal, rightVal);
@@ -1655,7 +1814,7 @@ public class ProcessRunner implements Runnable {
                     case ">=":
                         ensureNumbers(leftVal, rightVal);
                         return ((Number) leftVal).doubleValue() >= ((Number) rightVal).doubleValue();
-                    
+
                     // Arithmetic operators
                     case "+":
                         if (leftVal instanceof Number && rightVal instanceof Number) {
@@ -1684,7 +1843,7 @@ public class ProcessRunner implements Runnable {
                 }
                 break;
         }
-        
+
         throw wrapException("Cannot evaluate AST node: " + node.type, "ast_evaluation");
     }
 
@@ -1760,14 +1919,14 @@ public class ProcessRunner implements Runnable {
             this.body = body;
         }
     }
-    
+
     private String getCurrentFilePath() {
         if (data != null && data.containsKey("__current_script")) {
             return (String) data.get("__current_script");
         }
         return "/system/process/" + pid + ".json";
     }
-    
+
     private ExceptionContext createExceptionContext(String operation) {
         String currentLineStr = null;
         if (codeLines != null && currentLine >= 0 && currentLine < codeLines.size()) {
@@ -1775,14 +1934,14 @@ public class ProcessRunner implements Runnable {
         }
         return new ExceptionContext(pid, currentLine, getCurrentFilePath(), currentLineStr, operation);
     }
-    
+
     private void handleException(Exception e, String operation) {
         ExceptionContext context = createExceptionContext(operation);
-        
+
         if (e instanceof ProcessException) {
             ProcessException pe = (ProcessException) e;
             logProcessException(pe, context);
-            
+
             if (pe.isRecoverable()) {
                 Logger.warn("Recoverable exception in process " + pid + ", attempting to continue: " + pe.getMessage());
                 data.put("_warning", pe.getMessage());
@@ -1793,31 +1952,30 @@ public class ProcessRunner implements Runnable {
             }
         } else {
             ProcessException wrappedException = new UnrecoverableException(
-                e.getMessage() != null ? e.getMessage() : "Unknown error",
-                e,
-                context
-            );
+                    e.getMessage() != null ? e.getMessage() : "Unknown error",
+                    e,
+                    context);
             logProcessException(wrappedException, context);
             Logger.error("Exception in process " + pid, wrappedException);
             data.put("_error", e.getMessage());
             running = false;
         }
-        
+
         saveToFile(!running);
     }
-    
+
     private void logProcessException(ProcessException e, ExceptionContext context) {
         StringBuilder logMessage = new StringBuilder();
         logMessage.append("Process Exception Details:\n");
         logMessage.append(e.toDetailedString());
         Logger.error(logMessage.toString(), e);
     }
-    
+
     private RuntimeException wrapException(String message, String operation) {
         ExceptionContext context = createExceptionContext(operation);
         return new UnrecoverableException(message, context);
     }
-    
+
     private RuntimeException wrapException(String message, Throwable cause, String operation) {
         ExceptionContext context = createExceptionContext(operation);
         return new UnrecoverableException(message, cause, context);

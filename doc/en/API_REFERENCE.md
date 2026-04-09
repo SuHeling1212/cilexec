@@ -356,7 +356,7 @@ SwapUtil.onProcessExit(pid);
 | `getPID()` | None | `int` | Get current process ID |
 | `getPPID()` | None | `int` | Get parent process ID |
 | `fork()` | None | `int` | Create child process; parent returns child PID, child returns 0 |
-| `exec(path, params)` | `path`: program path, `params`: parameter array | `String[]` | Execute new program replacing current process |
+| `exec(path, params)` | `path`: program path, `params`: parameter array (supports special parameter system) | `String[]` | Execute new program replacing current process, supports special parameter system and per-process user context |
 | `kill(pid)` | `pid`: process ID | `String[]` | Terminate specified process |
 | `wait()` | None | `String[]` | Wait for any child process to end |
 | `waitPID(pid)` | `pid`: child process ID | `String[]` | Wait for specified child process to end |
@@ -364,6 +364,40 @@ SwapUtil.onProcessExit(pid);
 | `Continue(pid)` | `pid`: process ID | `String[]` | Resume paused process |
 | `getListOfChildProcess()` | None | `Map<String, Integer>` | Get child process list |
 | `getListOfProcess()` | None | `Map<String, Integer>` | Get all process list (requires local permission) |
+
+#### exec Parameter System
+
+The `exec` function's parameter system supports special parameter types for modifying execution behavior:
+
+**Parameter Parsing Rules:**
+- Parameters starting with `-` indicate special parameter types (e.g., `-user`)
+- Subsequent consecutive parameters without `-` prefix become values for that parameter type
+- Special parameters are filtered from `argv` and stored in the new process's `data` object
+- Parameters not associated with any special parameter are passed as regular command-line arguments to `argv`
+
+**Special Parameter Examples:**
+- `-user`: Specify the user to run the new process as
+- `-test`: Custom parameter, values stored in `data` object
+
+**-user Parameter Functionality:**
+1. Stores `"user": ["username"]` in the new process's `data` object
+2. Triggers process user context switch to the specified username
+3. New process's file operations will use this user as the owner
+
+**Examples:**
+```fcl
+// Execute program as testuser
+exec("/user/local/program.fcl", ["-user", "testuser", "arg1", "arg2"])
+
+// Multiple special parameters
+exec("/user/local/program.fcl", ["-user", "testuser", "-config", "value1", "value2", "regular_arg"])
+```
+
+**Per-Process User Context:**
+- Each process has independent user identity (stored in ThreadLocal)
+- `switchUser(username, password)` only switches the current process's user
+- `getCurrentUser()` returns the current process's username
+- File operations (create, read, write) use the current process's user as the owner
 
 ### Swap Pool API
 

@@ -24,24 +24,48 @@ public class FunctionRegistry {
     
     /**
      * Call function
-     * 
-     * @param name    Function name
+     *
+     * @param name    Function name (may include namespace like "swapPool.create")
      * @param args    Argument array
      * @param context Call context
      * @return Function return value, returns null if function does not exist
      */
     public static Object call(String name, Object[] args, FunctionContext context) {
+        // Handle namespaced function calls like "swapPool.create"
+        String simpleName = name;
+        String namespace = null;
+        if (name.contains(".")) {
+            int dotIndex = name.lastIndexOf('.');
+            namespace = name.substring(0, dotIndex);
+            simpleName = name.substring(dotIndex + 1);
+        }
+
         Object lastError = null;
+
+        // First try with the full name (for providers that understand namespaced names)
         for (FunctionProvider provider : providers) {
             Object result = provider.call(name, args, context);
-            if (result != null) {
-                if (isErrorResult(result)) {
-                    lastError = result;
-                    continue;
-                }
+            if (result != null && !isErrorResult(result)) {
                 return result;
             }
+            if (isErrorResult(result)) {
+                lastError = result;
+            }
         }
+
+        // If full name didn't work and we have a namespace, try with simple name
+        if (namespace != null) {
+            for (FunctionProvider provider : providers) {
+                Object result = provider.call(simpleName, args, context);
+                if (result != null && !isErrorResult(result)) {
+                    return result;
+                }
+                if (isErrorResult(result)) {
+                    lastError = result;
+                }
+            }
+        }
+
         return lastError;
     }
     

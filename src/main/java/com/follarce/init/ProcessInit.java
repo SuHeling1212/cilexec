@@ -124,7 +124,7 @@ public class ProcessInit {
         // Basic info
         process.put("Name", "INIT");
         process.put("Owner", currentUser);
-        process.put("Local", isLocal);
+        process.put("isLocal", isLocal);
         process.put("PID", 1);
         process.put("Path", "");
         process.put("Status", true);

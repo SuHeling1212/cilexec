@@ -1,22 +1,16 @@
 #!/bin/bash
 
 echo "=============== Running CilExec ==============="
-
-# Check if target/classes exists
-if [ ! -d "target/classes" ]; then
-    echo "Compiled class files not found, compiling..."
-    mvn clean compile
-    if [ $? -ne 0 ]; then
-        echo "Compilation failed!"
-        exit 1
-    fi
+rm -rf target/
+echo "Compiling..."
+mvn clean compile
+if [ $? -ne 0 ]; then
+    echo "Compilation failed!"
+    exit 1
 fi
 
-# Copy dependencies to target/dependency
 echo "Checking dependencies..."
-if [ ! -d "target/dependency" ]; then
-    mvn dependency:copy-dependencies -q
-fi
+mvn dependency:copy-dependencies -q
 
 # Get dependency classpath
 CLASSPATH="target/classes"

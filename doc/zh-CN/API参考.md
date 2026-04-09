@@ -402,7 +402,7 @@ if dirList[0] == "SUCCESS" {
 | `getPID()` | 无 | `int` | 获取当前进程ID |
 | `getPPID()` | 无 | `int` | 获取父进程ID |
 | `fork()` | 无 | `int` | 创建子进程，父进程返回子PID，子进程返回0 |
-| `exec(path, params)` | `path`: 程序路径, `params`: 参数数组 | `String[]` | 执行新程序替换当前进程 |
+| `exec(path, params)` | `path`: 程序路径, `params`: 参数数组（支持特殊参数系统） | `String[]` | 执行新程序替换当前进程，支持特殊参数系统和进程级用户上下文 |
 | `kill(pid)` | `pid`: 进程ID | `String[]` | 终止指定进程 |
 | `wait()` | 无 | `String[]` | 等待任意子进程结束 |
 | `waitPID(pid)` | `pid`: 子进程ID | `String[]` | 等待指定子进程结束 |
@@ -426,6 +426,40 @@ if pid == 0 {
     println("子进程结束")
 }
 ```
+
+#### exec 参数系统
+
+`exec` 函数的参数系统支持特殊参数类型，用于修改执行行为：
+
+**参数解析规则：**
+- 以 `-` 开头的参数表示特殊参数类型（如 `-user`）
+- 后续连续的非 `-` 开头的参数作为该类型的值
+- 特殊参数会从 `argv` 中过滤，存储在新进程的 `data` 对象中
+- 不关联任何特殊参数的参数作为常规命令行参数传入 `argv`
+
+**特殊参数示例：**
+- `-user`：指定新进程的运行用户
+- `-test`：自定义参数，值会存储在 `data` 对象中
+
+**-user 参数功能：**
+1. 将 `"user": ["用户名"]` 存储到新进程的 `data` 对象中
+2. 触发进程用户上下文切换到指定用户名
+3. 新进程的文件操作将以该用户身份进行
+
+**示例：**
+```fcl
+// 以 testuser 用户身份执行程序
+exec("/user/local/program.fcl", ["-user", "testuser", "arg1", "arg2"])
+
+// 多个特殊参数
+exec("/user/local/program.fcl", ["-user", "testuser", "-config", "value1", "value2", "regular_arg"])
+```
+
+**进程级用户上下文：**
+- 每个进程拥有独立的用户身份（ThreadLocal 存储）
+- `switchUser(username, password)` 只切换当前进程的用户
+- `getCurrentUser()` 返回当前进程的用户名
+- 文件操作（创建、读写）使用当前进程的用户作为所有者
 
 ### 交换池 API
 

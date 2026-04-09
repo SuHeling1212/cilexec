@@ -191,29 +191,14 @@ public class UserInit {
     /**
      * Get current logged-in user
      *
-     * @return String Current username, returns null on failure
+     * @return String Current username
      */
     public static String getCurrentUser() {
-        String[] readResult = FileUtil.read(USERS_FILE);
-        if (!readResult[0].equals("SUCCESS")) {
-            return null;
-        }
-
-        Object obj = JsonUtil.readJson(readResult[1]);
-        if (!(obj instanceof Map)) {
-            return null;
-        }
-
-        Map<String, Object> data = (Map<String, Object>) obj;
-        Object currentUser = data.get("currentUser");
-        if (currentUser instanceof String) {
-            return (String) currentUser;
-        }
-        return null;
+        return com.follarce.process.ProcessFunc.getCurrentUser();
     }
 
     /**
-     * Switch current user
+     * Switch current user (for current process only)
      *
      * @param username Username
      * @param password Password
@@ -224,38 +209,33 @@ public class UserInit {
             return new String[]{"ERROR", "INVALID_USERNAME"};
         }
 
-        // Verify user exists
         if (!userExists(username)) {
             return new String[]{"ERROR", "USER_NOT_EXISTS"};
         }
 
-        // Verify password
         if (!validateUser(username, password)) {
             return new String[]{"ERROR", "INVALID_PASSWORD"};
         }
 
-        // Read full data
-        String[] readResult = FileUtil.read(USERS_FILE);
-        if (!readResult[0].equals("SUCCESS")) {
-            return new String[]{"ERROR", "READ_FAILED"};
+        com.follarce.process.ProcessFunc.setCurrentUser(username);
+        
+        // Update process file Owner field
+        try {
+            int currentPid = com.follarce.process.ProcessFunc.getPID();
+            String processFile = "/system/process/" + currentPid + ".json";
+            String[] readResult = FileUtil.read(processFile);
+            if (readResult[0].equals("SUCCESS")) {
+                Object processObj = JsonUtil.readJson(readResult[1]);
+                if (processObj instanceof Map) {
+                    Map<String, Object> process = (Map<String, Object>) processObj;
+                    process.put("Owner", username);
+                    FileUtil.write(processFile, JsonUtil.toJson(process));
+                }
+            }
+        } catch (Exception e) {
+            // Silently ignore - process file update is optional
         }
-
-        Object obj = JsonUtil.readJson(readResult[1]);
-        if (!(obj instanceof Map)) {
-            return new String[]{"ERROR", "INVALID_USER_DATA"};
-        }
-
-        Map<String, Object> data = (Map<String, Object>) obj;
-
-        // Update current user
-        data.put("currentUser", username);
-
-        // Save
-        String[] writeResult = FileUtil.write(USERS_FILE, JsonUtil.toJson(data));
-        if (!writeResult[0].equals("SUCCESS")) {
-            return new String[]{"ERROR", "SAVE_FAILED"};
-        }
-
+        
         return new String[]{"SUCCESS", null};
     }
 

@@ -1,10 +1,13 @@
 package com.follarce.plugin;
 
+import com.follarce.basicUtil.JsonUtil;
 import com.follarce.basicUtil.Logger;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Map;
 
 public class IOFunctionProvider implements FunctionProvider {
 
@@ -50,7 +53,7 @@ public class IOFunctionProvider implements FunctionProvider {
             if (i > 0) {
                 sb.append(" ");
             }
-            sb.append(args[i] != null ? args[i].toString() : "null");
+            sb.append(formatValue(args[i]));
         }
 
         if (newline) {
@@ -60,6 +63,19 @@ public class IOFunctionProvider implements FunctionProvider {
         }
 
         return new String[]{"SUCCESS"};
+    }
+
+    private String formatValue(Object obj) {
+        if (obj == null) {
+            return "null";
+        }
+        if (obj instanceof Object[] || obj instanceof String[]) {
+            return JsonUtil.toJson(obj);
+        }
+        if (obj instanceof List || obj instanceof Map) {
+            return JsonUtil.toJson(obj);
+        }
+        return obj.toString();
     }
 
     private Object handlePrintf(Object[] args) {

@@ -17,6 +17,7 @@ import com.follarce.network.SocketUtil;
 public class ProcessFunc {
 
     private static final ThreadLocal<Integer> currentPid = ThreadLocal.withInitial(() -> 1);
+    private static final ThreadLocal<String> currentUser = ThreadLocal.withInitial(() -> "local");
 
     public static void setCurrentPid(int pid) {
         currentPid.set(pid);
@@ -24,6 +25,14 @@ public class ProcessFunc {
 
     public static int getPID() {
         return currentPid.get();
+    }
+
+    public static void setCurrentUser(String user) {
+        currentUser.set(user);
+    }
+
+    public static String getCurrentUser() {
+        return currentUser.get();
     }
 
     /**
@@ -158,9 +167,9 @@ public class ProcessFunc {
 
     /**
      * Execute a new program in the current process
-     * 
+     *
      * @param path   program file path
-     * @param params command line arguments
+     * @param params command line arguments (may contain special parameters starting with "-")
      * @return ["SUCCESS", content] on success, ["ERROR", code] on failure
      */
     public static String[] exec(String path, String[] params) {
@@ -201,24 +210,71 @@ public class ProcessFunc {
         process.put("startTime", TimeUtil.getTime()); // Reset start time
         process.put("RunningTime", 0); // Reset running time
 
-        // 5. Reset Program section
+        // 5. Parse special parameters from params array
+        Map<String, List<String>> specialParams = new HashMap<>();
+        List<String> regularArgs = new ArrayList<>();
+        String currentParam = null;
+        List<String> currentValues = null;
+        
+        if (params != null) {
+            for (int i = 0; i < params.length; i++) {
+                String param = params[i];
+                if (param.startsWith("-")) {
+                    // Save previous parameter if any
+                    if (currentParam != null) {
+                        specialParams.put(currentParam.substring(1), currentValues);
+                    }
+                    // Start new parameter
+                    currentParam = param;
+                    currentValues = new ArrayList<>();
+                } else {
+                    // Value for current parameter or regular argument
+                    if (currentParam != null) {
+                        currentValues.add(param);
+                    } else {
+                        // Regular argument (not associated with any special parameter)
+                        regularArgs.add(param);
+                    }
+                }
+            }
+            // Save last parameter if any
+            if (currentParam != null) {
+                specialParams.put(currentParam.substring(1), currentValues);
+            }
+        }
+        
+        // Check for -user parameter
+        if (specialParams.containsKey("user")) {
+            List<String> userValues = specialParams.get("user");
+            if (userValues != null && !userValues.isEmpty()) {
+                String username = userValues.get(0);
+                process.put("user", username);
+                process.put("Owner", username);
+                setCurrentUser(username);
+            }
+        }
+
+        // 6. Reset Program section
         Map<String, Object> program = new HashMap<>();
 
         // Data section (reset, but add command line arguments)
         Map<String, Object> data = new HashMap<>();
         
-        // Store command line arguments
-        // argv[0] is the program path, argv[1..n] are the params
+        // Store special parameters in data object
+        for (Map.Entry<String, List<String>> entry : specialParams.entrySet()) {
+            data.put(entry.getKey(), entry.getValue());
+        }
+
+        // Store command line arguments (regular args only, special params are filtered out)
+        // argv[0] is the program path, argv[1..n] are the regular arguments
         List<String> argv = new ArrayList<>();
         argv.add(path);
-        if (params != null) {
-            for (String param : params) {
-                argv.add(param);
-            }
+        for (String arg : regularArgs) {
+            argv.add(arg);
         }
         data.put("argv", argv);
         data.put("argc", argv.size());
-        
+
         program.put("Data", data);
 
         // Code section (load from script)
@@ -491,7 +547,7 @@ public class ProcessFunc {
             return new String[] { "ERROR", "INVALID_PROCESS_JSON" };
         }
         Map<String, Object> currentProcess = (Map<String, Object>) currentProcessObj;
-        Boolean isLocal = (Boolean) currentProcess.get("Local");
+        Boolean isLocal = (Boolean) currentProcess.get("isLocal");
         if (isLocal == null || !isLocal) {
             return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
         }

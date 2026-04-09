@@ -9,6 +9,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
+import org.bitbucket.cowwoc.diffmatchpatch.DiffMatchPatch;
+import java.util.LinkedList;
+import com.follarce.init.UserInit;
 
 public class FileUtil {
     private static String VFS_ROOT = null; // Initially unknown
@@ -22,19 +25,20 @@ public class FileUtil {
         if (name == null || name.trim().isEmpty()) {
             return false;
         }
-        
+
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
             if (!Character.isLetterOrDigit(c) && c != '_' && c != '-' && c != '.') {
                 return false;
             }
         }
-        
+
         return true;
     }
 
     /**
-     * Check if filename is valid (cannot start with ., must pass whitelist validation)
+     * Check if filename is valid (cannot start with ., must pass whitelist
+     * validation)
      */
     private static boolean isValidName(String name) {
         return name != null && !name.trim().isEmpty() && !name.startsWith(".") && isValidPathCharacter(name);
@@ -154,7 +158,8 @@ public class FileUtil {
      * @param path           Virtual path
      * @param checkParentDir Whether to check if parent directory exists
      * @param needExist      Whether file needs to exist
-     * @param operation      Operation type (read/write/execute), null to skip permission check
+     * @param operation      Operation type (read/write/execute), null to skip
+     *                       permission check
      * @return [File object, error info] Returns null and error code if error
      */
     private static Object[] validateFile(String path, boolean checkParentDir, boolean needExist, String operation) {
@@ -226,7 +231,8 @@ public class FileUtil {
     }
 
     /**
-     * Validate file path and return File object (backward compatible, no permission check)
+     * Validate file path and return File object (backward compatible, no permission
+     * check)
      */
     private static Object[] validateFile(String path, boolean checkParentDir, boolean needExist) {
         return validateFile(path, checkParentDir, needExist, null);
@@ -284,13 +290,15 @@ public class FileUtil {
             return new String[] { "ERROR", "SOURCE_FILE_DOES_NOT_EXIST" };
         }
 
-        // 6. Extract filename from source path (link file name is same as source file name)
+        // 6. Extract filename from source path (link file name is same as source file
+        // name)
         String sourceName = sourcePath;
         int lastSlash = sourcePath.lastIndexOf('/');
         if (lastSlash >= 0) {
             sourceName = sourcePath.substring(lastSlash + 1);
         }
-        // If extracted result is empty string, source path ends with /, need to look further
+        // If extracted result is empty string, source path ends with /, need to look
+        // further
         if (sourceName.isEmpty()) {
             String pathWithoutTrailingSlash = sourcePath.substring(0, sourcePath.length() - 1);
             lastSlash = pathWithoutTrailingSlash.lastIndexOf('/');
@@ -620,7 +628,10 @@ public class FileUtil {
             path = path + "/";
         }
 
-        // 5. Get root directory
+        // 5. Resolve path aliases (e.g., ~ -> /user/local)
+        path = PathUtil.resolvePath(path);
+
+        // 6. Get root directory
         String root = getVfsRoot();
 
         // 6. Convert to real path (parent directory path)
@@ -746,14 +757,17 @@ public class FileUtil {
             path = path + "/";
         }
 
-        // 5. Get root directory
+        // 5. Resolve path aliases (e.g., ~ -> /user/local)
+        path = PathUtil.resolvePath(path);
+
+        // 6. Get root directory
         String root = getVfsRoot();
 
-        // 6. Convert to real path (directory path)
+        // 7. Convert to real path (directory path)
         String normalized = normalizePath(path);
         String realDirPath = root + normalized.replace('/', File.separatorChar);
 
-        // 7. Check if directory exists
+        // 8. Check if directory exists
         File dir = new File(realDirPath);
         if (!dir.exists()) {
             return new String[] { "ERROR", "DIRECTORY_DOES_NOT_EXIST" };
@@ -799,8 +813,9 @@ public class FileUtil {
             timeMap.put("lastOpenTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             metaMap.put("Time", timeMap);
 
-            // Add owner (use local for now)
-            metaMap.put("Owner", "local");
+            // Add owner (use current user)
+            String currentUser = UserInit.getCurrentUser();
+            metaMap.put("Owner", currentUser != null ? currentUser : "local");
 
             // Add default permissions
             Map<String, String> permMap = new HashMap<>();
@@ -930,7 +945,8 @@ public class FileUtil {
      * Read file metadata
      *
      * @param path File path
-     * @return String[] Array, [0] is status, [1] is metadata JSON (returns "{}" if no metadata)
+     * @return String[] Array, [0] is status, [1] is metadata JSON (returns "{}" if
+     *         no metadata)
      */
     public static String[] readFileMetaData(String path) {
         // 1. Validate file
@@ -965,7 +981,8 @@ public class FileUtil {
      * Read directory metadata
      *
      * @param path Directory path (ends with /)
-     * @return String[] Array, [0] is status, [1] is metadata JSON (returns "{}" if no metadata)
+     * @return String[] Array, [0] is status, [1] is metadata JSON (returns "{}" if
+     *         no metadata)
      */
     public static String[] readDirectoryMetaData(String path) {
         // 1. Check path
@@ -1292,7 +1309,8 @@ public class FileUtil {
     }
 
     /**
-     * Write file
+     * Write file with character-level incremental update
+     * Only writes the parts that actually changed to extend disk life
      *
      * @param path    File path
      * @param content Content to write
@@ -1316,33 +1334,59 @@ public class FileUtil {
         }
 
         try {
-            // 3. Read existing file content (to get metadata)
-            String fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            // 3. Read existing file content (to get metadata and body)
+            String existingFullContent = "";
+            String existingBody = "";
 
-            // 4. Check lock status
-            String[] lockCheck = checkLock(file);
-            if (lockCheck != null) {
-                return lockCheck;
+            if (file.exists()) {
+                existingFullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+
+                // 4. Check lock status
+                String[] lockCheck = checkLock(file);
+                if (lockCheck != null) {
+                    return lockCheck;
+                }
+
+                // 5. Extract existing body (content without metadata)
+                String[] metaResult = extractMetaContent(existingFullContent);
+                if (metaResult[0].equals("SUCCESS") && metaResult.length > 2) {
+                    existingBody = metaResult[2];
+                }
             }
 
-            // 5. Extract metadata
+            // 6. Apply character-level diff to only write changed parts
+            String finalBody = content;
+            if (!existingBody.isEmpty() && !existingBody.equals(content)) {
+                DiffMatchPatch dmp = new DiffMatchPatch();
+                LinkedList<DiffMatchPatch.Diff> diffs = dmp.diffMain(existingBody, content);
+                dmp.diffCleanupSemantic(diffs);
+                finalBody = dmp.diffText2(diffs);
+            }
+
+            // 7. If nothing changed, skip write to save disk life
+            if (finalBody.equals(existingBody)) {
+                return new String[] { "SUCCESS", null };
+            }
+
+            // 8. Extract or create metadata
             String metaJson = "{}";
-            String[] metaResult = extractMetaContent(fullContent);
-            if (metaResult[0].equals("SUCCESS")) {
-                metaJson = metaResult[1];
+            if (!existingFullContent.isEmpty()) {
+                String[] metaResult = extractMetaContent(existingFullContent);
+                if (metaResult[0].equals("SUCCESS")) {
+                    metaJson = metaResult[1];
+                }
             }
 
-            // 6. Parse metadata
+            // 9. Parse metadata
             Object metaObj = JsonUtil.readJson(metaJson);
             Map<String, Object> metaMap;
-
             if (metaObj instanceof Map) {
                 metaMap = (Map<String, Object>) metaObj;
             } else {
                 metaMap = new HashMap<>();
             }
 
-            // 7. Ensure locked field exists
+            // 10. Ensure locked field exists
             Object lockedObj = metaMap.get("locked");
             if (!(lockedObj instanceof Map)) {
                 Map<String, Object> lockMap = new HashMap<>();
@@ -1351,7 +1395,7 @@ public class FileUtil {
                 metaMap.put("locked", lockMap);
             }
 
-            // 8. Update time in metadata
+            // 11. Update time in metadata
             Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -1360,19 +1404,19 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 9. Ensure create time exists
+            // 12. Ensure create time exists
             if (!time.containsKey("createTime")) {
                 time.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             }
 
-            // 10. Reassemble file (keep metadata, update body)
+            // 13. Reassemble file
             String newMetaJson = JsonUtil.toJson(metaMap);
-            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + content;
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + finalBody;
 
-            // 11. Write back to file
+            // 14. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
 
-            // 12. Update file size metadata
+            // 15. Update file size metadata
             updateFileSize(file, metaMap);
 
             return new String[] { "SUCCESS", null };
@@ -1864,10 +1908,10 @@ public class FileUtil {
             }
 
             String content = new String(Files.readAllBytes(initFile.toPath()), StandardCharsets.UTF_8);
-            
+
             // Strip metadata header if present
             content = extractBodyContent(content);
-            
+
             Object obj = JsonUtil.readJson(content);
 
             if (obj instanceof Map) {
@@ -1993,10 +2037,11 @@ public class FileUtil {
 
     /**
      * Update file size metadata
-     * Calculates the actual file content size (excluding metadata) and updates the metadata
+     * Calculates the actual file content size (excluding metadata) and updates the
+     * metadata
      *
-     * @param file     The file to update
-     * @param metaMap  The metadata map to update
+     * @param file    The file to update
+     * @param metaMap The metadata map to update
      */
     private static void updateFileSize(File file, Map<String, Object> metaMap) {
         try {
@@ -2054,7 +2099,7 @@ public class FileUtil {
     /**
      * Check and validate file/directory permission
      * 
-     * @param path File or directory path
+     * @param path      File or directory path
      * @param operation Operation type (read/write/execute)
      * @return null if permission granted, error array if denied
      */
@@ -2062,11 +2107,11 @@ public class FileUtil {
         if (path == null || path.trim().isEmpty()) {
             return null;
         }
-        
+
         if (!UserUtil.checkFilePermission(path, operation)) {
             return new String[] { "ERROR", "INSUFFICIENT_PERMISSION" };
         }
-        
+
         return null;
     }
 
@@ -2074,7 +2119,7 @@ public class FileUtil {
      * Check and validate lock status for file or directory
      * Auto-unlock if locker process is dead
      * 
-     * @param file File or directory to check
+     * @param file        File or directory to check
      * @param isDirectory true if checking directory, false if checking file
      * @return null if not locked or lock released, error array if locked
      */
@@ -2082,7 +2127,7 @@ public class FileUtil {
         try {
             File metaFile;
             String fullContent;
-            
+
             if (isDirectory) {
                 metaFile = new File(file, ".META");
                 if (!metaFile.exists()) {
@@ -2095,9 +2140,9 @@ public class FileUtil {
                 }
                 fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
             }
-            
+
             String[] metaResult = extractMetaContent(fullContent);
-            
+
             if (metaResult[0].equals("SUCCESS")) {
                 Object metaObj = JsonUtil.readJson(metaResult[1]);
                 if (metaObj instanceof Map) {
@@ -2117,7 +2162,7 @@ public class FileUtil {
                                 if (!isProcessExists(lockerPid)) {
                                     String entityType = isDirectory ? "directory" : "file";
                                     LOGGER.info("Auto-unlocking " + entityType + " " + file.getPath() +
-                                              " (locker PID " + lockerPid + " is dead)");
+                                            " (locker PID " + lockerPid + " is dead)");
 
                                     locked.put("isLocked", false);
                                     locked.put("lockedBy", null);
@@ -2144,49 +2189,51 @@ public class FileUtil {
     /**
      * Update metadata for file or directory
      * 
-     * @param file File or directory to update
-     * @param metaMap Existing metadata map
-     * @param updates Map of updates to apply (supports nested keys like "Time.lastEditTime")
-     * @param isDirectory true if updating directory metadata, false if updating file metadata
+     * @param file        File or directory to update
+     * @param metaMap     Existing metadata map
+     * @param updates     Map of updates to apply (supports nested keys like
+     *                    "Time.lastEditTime")
+     * @param isDirectory true if updating directory metadata, false if updating
+     *                    file metadata
      * @throws IOException if update fails
      */
-    private static void updateMetadata(File file, Map<String, Object> metaMap, 
-                                      Map<String, Object> updates, boolean isDirectory) throws IOException {
+    private static void updateMetadata(File file, Map<String, Object> metaMap,
+            Map<String, Object> updates, boolean isDirectory) throws IOException {
         int[] now = TimeUtil.getTime();
-        
+
         for (Map.Entry<String, Object> entry : updates.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
-            
+
             if (key.contains(".")) {
                 String[] parts = key.split("\\.", 2);
                 String parentKey = parts[0];
                 String childKey = parts[1];
-                
+
                 Map<String, Object> parentMap = (Map<String, Object>) metaMap.get(parentKey);
                 if (parentMap == null) {
                     parentMap = new HashMap<>();
                     metaMap.put(parentKey, parentMap);
                 }
-                
-                if (value instanceof int[] && ((int[]) value).length == 7 && 
-                    ((int[]) value)[0] == 0) {
+
+                if (value instanceof int[] && ((int[]) value).length == 7 &&
+                        ((int[]) value)[0] == 0) {
                     parentMap.put(childKey, new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
                 } else {
                     parentMap.put(childKey, value);
                 }
             } else {
-                if (value instanceof int[] && ((int[]) value).length == 7 && 
-                    ((int[]) value)[0] == 0) {
+                if (value instanceof int[] && ((int[]) value).length == 7 &&
+                        ((int[]) value)[0] == 0) {
                     metaMap.put(key, new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
                 } else {
                     metaMap.put(key, value);
                 }
             }
         }
-        
+
         String newMetaJson = JsonUtil.toJson(metaMap);
-        
+
         if (isDirectory) {
             File metaFile = new File(file, ".META");
             String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n";

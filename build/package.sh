@@ -1,5 +1,6 @@
 #!/bin/bash
 echo "=============== Packaging ==============="
+rm -rf target/
 mvn clean package
 
 if [ $? -eq 0 ]; then
