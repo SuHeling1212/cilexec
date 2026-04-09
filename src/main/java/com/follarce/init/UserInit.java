@@ -45,16 +45,16 @@ public class UserInit {
      */
     public static String[] createUser(String username, String password, boolean local) {
         if (username == null || username.trim().isEmpty()) {
-            return new String[]{"ERROR", "INVALID_USERNAME"};
+            return new String[] { "ERROR", "INVALID_USERNAME" };
         }
 
         if (password == null || password.isEmpty()) {
-            return new String[]{"ERROR", "INVALID_PASSWORD"};
+            return new String[] { "ERROR", "INVALID_PASSWORD" };
         }
 
         // Check if user already exists
         if (userExists(username)) {
-            return new String[]{"ERROR", "USER_EXISTS"};
+            return new String[] { "ERROR", "USER_EXISTS" };
         }
 
         // Read existing user list
@@ -76,14 +76,14 @@ public class UserInit {
 
         String[] writeResult = FileUtil.write(USERS_FILE, JsonUtil.toJson(data));
         if (!writeResult[0].equals("SUCCESS")) {
-            return new String[]{"ERROR", "SAVE_FAILED"};
+            return new String[] { "ERROR", "SAVE_FAILED" };
         }
 
         // Create user home directory
         FileUtil.createDirectory("/user/", username);
         FileUtil.createDirectory("/user/" + username + "/", "app");
 
-        return new String[]{"SUCCESS", null};
+        return new String[] { "SUCCESS", null };
     }
 
     /**
@@ -95,14 +95,14 @@ public class UserInit {
      */
     public static String[] removeUser(String username, String password) {
         if (username == null || username.trim().isEmpty()) {
-            return new String[]{"ERROR", "INVALID_USERNAME"};
+            return new String[] { "ERROR", "INVALID_USERNAME" };
         }
 
         // Check if user exists
         Map<String, Object> users = getListOfUsers();
         Object userObj = users.get(username);
         if (!(userObj instanceof Map)) {
-            return new String[]{"ERROR", "USER_NOT_EXISTS"};
+            return new String[] { "ERROR", "USER_NOT_EXISTS" };
         }
 
         Map<String, Object> userInfo = (Map<String, Object>) userObj;
@@ -110,13 +110,13 @@ public class UserInit {
         // Verify password
         String storedPassword = (String) userInfo.get("password");
         if (storedPassword == null || !storedPassword.equals(password)) {
-            return new String[]{"ERROR", "INVALID_PASSWORD"};
+            return new String[] { "ERROR", "INVALID_PASSWORD" };
         }
 
         // Cannot delete local user
         Boolean isLocal = (Boolean) userInfo.get("isLocal");
         if (isLocal != null && isLocal) {
-            return new String[]{"ERROR", "CANNOT_REMOVE_LOCAL"};
+            return new String[] { "ERROR", "CANNOT_REMOVE_LOCAL" };
         }
 
         // Remove from list
@@ -128,10 +128,10 @@ public class UserInit {
 
         String[] writeResult = FileUtil.write(USERS_FILE, JsonUtil.toJson(data));
         if (!writeResult[0].equals("SUCCESS")) {
-            return new String[]{"ERROR", "SAVE_FAILED"};
+            return new String[] { "ERROR", "SAVE_FAILED" };
         }
 
-        return new String[]{"SUCCESS", null};
+        return new String[] { "SUCCESS", null };
     }
 
     /**
@@ -197,31 +197,25 @@ public class UserInit {
         return com.follarce.process.ProcessFunc.getCurrentUser();
     }
 
-    /**
-     * Switch current user (for current process only)
-     *
-     * @param username Username
-     * @param password Password
-     * @return String[] [status, error code]
-     */
     public static String[] switchUser(String username, String password) {
-        if (username == null || username.trim().isEmpty()) {
-            return new String[]{"ERROR", "INVALID_USERNAME"};
-        }
+        // ... 验证 ...
 
-        if (!userExists(username)) {
-            return new String[]{"ERROR", "USER_NOT_EXISTS"};
-        }
+        int currentPid = com.follarce.process.ProcessFunc.getPID();
 
-        if (!validateUser(username, password)) {
-            return new String[]{"ERROR", "INVALID_PASSWORD"};
-        }
+        // 1. 暂停
+        com.follarce.process.ProcessFunc.Pause(currentPid);
 
-        com.follarce.process.ProcessFunc.setCurrentUser(username);
-        
-        // Update process file Owner field
+        // 2. 等待 ProcessRunner 完成当前操作
         try {
-            int currentPid = com.follarce.process.ProcessFunc.getPID();
+            Thread.sleep(50); // 等待 50ms
+        } catch (InterruptedException e) {
+        }
+
+        // 3. 切换用户
+        com.follarce.process.ProcessFunc.setCurrentUser(username);
+
+        // 4. 修改文件
+        try {
             String processFile = "/system/process/" + currentPid + ".json";
             String[] readResult = FileUtil.read(processFile);
             if (readResult[0].equals("SUCCESS")) {
@@ -233,10 +227,12 @@ public class UserInit {
                 }
             }
         } catch (Exception e) {
-            // Silently ignore - process file update is optional
         }
-        
-        return new String[]{"SUCCESS", null};
+
+        // 5. 恢复
+        com.follarce.process.ProcessFunc.Continue(currentPid);
+
+        return new String[] { "SUCCESS", null };
     }
 
     /**

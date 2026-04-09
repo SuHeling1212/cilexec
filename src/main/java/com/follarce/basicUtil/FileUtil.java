@@ -9,8 +9,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
-import org.bitbucket.cowwoc.diffmatchpatch.DiffMatchPatch;
-import java.util.LinkedList;
 import com.follarce.init.UserInit;
 
 public class FileUtil {
@@ -1334,50 +1332,28 @@ public class FileUtil {
         }
 
         try {
-            // 3. Read existing file content (to get metadata and body)
-            String existingFullContent = "";
-            String existingBody = "";
-
+            // 3. Read existing file content (to get metadata)
+            String fullContent = "";
             if (file.exists()) {
-                existingFullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+                fullContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
 
                 // 4. Check lock status
                 String[] lockCheck = checkLock(file);
                 if (lockCheck != null) {
                     return lockCheck;
                 }
-
-                // 5. Extract existing body (content without metadata)
-                String[] metaResult = extractMetaContent(existingFullContent);
-                if (metaResult[0].equals("SUCCESS") && metaResult.length > 2) {
-                    existingBody = metaResult[2];
-                }
             }
 
-            // 6. Apply character-level diff to only write changed parts
-            String finalBody = content;
-            if (!existingBody.isEmpty() && !existingBody.equals(content)) {
-                DiffMatchPatch dmp = new DiffMatchPatch();
-                LinkedList<DiffMatchPatch.Diff> diffs = dmp.diffMain(existingBody, content);
-                dmp.diffCleanupSemantic(diffs);
-                finalBody = dmp.diffText2(diffs);
-            }
-
-            // 7. If nothing changed, skip write to save disk life
-            if (finalBody.equals(existingBody)) {
-                return new String[] { "SUCCESS", null };
-            }
-
-            // 8. Extract or create metadata
+            // 5. Extract metadata
             String metaJson = "{}";
-            if (!existingFullContent.isEmpty()) {
-                String[] metaResult = extractMetaContent(existingFullContent);
+            if (!fullContent.isEmpty()) {
+                String[] metaResult = extractMetaContent(fullContent);
                 if (metaResult[0].equals("SUCCESS")) {
                     metaJson = metaResult[1];
                 }
             }
 
-            // 9. Parse metadata
+            // 6. Parse metadata
             Object metaObj = JsonUtil.readJson(metaJson);
             Map<String, Object> metaMap;
             if (metaObj instanceof Map) {
@@ -1386,7 +1362,7 @@ public class FileUtil {
                 metaMap = new HashMap<>();
             }
 
-            // 10. Ensure locked field exists
+            // 7. Ensure locked field exists
             Object lockedObj = metaMap.get("locked");
             if (!(lockedObj instanceof Map)) {
                 Map<String, Object> lockMap = new HashMap<>();
@@ -1395,7 +1371,7 @@ public class FileUtil {
                 metaMap.put("locked", lockMap);
             }
 
-            // 11. Update time in metadata
+            // 8. Update time in metadata
             Map<String, Object> time = (Map<String, Object>) metaMap.get("Time");
             if (time == null) {
                 time = new HashMap<>();
@@ -1404,19 +1380,19 @@ public class FileUtil {
             int[] now = TimeUtil.getTime();
             time.put("lastEditTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
 
-            // 12. Ensure create time exists
+            // 9. Ensure create time exists
             if (!time.containsKey("createTime")) {
                 time.put("createTime", new int[] { now[0], now[1], now[2], now[3], now[4], now[5], now[6] });
             }
 
-            // 13. Reassemble file
+            // 10. Reassemble file
             String newMetaJson = JsonUtil.toJson(metaMap);
-            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + finalBody;
+            String newFullContent = "#<META>\n" + newMetaJson + "\n<META>#\n" + content;
 
-            // 14. Write back to file
+            // 11. Write back to file
             Files.write(file.toPath(), newFullContent.getBytes());
 
-            // 15. Update file size metadata
+            // 12. Update file size metadata
             updateFileSize(file, metaMap);
 
             return new String[] { "SUCCESS", null };

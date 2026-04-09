@@ -299,15 +299,16 @@ public class ProcessRunner implements Runnable {
     }
 
     public void executeLine() {
-        System.out
-                .println("[PID " + pid + "] Executing line " + currentLine + ": " + codeLines.get(currentLine).trim());
+
         if (owner != null) {
             UserUtil.setCurrentUser(owner);
         }
 
+        // 保存当前的 currentLine，防止被 loadFromFile() 覆盖
+        int savedCurrentLine = this.currentLine;
         loadFromFile();
-System.out
-                .println("[PID " + pid + "] Executing line " + currentLine + ": " + codeLines.get(currentLine).trim());
+        this.currentLine = savedCurrentLine;
+
         if (currentLine >= codeLines.size()) {
             running = false;
             saveToFile(true);
@@ -359,8 +360,6 @@ System.out
             return;
         }
 
-        // For fork() and other statements: increment line first, then execute
-        // This ensures child process starts from next line
         if (line.startsWith("fork(")) {
             currentLine++;
             saveToFile();
