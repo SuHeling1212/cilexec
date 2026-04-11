@@ -194,43 +194,62 @@ public class UserInit {
      * @return String Current username
      */
     public static String getCurrentUser() {
-        return com.follarce.process.ProcessFunc.getCurrentUser();
+        return getCurrentUserFromFile();
+    }
+
+    public static String getCurrentUserFromFile() {
+        String[] readResult = FileUtil.read(USERS_FILE);
+        if (!readResult[0].equals("SUCCESS")) {
+            return "local";
+        }
+
+        Object obj = JsonUtil.readJson(readResult[1]);
+        if (!(obj instanceof Map)) {
+            return "local";
+        }
+
+        Map<String, Object> data = (Map<String, Object>) obj;
+        Object currentUserObj = data.get("currentUser");
+        if (currentUserObj instanceof String) {
+            return (String) currentUserObj;
+        }
+        return "local";
     }
 
     public static String[] switchUser(String username, String password) {
-        // ... 验证 ...
-
-        int currentPid = com.follarce.process.ProcessFunc.getPID();
-
-        // 1. 暂停
-        com.follarce.process.ProcessFunc.Pause(currentPid);
-
-        // 2. 等待 ProcessRunner 完成当前操作
-        try {
-            Thread.sleep(50); // 等待 50ms
-        } catch (InterruptedException e) {
+        if (username == null || username.trim().isEmpty()) {
+            return new String[] { "ERROR", "INVALID_USERNAME" };
         }
 
-        // 3. 切换用户
-        com.follarce.process.ProcessFunc.setCurrentUser(username);
-
-        // 4. 修改文件
-        try {
-            String processFile = "/system/process/" + currentPid + ".json";
-            String[] readResult = FileUtil.read(processFile);
-            if (readResult[0].equals("SUCCESS")) {
-                Object processObj = JsonUtil.readJson(readResult[1]);
-                if (processObj instanceof Map) {
-                    Map<String, Object> process = (Map<String, Object>) processObj;
-                    process.put("Owner", username);
-                    FileUtil.write(processFile, JsonUtil.toJson(process));
-                }
-            }
-        } catch (Exception e) {
+        if (password == null || password.isEmpty()) {
+            return new String[] { "ERROR", "INVALID_PASSWORD" };
         }
 
-        // 5. 恢复
-        com.follarce.process.ProcessFunc.Continue(currentPid);
+        if (!userExists(username)) {
+            return new String[] { "ERROR", "USER_NOT_EXISTS" };
+        }
+
+        if (!validateUser(username, password)) {
+            return new String[] { "ERROR", "INVALID_PASSWORD" };
+        }
+
+        String[] readResult = FileUtil.read(USERS_FILE);
+        if (!readResult[0].equals("SUCCESS")) {
+            return new String[] { "ERROR", "FILE_READ_FAILED" };
+        }
+
+        Object obj = JsonUtil.readJson(readResult[1]);
+        if (!(obj instanceof Map)) {
+            return new String[] { "ERROR", "INVALID_FILE_FORMAT" };
+        }
+
+        Map<String, Object> data = (Map<String, Object>) obj;
+        data.put("currentUser", username);
+
+        String[] writeResult = FileUtil.write(USERS_FILE, JsonUtil.toJson(data));
+        if (!writeResult[0].equals("SUCCESS")) {
+            return new String[] { "ERROR", "SAVE_FAILED" };
+        }
 
         return new String[] { "SUCCESS", null };
     }

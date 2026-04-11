@@ -96,6 +96,10 @@ public class ProcessFunc {
             childProcess.put("startTime", TimeUtil.getTime());
             childProcess.put("RunningTime", 0);
 
+            // Set child's Owner from system config (users.json currentUser)
+            String currentUserFromConfig = com.follarce.init.UserInit.getCurrentUserFromFile();
+            childProcess.put("Owner", currentUserFromConfig != null ? currentUserFromConfig : "local");
+
             // Set child's program state - continue from next line after fork()
             Map<String, Object> program = (Map<String, Object>) childProcess.get("Program");
             Map<String, Object> code = (Map<String, Object>) program.get("Code");
@@ -250,8 +254,10 @@ public class ProcessFunc {
                 String username = userValues.get(0);
                 process.put("user", username);
                 process.put("Owner", username);
-                setCurrentUser(username);
             }
+        } else {
+            String currentUserFromConfig = com.follarce.init.UserInit.getCurrentUserFromFile();
+            process.put("Owner", currentUserFromConfig != null ? currentUserFromConfig : "local");
         }
 
         // 6. Reset Program section

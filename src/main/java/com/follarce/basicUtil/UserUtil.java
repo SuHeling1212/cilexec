@@ -5,7 +5,88 @@ import java.util.*;
 
 public class UserUtil {
 
-    private static ThreadLocal<String> currentUser = ThreadLocal.withInitial(() -> "local");
+    /**
+     * 获取当前进程的用户
+     * 优先从 ProcessRunner 设置的 ThreadLocal 获取
+     * 如果未设置，从进程文件读取
+     */
+    private static ThreadLocal<String> currentProcessUser = new ThreadLocal<>();
+
+    /**
+     * 设置当前线程对应的进程用户
+     * 由 ProcessRunner.executeLine() 在每次执行前调用
+     */
+    public static void setCurrentProcessUser(String user) {
+        currentProcessUser.set(user);
+    }
+
+    /**
+     * 获取当前进程的用户
+     */
+    public static String getCurrentUser() {
+        // 1. 优先从 ThreadLocal 获取（由 ProcessRunner 设置）
+        String user = currentProcessUser.get();
+        if (user != null) {
+            return user;
+        }
+
+        // 2. Fallback: 尝试从进程文件读取
+        try {
+            int pid = com.follarce.process.ProcessFunc.getPID();
+            if (pid > 0) {
+                String processOwner = getProcessOwner(pid);
+                if (processOwner != null) {
+                    return processOwner;
+                }
+            }
+        } catch (Exception e) {
+            // 忽略，返回默认值
+        }
+
+        // 3. 最终 fallback
+        return "local";
+    }
+
+    /**
+     * 从进程文件读取 Owner
+     */
+    private static String getProcessOwner(int pid) {
+        String root = FileUtil.getVfsRoot();
+        String processPath = root + "/system/process/" + pid + ".json";
+        java.io.File file = new java.io.File(processPath);
+
+        if (!file.exists()) {
+            return null;
+        }
+
+        try {
+            String content = new String(java.nio.file.Files.readAllBytes(file.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            // 提取文件体（跳过元数据）
+            String[] metaResult = FileUtil.extractMetaContent(content);
+            String body = metaResult.length > 2 ? metaResult[2] : content;
+
+            Object obj = JsonUtil.readJson(body);
+            if (obj instanceof Map) {
+                Map<String, Object> process = (Map<String, Object>) obj;
+                return (String) process.get("Owner");
+            }
+        } catch (Exception e) {
+            // 忽略
+        }
+        return null;
+    }
+
+    /**
+     * 清除当前线程的进程用户（线程结束时调用）
+     */
+    public static void clearCurrentProcessUser() {
+        currentProcessUser.remove();
+    }
+
+    public static boolean isLocal() {
+        return "local".equals(getCurrentUser());
+    }
 
     public static class PermissionResult {
         private final boolean success;
@@ -47,32 +128,28 @@ public class UserUtil {
         }
     }
 
-    public static void setCurrentUser(String user) {
-        currentUser.set(user);
-    }
-
-    public static String getCurrentUser() {
-        return currentUser.get();
-    }
-
-    public static boolean isLocal() {
-        return "local".equals(currentUser.get());
-    }
-    
     /**
      * Normalize path (handle .. and .)
-     * Delegates to FileUtil to avoid code duplication
      */
     private static String normalizePath(String path) {
         return FileUtil.normalizePath(path);
     }
-    
+
+    /**
+     * Extract meta content from file
+     */
+    private static String[] extractMetaContent(String fullContent) {
+        return FileUtil.extractMetaContent(fullContent);
+    }
+
     /**
      * Validate file permission with detailed error information
      */
     public static PermissionResult validatePermission(String path, String operation) {
-        String context = String.format("Path: %s, Operation: %s, User: %s", path, operation, getCurrentUser());
+        String currentUserStr = getCurrentUser();
+        String context = String.format("Path: %s, Operation: %s, User: %s", path, operation, currentUserStr);
 
+        // local 用户拥有所有权限
         if (isLocal()) {
             return PermissionResult.success();
         }
@@ -88,7 +165,7 @@ public class UserUtil {
 
         try {
             String content = new String(java.nio.file.Files.readAllBytes(file.toPath()),
-                                        java.nio.charset.StandardCharsets.UTF_8);
+                    java.nio.charset.StandardCharsets.UTF_8);
             String[] metaResult = extractMetaContent(content);
             if (!metaResult[0].equals("SUCCESS")) {
                 return PermissionResult.failure("Failed to extract metadata", context);
@@ -96,33 +173,32 @@ public class UserUtil {
 
             Map<String, Object> meta = (Map<String, Object>) JsonUtil.readJson(metaResult[1]);
             String owner = (String) meta.get("Owner");
-            String currentUserStr = getCurrentUser();
 
             Map<String, String> perm = (Map<String, String>) meta.get("Permission");
             if (perm == null) {
                 return PermissionResult.failure("Permission metadata missing", context);
             }
 
+            // 检查是否是所有者
             if (owner != null && owner.equals(currentUserStr)) {
                 String ownerPerm = perm.get("Owner");
                 if (ownerPerm != null && ownerPerm.contains(operation)) {
                     return PermissionResult.success();
                 }
                 return PermissionResult.failure(
-                    "Owner permission denied",
-                    context + String.format(", Owner: %s, OwnerPermission: %s", owner, ownerPerm)
-                );
+                        "Owner permission denied",
+                        context + String.format(", Owner: %s, OwnerPermission: %s", owner, ownerPerm));
             }
 
+            // 检查其他人权限
             String othersPerm = perm.get("Others");
             if (othersPerm != null && othersPerm.contains(operation)) {
                 return PermissionResult.success();
             }
 
             return PermissionResult.failure(
-                "Others permission denied",
-                context + String.format(", OthersPermission: %s", othersPerm)
-            );
+                    "Others permission denied",
+                    context + String.format(", OthersPermission: %s", othersPerm));
         } catch (IOException e) {
             return PermissionResult.failure("Permission check IO error: " + e.getMessage(), context);
         } catch (ClassCastException e) {
@@ -131,25 +207,18 @@ public class UserUtil {
     }
 
     /**
-     * Check file permission (direct file read, no recursion)
+     * Check file permission
      */
     public static boolean checkFilePermission(String path, String operation) {
         return validatePermission(path, operation).isSuccess();
     }
-    
-    /**
-     * Extract meta content from file
-     * Delegates to FileUtil to avoid code duplication
-     */
-    private static String[] extractMetaContent(String fullContent) {
-        return FileUtil.extractMetaContent(fullContent);
-    }
-    
+
     /**
      * Validate process permission with detailed error information
      */
     public static PermissionResult validateProcessPermission(int pid) {
-        String context = String.format("PID: %d, User: %s", pid, getCurrentUser());
+        String currentUserStr = getCurrentUser();
+        String context = String.format("PID: %d, User: %s", pid, currentUserStr);
 
         if (isLocal()) {
             return PermissionResult.success();
@@ -164,7 +233,6 @@ public class UserUtil {
         try {
             Map<String, Object> process = (Map<String, Object>) JsonUtil.readJson(readResult[1]);
             String owner = (String) process.get("Owner");
-            String currentUserStr = getCurrentUser();
 
             if (owner == null) {
                 return PermissionResult.failure("Process owner information missing", context);
@@ -172,9 +240,8 @@ public class UserUtil {
 
             if (!owner.equals(currentUserStr)) {
                 return PermissionResult.failure(
-                    "Process ownership mismatch",
-                    context + String.format(", Owner: %s", owner)
-                );
+                        "Process ownership mismatch",
+                        context + String.format(", Owner: %s", owner));
             }
 
             return PermissionResult.success();

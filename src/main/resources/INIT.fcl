@@ -1,7 +1,2 @@
-#println("最小测试开始")
-createUser("miniuser", "pass", false)
-println("用户创建完成")
-switchUser("miniuser","pass")
-a = getCurrentUser()
-println("当前用户: " + a)
-println("测试结束")
+a = [1,2,3,4]
+println("a" + a[1])

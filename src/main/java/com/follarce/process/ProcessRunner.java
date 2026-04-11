@@ -5,9 +5,12 @@ import com.follarce.plugin.FunctionContext;
 import com.follarce.plugin.FunctionRegistry;
 import com.follarce.basicUtil.*;
 import com.follarce.process.exception.*;
+import com.follarce.process.interpreter.Lexer;
+import com.follarce.process.interpreter.NodeEvaluator;
+import com.follarce.process.interpreter.Parser;
+import com.follarce.process.interpreter.ProcessRunnerNodeEvaluator;
 import java.util.*;
 import java.util.regex.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class ProcessRunner implements Runnable {
 
@@ -55,7 +58,7 @@ public class ProcessRunner implements Runnable {
         // If Status is false, running will be false and process won't execute
 
         if (owner != null) {
-            UserUtil.setCurrentUser(owner);
+            UserUtil.setCurrentProcessUser(owner);
         }
 
         // Initialize function call context
@@ -280,7 +283,7 @@ public class ProcessRunner implements Runnable {
     @Override
     public void run() {
         if (owner != null) {
-            UserUtil.setCurrentUser(owner);
+            UserUtil.setCurrentProcessUser(owner);
         }
 
         while (running) {
@@ -301,13 +304,10 @@ public class ProcessRunner implements Runnable {
     public void executeLine() {
 
         if (owner != null) {
-            UserUtil.setCurrentUser(owner);
+            UserUtil.setCurrentProcessUser(owner);
         }
 
-        // 保存当前的 currentLine，防止被 loadFromFile() 覆盖
-        int savedCurrentLine = this.currentLine;
         loadFromFile();
-        this.currentLine = savedCurrentLine;
 
         if (currentLine >= codeLines.size()) {
             running = false;
@@ -974,6 +974,9 @@ public class ProcessRunner implements Runnable {
     }
 
     private Object evaluate(String expr) {
+        if (expr.startsWith("[") && expr.endsWith("]")) {
+            return parseArray(expr);
+        }
         expr = expr.trim();
 
         // Remove trailing semicolon if present
@@ -981,8 +984,31 @@ public class ProcessRunner implements Runnable {
             expr = expr.substring(0, expr.length() - 1).trim();
         }
 
+        // ========== 提前处理字面量（必须在 preprocessFunctionCalls 之前） ==========
+        if (expr.matches("-?\\d+")) {
+            return Integer.parseInt(expr);
+        }
+        if (expr.matches("-?\\d+\\.\\d+")) {
+            return Double.parseDouble(expr);
+        }
+        if (expr.equals("true"))
+            return true;
+        if (expr.equals("false"))
+            return false;
+        if (expr.startsWith("[") && expr.endsWith("]")) {
+            return parseArray(expr);
+        }
+        if (expr.startsWith("{") && expr.endsWith("}")) {
+            return parseMap(expr);
+        }
+        if (expr.startsWith("\"") && expr.endsWith("\"")) {
+            // 检查是否是纯字符串（不包含未转义的 + 等运算符）
+            // 简化：直接返回字符串内容
+            return expr.substring(1, expr.length() - 1);
+        }
+        // ========================================================================
+
         // Check if this is a function call followed by index access: func()[index]
-        // This must be handled before preprocessFunctionCalls to preserve array type
         int firstBracket = expr.indexOf('[');
         if (firstBracket > 0) {
             String beforeBracket = expr.substring(0, firstBracket).trim();
@@ -1003,92 +1029,15 @@ public class ProcessRunner implements Runnable {
             }
         }
 
-        // Check if this is a standalone function call first
-        // A standalone function call is: functionName(arguments) with no other
-        // operators
+        // Check if this is a standalone function call
         if (isStandaloneFunctionCall(expr)) {
             return handleFunctionCall(expr);
         }
 
-        // Pre-process: find and evaluate function calls in the expression
-        // This is for complex expressions like "result: " + read(path)
+        // Pre-process function calls in complex expressions
         expr = preprocessFunctionCalls(expr);
 
-        if (expr.matches("-?\\d+")) {
-            return Integer.parseInt(expr);
-        }
-        if (expr.matches("-?\\d+\\.\\d+")) {
-            return Double.parseDouble(expr);
-        }
-        if (expr.startsWith("\"") && expr.endsWith("\"")) {
-            if (expr.length() < 2) {
-                return "";
-            }
-            // Check if this is a pure string or a string expression (e.g., "hello"+"world")
-            // Count unescaped quotes - if more than 2, it's likely an expression
-            int quoteCount = 0;
-            for (int i = 0; i < expr.length(); i++) {
-                if (expr.charAt(i) == '"' && (i == 0 || expr.charAt(i - 1) != '\\')) {
-                    quoteCount++;
-                }
-            }
-            // If there are more than 2 unescaped quotes, it's an expression with multiple
-            // strings
-            if (quoteCount > 2) {
-                return evaluateOperator(expr);
-            }
-            // Handle escape sequences in strings
-            StringBuilder sb = new StringBuilder();
-            int pos = 1;
-            while (pos < expr.length() - 1) {
-                char current = expr.charAt(pos);
-                if (current == '\\') {
-                    // Handle escape sequences
-                    if (pos + 1 < expr.length() - 1) {
-                        char next = expr.charAt(pos + 1);
-                        switch (next) {
-                            case 'n':
-                                sb.append('\n');
-                                break;
-                            case 't':
-                                sb.append('\t');
-                                break;
-                            case 'r':
-                                sb.append('\r');
-                                break;
-                            case '"':
-                                sb.append('"');
-                                break;
-                            case '\\':
-                                sb.append('\\');
-                                break;
-                            default:
-                                sb.append(next);
-                        }
-                        pos += 2;
-                    } else {
-                        throw wrapException("Unclosed escape sequence", "string_parsing");
-                    }
-                } else {
-                    sb.append(current);
-                    pos++;
-                }
-            }
-            return sb.toString();
-        }
-        if (expr.equals("true"))
-            return true;
-        if (expr.equals("false"))
-            return false;
-
-        if (expr.startsWith("[") && expr.endsWith("]")) {
-            return parseArray(expr);
-        }
-
-        if (expr.startsWith("{") && expr.endsWith("}")) {
-            return parseMap(expr);
-        }
-
+        // 长度运算符
         if (expr.startsWith("#")) {
             String varName = expr.substring(1);
             Object val = data.get(varName);
@@ -1102,13 +1051,10 @@ public class ProcessRunner implements Runnable {
                     (val != null ? val.getClass().getSimpleName() : "null"), "length_operation");
         }
 
-        // Check if this is a function call (identifier followed by parenthesis)
-        // Don't treat expressions like "10 / (2 + 3)" as function calls
+        // Check if this is a function call
         if (expr.contains("(") && !expr.startsWith("\"") && !expr.startsWith("'")) {
             int parenIndex = expr.indexOf('(');
             String potentialFuncName = expr.substring(0, parenIndex).trim();
-            // Check if potentialFuncName is a valid identifier (starts with letter or
-            // underscore)
             if (!potentialFuncName.isEmpty()
                     && (Character.isLetter(potentialFuncName.charAt(0)) || potentialFuncName.charAt(0) == '_')) {
                 return handleFunctionCall(expr);
@@ -1120,7 +1066,6 @@ public class ProcessRunner implements Runnable {
         }
 
         // Check if this is an index access: identifier[expr]
-        // Must match pattern: word[expr]
         if (expr.contains("[")) {
             Pattern indexPattern = Pattern.compile("(\\w+)\\[(.*)\\]");
             Matcher indexMatcher = indexPattern.matcher(expr);
@@ -1129,61 +1074,7 @@ public class ProcessRunner implements Runnable {
             }
         }
 
-        // Handle string concatenation: "text" + var + "text"
-        // Also handles mixed cases like "text" + var[index]
-        if (expr.contains("+")) {
-            return evaluateStringConcat(expr);
-        }
-
         return evaluateOperator(expr);
-    }
-
-    private Object evaluateStringConcat(String expr) {
-        List<Object> parts = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean inString = false;
-
-        for (int i = 0; i < expr.length(); i++) {
-            char c = expr.charAt(i);
-
-            if (c == '"') {
-                if (i == 0 || expr.charAt(i - 1) != '\\') {
-                    inString = !inString;
-                }
-                current.append(c);
-            } else if (c == '+' && !inString) {
-                String part = current.toString().trim();
-                if (!part.isEmpty()) {
-                    // Remove surrounding quotes if this is a string literal
-                    if (part.startsWith("\"") && part.endsWith("\"")) {
-                        parts.add(part.substring(1, part.length() - 1));
-                    } else {
-                        // Variable or expression
-                        parts.add(evaluate(part));
-                    }
-                }
-                current = new StringBuilder();
-            } else {
-                current.append(c);
-            }
-        }
-
-        String lastPart = current.toString().trim();
-        if (!lastPart.isEmpty()) {
-            // Remove surrounding quotes if this is a string literal
-            if (lastPart.startsWith("\"") && lastPart.endsWith("\"")) {
-                parts.add(lastPart.substring(1, lastPart.length() - 1));
-            } else {
-                parts.add(evaluate(lastPart));
-            }
-        }
-
-        // Concatenate all parts
-        StringBuilder result = new StringBuilder();
-        for (Object part : parts) {
-            result.append(formatValueForPrint(part));
-        }
-        return result.toString();
     }
 
     private String formatValueForPrint(Object obj) {
@@ -1465,414 +1356,106 @@ public class ProcessRunner implements Runnable {
         return result;
     }
 
-    // Token types for expression parsing
-    private enum TokenType {
-        NUMBER, STRING, BOOLEAN, IDENTIFIER, OPERATOR, LEFT_PAREN, RIGHT_PAREN, END
-    }
-
-    // Token class
-    private static class Token {
-        TokenType type;
-        String value;
-
-        Token(TokenType type, String value) {
-            this.type = type;
-            this.value = value;
-        }
-    }
-
-    // AST node types
-    private static class ASTNode {
-        String type;
-        Object value;
-        ASTNode left;
-        ASTNode right;
-
-        ASTNode(String type, Object value) {
-            this.type = type;
-            this.value = value;
-        }
-
-        ASTNode(String type, Object value, ASTNode left, ASTNode right) {
-            this.type = type;
-            this.value = value;
-            this.left = left;
-            this.right = right;
-        }
-    }
-
-    // Operator precedence (higher number = higher precedence)
-    private static final Map<String, Integer> PRECEDENCE = new HashMap<>();
-    static {
-        // Logical operators (lowest precedence)
-        PRECEDENCE.put("or", 1);
-        PRECEDENCE.put("and", 2);
-        PRECEDENCE.put("not", 3);
-
-        // Comparison operators
-        PRECEDENCE.put("==", 4);
-        PRECEDENCE.put("!=", 4);
-        PRECEDENCE.put("<", 5);
-        PRECEDENCE.put(">", 5);
-        PRECEDENCE.put("<=", 5);
-        PRECEDENCE.put(">=", 5);
-
-        // Arithmetic operators
-        PRECEDENCE.put("+", 6);
-        PRECEDENCE.put("-", 6);
-        PRECEDENCE.put("*", 7);
-        PRECEDENCE.put("/", 7);
-        PRECEDENCE.put("%", 7);
-    }
-
-    // Tokenize an expression
-    private List<Token> tokenize(String expr) {
-        List<Token> tokens = new ArrayList<>();
-        int pos = 0;
-
-        while (pos < expr.length()) {
-            char c = expr.charAt(pos);
-
-            if (Character.isWhitespace(c)) {
-                pos++;
-            } else if (Character.isDigit(c)
-                    || (c == '.' && pos + 1 < expr.length() && Character.isDigit(expr.charAt(pos + 1)))) {
-                // Number
-                int start = pos;
-                while (pos < expr.length() && (Character.isDigit(expr.charAt(pos)) || expr.charAt(pos) == '.')) {
-                    pos++;
-                }
-                tokens.add(new Token(TokenType.NUMBER, expr.substring(start, pos)));
-            } else if (c == '"') {
-                // String
-                int start = pos + 1;
-                StringBuilder sb = new StringBuilder();
-                pos = start;
-                while (pos < expr.length()) {
-                    char current = expr.charAt(pos);
-                    if (current == '\\') {
-                        // Handle escape sequences
-                        if (pos + 1 < expr.length()) {
-                            char next = expr.charAt(pos + 1);
-                            switch (next) {
-                                case 'n':
-                                    sb.append('\n');
-                                    break;
-                                case 't':
-                                    sb.append('\t');
-                                    break;
-                                case 'r':
-                                    sb.append('\r');
-                                    break;
-                                case '"':
-                                    sb.append('"');
-                                    break;
-                                case '\\':
-                                    sb.append('\\');
-                                    break;
-                                default:
-                                    sb.append(next);
-                            }
-                            pos += 2;
-                        } else {
-                            throw wrapException("Unclosed escape sequence", "string_parsing");
-                        }
-                    } else if (current == '"') {
-                        break;
-                    } else {
-                        sb.append(current);
-                        pos++;
-                    }
-                }
-                if (pos >= expr.length()) {
-                    throw wrapException("Unclosed string", "string_parsing");
-                }
-                tokens.add(new Token(TokenType.STRING, sb.toString()));
-                pos++;
-            } else if (c == '(') {
-                tokens.add(new Token(TokenType.LEFT_PAREN, "("));
-                pos++;
-            } else if (c == ')') {
-                tokens.add(new Token(TokenType.RIGHT_PAREN, ")"));
-                pos++;
-            } else if (c == '+' || c == '-' || c == '*' || c == '/' || c == '%') {
-                tokens.add(new Token(TokenType.OPERATOR, String.valueOf(c)));
-                pos++;
-            } else if (c == '=') {
-                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
-                    tokens.add(new Token(TokenType.OPERATOR, "=="));
-                    pos += 2;
-                } else {
-                    throw wrapException("Invalid operator: " + c, "tokenize");
-                }
-            } else if (c == '!') {
-                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
-                    tokens.add(new Token(TokenType.OPERATOR, "!="));
-                    pos += 2;
-                } else {
-                    throw wrapException("Invalid operator: " + c, "tokenize");
-                }
-            } else if (c == '<') {
-                // < or <= operator
-                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
-                    tokens.add(new Token(TokenType.OPERATOR, "<="));
-                    pos += 2;
-                } else {
-                    tokens.add(new Token(TokenType.OPERATOR, "<"));
-                    pos++;
-                }
-            } else if (c == '>') {
-                // > or >= operator
-                if (pos + 1 < expr.length() && expr.charAt(pos + 1) == '=') {
-                    tokens.add(new Token(TokenType.OPERATOR, ">="));
-                    pos += 2;
-                } else {
-                    tokens.add(new Token(TokenType.OPERATOR, ">"));
-                    pos++;
-                }
-            } else if (Character.isLetter(c) || c == '_') {
-                // Identifier or boolean
-                int start = pos;
-                while (pos < expr.length()
-                        && (Character.isLetterOrDigit(expr.charAt(pos)) || expr.charAt(pos) == '_')) {
-                    pos++;
-                }
-                String value = expr.substring(start, pos);
-                if (value.equals("true") || value.equals("false")) {
-                    tokens.add(new Token(TokenType.BOOLEAN, value));
-                } else if (value.equals("and") || value.equals("or") || value.equals("not")) {
-                    tokens.add(new Token(TokenType.OPERATOR, value));
-                } else {
-                    tokens.add(new Token(TokenType.IDENTIFIER, value));
-                }
-            } else {
-                throw wrapException("Unexpected character: " + c, "tokenize");
-            }
-        }
-
-        tokens.add(new Token(TokenType.END, ""));
-        return tokens;
-    }
-
-    // Parser class for building AST
-    private class Parser {
-        private List<Token> tokens;
-        private int pos;
-
-        Parser(List<Token> tokens) {
-            this.tokens = tokens;
-            this.pos = 0;
-        }
-
-        private Token peek() {
-            return tokens.get(pos);
-        }
-
-        private Token consume() {
-            return tokens.get(pos++);
-        }
-
-        private boolean match(TokenType type) {
-            if (peek().type == type) {
-                consume();
-                return true;
-            }
-            return false;
-        }
-
-        // Parse expressions with operator precedence
-        public ASTNode parse() {
-            return parseExpression(0);
-        }
-
-        // Recursive descent parser with precedence
-        private ASTNode parseExpression(int precedence) {
-            // Check for unary operators at the beginning
-            Token token = peek();
-            if (token.type == TokenType.OPERATOR && token.value.equals("not")) {
-                consume(); // Consume the "not" operator
-                String op = "not";
-                ASTNode right = parseExpression(PRECEDENCE.get(op));
-                return new ASTNode("unary", op, null, right);
-            }
-
-            ASTNode left = parsePrimary();
-
-            while (true) {
-                token = peek();
-                if (token.type != TokenType.OPERATOR)
-                    break;
-
-                int opPrecedence = PRECEDENCE.getOrDefault(token.value, 0);
-                if (opPrecedence <= precedence)
-                    break;
-
-                consume(); // Consume the operator
-                String op = token.value;
-
-                // For binary operators only (unary "not" is handled above)
-                ASTNode right = parseExpression(opPrecedence);
-                left = new ASTNode("binary", op, left, right);
-            }
-
-            return left;
-        }
-
-        private ASTNode parsePrimary() {
-            Token token = peek();
-
-            if (match(TokenType.NUMBER)) {
-                if (token.value.contains(".")) {
-                    return new ASTNode("number", Double.parseDouble(token.value));
-                } else {
-                    return new ASTNode("number", Integer.parseInt(token.value));
-                }
-            }
-
-            if (match(TokenType.STRING)) {
-                return new ASTNode("string", token.value);
-            }
-
-            if (match(TokenType.BOOLEAN)) {
-                return new ASTNode("boolean", Boolean.parseBoolean(token.value));
-            }
-
-            if (match(TokenType.IDENTIFIER)) {
-                return new ASTNode("identifier", token.value);
-            }
-
-            if (match(TokenType.LEFT_PAREN)) {
-                ASTNode expr = parseExpression(0);
-                if (!match(TokenType.RIGHT_PAREN)) {
-                    throw wrapException("Expected closing parenthesis", "expression_parsing");
-                }
-                return expr;
-            }
-
-            throw wrapException("Expected expression", "expression_parsing");
-        }
-    }
-
-    // Evaluate an AST node
-    private Object evaluateAST(ASTNode node) {
-        switch (node.type) {
-            case "number":
-            case "string":
-            case "boolean":
-                return node.value;
-
-            case "identifier":
-                String varName = (String) node.value;
-                if (data.containsKey(varName)) {
-                    return data.get(varName);
-                } else {
-                    throw UnrecoverableException.undefinedVariable(varName, pid, currentLine);
-                }
-
-            case "unary":
-                String unaryOp = (String) node.value;
-                Object right = evaluateAST(node.right);
-                if (unaryOp.equals("not")) {
-                    return !isTrue(right);
-                } else if (unaryOp.equals("-")) {
-                    if (right instanceof Number) {
-                        return -((Number) right).doubleValue();
-                    } else {
-                        throw UnrecoverableException.typeError("number",
-                                right != null ? right.getClass().getSimpleName() : "null", pid, currentLine);
-                    }
-                }
-                break;
-
-            case "binary":
-                String op = (String) node.value;
-                Object leftVal = evaluateAST(node.left);
-                Object rightVal = evaluateAST(node.right);
-
-                switch (op) {
-                    // Logical operators
-                    case "and":
-                        return isTrue(leftVal) && isTrue(rightVal);
-                    case "or":
-                        return isTrue(leftVal) || isTrue(rightVal);
-
-                    // Comparison operators
-                    case "==":
-                        return Objects.equals(leftVal, rightVal);
-                    case "!=":
-                        return !Objects.equals(leftVal, rightVal);
-                    case "<":
-                        ensureNumbers(leftVal, rightVal);
-                        return ((Number) leftVal).doubleValue() < ((Number) rightVal).doubleValue();
-                    case ">":
-                        ensureNumbers(leftVal, rightVal);
-                        return ((Number) leftVal).doubleValue() > ((Number) rightVal).doubleValue();
-                    case "<=":
-                        ensureNumbers(leftVal, rightVal);
-                        return ((Number) leftVal).doubleValue() <= ((Number) rightVal).doubleValue();
-                    case ">=":
-                        ensureNumbers(leftVal, rightVal);
-                        return ((Number) leftVal).doubleValue() >= ((Number) rightVal).doubleValue();
-
-                    // Arithmetic operators
-                    case "+":
-                        if (leftVal instanceof Number && rightVal instanceof Number) {
-                            return ((Number) leftVal).doubleValue() + ((Number) rightVal).doubleValue();
-                        } else {
-                            return leftVal.toString() + rightVal.toString();
-                        }
-                    case "-":
-                        ensureNumbers(leftVal, rightVal);
-                        return ((Number) leftVal).doubleValue() - ((Number) rightVal).doubleValue();
-                    case "*":
-                        ensureNumbers(leftVal, rightVal);
-                        return ((Number) leftVal).doubleValue() * ((Number) rightVal).doubleValue();
-                    case "/":
-                        ensureNumbers(leftVal, rightVal);
-                        if (((Number) rightVal).doubleValue() == 0) {
-                            throw UnrecoverableException.divisionByZero(pid, currentLine, op);
-                        }
-                        return ((Number) leftVal).doubleValue() / ((Number) rightVal).doubleValue();
-                    case "%":
-                        ensureNumbers(leftVal, rightVal);
-                        if (((Number) rightVal).intValue() == 0) {
-                            throw UnrecoverableException.divisionByZero(pid, currentLine, op);
-                        }
-                        return ((Number) leftVal).intValue() % ((Number) rightVal).intValue();
-                }
-                break;
-        }
-
-        throw wrapException("Cannot evaluate AST node: " + node.type, "ast_evaluation");
-    }
-
-    private void ensureNumbers(Object left, Object right) {
-        if (!(left instanceof Number) || !(right instanceof Number)) {
-            String leftType = left != null ? left.getClass().getSimpleName() : "null";
-            String rightType = right != null ? right.getClass().getSimpleName() : "null";
-            throw UnrecoverableException.typeError("numbers", leftType + " and " + rightType, pid, currentLine);
-        }
-    }
-
-    // New evaluateOperator method using AST
     private Object evaluateOperator(String expr) {
         try {
             String trimmedExpr = expr.trim();
             if (trimmedExpr.isEmpty()) {
                 return "";
             }
-            // Handle cases with only parentheses
             if (trimmedExpr.equals("()")) {
                 return "";
             }
-            List<Token> tokens = tokenize(trimmedExpr);
+            Lexer lexer = new Lexer(trimmedExpr);
+            List<Lexer.Token> tokens = lexer.tokenize();
             Parser parser = new Parser(tokens);
-            ASTNode ast = parser.parse();
-            return evaluateAST(ast);
+            Parser.ASTNode ast = parser.parse();
+
+            ProcessRunnerNodeEvaluator evaluator = new ProcessRunnerNodeEvaluator(
+                    data, pid, currentLine, functionContext);
+            evaluator.setRuntimeData(data, returnValue, codeLines);
+            evaluator.setFunctionInvoker(new NodeEvaluator.FunctionInvoker() {
+                @Override
+                public Object invokeFunction(String funcName, Object[] args) {
+                    return ProcessRunner.this.handleFunctionCallInEvaluator(funcName, args);
+                }
+            });
+
+            NodeEvaluator.EvaluationContext context = new NodeEvaluator.EvaluationContext(
+                    data, null, pid, currentLine);
+            return evaluator.evaluate(ast, context);
+        } catch (ProcessException e) {
+            throw e;
         } catch (Exception e) {
-            // If parsing fails, return the original expression as a string
-            return expr;
+            throw wrapException("Failed to parse expression: " + expr, e, "expression_parsing");
         }
+    }
+
+    private Object handleFunctionCallInEvaluator(String funcCallExpr, Object[] args) {
+        String fullFuncName;
+        String funcName;
+        String namespace = null;
+
+        int parenIndex = funcCallExpr.indexOf('(');
+        if (parenIndex > 0) {
+            fullFuncName = funcCallExpr.substring(0, parenIndex).trim();
+            if (fullFuncName.contains(".")) {
+                int dotIndex = fullFuncName.lastIndexOf('.');
+                namespace = fullFuncName.substring(0, dotIndex);
+                funcName = fullFuncName.substring(dotIndex + 1);
+            } else {
+                funcName = fullFuncName;
+            }
+        } else {
+            fullFuncName = funcCallExpr;
+            funcName = funcCallExpr;
+        }
+
+        String fullName = (namespace != null) ? namespace + "." + funcName : funcName;
+
+        Object result = FunctionRegistry.call(fullName, args, functionContext);
+        if (result != null) {
+            return result;
+        }
+
+        FunctionDef func = functions.get(funcName);
+        if (func != null) {
+            if (args.length != func.params.size()) {
+                throw wrapException("Function " + funcName + " expects " +
+                        func.params.size() + " arguments, got " + args.length, "function_call");
+            }
+
+            Map<String, Object> oldData = new HashMap<>(this.data);
+            int oldLine = this.currentLine;
+            List<String> oldCodeLines = this.codeLines;
+            Object oldReturnValue = this.returnValue;
+            this.returnValue = null;
+
+            for (int i = 0; i < func.params.size(); i++) {
+                this.data.put(func.params.get(i), args[i]);
+            }
+
+            this.codeLines = func.body;
+            this.currentLine = 0;
+
+            while (this.currentLine < this.codeLines.size() && this.returnValue == null) {
+                String line = this.codeLines.get(this.currentLine).trim();
+                this.currentLine++;
+                if (!line.isEmpty() && !line.startsWith("//") && !line.equals("{") && !line.equals("}")) {
+                    executeStatement(line);
+                }
+            }
+
+            Object ret = this.returnValue;
+
+            this.data = oldData;
+            this.codeLines = oldCodeLines;
+            this.currentLine = oldLine;
+            this.returnValue = oldReturnValue;
+
+            return ret;
+        }
+
+        throw UnrecoverableException.unknownFunction(funcName, pid, currentLine);
     }
 
     private boolean isTrue(Object obj) {
@@ -1979,4 +1562,5 @@ public class ProcessRunner implements Runnable {
         ExceptionContext context = createExceptionContext(operation);
         return new UnrecoverableException(message, cause, context);
     }
+
 }

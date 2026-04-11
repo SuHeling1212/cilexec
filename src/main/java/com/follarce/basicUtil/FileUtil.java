@@ -1314,6 +1314,7 @@ public class FileUtil {
      * @param content Content to write
      * @return String[] Array, [0] is status, [1] is error code (if any)
      */
+    //May be changed to a more performance-efficient approach in the future
     public static String[] write(String path, String content) {
         // 1. Validate file with write permission check
         Object[] validateResult = validateFile(path, true, true, "write");

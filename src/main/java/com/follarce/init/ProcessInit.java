@@ -111,8 +111,8 @@ public class ProcessInit {
             return;
         }
         
-        // Get current user
-        String currentUser = UserInit.getCurrentUser();
+        // Get current user from system config
+        String currentUser = UserInit.getCurrentUserFromFile();
         if (currentUser == null) {
             currentUser = "local";
         }

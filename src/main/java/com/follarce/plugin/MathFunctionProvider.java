@@ -1,6 +1,5 @@
 package com.follarce.plugin;
 
-import com.follarce.basicUtil.Logger;
 
 import java.util.*;
 
