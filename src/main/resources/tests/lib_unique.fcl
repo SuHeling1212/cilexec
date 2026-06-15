@@ -1,0 +1,8 @@
+// lib_unique.fcl - 测试模块 3（无冲突函数）
+func uniqueGreeting(name) {
+    println("[unique] Welcome, " + name + "!")
+}
+
+func getAnswer() {
+    return 42
+}

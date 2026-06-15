@@ -1,0 +1,272 @@
+// ============================================================
+// reCilexec 功能测试套件
+// ============================================================
+// 这是一个可导入的 FCL 模块。
+// import 只注册函数定义，不执行代码。
+// 调用 runAllTests() 来运行所有测试。
+// ============================================================
+
+// ── 辅助断言函数（供 runAllTests 内部使用） ──
+func assertEqual(expected, actual, msg) {
+    if (expected == actual) {
+        println("[PASS] " + msg)
+    } else {
+        println("[FAIL] " + msg + " (expected=" + expected + ", actual=" + actual + ")")
+    }
+}
+
+func assertTrue(condition, msg) {
+    if (condition) {
+        println("[PASS] " + msg)
+    } else {
+        println("[FAIL] " + msg + " (expected true)")
+    }
+}
+
+func assertFalse(condition, msg) {
+    if (!condition) {
+        println("[PASS] " + msg)
+    } else {
+        println("[FAIL] " + msg + " (expected false)")
+    }
+}
+
+// ── 主测试函数 ──
+func runAllTests() {
+
+// ════════════════════════════════════════════
+// 测试 1: 变量与基本运算
+// ════════════════════════════════════════════
+println("")
+println("=== Test 0: String + Number ===")
+result0 = "2" + 2
+assertEqual("22", result0, "string + number: \"2\" + 2 = \"22\"")
+
+println("")
+println("=== Test 1: Variables & Basic Arithmetic ===")
+
+x = 42
+assertEqual(42, x, "integer assignment")
+
+y = 3.14
+assertEqual(3.14, y, "float assignment")
+
+name = "CilExec"
+assertEqual("CilExec", name, "string assignment")
+
+sum = 10 + 20
+assertEqual(30, sum, "addition: 10 + 20")
+
+diff = 100 - 45
+assertEqual(55, diff, "subtraction: 100 - 45")
+
+product = 7 * 8
+assertEqual(56, product, "multiplication: 7 * 8")
+
+quotient = 81 / 9
+assertEqual(9, quotient, "division: 81 / 9")
+
+mod = 17 % 5
+assertEqual(2, mod, "modulo: 17 % 5")
+
+// ════════════════════════════════════════════
+// 测试 2: 字符串操作
+// ════════════════════════════════════════════
+println("")
+println("=== Test 2: String Operations ===")
+
+greeting = "Hello" + " " + "World"
+assertEqual("Hello World", greeting, "string concatenation")
+
+msg = "testing"
+len = #msg
+assertEqual(7, len, "string length operator (#)")
+
+// ════════════════════════════════════════════
+// 测试 3: 布尔与比较运算
+// ════════════════════════════════════════════
+println("")
+println("=== Test 3: Boolean & Comparison ===")
+
+assertTrue(true, "literal true")
+assertFalse(false, "literal false")
+assertTrue(10 > 5, "greater than: 10 > 5")
+assertFalse(3 > 8, "greater than: 3 > 8 (false)")
+assertTrue(5 <= 5, "less or equal: 5 <= 5")
+assertTrue(10 == 10, "equality: 10 == 10")
+assertTrue(10 != 20, "inequality: 10 != 20")
+
+assertTrue(true and true, "and: true and true")
+assertFalse(true and false, "and: true and false")
+assertTrue(false or true, "or: false or true")
+assertFalse(false or false, "or: false or false")
+assertTrue(!false, "not: !false")
+assertFalse(!true, "not: !true")
+
+// ════════════════════════════════════════════
+// 测试 4: if 条件判断
+// ════════════════════════════════════════════
+println("")
+println("=== Test 4: if Statement ===")
+
+score = 85
+grade = ""
+if (score >= 90) {
+    grade = "A"
+}
+if (score >= 80 and score < 90) {
+    grade = "B"
+}
+if (score >= 70 and score < 80) {
+    grade = "C"
+}
+assertEqual("B", grade, "if-else chain: score=85 grade=B")
+
+outer = 5
+inner = 3
+result = ""
+if (outer > 0) {
+    if (inner > 0) {
+        result = "both-positive"
+    }
+}
+assertEqual("both-positive", result, "nested if")
+
+// ════════════════════════════════════════════
+// 测试 5: while 循环
+// ════════════════════════════════════════════
+println("")
+println("=== Test 5: while Loop ===")
+
+count = 0
+i = 0
+while i < 5 {
+    count = count + i
+    i = i + 1
+}
+assertEqual(10, count, "while loop: sum 0..4 = 10")
+
+count2 = 0
+j = 0
+while j < 3 {
+    count2 = count2 + 1
+    j = j + 1
+}
+assertEqual(3, count2, "while loop (no parens): count to 3")
+
+// break 测试
+sumBreak = 0
+k = 0
+while true {
+    if (k >= 4) {
+        break
+    }
+    sumBreak = sumBreak + k
+    k = k + 1
+}
+assertEqual(6, sumBreak, "break from while: sum 0..3 = 6")
+
+// ════════════════════════════════════════════
+// 测试 6: 数组
+// ════════════════════════════════════════════
+println("")
+println("=== Test 6: Array ===")
+
+arr = [1, 2, 3, 4, 5]
+assertEqual(1, arr[0], "array: first element")
+assertEqual(3, arr[2], "array: third element")
+assertEqual(5, arr[4], "array: fifth element")
+arrLen = #arr
+assertEqual(5, arrLen, "array: length (#arr)")
+arr[1] = 99
+assertEqual(99, arr[1], "array: index assignment")
+
+mixed = [1, "hello", true]
+assertEqual(1, mixed[0], "mixed array: number")
+assertEqual("hello", mixed[1], "mixed array: string")
+assertEqual(true, mixed[2], "mixed array: boolean")
+
+// ════════════════════════════════════════════
+// 测试 7: 映射 (Map)
+// ════════════════════════════════════════════
+println("")
+println("=== Test 7: Map ===")
+person = {"name": "Alice", "age": 30, "score": 95.5}
+assertEqual("Alice", person["name"], "map: string key access")
+assertEqual(30, person["age"], "map: number value")
+assertEqual(95.5, person["score"], "map: float value")
+
+config = {"host": "localhost", "port": 8080, "ssl": true}
+assertEqual("localhost", config["host"], "map: multiple keys")
+assertEqual(8080, config["port"], "map: port number")
+assertEqual(true, config["ssl"], "map: boolean value")
+
+// 空 Map
+empty = {}
+assertEqual(true, isMap(empty), "map: empty map is map")
+
+// 嵌套 Map
+nested = {"outer": {"inner": 42}}
+innerMap = nested["outer"]
+assertEqual(42, innerMap["inner"], "map: nested map access")
+
+// 混合类型值
+mixed = {"str": "hello", "num": 42, "bool": true, "arr": [1,2,3]}
+assertEqual("hello", mixed["str"], "map: mixed string")
+assertEqual(42, mixed["num"], "map: mixed number")
+assertEqual(true, mixed["bool"], "map: mixed boolean")
+assertEqual(1, (mixed["arr"])[0], "map: array in map")
+
+// ════════════════════════════════════════════
+// 测试 9: 数学函数
+// ════════════════════════════════════════════
+println("")
+println("=== Test 9: Math Functions ===")
+
+assertEqual(42, abs(-42), "math.abs(-42)")
+assertEqual(4, round(3.7), "math.round(3.7)")
+assertEqual(10, sqrt(100), "math.sqrt(100)")
+assertEqual(3, floor(3.9), "math.floor(3.9)")
+assertEqual(4, ceil(3.1), "math.ceil(3.1)")
+assertEqual(200, max(100, 200), "math.max(100, 200)")
+assertEqual(100, min(100, 200), "math.min(100, 200)")
+
+// ════════════════════════════════════════════
+// 测试 10: 类型检查与工具函数
+// ════════════════════════════════════════════
+println("")
+println("=== Test 10: Type Checks ===")
+
+assertEqual("number", typeOf(42), "typeOf(42)")
+assertEqual("string", typeOf("hello"), "typeOf(\"hello\")")
+assertEqual("boolean", typeOf(true), "typeOf(true)")
+assertTrue(isNumber(42), "isNumber(42)")
+assertFalse(isNumber("hi"), "isNumber(\"hi\")")
+assertTrue(isString("hello"), "isString(\"hello\")")
+assertTrue(isBool(true), "isBool(true)")
+
+// ════════════════════════════════════════════
+// 测试 12: 路径函数
+// ════════════════════════════════════════════
+println("")
+println("=== Test 12: Path Functions ===")
+
+resolvedPath = resolve("$HOME/app")
+assertTrue(resolvedPath == "/user/local/app" or resolvedPath == "/user/local/app", "path.resolve: $HOME/app")
+
+fileName = getFileName("/system/config/env.json")
+assertEqual("env.json", fileName, "path.getFileName")
+
+parentPath = getParentPath("/system/config/env.json")
+assertEqual("/system/config", parentPath, "path.getParentPath")
+
+// ════════════════════════════════════════════
+// 测试汇总
+// ════════════════════════════════════════════
+println("")
+println("========================================")
+println("All tests completed!")
+println("========================================")
+println("")
+
+}  // end runAllTests

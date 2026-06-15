@@ -1,1566 +1,1234 @@
 package com.follarce.process;
 
-import com.follarce.init.UserInit;
-import com.follarce.plugin.FunctionContext;
-import com.follarce.plugin.FunctionRegistry;
-import com.follarce.basicUtil.*;
-import com.follarce.process.exception.*;
-import com.follarce.process.interpreter.Lexer;
-import com.follarce.process.interpreter.NodeEvaluator;
-import com.follarce.process.interpreter.Parser;
-import com.follarce.process.interpreter.ProcessRunnerNodeEvaluator;
+import com.follarce.Constants;
+import com.follarce.exception.RecoverableException;
+import com.follarce.exception.UnrecoverableException;
+import com.follarce.function.FunctionContext;
+import com.follarce.function.FunctionRegistry;
+import com.follarce.log.Logger;
+import com.follarce.script.*;
+import com.follarce.util.FileUtil;
+import com.follarce.util.JsonUtil;
+import com.follarce.util.PathUtil;
+import com.follarce.util.UserUtil;
+
 import java.util.*;
-import java.util.regex.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
-public class ProcessRunner implements Runnable {
+/**
+ * 进程执行引擎 —— 每个进程一个线程，逐行执行 FCL 代码。
+ * <p>
+ * 执行循环：每 10ms 执行一行，完整执行流程为：
+ * loadFromFile() → executeLine() → saveToFile()
+ */
+public class ProcessRunner extends Thread {
 
-    private enum BlockType {
-        WHILE, IF, FUNCTION
-    }
+    private static final Pattern FUNC_PATTERN =
+            Pattern.compile("^func\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{?\\s*$");
+    private static final Pattern IMPORT_PATTERN =
+            Pattern.compile("^import\\s+\"([^\"]+)\"\\s*$");
+    private static final Pattern INCLUDE_PATTERN =
+            Pattern.compile("^include\\s+\"([^\"]+)\"\\s*$");
+    private static final Pattern IF_PATTERN =
+            Pattern.compile("^if\\s*\\(?([^{)]+)\\)?\\s*\\{?\\s*$");
+    private static final Pattern WHILE_PATTERN =
+            Pattern.compile("^while\\s*\\(?([^{)]+)\\)?\\s*\\{?\\s*$");
+    private static final Pattern ASSIGN_PATTERN =
+            Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)$");
+    private static final Pattern INDEX_ASSIGN_PATTERN =
+            Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\[([^\\]]+)\\]\\s*=\\s*(.+)$");
+    private static final Pattern FORK_PATTERN =
+            Pattern.compile("^\\s*fork\\s*\\(\\s*\\)\\s*$");
+    private static final Pattern RETURN_PATTERN =
+            Pattern.compile("^return\\b\\s*(.*)$");
+    private static final Pattern BREAK_PATTERN =
+            Pattern.compile("^break\\s*$");
 
-    private static class BlockInfo {
-        BlockType type;
-        int startLine;
-        String condition; // Only for WHILE blocks
-
-        BlockInfo(BlockType type, int startLine) {
-            this.type = type;
-            this.startLine = startLine;
-        }
-
-        BlockInfo(BlockType type, int startLine, String condition) {
-            this.type = type;
-            this.startLine = startLine;
-            this.condition = condition;
-        }
-    }
-
-    private int pid;
-    private boolean running;
+    // ── 运行时状态 ──
+    private volatile boolean running = true;
+    private final int pid;
+    private Map<String, Object> processData;
     private Map<String, Object> data;
     private List<String> codeLines;
     private int currentLine;
-    private Map<String, FunctionDef> functions;
-    private Object returnValue;
-    private long startTimeMs;
-    private String owner;
-    private Deque<BlockInfo> blockStack; // Track block types and positions
-    private FunctionContext functionContext; // Function call context
+    private List<Map<String, Object>> blockStack;
+    private Map<String, Object> returnValue;
 
-    public ProcessRunner(int pid) {
+    // ── 用户函数缓存 ──
+    private final Map<String, FunctionDef> functions = new LinkedHashMap<>();
+
+    // ── 调用栈（用于用户函数调用） ──
+    private final Deque<CallFrame> callStack = new ArrayDeque<>();
+
+    // ── 用户函数调用参数（由 NodeEvaluator 回调传入） ──
+    private String pendingFuncName;
+    private List<Object> pendingFuncArgs;
+
+    public ProcessRunner(int pid, Map<String, Object> processData) {
+        super("Process-" + pid);
         this.pid = pid;
-        this.running = true;
-        this.functions = new HashMap<>();
-        this.blockStack = new ArrayDeque<>();
-        loadFromFile();
-
-        // loadFromFile() sets running based on file's Status
-        // If Status is false, running will be false and process won't execute
-
-        if (owner != null) {
-            UserUtil.setCurrentProcessUser(owner);
-        }
-
-        // Initialize function call context
-        int ppid = getParentPid();
-        String currentUser = owner != null ? owner : UserInit.getCurrentUser();
-        if (currentUser == null)
-            currentUser = "local";
-        this.functionContext = new FunctionContext(pid, ppid, currentUser);
-
-        // Set thread-local PID for process isolation
-        ProcessFunc.setCurrentPid(pid);
+        this.processData = processData;
+        this.callStack.clear();
+        loadFromProcessData();
     }
 
-    private int getParentPid() {
-        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
-        if (!readResult[0].equals("SUCCESS"))
-            return 0;
-
-        try {
-            Object processObj = JsonUtil.readJson(readResult[1]);
-            if (!(processObj instanceof Map))
-                return 0;
-            Map<String, Object> process = (Map<String, Object>) processObj;
-            Map<String, Object> parent = (Map<String, Object>) process.get("Parent");
-            if (parent != null && parent.containsKey("PID")) {
-                Object parentPidObj = parent.get("PID");
-                if (parentPidObj instanceof Number) {
-                    return ((Number) parentPidObj).intValue();
-                }
-            }
-        } catch (Exception e) {
-            // ignore
-        }
-        return 0;
+    /**
+     * 获取当前进程的 .pres 文件路径（基于 Name 字段）。
+     */
+    private String getProcessFilePath() {
+        String name = getProcessName();
+        return PathUtil.getProcessFilePath(name);
     }
 
-    @SuppressWarnings("unchecked")
-    private void loadFromFile() {
-        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
-        if (!readResult[0].equals("SUCCESS")) {
-            running = false;
-            return;
-        }
+    public int getPid() { return pid; }
 
-        Map<String, Object> process;
-        try {
-            Object processObj = JsonUtil.readJson(readResult[1]);
-            if (!(processObj instanceof Map)) {
-                running = false;
-                return;
-            }
-            process = (Map<String, Object>) processObj;
-        } catch (Exception e) {
-            running = false;
-            return;
-        }
-
-        this.owner = (String) process.get("Owner");
-        if (this.owner == null) {
-            this.owner = "local";
-        }
-
-        Object statusObj = process.get("Status");
-        if (statusObj == null) {
-            running = false;
-            return;
-        }
-
-        // Handle status: Boolean (true/false)
-        if (statusObj instanceof Boolean) {
-            running = (Boolean) statusObj;
-        } else {
-            // Unknown or null status, treat as stopped
-            running = false;
-            return;
-        }
-
-        Object startTimeObj = process.get("startTime");
-        if (startTimeObj instanceof List) {
-            List<?> list = (List<?>) startTimeObj;
-            int[] startTime = new int[7];
-            for (int i = 0; i < list.size() && i < 7; i++) {
-                Object val = list.get(i);
-                if (val instanceof Number) {
-                    startTime[i] = ((Number) val).intValue();
-                }
-            }
-            Calendar cal = Calendar.getInstance();
-            cal.set(startTime[0], startTime[1] - 1, startTime[2],
-                    startTime[3], startTime[4], startTime[5]);
-            this.startTimeMs = cal.getTimeInMillis() + startTime[6];
-        } else {
-            this.startTimeMs = System.currentTimeMillis();
-        }
-
-        Map<String, Object> program = (Map<String, Object>) process.get("Program");
-        if (program == null) {
-            running = false;
-            return;
-        }
-
-        this.data = (Map<String, Object>) program.get("Data");
-        if (this.data == null) {
-            this.data = new HashMap<>();
-        }
-
-        // Set __current_script for import functionality
-        String scriptPath = (String) process.get("Path");
-        if (scriptPath != null && !scriptPath.isEmpty()) {
-            this.data.put("__current_script", scriptPath);
-        }
-
-        Map<String, Object> code = (Map<String, Object>) program.get("Code");
-        if (code == null) {
-            running = false;
-            return;
-        }
-
-        this.codeLines = (List<String>) code.get("Code");
-        if (this.codeLines == null) {
-            running = false;
-            return;
-        }
-
-        // Remove null elements from codeLines
-        this.codeLines.removeIf(Objects::isNull);
-
-        // Load currentLine from file on every load to ensure correct position
-        // This is important for fork() - child process needs to start from correct line
-        Object runningLine = code.get("runningCodeLine");
-        if (runningLine instanceof Number) {
-            this.currentLine = ((Number) runningLine).intValue();
-        } else if (runningLine instanceof List) {
-            List<?> runningLineList = (List<?>) runningLine;
-            if (!runningLineList.isEmpty()) {
-                this.currentLine = ((Number) runningLineList.get(0)).intValue();
-            } else {
-                this.currentLine = 0;
-            }
-        } else {
-            this.currentLine = 0;
-        }
-
-        // Restore blockStack from file
-        this.blockStack.clear();
-        Object blockStackObj = code.get("BlockStack");
-        if (blockStackObj instanceof List) {
-            List<?> blockStackList = (List<?>) blockStackObj;
-            for (Object item : blockStackList) {
-                if (item instanceof Map) {
-                    Map<?, ?> blockMap = (Map<?, ?>) item;
-                    String typeStr = (String) blockMap.get("type");
-                    Number startLineNum = (Number) blockMap.get("startLine");
-                    String condition = (String) blockMap.get("condition");
-                    if (typeStr != null && startLineNum != null) {
-                        BlockType type = BlockType.valueOf(typeStr);
-                        BlockInfo blockInfo = new BlockInfo(type, startLineNum.intValue(), condition);
-                        this.blockStack.push(blockInfo);
-                    }
-                }
-            }
-        }
-
-        // Parse function definitions (don't remove them, will skip during execution)
-        parseFunctionDefinitions();
-
-        // Note: Don't reset currentLine here - let executeLine handle process
-        // termination
-        // when currentLine >= codeLines.size()
+    public String getProcessName() {
+        Object name = processData.get("Name");
+        return name != null ? name.toString() : "PID-" + pid;
     }
 
-    @SuppressWarnings("unchecked")
-    private void saveToFile() {
-        saveToFile(false);
+    public boolean isRunning() { return running; }
+
+    public void stopProcess() {
+        running = false;
+        interrupt();
     }
 
-    private void saveToFile(boolean updateStatus) {
-        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
-        if (!readResult[0].equals("SUCCESS")) {
-            return;
-        }
-
-        Object processObj = JsonUtil.readJson(readResult[1]);
-        if (!(processObj instanceof Map)) {
-            return;
-        }
-        Map<String, Object> process = (Map<String, Object>) processObj;
-
-        long currentTime = System.currentTimeMillis();
-        int runningSeconds = (int) ((currentTime - startTimeMs) / Constants.TIME_DIVISOR);
-        process.put("RunningTime", runningSeconds);
-
-        Map<String, Object> program = (Map<String, Object>) process.get("Program");
-        program.put("Data", this.data);
-
-        Map<String, Object> code = (Map<String, Object>) program.get("Code");
-        code.put("runningCodeLine", this.currentLine);
-        code.put("Code", this.codeLines);
-
-        // Save blockStack to persist block state
-        List<Map<String, Object>> blockStackList = new ArrayList<>();
-        for (BlockInfo block : this.blockStack) {
-            Map<String, Object> blockMap = new HashMap<>();
-            blockMap.put("type", block.type.name());
-            blockMap.put("startLine", block.startLine);
-            if (block.condition != null) {
-                blockMap.put("condition", block.condition);
-            }
-            blockStackList.add(blockMap);
-        }
-        code.put("BlockStack", blockStackList);
-
-        // Only update Status if explicitly requested (to avoid overwriting during
-        // shutdown)
-        if (updateStatus) {
-            process.put("Status", this.running);
-        }
-
-        FileUtil.write("/system/process/" + pid + ".json", JsonUtil.toJsonPretty(process));
-    }
+    // ════════════════════════════════════════════
+    // 主执行循环
+    // ════════════════════════════════════════════
 
     @Override
     public void run() {
-        if (owner != null) {
-            UserUtil.setCurrentProcessUser(owner);
-        }
+        Logger.info("Process " + pid + " (" + getProcessName() + ") started");
+
+        // 首次执行：解析函数定义
+        parseFunctionDefinitions();
+
+        // 初始化用户上下文（从进程 Owner 读取，但后续由 switchUser 接管）
+        String initialOwner = (String) processData.get("Owner");
+        UserUtil.setCurrentUser(initialOwner != null ? initialOwner : Constants.DEFAULT_USER_LOCAL);
+
+        // 进程启动标记
+        System.out.println("[PROCESS " + pid + " STARTED]");
 
         while (running) {
             try {
                 executeLine();
-            } catch (Exception e) {
-                handleException(e, "process_execution");
-            }
-            try {
                 Thread.sleep(Constants.PROCESS_TICK_MS);
             } catch (InterruptedException e) {
-                Logger.info("Process " + pid + " interrupted");
-                break;
+                Thread.currentThread().interrupt();
+                running = false;
+            } catch (Exception e) {
+                handleException(e, "executeLine");
             }
         }
+
+        Logger.info("Process " + pid + " (" + getProcessName() + ") terminated");
     }
 
-    public void executeLine() {
+    // ════════════════════════════════════════════
+    // 单行执行
+    // ════════════════════════════════════════════
 
-        if (owner != null) {
-            UserUtil.setCurrentProcessUser(owner);
-        }
-
+    @SuppressWarnings("unchecked")
+    private void executeLine() {
+        // 1. 从文件加载最新状态
         loadFromFile();
 
-        if (currentLine >= codeLines.size()) {
-            running = false;
-            saveToFile(true);
-            return;
+        // 检查 loadFromFile 后的数据状态
+        if (currentLine == 0 && codeLines != null && codeLines.size() > 0
+                && codeLines.get(0).contains("expected")) {
+            Logger.debug("AFTER LOAD: currentLine=" + currentLine + " line=" + codeLines.get(0)
+                    + " dataKeys=" + data.keySet() + " codeLen=" + codeLines.size());
         }
 
-        if (!running || codeLines == null) {
+        // 2. 检查是否执行完毕
+        if (currentLine >= codeLines.size()) {
+            // 如果在函数调用中，自动返回到调用者
+            if (!callStack.isEmpty()) {
+                CallFrame frame = callStack.pop();
+                this.data = frame.savedData;
+                this.codeLines = frame.savedCodeLines;
+                this.currentLine = frame.savedCurrentLine + 1; // 跳过函数调用行
+                // 设置返回值（如果有）
+                if (returnValue != null && returnValue.get("value") != null) {
+                    data.put("__return_value", returnValue.get("value"));
+                }
+                this.returnValue = null;
+                this.blockStack = new ArrayList<>();
+                saveToFile();
+                return;
+            }
             running = false;
-            saveToFile(true);
+            saveToFile();
             return;
         }
 
         String line = codeLines.get(currentLine).trim();
 
+        // 3. 跳过空行、注释
         if (line.isEmpty() || line.startsWith("//") || line.startsWith("#")) {
             currentLine++;
             saveToFile();
             return;
         }
 
-        if (line.equals("{")) {
+        // 4. 处理花括号行
+        if (line.equals("{") || line.startsWith("}")) {
+            // } 需要处理 while 循环回跳
+            if (line.startsWith("}")) {
+                handleClosingBrace();
+            }
+            // 对于 } else { 等行，跳过 {} 处理后的剩余部分
             currentLine++;
             saveToFile();
             return;
         }
 
-        if (line.equals("}")) {
-            if (!blockStack.isEmpty()) {
-                BlockInfo block = blockStack.peek();
-                if (block.type == BlockType.WHILE) {
-                    String condition = block.condition;
-                    if (isTrue(evaluate(condition))) {
-                        currentLine = block.startLine;
-                    } else {
-                        blockStack.pop();
-                        currentLine++;
-                    }
-                } else {
-                    blockStack.pop();
-                    currentLine++;
-                }
-            } else {
-                currentLine++;
-            }
-            if (currentLine >= codeLines.size()) {
-                running = false;
-            }
-            saveToFile();
-            return;
-        }
-
-        if (line.startsWith("fork(")) {
-            currentLine++;
-            saveToFile();
-            try {
-                executeStatement(line);
-            } catch (Exception e) {
-                handleException(e, "fork_operation");
-            }
-            return;
-        }
-
-        if (line.startsWith("exec(")) {
-            try {
-                executeStatement(line);
-                loadFromFile();
-                saveToFile();
-            } catch (Exception e) {
-                handleException(e, "exec_operation");
-            }
-            return;
-        }
-
-        int lineBefore = currentLine;
         try {
-            executeStatement(line);
-        } catch (Exception e) {
-            handleException(e, "statement_execution");
-        }
+            // 当前用户由 run() 初始化，switchUser 动态切换，此处不再重置
 
-        if (currentLine == lineBefore) {
-            currentLine++;
-        }
-        saveToFile(running == false);
-    }
-
-    private void executeStatement(String line) {
-        if (line.startsWith("func ")) {
-            return;
-        }
-
-        if (line.startsWith("import ")) {
-            handleImport(line);
-            return;
-        }
-
-        if (line.startsWith("if ")) {
-            handleIf(line);
-            return;
-        }
-
-        if (line.startsWith("while ")) {
-            handleWhile(line);
-            return;
-        }
-
-        if (line.startsWith("return ")) {
-            handleReturn(line);
-            return;
-        }
-
-        if (line.equals("break")) {
-            handleBreak();
-            return;
-        }
-
-        // Check if this is an assignment (variable = value)
-        // Must be: identifier = expression, not inside quotes or parentheses
-        if (isAssignment(line)) {
-            handleAssignment(line);
-            return;
-        }
-
-        evaluate(line);
-    }
-
-    private boolean isAssignment(String line) {
-        int eqIndex = line.indexOf('=');
-        if (eqIndex == -1) {
-            return false;
-        }
-
-        // Check if there's a second '=' (comparison operator ==)
-        if (eqIndex + 1 < line.length() && line.charAt(eqIndex + 1) == '=') {
-            return false;
-        }
-
-        // Check if '=' is inside quotes
-        boolean inQuotes = false;
-        for (int i = 0; i < eqIndex; i++) {
-            char c = line.charAt(i);
-            if (c == '"' && (i == 0 || line.charAt(i - 1) != '\\')) {
-                inQuotes = !inQuotes;
-            }
-        }
-        if (inQuotes) {
-            return false;
-        }
-
-        // Check if '=' is inside parentheses
-        int parenDepth = 0;
-        for (int i = 0; i < eqIndex; i++) {
-            char c = line.charAt(i);
-            if (c == '(')
-                parenDepth++;
-            if (c == ')')
-                parenDepth--;
-        }
-        if (parenDepth > 0) {
-            return false;
-        }
-
-        // Check if left side is a valid identifier (possibly with index access)
-        String left = line.substring(0, eqIndex).trim();
-        if (left.isEmpty()) {
-            return false;
-        }
-
-        // Valid identifier: starts with letter or underscore, contains only
-        // alphanumeric, underscore, and brackets
-        if (left.contains("[") && left.contains("]")) {
-            // Index access: identifier[expr]
-            int bracketIndex = left.indexOf('[');
-            String baseName = left.substring(0, bracketIndex).trim();
-            return isValidIdentifier(baseName);
-        }
-
-        return isValidIdentifier(left);
-    }
-
-    private boolean isValidIdentifier(String name) {
-        if (name.isEmpty()) {
-            return false;
-        }
-        if (!Character.isLetter(name.charAt(0)) && name.charAt(0) != '_') {
-            return false;
-        }
-        for (int i = 1; i < name.length(); i++) {
-            char c = name.charAt(i);
-            if (!Character.isLetterOrDigit(c) && c != '_') {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean isStandaloneFunctionCall(String expr) {
-        expr = expr.trim();
-        if (expr.isEmpty()) {
-            return false;
-        }
-
-        int parenIndex = expr.indexOf('(');
-        if (parenIndex <= 0) {
-            return false;
-        }
-
-        String funcName = expr.substring(0, parenIndex).trim();
-        // Function name can only contain letters, digits, underscore, and dots (for
-        // namespace)
-        if (!funcName.matches("[a-zA-Z_][a-zA-Z0-9_.]*")) {
-            return false;
-        }
-
-        if (!expr.endsWith(")")) {
-            return false;
-        }
-
-        return true;
-    }
-
-    private int findMatchingParen(String str, int openParen) {
-        int depth = 1;
-        for (int i = openParen + 1; i < str.length(); i++) {
-            char c = str.charAt(i);
-            if (c == '(')
-                depth++;
-            else if (c == ')')
-                depth--;
-            if (depth == 0)
-                return i;
-        }
-        return -1;
-    }
-
-    private void handleBreak() {
-        int braceCount = 1;
-        int i = currentLine + 1;
-        while (i < codeLines.size() && braceCount > 0) {
-            String l = codeLines.get(i).trim();
-            if (l.equals("{"))
-                braceCount++;
-            if (l.equals("}"))
-                braceCount--;
-            i++;
-        }
-        if (!blockStack.isEmpty() && blockStack.peek().type == BlockType.WHILE) {
-            blockStack.pop();
-        }
-        currentLine = Math.min(i, codeLines.size());
-    }
-
-    private void handleImport(String line) {
-        Pattern p = Pattern.compile("import\\s+\"([^\"]+)\"");
-        Matcher m = p.matcher(line);
-        if (!m.find()) {
-            throw wrapException("Invalid import syntax", "import_statement");
-        }
-
-        String fileName = m.group(1);
-        String importPath;
-
-        if (fileName.startsWith("/") || fileName.startsWith("~") || fileName.startsWith("$")) {
-            importPath = fileName;
-        } else {
-            String currentScript = (String) data.get("__current_script");
-            if (currentScript != null) {
-                int lastSlash = currentScript.lastIndexOf('/');
-                if (lastSlash >= 0) {
-                    importPath = currentScript.substring(0, lastSlash + 1) + fileName;
-                } else {
-                    importPath = fileName;
-                }
-            } else {
-                importPath = "~/app/" + fileName;
-            }
-        }
-
-        String[] readResult = FileUtil.read(importPath);
-        if (!readResult[0].equals("SUCCESS")) {
-            throw UnrecoverableException.fileNotFound(importPath, pid, currentLine);
-        }
-
-        parseFunctionsFromScript(readResult[1]);
-    }
-
-    private void parseFunctionsFromScript(String content) {
-        String[] lines = content.split("\n");
-        int i = 0;
-
-        while (i < lines.length) {
-            String line = lines[i].trim();
-
+            // 5. 识别语句类型
             if (line.startsWith("func ")) {
-                Pattern p = Pattern.compile("func\\s+(\\w+)\\((.*)\\)\\s*\\{");
-                Matcher m = p.matcher(line);
-                if (m.find()) {
-                    String name = m.group(1);
-                    String paramsStr = m.group(2).trim();
-                    List<String> params = paramsStr.isEmpty() ? new ArrayList<>()
-                            : Arrays.asList(paramsStr.split("\\s*,\\s*"));
-
-                    List<String> body = new ArrayList<>();
-                    i++;
-                    int braceCount = 1;
-
-                    while (i < lines.length && braceCount > 0) {
-                        String bodyLine = lines[i];
-                        i++;
-                        if (bodyLine.contains("{"))
-                            braceCount++;
-                        if (bodyLine.contains("}"))
-                            braceCount--;
-                        if (braceCount > 0) {
-                            body.add(bodyLine);
-                        }
-                    }
-
-                    functions.put(name, new FunctionDef(params, body));
-                    continue;
-                }
-            }
-            i++;
-        }
-    }
-
-    private void parseFunctionDefinitions() {
-        if (codeLines == null || codeLines.isEmpty()) {
-            return;
-        }
-
-        // Clear existing functions and re-parse
-        functions.clear();
-
-        int i = 0;
-        while (i < codeLines.size()) {
-            String line = codeLines.get(i).trim();
-
-            if (line.startsWith("func ")) {
-                Pattern p = Pattern.compile("func\\s+(\\w+)\\((.*)\\)\\s*\\{");
-                Matcher m = p.matcher(line);
-                if (m.find()) {
-                    String name = m.group(1);
-                    String paramsStr = m.group(2).trim();
-                    List<String> params = paramsStr.isEmpty() ? new ArrayList<>()
-                            : Arrays.asList(paramsStr.split("\\s*,\\s*"));
-
-                    List<String> body = new ArrayList<>();
-                    int braceCount = 1;
-                    i++;
-
-                    while (i < codeLines.size() && braceCount > 0) {
-                        String bodyLine = codeLines.get(i);
-                        if (bodyLine.contains("{"))
-                            braceCount++;
-                        if (bodyLine.contains("}"))
-                            braceCount--;
-                        if (braceCount > 0) {
-                            body.add(bodyLine);
-                        }
-                        i++;
-                    }
-
-                    functions.put(name, new FunctionDef(params, body));
-                    continue;
-                }
-            }
-            i++;
-        }
-    }
-
-    private void handleIf(String line) {
-        String condition = line.substring(2, line.length() - 1).trim();
-        boolean result = isTrue(evaluate(condition));
-
-        if (result) {
-            blockStack.push(new BlockInfo(BlockType.IF, currentLine, null));
-        } else {
-            int braceCount = 1;
-            int i = currentLine + 1;
-            while (i < codeLines.size() && braceCount > 0) {
-                String l = codeLines.get(i).trim();
-                if (l.equals("{"))
-                    braceCount++;
-                if (l.equals("}"))
-                    braceCount--;
-                i++;
-            }
-            currentLine = i - 1;
-        }
-    }
-
-    private void handleWhile(String line) {
-        String condition;
-        String afterWhile = line.substring(5).trim();
-
-        if (afterWhile.endsWith("{")) {
-            afterWhile = afterWhile.substring(0, afterWhile.length() - 1).trim();
-        }
-
-        if (afterWhile.startsWith("(") && afterWhile.endsWith(")")) {
-            condition = afterWhile.substring(1, afterWhile.length() - 1).trim();
-        } else {
-            condition = afterWhile;
-        }
-
-        if (!blockStack.isEmpty()) {
-            BlockInfo top = blockStack.peek();
-            if (top.type == BlockType.WHILE && top.startLine == currentLine) {
-                if (!isTrue(evaluate(condition))) {
-                    blockStack.pop();
-                    int braceCount = 1;
-                    int i = currentLine + 1;
-                    while (i < codeLines.size() && braceCount > 0) {
-                        String l = codeLines.get(i).trim();
-                        if (l.equals("{"))
-                            braceCount++;
-                        if (l.equals("}"))
-                            braceCount--;
-                        i++;
-                    }
-                    currentLine = i - 1;
-                }
+                // 函数定义 → 跳过
+                skipFunctionBody();
+                saveToFile();
                 return;
             }
-        }
 
-        if (!isTrue(evaluate(condition))) {
-            int braceCount = 1;
-            int i = currentLine + 1;
-            while (i < codeLines.size() && braceCount > 0) {
-                String l = codeLines.get(i).trim();
-                if (l.equals("{"))
-                    braceCount++;
-                if (l.equals("}"))
-                    braceCount--;
-                i++;
-            }
-            currentLine = i - 1;
-        } else {
-            blockStack.push(new BlockInfo(BlockType.WHILE, currentLine, condition));
-        }
-    }
-
-    private void handleReturn(String line) {
-        String expr = line.substring(7).trim();
-        if (expr.endsWith(";")) {
-            expr = expr.substring(0, expr.length() - 1).trim();
-        }
-        if (expr.isEmpty()) {
-            returnValue = null;
-        } else {
-            returnValue = evaluate(expr);
-        }
-        int braceCount = 1;
-        int i = currentLine + 1;
-        while (i < codeLines.size() && braceCount > 0) {
-            String l = codeLines.get(i).trim();
-            if (l.equals("{"))
-                braceCount++;
-            if (l.equals("}"))
-                braceCount--;
-            i++;
-        }
-        currentLine = i - 1;
-    }
-
-    private void handleAssignment(String line) {
-        String[] parts = line.split("=", 2);
-        if (parts.length < 2) {
-            throw wrapException("Invalid assignment syntax", "assignment");
-        }
-
-        String left = parts[0].trim();
-        String right = parts[1].trim();
-
-        if (left.startsWith("_")) {
-            throw wrapException("Variable names cannot start with underscore (reserved for system use): " + left,
-                    "reserved_variable");
-        }
-
-        if (left.contains("[")) {
-            handleIndexAssignment(left, right);
-            return;
-        }
-
-        Object value = evaluate(right);
-        data.put(left, value);
-    }
-
-    @SuppressWarnings("unchecked")
-    private void handleIndexAssignment(String left, String right) {
-        int firstBracket = left.indexOf('[');
-        if (firstBracket <= 0) {
-            throw wrapException("Invalid index syntax", "index_assignment");
-        }
-
-        String containerName = left.substring(0, firstBracket);
-        Object container = data.get(containerName);
-        if (container == null) {
-            throw UnrecoverableException.undefinedVariable(containerName, pid, currentLine);
-        }
-
-        String indexExpr = left.substring(firstBracket);
-        Object value = evaluate(right);
-
-        handleIndexAssignmentRecursive(container, indexExpr, value);
-    }
-
-    @SuppressWarnings("unchecked")
-    private void handleIndexAssignmentRecursive(Object container, String indexExpr, Object value) {
-        if (!indexExpr.startsWith("[")) {
-            return;
-        }
-
-        int depth = 0;
-        int closeBracket = -1;
-        for (int i = 0; i < indexExpr.length(); i++) {
-            char c = indexExpr.charAt(i);
-            if (c == '[' || c == '{')
-                depth++;
-            else if (c == ']' || c == '}')
-                depth--;
-
-            if (c == ']' && depth == 0) {
-                closeBracket = i;
-                break;
-            }
-        }
-
-        if (closeBracket == -1) {
-            throw wrapException("Invalid index syntax: missing closing bracket", "index_assignment");
-        }
-
-        String indexContent = indexExpr.substring(1, closeBracket).trim();
-        Object index = evaluate(indexContent);
-
-        String remaining = indexExpr.substring(closeBracket + 1).trim();
-
-        if (remaining.startsWith("[")) {
-            Object nextContainer;
-            if (container instanceof List && index instanceof Number) {
-                List<?> list = (List<?>) container;
-                int idx = ((Number) index).intValue();
-                if (idx < 0)
-                    idx = list.size() + idx;
-                if (idx < 0 || idx >= list.size()) {
-                    throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
-                }
-                nextContainer = list.get(idx);
-            } else if (container instanceof Map) {
-                Map<?, ?> map = (Map<?, ?>) container;
-                nextContainer = map.get(index);
-            } else {
-                throw UnrecoverableException.typeError("array or map",
-                        container.getClass().getSimpleName(), pid, currentLine);
+            if (line.startsWith("import ")) {
+                handleImport(line);
+                currentLine++;
+                saveToFile();
+                return;
             }
 
-            if (nextContainer == null) {
-                throw wrapException("Cannot access index of null value", "index_assignment");
+            if (line.startsWith("include ")) {
+                handleInclude(line);
+                currentLine++;
+                saveToFile();
+                return;
             }
 
-            handleIndexAssignmentRecursive(nextContainer, remaining, value);
-        } else {
-            if (container instanceof List && index instanceof Number) {
-                List<Object> list = (List<Object>) container;
-                int idx = ((Number) index).intValue();
-                if (idx < 0)
-                    idx = list.size() + idx;
-                if (idx < 0 || idx >= list.size()) {
-                    throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
-                }
-                list.set(idx, value);
-            } else if (container instanceof Map) {
-                Map<Object, Object> map = (Map<Object, Object>) container;
-                map.put(index, value);
-            } else {
-                throw UnrecoverableException.typeError("array or map",
-                        container.getClass().getSimpleName(), pid, currentLine);
-            }
-        }
-    }
-
-    private String preprocessFunctionCalls(String expr) {
-        StringBuilder result = new StringBuilder();
-        int i = 0;
-        while (i < expr.length()) {
-            char c = expr.charAt(i);
-
-            if (c == '"') {
-                // Copy string literal as-is
-                result.append(c);
-                i++;
-                while (i < expr.length()) {
-                    char sc = expr.charAt(i);
-                    result.append(sc);
-                    if (sc == '\\' && i + 1 < expr.length()) {
-                        i++;
-                        result.append(expr.charAt(i));
-                    } else if (sc == '"') {
-                        i++;
-                        break;
-                    }
-                    i++;
-                }
-            } else if (Character.isLetter(c) || c == '_') {
-                // Potential function name (may include namespace like "swapPool.create")
-                int start = i;
-                while (i < expr.length() && (Character.isLetterOrDigit(expr.charAt(i)) || expr.charAt(i) == '_'
-                        || expr.charAt(i) == '.')) {
-                    i++;
-                }
-                // Don't allow '.' as last character
-                if (i > start && expr.charAt(i - 1) == '.') {
-                    i--; // Back up one position
-                }
-                String name = expr.substring(start, i);
-
-                // Check if followed by '('
-                int savedI = i;
-                while (i < expr.length() && Character.isWhitespace(expr.charAt(i))) {
-                    i++;
-                }
-
-                if (i < expr.length() && expr.charAt(i) == '(') {
-                    // This is a function call - find the matching closing parenthesis
-                    int parenCount = 1;
-                    int funcEnd = i + 1;
-                    while (funcEnd < expr.length() && parenCount > 0) {
-                        char fc = expr.charAt(funcEnd);
-                        if (fc == '(')
-                            parenCount++;
-                        if (fc == ')')
-                            parenCount--;
-                        funcEnd++;
-                    }
-                    // Extract the full function call expression
-                    String funcCallExpr = expr.substring(start, funcEnd);
-                    Object funcResult = handleFunctionCall(funcCallExpr);
-                    i = funcEnd;
-                    result.append(formatValueForPrint(funcResult));
-                } else if (name.contains(".")) {
-                    // This is a dot-separated identifier like math.pi or swapPool.create
-                    // Try treating it as a function call with empty arguments
-                    // This handles cases like math.pi where the function takes no arguments
-                    Object funcResult = handleFunctionCall(name + "()");
-                    if (funcResult != null) {
-                        result.append(formatValueForPrint(funcResult));
-                    } else {
-                        // If function call failed, treat as property access
-                        result.append(name);
-                    }
-                } else {
-                    i = savedI; // Restore i to position after identifier
-                    result.append(name);
-                }
-            } else {
-                result.append(c);
-                i++;
-            }
-        }
-        return result.toString();
-    }
-
-    private Object evaluate(String expr) {
-        if (expr.startsWith("[") && expr.endsWith("]")) {
-            return parseArray(expr);
-        }
-        expr = expr.trim();
-
-        // Remove trailing semicolon if present
-        if (expr.endsWith(";")) {
-            expr = expr.substring(0, expr.length() - 1).trim();
-        }
-
-        // ========== 提前处理字面量（必须在 preprocessFunctionCalls 之前） ==========
-        if (expr.matches("-?\\d+")) {
-            return Integer.parseInt(expr);
-        }
-        if (expr.matches("-?\\d+\\.\\d+")) {
-            return Double.parseDouble(expr);
-        }
-        if (expr.equals("true"))
-            return true;
-        if (expr.equals("false"))
-            return false;
-        if (expr.startsWith("[") && expr.endsWith("]")) {
-            return parseArray(expr);
-        }
-        if (expr.startsWith("{") && expr.endsWith("}")) {
-            return parseMap(expr);
-        }
-        if (expr.startsWith("\"") && expr.endsWith("\"")) {
-            // 检查是否是纯字符串（不包含未转义的 + 等运算符）
-            // 简化：直接返回字符串内容
-            return expr.substring(1, expr.length() - 1);
-        }
-        // ========================================================================
-
-        // Check if this is a function call followed by index access: func()[index]
-        int firstBracket = expr.indexOf('[');
-        if (firstBracket > 0) {
-            String beforeBracket = expr.substring(0, firstBracket).trim();
-            int firstParen = beforeBracket.lastIndexOf('(');
-            if (firstParen > 0) {
-                String possibleFuncName = beforeBracket.substring(0, firstParen).trim();
-                if (possibleFuncName.matches("[a-zA-Z_][a-zA-Z0-9_.]*")) {
-                    int lastParen = findMatchingParen(beforeBracket, firstParen);
-                    if (lastParen > firstParen) {
-                        String funcCall = beforeBracket.substring(0, lastParen + 1);
-                        String indexExpr = expr.substring(firstBracket);
-                        if (isStandaloneFunctionCall(funcCall)) {
-                            Object funcResult = handleFunctionCall(funcCall);
-                            return handleIndexAccessRecursive(funcResult, indexExpr);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check if this is a standalone function call
-        if (isStandaloneFunctionCall(expr)) {
-            return handleFunctionCall(expr);
-        }
-
-        // Pre-process function calls in complex expressions
-        expr = preprocessFunctionCalls(expr);
-
-        // 长度运算符
-        if (expr.startsWith("#")) {
-            String varName = expr.substring(1);
-            Object val = data.get(varName);
-            if (val instanceof List)
-                return ((List<?>) val).size();
-            if (val instanceof Map)
-                return ((Map<?, ?>) val).size();
-            if (val instanceof String)
-                return ((String) val).length();
-            throw wrapException("Cannot get length of " +
-                    (val != null ? val.getClass().getSimpleName() : "null"), "length_operation");
-        }
-
-        // Check if this is a function call
-        if (expr.contains("(") && !expr.startsWith("\"") && !expr.startsWith("'")) {
-            int parenIndex = expr.indexOf('(');
-            String potentialFuncName = expr.substring(0, parenIndex).trim();
-            if (!potentialFuncName.isEmpty()
-                    && (Character.isLetter(potentialFuncName.charAt(0)) || potentialFuncName.charAt(0) == '_')) {
-                return handleFunctionCall(expr);
-            }
-        }
-
-        if (data.containsKey(expr)) {
-            return data.get(expr);
-        }
-
-        // Check if this is an index access: identifier[expr]
-        if (expr.contains("[")) {
-            Pattern indexPattern = Pattern.compile("(\\w+)\\[(.*)\\]");
-            Matcher indexMatcher = indexPattern.matcher(expr);
-            if (indexMatcher.matches()) {
-                return handleIndexAccess(expr);
-            }
-        }
-
-        return evaluateOperator(expr);
-    }
-
-    private String formatValueForPrint(Object obj) {
-        if (obj == null) {
-            return "null";
-        }
-        if (obj instanceof Object[] || obj instanceof String[]) {
-            return JsonUtil.toJson(obj);
-        }
-        if (obj instanceof List || obj instanceof Map) {
-            return JsonUtil.toJson(obj);
-        }
-        return obj.toString();
-    }
-
-    private Object handleFunctionCall(String expr) {
-        int parenIndex = expr.indexOf('(');
-        String fullFuncName = expr.substring(0, parenIndex).trim();
-
-        // If fullFuncName is empty, this is likely a parenthesized expression, not a
-        // function call
-        if (fullFuncName.isEmpty()) {
-            return evaluateOperator(expr);
-        }
-
-        // Handle namespace.function syntax (e.g., swapPool.create)
-        String funcName = fullFuncName;
-        String namespace = null;
-        if (fullFuncName.contains(".")) {
-            int dotIndex = fullFuncName.lastIndexOf('.');
-            namespace = fullFuncName.substring(0, dotIndex);
-            funcName = fullFuncName.substring(dotIndex + 1);
-        }
-
-        // Find the matching closing parenthesis
-        int depth = 1;
-        int closeParenIndex = parenIndex + 1;
-        while (closeParenIndex < expr.length() && depth > 0) {
-            char c = expr.charAt(closeParenIndex);
-            if (c == '(')
-                depth++;
-            if (c == ')')
-                depth--;
-            if (depth > 0)
-                closeParenIndex++;
-        }
-
-        String argsStr = expr.substring(parenIndex + 1, closeParenIndex).trim();
-
-        List<Object> args = new ArrayList<>();
-        if (!argsStr.isEmpty()) {
-            int argDepth = 0;
-            boolean inString = false;
-            StringBuilder current = new StringBuilder();
-            for (int i = 0; i < argsStr.length(); i++) {
-                char c = argsStr.charAt(i);
-
-                // Track string literals
-                if (c == '"' && (i == 0 || argsStr.charAt(i - 1) != '\\')) {
-                    inString = !inString;
-                }
-
-                if (!inString) {
-                    if (c == '(')
-                        argDepth++;
-                    if (c == ')')
-                        argDepth--;
-                    if (c == ',' && argDepth == 0) {
-                        String argStr = current.toString().trim();
-                        if (!argStr.isEmpty()) {
-                            args.add(evaluate(argStr));
-                        }
-                        current = new StringBuilder();
-                        continue;
-                    }
-                }
-                current.append(c);
-            }
-            String argStr = current.toString().trim();
-            if (!argStr.isEmpty()) {
-                args.add(evaluate(argStr));
-            }
-        }
-
-        Object[] argArray = args.toArray();
-
-        // Build full function name with namespace if present
-        String fullName = (namespace != null) ? namespace + "." + funcName : funcName;
-
-        // Use new plugin system to call functions
-        Object result = FunctionRegistry.call(fullName, argArray, functionContext);
-        if (result != null) {
-            return result;
-        }
-
-        FunctionDef func = functions.get(funcName);
-        if (func != null) {
-            if (args.size() != func.params.size()) {
-                throw wrapException("Function " + funcName + " expects " +
-                        func.params.size() + " arguments, got " + args.size(), "function_call");
+            if (line.startsWith("if ") || line.startsWith("if(")) {
+                handleIf(line);
+                saveToFile();
+                return;
             }
 
-            Map<String, Object> oldData = new HashMap<>(this.data);
-            int oldLine = this.currentLine;
-            List<String> oldCodeLines = this.codeLines;
-            Object oldReturnValue = this.returnValue;
-            this.returnValue = null;
-
-            for (int i = 0; i < func.params.size(); i++) {
-                this.data.put(func.params.get(i), args.get(i));
+            if (line.startsWith("while ") || line.startsWith("while(")) {
+                handleWhile(line);
+                saveToFile();
+                return;
             }
 
-            this.codeLines = func.body;
-            this.currentLine = 0;
-
-            while (this.currentLine < this.codeLines.size() && this.returnValue == null) {
-                String line = this.codeLines.get(this.currentLine).trim();
-                this.currentLine++;
-                if (!line.isEmpty() && !line.startsWith("//") && !line.equals("{") && !line.equals("}")) {
-                    executeStatement(line);
-                }
+            if (line.startsWith("return")) {
+                handleReturn(line);
+                saveToFile();
+                return;
             }
 
-            Object ret = this.returnValue;
-
-            this.data = oldData;
-            this.codeLines = oldCodeLines;
-            this.currentLine = oldLine;
-            this.returnValue = oldReturnValue;
-
-            return ret;
-        }
-
-        Logger.error("Process " + pid + " unknown function: " + funcName);
-        throw UnrecoverableException.unknownFunction(funcName, pid, currentLine);
-    }
-
-    private Object handleIndexAccess(String expr) {
-        int firstBracket = expr.indexOf('[');
-        if (firstBracket <= 0) {
-            throw wrapException("Invalid index syntax", "index_access");
-        }
-
-        String containerName = expr.substring(0, firstBracket);
-        Object container = data.get(containerName);
-        if (container == null) {
-            throw UnrecoverableException.undefinedVariable(containerName, pid, currentLine);
-        }
-
-        return handleIndexAccessRecursive(container, expr.substring(firstBracket));
-    }
-
-    private Object handleIndexAccessRecursive(Object container, String indexExpr) {
-        if (!indexExpr.startsWith("[")) {
-            return container;
-        }
-
-        int depth = 0;
-        int closeBracket = -1;
-        for (int i = 0; i < indexExpr.length(); i++) {
-            char c = indexExpr.charAt(i);
-            if (c == '[' || c == '{')
-                depth++;
-            else if (c == ']' || c == '}')
-                depth--;
-
-            if (c == ']' && depth == 0) {
-                closeBracket = i;
-                break;
-            }
-        }
-
-        if (closeBracket == -1) {
-            throw wrapException("Invalid index syntax: missing closing bracket", "index_access");
-        }
-
-        String indexContent = indexExpr.substring(1, closeBracket).trim();
-        Object index = evaluate(indexContent);
-
-        Object result;
-        if (container instanceof List && index instanceof Number) {
-            List<?> list = (List<?>) container;
-            int idx = ((Number) index).intValue();
-            if (idx < 0)
-                idx = list.size() + idx;
-            if (idx < 0 || idx >= list.size()) {
-                throw UnrecoverableException.arrayIndexOutOfBounds(idx, list.size(), pid, currentLine);
-            }
-            result = list.get(idx);
-        } else if (container instanceof Map) {
-            Map<?, ?> map = (Map<?, ?>) container;
-            result = map.get(index);
-        } else {
-            throw UnrecoverableException.typeError("array or map",
-                    container.getClass().getSimpleName(), pid, currentLine);
-        }
-
-        String remaining = indexExpr.substring(closeBracket + 1).trim();
-        if (remaining.startsWith("[")) {
-            return handleIndexAccessRecursive(result, remaining);
-        }
-
-        return result;
-    }
-
-    private List<Object> parseArray(String expr) {
-        String content = expr.substring(1, expr.length() - 1).trim();
-        List<Object> result = new ArrayList<>();
-
-        if (!content.isEmpty()) {
-            int depth = 0;
-            StringBuilder current = new StringBuilder();
-            for (int i = 0; i < content.length(); i++) {
-                char c = content.charAt(i);
-                if (c == '[' || c == '{')
-                    depth++;
-                if (c == ']' || c == '}')
-                    depth--;
-                if (c == ',' && depth == 0) {
-                    result.add(evaluate(current.toString().trim()));
-                    current = new StringBuilder();
-                } else {
-                    current.append(c);
-                }
-            }
-            if (current.length() > 0) {
-                result.add(evaluate(current.toString().trim()));
-            }
-        }
-
-        return result;
-    }
-
-    private Map<Object, Object> parseMap(String expr) {
-        String content = expr.substring(1, expr.length() - 1).trim();
-        Map<Object, Object> result = new HashMap<>();
-
-        if (!content.isEmpty()) {
-            int depth = 0;
-            boolean inKey = true;
-            StringBuilder currentKey = new StringBuilder();
-            StringBuilder currentValue = new StringBuilder();
-
-            for (int i = 0; i < content.length(); i++) {
-                char c = content.charAt(i);
-                if (c == '{' || c == '[')
-                    depth++;
-                if (c == '}' || c == ']')
-                    depth--;
-
-                if (c == ':' && depth == 0 && inKey) {
-                    inKey = false;
-                    continue;
-                }
-
-                if (c == ',' && depth == 0) {
-                    if (!inKey && currentValue.length() > 0) {
-                        Object key = evaluate(currentKey.toString().trim());
-                        Object value = evaluate(currentValue.toString().trim());
-                        result.put(key, value);
-                    }
-                    currentKey = new StringBuilder();
-                    currentValue = new StringBuilder();
-                    inKey = true;
-                } else if (inKey) {
-                    currentKey.append(c);
-                } else {
-                    currentValue.append(c);
-                }
+            if (line.equals("break")) {
+                handleBreak();
+                saveToFile();
+                return;
             }
 
-            if (!inKey && currentValue.length() > 0) {
-                Object key = evaluate(currentKey.toString().trim());
-                Object value = evaluate(currentValue.toString().trim());
-                result.put(key, value);
+            // 6. fork() / exec() 特殊处理
+            if (line.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
+                handleFork();
+                saveToFile();
+                return;
             }
-        }
 
-        return result;
-    }
-
-    private Object evaluateOperator(String expr) {
-        try {
-            String trimmedExpr = expr.trim();
-            if (trimmedExpr.isEmpty()) {
-                return "";
+            // 7. exec() 特殊处理
+            if (line.startsWith("exec(") || line.startsWith("exec (")) {
+                handleExec(line);
+                // exec 后重新加载文件
+                loadFromFile();
+                return;
             }
-            if (trimmedExpr.equals("()")) {
-                return "";
+
+            // 8. 索引赋值 arr[0] = expr
+            Matcher indexAssignMatcher = INDEX_ASSIGN_PATTERN.matcher(line);
+            if (indexAssignMatcher.matches()) {
+                handleIndexAssignment(indexAssignMatcher);
+                currentLine++;
+                saveToFile();
+                return;
             }
-            Lexer lexer = new Lexer(trimmedExpr);
-            List<Lexer.Token> tokens = lexer.tokenize();
-            Parser parser = new Parser(tokens);
-            Parser.ASTNode ast = parser.parse();
 
-            ProcessRunnerNodeEvaluator evaluator = new ProcessRunnerNodeEvaluator(
-                    data, pid, currentLine, functionContext);
-            evaluator.setRuntimeData(data, returnValue, codeLines);
-            evaluator.setFunctionInvoker(new NodeEvaluator.FunctionInvoker() {
-                @Override
-                public Object invokeFunction(String funcName, Object[] args) {
-                    return ProcessRunner.this.handleFunctionCallInEvaluator(funcName, args);
-                }
-            });
+            // 9. 普通赋值 x = expr
+            Matcher assignMatcher = ASSIGN_PATTERN.matcher(line);
+            if (assignMatcher.matches()) {
+                handleAssignment(assignMatcher);
+                currentLine++;
+                saveToFile();
+                return;
+            }
 
-            NodeEvaluator.EvaluationContext context = new NodeEvaluator.EvaluationContext(
-                    data, null, pid, currentLine);
-            return evaluator.evaluate(ast, context);
-        } catch (ProcessException e) {
-            throw e;
+            // 10. 通用表达式（函数调用、字面量等）
+            handleExpression(line);
+
         } catch (Exception e) {
-            throw wrapException("Failed to parse expression: " + expr, e, "expression_parsing");
-        }
-    }
-
-    private Object handleFunctionCallInEvaluator(String funcCallExpr, Object[] args) {
-        String fullFuncName;
-        String funcName;
-        String namespace = null;
-
-        int parenIndex = funcCallExpr.indexOf('(');
-        if (parenIndex > 0) {
-            fullFuncName = funcCallExpr.substring(0, parenIndex).trim();
-            if (fullFuncName.contains(".")) {
-                int dotIndex = fullFuncName.lastIndexOf('.');
-                namespace = fullFuncName.substring(0, dotIndex);
-                funcName = fullFuncName.substring(dotIndex + 1);
-            } else {
-                funcName = fullFuncName;
-            }
-        } else {
-            fullFuncName = funcCallExpr;
-            funcName = funcCallExpr;
+            handleException(e, "line: " + line);
         }
 
-        String fullName = (namespace != null) ? namespace + "." + funcName : funcName;
-
-        Object result = FunctionRegistry.call(fullName, args, functionContext);
-        if (result != null) {
-            return result;
-        }
-
-        FunctionDef func = functions.get(funcName);
-        if (func != null) {
-            if (args.length != func.params.size()) {
-                throw wrapException("Function " + funcName + " expects " +
-                        func.params.size() + " arguments, got " + args.length, "function_call");
-            }
-
-            Map<String, Object> oldData = new HashMap<>(this.data);
-            int oldLine = this.currentLine;
-            List<String> oldCodeLines = this.codeLines;
-            Object oldReturnValue = this.returnValue;
-            this.returnValue = null;
-
-            for (int i = 0; i < func.params.size(); i++) {
-                this.data.put(func.params.get(i), args[i]);
-            }
-
-            this.codeLines = func.body;
-            this.currentLine = 0;
-
-            while (this.currentLine < this.codeLines.size() && this.returnValue == null) {
-                String line = this.codeLines.get(this.currentLine).trim();
-                this.currentLine++;
-                if (!line.isEmpty() && !line.startsWith("//") && !line.equals("{") && !line.equals("}")) {
-                    executeStatement(line);
-                }
-            }
-
-            Object ret = this.returnValue;
-
-            this.data = oldData;
-            this.codeLines = oldCodeLines;
-            this.currentLine = oldLine;
-            this.returnValue = oldReturnValue;
-
-            return ret;
-        }
-
-        throw UnrecoverableException.unknownFunction(funcName, pid, currentLine);
-    }
-
-    private boolean isTrue(Object obj) {
-        if (obj == null)
-            return false;
-        if (obj instanceof Boolean)
-            return (Boolean) obj;
-        if (obj instanceof Number)
-            return ((Number) obj).doubleValue() != 0;
-        if (obj instanceof String)
-            return !((String) obj).isEmpty();
-        if (obj instanceof List)
-            return !((List<?>) obj).isEmpty();
-        if (obj instanceof Map)
-            return !((Map<?, ?>) obj).isEmpty();
-        return true;
-    }
-
-    public int getPid() {
-        return pid;
-    }
-
-    public boolean isRunning() {
-        return running;
-    }
-
-    public void stop() {
-        running = false;
+        currentLine++;
         saveToFile();
     }
 
-    public void shutdown() {
-        running = false;
-        // Don't save to file - preserve original Status
-    }
+    // ════════════════════════════════════════════
+    // 控制流处理
+    // ════════════════════════════════════════════
 
-    private static class FunctionDef {
-        List<String> params;
-        List<String> body;
-
-        FunctionDef(List<String> params, List<String> body) {
-            this.params = params;
-            this.body = body;
+    @SuppressWarnings("unchecked")
+    private void handleIf(String line) {
+        Matcher matcher = IF_PATTERN.matcher(line);
+        if (!matcher.matches()) {
+            currentLine++;
+            return;
+        }
+        String condition = matcher.group(1).trim();
+        boolean result = evaluateToBoolean(condition);
+        if (result) {
+            // 条件成立：push IF block，进入 body
+            Map<String, Object> block = new LinkedHashMap<>();
+            block.put("type", "IF");
+            block.put("startLine", currentLine);
+            block.put("condition", condition);
+            blockStack.add(block);
+            currentLine++;
+        } else {
+            // 条件不成立：跳过 body 到匹配的 }
+            currentLine = skipToMatchingBrace(currentLine + 1);
         }
     }
 
-    private String getCurrentFilePath() {
-        if (data != null && data.containsKey("__current_script")) {
-            return (String) data.get("__current_script");
+    @SuppressWarnings("unchecked")
+    private void handleWhile(String line) {
+        Matcher matcher = WHILE_PATTERN.matcher(line);
+        if (!matcher.matches()) {
+            currentLine++;
+            return;
         }
-        return "/system/process/" + pid + ".json";
+        String condition = matcher.group(1).trim();
+        boolean result = evaluateToBoolean(condition);
+        if (result) {
+            // 条件成立：push WHILE block，进入 body
+            Map<String, Object> block = new LinkedHashMap<>();
+            block.put("type", "WHILE");
+            block.put("startLine", currentLine);
+            block.put("condition", condition);
+            blockStack.add(block);
+            currentLine++;
+        } else {
+            // 条件不成立：跳过 body
+            currentLine = skipToMatchingBrace(currentLine + 1);
+        }
     }
 
-    private ExceptionContext createExceptionContext(String operation) {
-        String currentLineStr = null;
-        if (codeLines != null && currentLine >= 0 && currentLine < codeLines.size()) {
-            currentLineStr = codeLines.get(currentLine);
+    private void handleClosingBrace() {
+        if (blockStack.isEmpty()) {
+            currentLine++;
+            return;
         }
-        return new ExceptionContext(pid, currentLine, getCurrentFilePath(), currentLineStr, operation);
-    }
-
-    private void handleException(Exception e, String operation) {
-        ExceptionContext context = createExceptionContext(operation);
-
-        if (e instanceof ProcessException) {
-            ProcessException pe = (ProcessException) e;
-            logProcessException(pe, context);
-
-            if (pe.isRecoverable()) {
-                Logger.warn("Recoverable exception in process " + pid + ", attempting to continue: " + pe.getMessage());
-                data.put("_warning", pe.getMessage());
+        Map<String, Object> block = blockStack.get(blockStack.size() - 1);
+        String type = (String) block.get("type");
+        if ("WHILE".equals(type)) {
+            // 重新检查 while 条件
+            String condition = (String) block.get("condition");
+            boolean result = evaluateToBoolean(condition);
+            if (result) {
+                // 条件仍成立：跳回 while 开头
+                int startLine = ((Number) block.get("startLine")).intValue();
+                currentLine = startLine;
             } else {
-                Logger.error("Unrecoverable exception in process " + pid, pe);
-                data.put("_error", pe.getMessage());
+                // 条件不成立：pop block，继续
+                blockStack.remove(blockStack.size() - 1);
+                currentLine++;
+            }
+        } else if ("IF".equals(type)) {
+            // if body 结束，pop block
+            blockStack.remove(blockStack.size() - 1);
+            currentLine++;
+        } else {
+            currentLine++;
+        }
+    }
+
+    private void handleBreak() {
+        // 从当前行向前扫描 }，计数
+        int depth = 0;
+        int start = currentLine;
+        // 先看当前 blockStack
+        if (!blockStack.isEmpty()) {
+            Map<String, Object> top = blockStack.get(blockStack.size() - 1);
+            if ("WHILE".equals(top.get("type"))) {
+                blockStack.remove(blockStack.size() - 1);
+            }
+        }
+        // 找到匹配的 }
+        currentLine = skipToMatchingBrace(currentLine + 1);
+    }
+
+    private void handleReturn(String line) {
+        Matcher matcher = RETURN_PATTERN.matcher(line);
+        if (matcher.matches()) {
+            String expr = matcher.group(1).trim();
+            if (!expr.isEmpty()) {
+                returnValue = new LinkedHashMap<>();
+                returnValue.put("value", evaluateExpression(expr));
+            } else {
+                returnValue = new LinkedHashMap<>();
+            }
+        }
+
+        // 如果不在函数调用中，终止进程
+        if (callStack.isEmpty()) {
+            running = false;
+            currentLine = codeLines.size();
+        } else {
+            // 恢复调用帧
+            CallFrame frame = callStack.pop();
+            this.data = frame.savedData;
+            this.codeLines = frame.savedCodeLines;
+            this.currentLine = frame.savedCurrentLine;
+            if (returnValue != null) {
+                data.put("__return_value", returnValue.get("value"));
+            }
+            // 清空函数的代码
+            currentLine++;
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // 进程操作：fork / exec
+    // ════════════════════════════════════════════
+
+    @SuppressWarnings("unchecked")
+    private void handleFork() {
+        try {
+            // 1. 保存当前状态
+            saveToFile();
+
+            // 2. 分配新 PID
+            int childPid = allocatePid();
+
+            // 3. 深拷贝父进程数据
+            Map<String, Object> childData = JsonUtil.deepCopy(processData);
+
+            // 4. 修改子进程属性
+            childData.put("PID", childPid);
+            childData.put("Name", getProcessName() + "_fork");
+            // 设置父进程信息
+            Map<String, Object> parentInfo = new LinkedHashMap<>();
+            parentInfo.put("Name", processData.get("Name"));
+            parentInfo.put("PID", pid);
+            parentInfo.put("Path", processData.get("Path"));
+            childData.put("Parent", parentInfo);
+            childData.put("Child", new LinkedHashMap<>());
+
+            // 5. 重置子进程状态
+            Map<String, Object> program = (Map<String, Object>) childData.get("Program");
+            if (program != null) {
+                Map<String, Object> code = (Map<String, Object>) program.get("Code");
+                if (code != null) {
+                    code.put("runningCodeLine", currentLine + 1);
+                    code.put("BlockStack", new ArrayList<>());
+                }
+                program.put("returnValue", null);
+            }
+
+            // 6. 更新父进程的 Child 列表
+            Map<String, Object> children = (Map<String, Object>) processData.get("Child");
+            if (children == null) {
+                children = new LinkedHashMap<>();
+                processData.put("Child", children);
+            }
+            Map<String, Object> childInfo = new LinkedHashMap<>();
+            childInfo.put("Name", childData.get("Name"));
+            childInfo.put("PID", childPid);
+            childInfo.put("Path", childData.get("Path"));
+            children.put(String.valueOf(childPid), childInfo);
+
+            // 7. 写入子进程文件并保存父进程
+            String childJson = JsonUtil.toMetaJson(childData);
+            String childName = (String) childData.get("Name");
+            if (childName == null) childName = String.valueOf(childPid);
+            String childFileName = PathUtil.getProcessFileName(childName);
+            FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childFileName);
+            FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
+
+            // 8. 保存父进程（更新 Child 列表）
+            saveToFile();
+
+            Logger.info("Fork: PID " + pid + " created child PID " + childPid);
+        } catch (Exception e) {
+            Logger.error("Fork failed for PID " + pid + ": " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleExec(String line) {
+        // 解析 exec("path", params...)
+        String inner = line.substring(line.indexOf('(') + 1, line.lastIndexOf(')')).trim();
+        // 简单解析：第一个参数是路径，剩余是参数
+        String[] parts = parseExecArgs(inner);
+        if (parts.length == 0) return;
+
+        String path = parts[0];
+        // 读取目标脚本
+        String scriptPath = PathUtil.resolvePath(path);
+        if (!FileUtil.exists(scriptPath)) {
+            Logger.error("Exec: script not found: " + scriptPath);
+            return;
+        }
+
+        String scriptContent = FileUtil.read(scriptPath);
+        if (scriptContent == null || scriptContent.trim().isEmpty()) {
+            Logger.error("Exec: empty script: " + scriptPath);
+            return;
+        }
+
+        // 重置当前进程
+        List<String> newCodeLines = new ArrayList<>();
+        for (String l : scriptContent.split("\n")) {
+            newCodeLines.add(l);
+        }
+
+        processData.put("Path", scriptPath);
+        processData.put("startTime", FileUtil.getCurrentTimeArray());
+        processData.put("RunningTime", 0);
+
+        Map<String, Object> program = (Map<String, Object>) processData.get("Program");
+        if (program == null) {
+            program = new LinkedHashMap<>();
+            processData.put("Program", program);
+        }
+
+        // 设置参数
+        Map<String, Object> newData = new LinkedHashMap<>();
+        newData.put("__current_script", scriptPath);
+        if (parts.length > 1) {
+            newData.put("argc", parts.length - 1);
+            List<String> argv = new ArrayList<>();
+            for (int i = 1; i < parts.length; i++) {
+                argv.add(parts[i]);
+            }
+            newData.put("argv", argv);
+        }
+        program.put("Data", newData);
+
+        Map<String, Object> code = new LinkedHashMap<>();
+        code.put("Code", newCodeLines);
+        code.put("runningCodeLine", 0);
+        code.put("BlockStack", new ArrayList<>());
+        program.put("Code", code);
+        program.put("returnValue", null);
+
+        // 重新解析函数定义
+        this.codeLines = newCodeLines;
+        this.data = newData;
+        this.currentLine = 0;
+        this.blockStack = new ArrayList<>();
+        this.functions.clear();
+        parseFunctionDefinitions();
+
+        // 设置当前进程的用户
+        String execUser = detectExecUser(parts);
+        if (execUser != null) {
+            processData.put("Owner", execUser);
+        }
+
+        saveToFile();
+        Logger.info("Exec: PID " + pid + " loaded script " + scriptPath);
+    }
+
+    /**
+     * 分配新的 PID。
+     * synchronized 防止并发 fork 时分配相同的 PID。
+     */
+    @SuppressWarnings("unchecked")
+    private synchronized int allocatePid() {
+        Map<Integer, String> pidMap = PathUtil.scanProcessFileNames();
+        int maxPid = Constants.PID_INIT;
+        for (int p : pidMap.keySet()) {
+            if (p > maxPid) maxPid = p;
+        }
+        return maxPid + 1;
+    }
+
+    // ════════════════════════════════════════════
+    // 赋值处理
+    // ════════════════════════════════════════════
+
+    private void handleAssignment(Matcher matcher) {
+        String varName = matcher.group(1).trim();
+        String expr = matcher.group(2).trim();
+        Object value = evaluateExpression(expr);
+        data.put(varName, value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleIndexAssignment(Matcher matcher) {
+        String varName = matcher.group(1).trim();
+        String indexExpr = matcher.group(2).trim();
+        String valueExpr = matcher.group(3).trim();
+
+        Object target = data.get(varName);
+        Object index = evaluateExpression(indexExpr);
+        Object value = evaluateExpression(valueExpr);
+
+        if (target instanceof List) {
+            int i = toIntIndex(index);
+            ((List<Object>) target).set(i, value);
+        } else if (target instanceof Map) {
+            ((Map<Object, Object>) target).put(index, value);
+        } else if (target instanceof Object[]) {
+            int i = toIntIndex(index);
+            ((Object[]) target)[i] = value;
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // 表达式求值
+    // ════════════════════════════════════════════
+
+    /**
+     * 处理表达式语句（函数调用）。
+     */
+    private void handleExpression(String line) {
+        Object result = evaluateExpression(line);
+        // 检查是否是特殊标记
+        if (result instanceof String) {
+            String marker = (String) result;
+            handleSpecialMarker(marker);
+        }
+    }
+
+    /**
+     * 对表达式字符串进行全面求值。
+     */
+    private Object evaluateExpression(String expr) {
+        // 预处理：处理行首函数调用
+        try {
+            Lexer lexer = new Lexer(expr);
+            List<Token> tokens = lexer.tokenize();
+            if (tokens.isEmpty()) return null;
+
+            Parser parser = new Parser(tokens);
+            AstNode ast = parser.parse();
+            if (ast == null) return null;
+
+            String user = (String) processData.get("Owner");
+            if (user == null) user = Constants.DEFAULT_USER_LOCAL;
+            NodeEvaluator evaluator = new NodeEvaluator(data, pid, user);
+            // 设置函数回调，捕获函数名和参数
+            evaluator.setFunctionArgCallback((name, args) -> {
+                pendingFuncName = name;
+                pendingFuncArgs = args;
+            });
+            if (expr.contains("expected") || expr.contains("actual")) {
+                Logger.debug("DATA CHECK: expr=" + expr + " data=" + data + " dataKeys=" + data.keySet());
+            }
+            Object result = evaluator.evaluate(ast);
+
+            // 注意：特殊标记由 handleExpression 统一处理，
+            // 这里只返回结果，不做标记处理
+
+            return result;
+        } catch (Exception e) {
+            Logger.warn("Expression evaluation error in PID " + pid + ": " + e.getMessage()
+                    + " expr=" + expr);
+            return null;
+        }
+    }
+
+    /**
+     * 求值布尔表达式。
+     */
+    private boolean evaluateToBoolean(String condition) {
+        Object result = evaluateExpression(condition);
+        if (result == null) return false;
+        if (result instanceof Boolean) return (Boolean) result;
+        if (result instanceof Number) return ((Number) result).doubleValue() != 0;
+        if (result instanceof String) return !((String) result).isEmpty();
+        return true;
+    }
+
+    // ════════════════════════════════════════════
+    // 特殊标记处理
+    // ════════════════════════════════════════════
+
+    private void handleSpecialMarker(String marker) {
+        if (marker == null) return;
+
+        if (marker.equals("FORK")) {
+            handleFork();
+        } else if (marker.startsWith("KILL:")) {
+            handleKill(marker.substring(5));
+        } else if (marker.equals("WAIT")) {
+            handleWait();
+        } else if (marker.startsWith("WAITPID:")) {
+            handleWaitPid(marker.substring(8));
+        } else if (marker.startsWith("PAUSE:")) {
+            handlePause(marker.substring(6));
+        } else if (marker.startsWith("CONTINUE:")) {
+            handleContinue(marker.substring(9));
+        } else if (marker.startsWith("EXEC:")) {
+            // 由外层 handleExec 处理
+        } else if (marker.startsWith("USER:")) {
+            handleUserFunction(marker.substring(5));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleKill(String pidStr) {
+        try {
+            int targetPid = Integer.parseInt(pidStr.trim());
+            String processPath = PathUtil.findProcessFilePathByPid(targetPid);
+            if (processPath == null || !FileUtil.exists(processPath)) return;
+
+            // 读取目标进程
+            String content = FileUtil.read(processPath);
+            Map<String, Object> targetData = JsonUtil.parseToMap(content);
+
+            // 孤儿进程收养：将子进程过继给 INIT
+            Map<String, Object> children = (Map<String, Object>) targetData.get("Child");
+            if (children != null && !children.isEmpty()) {
+                // 读取 INIT 进程
+                String initPath = PathUtil.getProcessFilePath("INIT");
+                String initContent = FileUtil.read(initPath);
+                Map<String, Object> initData = JsonUtil.parseToMap(initContent);
+                Map<String, Object> initChildren = (Map<String, Object>) initData.get("Child");
+                if (initChildren == null) {
+                    initChildren = new LinkedHashMap<>();
+                    initData.put("Child", initChildren);
+                }
+                initChildren.putAll(children);
+                FileUtil.write(initPath, JsonUtil.toMetaJson(initData));
+            }
+
+            // 从父进程的 Child 列表中移除
+            Map<String, Object> parent = (Map<String, Object>) targetData.get("Parent");
+            if (parent != null && parent.get("PID") != null) {
+                int parentPid = ((Number) parent.get("PID")).intValue();
+                String parentPath = PathUtil.findProcessFilePathByPid(parentPid);
+                if (parentPath != null && FileUtil.exists(parentPath)) {
+                    String parentContent = FileUtil.read(parentPath);
+                    Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
+                    Map<String, Object> parentChildren = (Map<String, Object>) parentData.get("Child");
+                    if (parentChildren != null) {
+                        parentChildren.remove(pidStr);
+                    }
+                    FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
+                }
+            }
+
+            // 删除进程文件
+            FileUtil.removeFile(processPath);
+            Logger.info("Kill: PID " + targetPid + " terminated by PID " + pid);
+
+        } catch (Exception e) {
+            Logger.error("Kill failed: " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleWait() {
+        // 等待任意子进程结束
+        while (running) {
+            Map<String, Object> children = (Map<String, Object>) processData.get("Child");
+            if (children == null || children.isEmpty()) break;
+
+            for (Iterator<Map.Entry<String, Object>> it = children.entrySet().iterator(); it.hasNext();) {
+                Map.Entry<String, Object> entry = it.next();
+                int childPid = Integer.parseInt(entry.getKey());
+                String childPath = PathUtil.findProcessFilePathByPid(childPid);
+
+                if (!FileUtil.exists(childPath)) {
+                    it.remove();
+                    saveToFile();
+                    Logger.info("Wait: child PID " + childPid + " finished (parent PID " + pid + ")");
+                    return;
+                }
+
+                String childContent = FileUtil.read(childPath);
+                Map<String, Object> childData = JsonUtil.parseToMap(childContent);
+                Object status = childData.get("Status");
+                if (status instanceof Boolean && !(Boolean) status) {
+                    it.remove();
+                    saveToFile();
+                    return;
+                }
+            }
+
+            // 重新加载进程文件（子进程列表可能已变更）
+            try { Thread.sleep(100); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            loadFromFile();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleWaitPid(String pidStr) {
+        int targetPid = Integer.parseInt(pidStr.trim());
+        while (running) {
+            String childPath = PathUtil.findProcessFilePathByPid(targetPid);
+            if (childPath == null || !FileUtil.exists(childPath)) {
+                // 子进程已删除
+                Map<String, Object> children = (Map<String, Object>) processData.get("Child");
+                if (children != null) children.remove(pidStr);
+                saveToFile();
+                return;
+            }
+            try { Thread.sleep(100); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handlePause(String pidStr) {
+        int targetPid = Integer.parseInt(pidStr.trim());
+        String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
+        if (targetPath != null && FileUtil.exists(targetPath)) {
+            String content = FileUtil.read(targetPath);
+            Map<String, Object> targetData = JsonUtil.parseToMap(content);
+            targetData.put("Status", false);
+            FileUtil.write(targetPath, JsonUtil.toMetaJson(targetData));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleContinue(String pidStr) {
+        int targetPid = Integer.parseInt(pidStr.trim());
+        String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
+        if (targetPath != null && FileUtil.exists(targetPath)) {
+            String content = FileUtil.read(targetPath);
+            Map<String, Object> targetData = JsonUtil.parseToMap(content);
+            targetData.put("Status", true);
+            FileUtil.write(targetPath, JsonUtil.toMetaJson(targetData));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleUserFunction(String funcName) {
+        FunctionDef def = FunctionRegistry.getUserFunction(funcName);
+        if (def == null) {
+            Logger.warn("User function not found: " + funcName);
+            return;
+        }
+        // 保存当前上下文
+        CallFrame frame = new CallFrame(new LinkedHashMap<>(data),
+                new ArrayList<>(codeLines), currentLine);
+        callStack.push(frame);
+        // 切换到函数体
+        this.data = new LinkedHashMap<>();
+        this.codeLines = new ArrayList<>(def.bodyLines);
+        this.currentLine = 0;
+        this.blockStack = new ArrayList<>();
+        this.returnValue = null;
+
+        // 获取函数参数（从回调捕获或 FunctionRegistry）
+        List<Object> args = pendingFuncArgs;
+        pendingFuncArgs = null;
+        if (args == null) {
+            args = new ArrayList<>();
+        }
+        Logger.debug("handleUserFunction " + funcName + " args: " + args + " params: " + def.params);
+        if (def.params != null && args != null) {
+            for (int i = 0; i < def.params.size() && i < args.size(); i++) {
+                data.put(def.params.get(i), args.get(i));
+            }
+            Logger.debug("Function " + funcName + " params: " + def.params + " args: " + args + " data: " + data);
+        }
+        // 保存到文件
+        saveToFile();
+        Logger.debug("After saveToFile in handleUserFunction, data keys: " + data.keySet());
+        // 设置 currentLine = -1，因为外层 executeLine 会 +1 变为 0，使函数体从第一行开始执行
+        this.currentLine = -1;
+    }
+
+    // ════════════════════════════════════════════
+    // Import 处理
+    // ════════════════════════════════════════════
+
+    /**
+     * include：将文件内容直接插入当前代码中执行（类似 C 的 #include）。
+     */
+    private void handleInclude(String line) {
+        Matcher matcher = INCLUDE_PATTERN.matcher(line);
+        if (!matcher.matches()) return;
+
+        String includePath = matcher.group(1);
+        String resolvedPath = PathUtil.resolvePath(includePath);
+
+        if (!FileUtil.exists(resolvedPath)) {
+            Logger.warn("Include file not found: " + includePath);
+            return;
+        }
+
+        String includeContent = FileUtil.read(resolvedPath);
+        if (includeContent == null || includeContent.trim().isEmpty()) return;
+
+        // 在当前位置插入代码行
+        List<String> includeLines = new ArrayList<>();
+        for (String l : includeContent.split("\n")) {
+            includeLines.add(l);
+        }
+        codeLines.addAll(currentLine + 1, includeLines);
+        parseFunctionDefinitions();
+    }
+
+    /**
+     * import：仅解析文件中的函数定义并注册，不执行非函数代码。
+     * 以 "文件名.函数名" 的格式注册，支持命名空间调用。
+     * 同名函数无冲突时也注册短名，允许直接调用。
+     */
+    private void handleImport(String line) {
+        Matcher matcher = IMPORT_PATTERN.matcher(line);
+        if (!matcher.matches()) return;
+
+        String importPath = matcher.group(1);
+        String resolvedPath = PathUtil.resolvePath(importPath);
+
+        if (!FileUtil.exists(resolvedPath)) {
+            Logger.warn("Import file not found: " + importPath);
+            return;
+        }
+
+        String importContent = FileUtil.read(resolvedPath);
+        if (importContent == null || importContent.trim().isEmpty()) return;
+
+        // 提取文件名作为命名空间（去掉路径和后缀）
+        String namespace = PathUtil.getFileName(importPath);
+        if (namespace.endsWith(".fcl")) {
+            namespace = namespace.substring(0, namespace.length() - 4);
+        }
+        Logger.debug("Import: using namespace '" + namespace + "' from " + importPath);
+
+        // 仅解析函数定义并注册到 FunctionRegistry，不执行非函数代码
+        List<String> importLines = new ArrayList<>();
+        for (String l : importContent.split("\n")) {
+            importLines.add(l);
+        }
+
+        // 用 parseFunctionDefinitions 的逻辑只注册函数
+        int i = 0;
+        while (i < importLines.size()) {
+            String l = importLines.get(i).trim();
+            Matcher funcMatcher = FUNC_PATTERN.matcher(l);
+            if (funcMatcher.matches()) {
+                String funcName = funcMatcher.group(1);
+                String paramsStr = funcMatcher.group(2).trim();
+                List<String> params = new ArrayList<>();
+                if (!paramsStr.isEmpty()) {
+                    for (String p : paramsStr.split(",")) {
+                        params.add(p.trim());
+                    }
+                }
+                // 提取函数体
+                int bodyStart = i + 1;
+                int braceDepth = l.contains("{") ? 1 : 0;
+                int bodyEnd = bodyStart;
+                for (int j = bodyStart; j < importLines.size(); j++) {
+                    String bl = importLines.get(j).trim();
+                    if (bl.contains("{")) braceDepth++;
+                    if (bl.contains("}")) braceDepth--;
+                    if (braceDepth <= 0) {
+                        bodyEnd = j;
+                        break;
+                    }
+                }
+                List<String> bodyLines = new ArrayList<>();
+                for (int j = bodyStart; j < bodyEnd; j++) {
+                    bodyLines.add(importLines.get(j));
+                }
+                FunctionDef def = new FunctionDef(funcName, params, bodyLines, -1);
+
+                // 以 "命名空间.函数名" 注册
+                String namespacedName = namespace + "." + funcName;
+                FunctionRegistry.registerUserFunction(namespacedName, def);
+                Logger.debug("Import: registered '" + namespacedName + "' from " + importPath);
+
+                // 无冲突时也注册短名（允许直接调用）
+                if (!FunctionRegistry.hasUserFunction(funcName)) {
+                    FunctionRegistry.registerUserFunction(funcName, def);
+                    Logger.debug("Import: also registered short name '" + funcName + "'");
+                } else {
+                    Logger.debug("Import: short name '" + funcName + "' conflicts, namespace required");
+                }
+
+                i = bodyEnd;
+            }
+            i++;
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // 函数定义解析
+    // ════════════════════════════════════════════
+
+    private void parseFunctionDefinitions() {
+        functions.clear();
+        int i = 0;
+        while (i < codeLines.size()) {
+            String line = codeLines.get(i).trim();
+            Matcher matcher = FUNC_PATTERN.matcher(line);
+            if (matcher.matches()) {
+                String funcName = matcher.group(1);
+                String paramsStr = matcher.group(2).trim();
+                List<String> params = new ArrayList<>();
+                if (!paramsStr.isEmpty()) {
+                    for (String p : paramsStr.split(",")) {
+                        params.add(p.trim());
+                    }
+                }
+                // 提取函数体
+                int bodyStart = i + 1;
+                int braceDepth = 0;
+                int bodyEnd = bodyStart;
+                // 如果本行已经包含 {，则 depth 从 1 开始
+                if (line.contains("{")) braceDepth = 1;
+                for (int j = bodyStart; j < codeLines.size(); j++) {
+                    String bl = codeLines.get(j).trim();
+                    if (bl.contains("{")) braceDepth++;
+                    if (bl.contains("}")) braceDepth--;
+                    if (braceDepth <= 0) {
+                        bodyEnd = j;
+                        break;
+                    }
+                }
+                List<String> bodyLines = new ArrayList<>();
+                for (int j = bodyStart; j < bodyEnd; j++) {
+                    bodyLines.add(codeLines.get(j));
+                }
+                FunctionDef def = new FunctionDef(funcName, params, bodyLines, i);
+                functions.put(funcName, def);
+                FunctionRegistry.registerUserFunction(funcName, def);
+            }
+            i++;
+        }
+    }
+
+    /**
+     * 跳过函数体（遇到 func 行时）。
+     */
+    private void skipFunctionBody() {
+        int braceDepth = 0;
+        String current = codeLines.get(currentLine).trim();
+        if (current.contains("{")) braceDepth = 1;
+
+        while (currentLine < codeLines.size()) {
+            currentLine++;
+            if (currentLine >= codeLines.size()) break;
+            current = codeLines.get(currentLine).trim();
+            if (current.contains("{")) braceDepth++;
+            if (current.contains("}")) braceDepth--;
+            if (braceDepth <= 0) {
+                currentLine++;
+                return;
+            }
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // 花括号匹配
+    // ════════════════════════════════════════════
+
+    private int skipToMatchingBrace(int startLine) {
+        int depth = 1;
+        for (int i = startLine; i < codeLines.size(); i++) {
+            String line = codeLines.get(i).trim();
+            if (line.contains("{")) depth++;
+            if (line.contains("}")) {
+                depth--;
+                if (depth <= 0) return i + 1;
+            }
+        }
+        return codeLines.size();
+    }
+
+    // ════════════════════════════════════════════
+    // 文件状态管理
+    // ════════════════════════════════════════════
+
+    @SuppressWarnings("unchecked")
+    private void loadFromFile() {
+        String processPath = getProcessFilePath();
+        if (!FileUtil.exists(processPath)) {
+            running = false;
+            return;
+        }
+        try {
+            String content = FileUtil.read(processPath);
+            if (content == null || content.trim().isEmpty()) {
                 running = false;
+                return;
+            }
+            processData = JsonUtil.parseToMap(content);
+            loadFromProcessData();
+        } catch (Exception e) {
+            Logger.error("Failed to load process " + pid + ": " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void loadFromProcessData() {
+        Object status = processData.get("Status");
+        if (status instanceof Boolean) {
+            running = (Boolean) status;
+        }
+
+        Map<String, Object> program = (Map<String, Object>) processData.get("Program");
+        if (program != null) {
+            data = (Map<String, Object>) program.get("Data");
+            if (data == null) {
+                data = new LinkedHashMap<>();
+                program.put("Data", data);
+            }
+
+            Map<String, Object> code = (Map<String, Object>) program.get("Code");
+            if (code != null) {
+                codeLines = (List<String>) code.get("Code");
+                if (codeLines == null) codeLines = new ArrayList<>();
+                Object lineObj = code.get("runningCodeLine");
+                currentLine = lineObj instanceof Number ? ((Number) lineObj).intValue() : 0;
+                blockStack = (List<Map<String, Object>>) code.get("BlockStack");
+                if (blockStack == null) {
+                    blockStack = new ArrayList<>();
+                    code.put("BlockStack", blockStack);
+                }
+            }
+
+            returnValue = (Map<String, Object>) program.get("returnValue");
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void saveToFile() {
+        try {
+            // 更新运行时间
+            processData.put("Status", running);
+            processData.put("RunningTime", 0); // 简化实现
+
+            Map<String, Object> program = (Map<String, Object>) processData.get("Program");
+            if (program == null) {
+                program = new LinkedHashMap<>();
+                processData.put("Program", program);
+            }
+            program.put("Data", data);
+            program.put("returnValue", returnValue);
+
+            Map<String, Object> code = new LinkedHashMap<>();
+            code.put("Code", codeLines);
+            code.put("runningCodeLine", currentLine < codeLines.size() ? currentLine : codeLines.size());
+            code.put("BlockStack", blockStack);
+            program.put("Code", code);
+
+            String json = JsonUtil.toMetaJson(processData);
+            String processPath = getProcessFilePath();
+            FileUtil.write(processPath, json);
+        } catch (Exception e) {
+            Logger.error("Failed to save process " + pid + ": " + e.getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // 异常处理
+    // ════════════════════════════════════════════
+
+    @SuppressWarnings("unchecked")
+    private void handleException(Exception e, String operation) {
+        String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        Logger.error("Process " + pid + " error at line " + currentLine + " (" + operation + "): " + msg);
+
+        // 区分异常类型：RecoverableException → 警告不终止，UnrecoverableException → 终止进程
+        if (e instanceof RecoverableException) {
+            // 可恢复异常：仅记录警告，进程继续运行
+            data.put("_warning", msg);
+        } else if (e instanceof UnrecoverableException) {
+            // 不可恢复异常：记录错误，终止进程
+            data.put("_error", msg);
+            running = false;
+        } else if (e instanceof RuntimeException) {
+            // 普通运行时异常：默认终止进程
+            data.put("_error", msg);
+            running = false;
+        } else {
+            // 其余异常：记录警告
+            data.put("_warning", msg);
+        }
+        saveToFile();
+    }
+
+    // ════════════════════════════════════════════
+    // 辅助方法
+    // ════════════════════════════════════════════
+
+    private int toIntIndex(Object index) {
+        if (index instanceof Number) return ((Number) index).intValue();
+        if (index instanceof String) {
+            try { return Integer.parseInt((String) index); } catch (NumberFormatException e) {
+                throw new RuntimeException("Invalid index: " + index);
+            }
+        }
+        throw new RuntimeException("Invalid index type: " + index.getClass());
+    }
+
+    private String[] parseExecArgs(String inner) {
+        // 简单解析：第一个引号包围的是路径，剩余以空格分隔
+        List<String> result = new ArrayList<>();
+        inner = inner.trim();
+        if (inner.startsWith("\"")) {
+            int endQuote = inner.indexOf('"', 1);
+            if (endQuote > 0) {
+                result.add(inner.substring(1, endQuote));
+                String rest = inner.substring(endQuote + 1).trim();
+                if (!rest.isEmpty()) {
+                    for (String p : rest.split("\\s+")) {
+                        p = p.trim();
+                        if (!p.isEmpty()) result.add(p);
+                    }
+                }
             }
         } else {
-            ProcessException wrappedException = new UnrecoverableException(
-                    e.getMessage() != null ? e.getMessage() : "Unknown error",
-                    e,
-                    context);
-            logProcessException(wrappedException, context);
-            Logger.error("Exception in process " + pid, wrappedException);
-            data.put("_error", e.getMessage());
-            running = false;
+            // 无引号路径
+            for (String p : inner.split("\\s+")) {
+                p = p.trim();
+                if (!p.isEmpty()) result.add(p);
+            }
         }
-
-        saveToFile(!running);
+        return result.toArray(new String[0]);
     }
 
-    private void logProcessException(ProcessException e, ExceptionContext context) {
-        StringBuilder logMessage = new StringBuilder();
-        logMessage.append("Process Exception Details:\n");
-        logMessage.append(e.toDetailedString());
-        Logger.error(logMessage.toString(), e);
+    private String detectExecUser(String[] parts) {
+        for (int i = 1; i < parts.length; i++) {
+            if ("-user".equals(parts[i]) && i + 1 < parts.length) {
+                return parts[i + 1];
+            }
+        }
+        return null;
     }
 
-    private RuntimeException wrapException(String message, String operation) {
-        ExceptionContext context = createExceptionContext(operation);
-        return new UnrecoverableException(message, context);
-    }
+    // ── 调用帧（用于函数调用恢复上下文） ──
 
-    private RuntimeException wrapException(String message, Throwable cause, String operation) {
-        ExceptionContext context = createExceptionContext(operation);
-        return new UnrecoverableException(message, cause, context);
-    }
+    private static class CallFrame {
+        final Map<String, Object> savedData;
+        final List<String> savedCodeLines;
+        final int savedCurrentLine;
 
+        CallFrame(Map<String, Object> savedData, List<String> savedCodeLines, int savedCurrentLine) {
+            this.savedData = savedData;
+            this.savedCodeLines = savedCodeLines;
+            this.savedCurrentLine = savedCurrentLine;
+        }
+    }
 }

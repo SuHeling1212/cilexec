@@ -1,280 +1,118 @@
 package com.follarce.init;
 
-import com.follarce.basicUtil.*;
-import com.follarce.process.ProcessRunner;
+import com.follarce.Constants;
+import com.follarce.log.Logger;
+import com.follarce.util.FileUtil;
+import com.follarce.util.JsonUtil;
+import com.follarce.util.UserUtil;
+
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
-public class ProcessInit {
+/**
+ * 进程系统初始化 —— 创建 INIT 进程、启动调度器。
+ */
+public final class ProcessInit {
 
-    private static boolean initialized = false;
-    private static Thread schedulerThread;
-    private static Map<Integer, ProcessRunner> runners = new ConcurrentHashMap<>();
-    
+    private ProcessInit() {}
+
+    private static final String INIT_PROCESS_FILE = "INIT.pres";
+
     /**
-     * Initialize the process system
-     * Creates INIT process (PID 1) and starts scheduler
+     * 初始化进程系统。
+     * 检查 PID 1 (INIT) 是否存在，不存在则创建并启动。
      */
     public static void init() {
-        if (initialized) {
-            return;
-        }
-        
-        Logger.info("Initializing process system");
-        
-        // Ensure process directory exists
-        ensureProcessDirectory();
-        
-        // Create INIT process if not exists
-        if (!processExists(1)) {
+        Logger.info("ProcessInit: Initializing process system");
+
+        // 检查 PID 1 是否存在
+        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE;
+        boolean initExists = FileUtil.exists(initProcessPath);
+
+        if (!initExists) {
+            Logger.info("INIT process not found, creating...");
             createInitProcess();
         } else {
-            // If exists and Status is true, start runner
-            if (isProcessRunning(1)) {
-                ProcessRunner runner = new ProcessRunner(1);
-                runners.put(1, runner);
-                new Thread(runner).start();
-                Logger.debug("Started runner for existing PID: 1");
-            } else {
-                Logger.debug("PID 1 exists but Status is false, not starting");
-            }
+            Logger.info("INIT process already exists");
         }
-        
-        // Start the scheduler
-        startScheduler();
-        
-        initialized = true;
-        Logger.info("Process system initialized");
-    }
-    
-    /**
-     * Ensure /system/process directory exists
-     */
-    private static void ensureProcessDirectory() {
-        String[] listResult = FileUtil.getListOfFileAndDirectory("/system/process/");
-        if (!listResult[0].equals("SUCCESS")) {
-            FileUtil.createDirectory("/system/", "process");
-        }
-    }
-    
-    /**
-     * Check if a process with given PID exists
-     */
-    private static boolean processExists(int pid) {
-        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
-        return readResult[0].equals("SUCCESS");
     }
 
     /**
-     * Check if a process is running (Status is true)
+     * 创建 PID 1 (INIT) 进程文件。
      */
-    private static boolean isProcessRunning(int pid) {
-        String[] readResult = FileUtil.read("/system/process/" + pid + ".json");
-        if (!readResult[0].equals("SUCCESS")) {
-            return false;
+    public static void createInitProcess() {
+        // 读取 INIT.fcl 代码
+        String initFclPath = Constants.SYSTEM_CONFIG_PATH + Constants.INIT_FCL;
+        String initCode;
+
+        if (FileUtil.exists(initFclPath)) {
+            initCode = FileUtil.read(initFclPath);
+        } else {
+            Logger.warn("INIT.fcl not found, using default idle loop");
+            initCode = "while true {}";
         }
-        try {
-            Object result = JsonUtil.readJson(readResult[1]);
-            // Check if result is a Map (success case) or String[] (error case)
-            if (result instanceof Map) {
-                Map<String, Object> process = (Map<String, Object>) result;
-                Object statusObj = process.get("Status");
-                if (statusObj instanceof Boolean) {
-                    return (Boolean) statusObj;
-                }
-            } else if (result instanceof String[]) {
-                // JSON parsing failed, log the error
-                String[] error = (String[]) result;
-                Logger.error("JSON parsing error: " + error[1]);
+
+        // 分割代码为行
+        List<String> codeLines = new ArrayList<>();
+        if (initCode != null && !initCode.trim().isEmpty()) {
+            for (String line : initCode.split("\n")) {
+                codeLines.add(line);
             }
-        } catch (ClassCastException e) {
-            Logger.error("Failed to check process status: invalid JSON structure");
-        } catch (Exception e) {
-            Logger.error("Failed to check process status: " + e.getMessage());
         }
-        return false;
-    }
-    
-    /**
-     * Create the INIT process (PID 1)
-     */
-    private static void createInitProcess() {
-        Logger.info("Creating INIT process (PID 1)");
-        
-        // Ensure process directory exists
-        FileUtil.createDirectory("/system/", "process");
-        
-        // Create the process file first
-        String[] createResult = FileUtil.createFile("/system/process/", "1.json");
-        if (!createResult[0].equals("SUCCESS")) {
-            Logger.error("Failed to create process file: " + createResult[1]);
-            return;
+        if (codeLines.isEmpty()) {
+            codeLines.add("while true {}");
         }
-        
-        // Get current user from system config
-        String currentUser = UserInit.getCurrentUserFromFile();
-        if (currentUser == null) {
-            currentUser = "local";
-        }
-        boolean isLocal = UserInit.isLocal();
-        
-        // Build process JSON
-        Map<String, Object> process = new HashMap<>();
-        
-        // Basic info
-        process.put("Name", "INIT");
-        process.put("Owner", currentUser);
-        process.put("isLocal", isLocal);
-        process.put("PID", 1);
-        process.put("Path", "");
-        process.put("Status", true);
-        
-        // Start time (current time)
-        int[] now = TimeUtil.getTime();
-        process.put("startTime", new int[]{now[0], now[1], now[2], now[3], now[4], now[5], now[6]});
-        process.put("RunningTime", 0);
-        
-        // Parent (none)
-        process.put("Parent", new HashMap<>());
-        
-        // Children (none)
-        process.put("Child", new HashMap<>());
-        
-        // Program section
-        Map<String, Object> program = new HashMap<>();
-        
-        // Data section
-        program.put("Data", new HashMap<>());
-        
-        // Code section - read from INIT.fcl config file
-        Map<String, Object> code = new HashMap<>();
+
+        // 读取用户配置
+        String currentUser = UserUtil.getCurrentUserFromFile();
+        if (currentUser == null) currentUser = Constants.DEFAULT_USER_LOCAL;
+
+        // 构建进程 JSON
+        Map<String, Object> processData = new LinkedHashMap<>();
+        processData.put("Name", "INIT");
+        processData.put("Owner", currentUser);
+        processData.put("isLocal", true);
+        processData.put("PID", Constants.PID_INIT);
+        processData.put("Path", initFclPath);
+        processData.put("Status", true);
+        processData.put("startTime", FileUtil.getCurrentTimeArray());
+        processData.put("RunningTime", 0);
+        processData.put("Parent", new LinkedHashMap<>());
+        processData.put("Child", new LinkedHashMap<>());
+
+        // Program 部分
+        Map<String, Object> program = new LinkedHashMap<>();
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("__current_script", initFclPath);
+        program.put("Data", data);
+
+        Map<String, Object> code = new LinkedHashMap<>();
+        code.put("Code", codeLines);
         code.put("runningCodeLine", 0);
 
-        List<String> codeLines = new ArrayList<>();
-        String[] initConfigResult = FileUtil.read("/system/config/INIT.fcl");
-        if (initConfigResult[0].equals("SUCCESS")) {
-            String[] lines = initConfigResult[1].split("\n");
-            for (String line : lines) {
-                String trimmed = line.trim();
-                // Skip comments and empty lines
-                if (!trimmed.isEmpty() && !trimmed.startsWith("#")) {
-                    codeLines.add(trimmed);
-                }
-            }
-        }
-        // Fallback to default if config is empty or failed to read
-        if (codeLines.isEmpty()) {
-            codeLines.add("while true {");
-            codeLines.add("}");
-        }
-        code.put("Code", codeLines);
-        
+        List<Map<String, Object>> blockStack = new ArrayList<>();
+        code.put("BlockStack", blockStack);
+
         program.put("Code", code);
-        process.put("Program", program);
-        
-        // Write to file
-        String processJson = JsonUtil.toJson(process);
-        String[] writeResult = FileUtil.write("/system/process/1.json", processJson);
-        
-        if (writeResult[0].equals("SUCCESS")) {
-            Logger.info("INIT process created successfully");
-            
-            // Start the runner immediately
-            ProcessRunner runner = new ProcessRunner(1);
-            runners.put(1, runner);
-            new Thread(runner).start();
-            Logger.debug("Started runner for PID: 1");
-        } else {
-            Logger.error("Failed to write INIT process: " + writeResult[1]);
-        }
+        program.put("returnValue", null);
+
+        processData.put("Program", program);
+
+        // 写入进程文件
+        String json = JsonUtil.toMetaJson(processData);
+        FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, INIT_PROCESS_FILE);
+        FileUtil.write(Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE, json);
+
+        Logger.info("Created INIT process (PID=1)");
     }
-    
+
     /**
-     * Start the process scheduler
-     * Monitors for new processes and creates runners for them
+     * 获取初始进程的启动参数。
      */
-    private static void startScheduler() {
-        Logger.info("Starting process scheduler");
-        
-        schedulerThread = new Thread(() -> {
-            while (true) {
-                try {
-                    // Get all process files
-                    String[] listResult = FileUtil.getListOfFileAndDirectory("/system/process/");
-                    
-                    if (listResult[0].equals("SUCCESS")) {
-                        // Collect all PIDs
-                        Set<Integer> currentPids = new HashSet<>();
-                        for (int i = 1; i < listResult.length; i++) {
-                            String name = listResult[i];
-                            if (name.endsWith(".json")) {
-                                try {
-                                    int pid = Integer.parseInt(name.replace(".json", ""));
-                                    currentPids.add(pid);
-                                    
-                                    // Create runner if not exists and process is running
-                                    if (!runners.containsKey(pid) && isProcessRunning(pid)) {
-                                        ProcessRunner runner = new ProcessRunner(pid);
-                                        runners.put(pid, runner);
-                                        new Thread(runner).start();
-                                        Logger.debug("Started runner for PID: " + pid);
-                                    }
-                                } catch (NumberFormatException e) {
-                                    // Ignore non-numeric filenames
-                                }
-                            }
-                        }
-                        
-                        // Remove runners for terminated processes
-                        Iterator<Map.Entry<Integer, ProcessRunner>> it = runners.entrySet().iterator();
-                        while (it.hasNext()) {
-                            Map.Entry<Integer, ProcessRunner> entry = it.next();
-                            if (!currentPids.contains(entry.getKey())) {
-                                entry.getValue().shutdown(); // Use shutdown to avoid modifying deleted process file
-                                it.remove();
-                                Logger.debug("Removed runner for PID: " + entry.getKey());
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    Logger.error("Scheduler error: " + e.getMessage());
-                }
-                
-                // Sleep before next scan
-                try {
-                    Thread.sleep(Constants.SCHEDULER_SLEEP_MS);
-                } catch (InterruptedException e) {
-                    break;
-                }
-            }
-        });
-        
-        schedulerThread.setDaemon(true);
-        schedulerThread.start();
-    }
-    
-    /**
-     * Get runner for a specific PID
-     */
-    public static ProcessRunner getRunner(int pid) {
-        return runners.get(pid);
-    }
-    
-    /**
-     * Shutdown the process system
-     */
-    public static void shutdown() {
-        // Stop all runners without modifying process files
-        for (ProcessRunner runner : runners.values()) {
-            runner.shutdown();
-        }
-        runners.clear();
-        
-        if (schedulerThread != null) {
-            schedulerThread.interrupt();
-        }
-        
-        initialized = false;
-        Logger.info("Process system shutdown");
+    public static Map<String, Object> getInitProcessData() {
+        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE;
+        if (!FileUtil.exists(initProcessPath)) return null;
+
+        String content = FileUtil.read(initProcessPath);
+        return JsonUtil.parseToMap(content);
     }
 }

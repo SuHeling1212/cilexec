@@ -1,252 +1,245 @@
 package com.follarce.init;
 
-import java.io.*;
-import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
+import com.follarce.Constants;
+import com.follarce.log.Logger;
+import com.follarce.util.FileUtil;
+import com.follarce.util.JsonUtil;
+import com.follarce.util.PathUtil;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
-import java.util.HashMap;
+import java.nio.file.StandardCopyOption;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
-import com.follarce.basicUtil.Logger;
-import com.follarce.basicUtil.TimeUtil;
-import com.follarce.basicUtil.JsonUtil;
+/**
+ * 文件系统初始化 —— 创建 VFS 目录树、配置文件、复制 INIT.fcl。
+ */
+public final class FileInit {
 
-public class FileInit {
+    private FileInit() {}
 
-    private static final String VFS_ROOT = "cilexec_root";
+    /**
+     * 初始化 VFS 文件系统。
+     */
+    public static void init(File vfsRoot) {
+        Logger.info("FileInit: Initializing VFS at " + vfsRoot.getAbsolutePath());
 
-    public static void init() {
-        String workDir = getWorkDirectory();
-        String vfsPath = workDir + File.separator + VFS_ROOT;
+        // 设置 VFS 根目录
+        PathUtil.setVfsRoot(vfsRoot);
 
-        if (isValidFileStructure(vfsPath)) {
-            Logger.debug("File structure already exists and is valid, skipping initialization");
-            return;
-        }
+        // 创建目录结构
+        createDirectories();
 
-        createDirectories(vfsPath);
-        createFiles(vfsPath);
-        copyInitFile(vfsPath);
+        // 创建配置文件
+        createFiles();
+
+        // 复制 INIT.fcl
+        copyInitFile();
+
+        // 复制测试脚本
+        copyTestFiles();
+
+        Logger.info("FileInit: VFS initialized successfully");
     }
 
-    private static boolean isValidFileStructure(String vfsPath) {
-        String[][] requiredDirs = {
-            {"system", "app"},
-            {"system", "config"},
-            {"system", "process"},
-            {"system", "swap"},
-            {"user", "local", "app"}
-        };
-
-        for (String[] dirParts : requiredDirs) {
-            String dirPath = vfsPath;
-            for (String part : dirParts) {
-                dirPath += File.separator + part;
+    /**
+     * 创建 VFS 目录树并写入 .META 元数据。
+     */
+    public static void createDirectories() {
+        for (String dirPath : Constants.VFS_ROOT_DIRS) {
+            String realPath = PathUtil.toRealPath(dirPath);
+            File dir = new File(realPath);
+            if (!dir.exists()) {
+                if (dir.mkdirs()) {
+                    Logger.info("Created directory: " + dirPath);
+                } else {
+                    Logger.error("Failed to create directory: " + dirPath);
+                    continue;
+                }
             }
-            if (!new File(dirPath).isDirectory()) {
-                return false;
+            // 创建 .META 文件
+            FileUtil.createDirectoryMetaData(dirPath);
+        }
+    }
+
+    /**
+     * 创建关键配置文件。
+     */
+    public static void createFiles() {
+        // init.json (VFS 根路径配置)
+        createInitJson();
+
+        // local.json (local 用户信息)
+        createLocalJson();
+
+        // users.json (用户列表)
+        createUsersJson();
+
+        // env.json (环境变量 + 路径别名)
+        createEnvJson();
+    }
+
+    /**
+     * 创建 init.json。
+     */
+    private static void createInitJson() {
+        String path = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_INIT_JSON;
+        if (!FileUtil.exists(path)) {
+            Map<String, Object> config = new LinkedHashMap<>();
+            config.put("root", PathUtil.getVfsRoot() != null ?
+                    PathUtil.getVfsRoot().getAbsolutePath() : "");
+            FileUtil.createFile(Constants.SYSTEM_CONFIG_PATH, Constants.CONFIG_INIT_JSON);
+            FileUtil.write(path, JsonUtil.toMetaJson(config));
+            Logger.info("Created init.json");
+        }
+    }
+
+    /**
+     * 创建 local.json。
+     */
+    private static void createLocalJson() {
+        String path = Constants.USER_LOCAL_PATH + Constants.CONFIG_LOCAL_JSON;
+        if (!FileUtil.exists(path)) {
+            Map<String, Object> localInfo = new LinkedHashMap<>();
+            localInfo.put("username", Constants.DEFAULT_USER_LOCAL);
+            localInfo.put("home", Constants.USER_LOCAL_PATH);
+            localInfo.put("created", FileUtil.getCurrentTimeArray());
+            FileUtil.createFile(Constants.USER_LOCAL_PATH, Constants.CONFIG_LOCAL_JSON);
+            FileUtil.write(path, JsonUtil.toMetaJson(localInfo));
+            Logger.info("Created local.json");
+        }
+    }
+
+    /**
+     * 创建 users.json（含 local 用户）。
+     */
+    private static void createUsersJson() {
+        String path = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_USERS_JSON;
+        if (!FileUtil.exists(path)) {
+            Map<String, Object> config = UserUtil.createDefaultUsersConfig();
+            FileUtil.createFile(Constants.SYSTEM_CONFIG_PATH, Constants.CONFIG_USERS_JSON);
+            FileUtil.write(path, JsonUtil.toMetaJson(config));
+            Logger.info("Created users.json");
+        }
+    }
+
+    /**
+     * 创建 env.json（环境变量和路径别名）。
+     */
+    private static void createEnvJson() {
+        String path = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_ENV_JSON;
+        if (!FileUtil.exists(path)) {
+            Map<String, Object> env = new LinkedHashMap<>();
+            env.put("HOME", Constants.USER_LOCAL_PATH);
+            env.put("SYSTEM", "/system");
+            env.put("PATH", "/system/app:/user/local/app");
+
+            Map<String, Object> aliases = new LinkedHashMap<>();
+            aliases.put("home", Constants.USER_LOCAL_PATH);
+            aliases.put("system", "/system");
+            aliases.put("temp", "/system/swap");
+            env.put("aliases", aliases);
+
+            FileUtil.createFile(Constants.SYSTEM_CONFIG_PATH, Constants.CONFIG_ENV_JSON);
+            FileUtil.write(path, JsonUtil.toMetaJson(env));
+            Logger.info("Created env.json");
+        }
+    }
+
+    /**
+     * 从 classpath 复制测试脚本到 VFS。
+     */
+    public static void copyTestFiles() {
+        String[] testFiles = {"tests/test_all.fcl", "tests/lib1.fcl", "tests/lib2.fcl", "tests/lib_unique.fcl"};
+        for (String resourcePath : testFiles) {
+            String destDir = Constants.SYSTEM_APP_PATH;
+            String fileName = resourcePath.substring(resourcePath.lastIndexOf('/') + 1);
+            String destPath = destDir + fileName;
+            if (FileUtil.exists(destPath)) continue;
+
+            try {
+                InputStream in = FileInit.class.getClassLoader().getResourceAsStream(resourcePath);
+                if (in != null) {
+                    String content = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    in.close();
+                    if (!FileUtil.exists(destDir)) {
+                        FileUtil.createDirectory("/system", "app");
+                    }
+                    FileUtil.createFile(destDir, fileName);
+                    FileUtil.write(destPath, content);
+                    Logger.info("Copied test script: " + resourcePath + " -> " + destPath);
+                } else {
+                    Logger.warn("Test resource not found in classpath: " + resourcePath);
+                }
+            } catch (IOException e) {
+                Logger.error("Failed to copy test file: " + resourcePath + " - " + e.getMessage());
             }
         }
-
-        String initJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "init.json";
-        String localJsonPath = vfsPath + File.separator + "user" + File.separator + "local" + File.separator + "local.json";
-        String usersJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "users.json";
-        String initFclPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "INIT.fcl";
-        String envJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "env.json";
-
-        return new File(initJsonPath).exists() &&
-               new File(localJsonPath).exists() &&
-               new File(usersJsonPath).exists() &&
-               new File(initFclPath).exists() &&
-               new File(envJsonPath).exists();
     }
 
-    private static String getWorkDirectory() {
-        try {
-            String path = FileInit.class.getProtectionDomain()
-                .getCodeSource()
-                .getLocation()
-                .toURI()
-                .getPath();
-            File jarFile = new File(path);
-            return jarFile.getParent();
-        } catch (URISyntaxException e) {
-            return System.getProperty("user.dir");
-        } catch (Exception e) {
-            return System.getProperty("user.dir");
-        }
-    }
-
-    private static void createDirectories(String vfsPath) {
-        String[][] dirs = {
-            {"system"},
-            {"system", "app"},
-            {"system", "config"},
-            {"system", "process"},
-            {"system", "swap"},
-            {"user"},
-            {"user", "local"},
-            {"user", "local", "app"}
-        };
-
-        new File(vfsPath).mkdirs();
-
-        int[] time = TimeUtil.getTime();
-
-        for (String[] dirParts : dirs) {
-            String dirPath = vfsPath;
-            for (String part : dirParts) {
-                dirPath += File.separator + part;
-            }
-            File dir = new File(dirPath);
-            dir.mkdirs();
-            createDirectoryMeta(dir, time);
-        }
-    }
-
-    private static void createDirectoryMeta(File dir, int[] time) {
-        File metaFile = new File(dir, ".META");
-        if (metaFile.exists()) {
-            return;
-        }
-
-        try {
-            Map<String, Object> metaMap = new HashMap<>();
-
-            Map<String, Object> timeMap = new HashMap<>();
-            timeMap.put("createTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
-            timeMap.put("lastEditTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
-            timeMap.put("lastOpenTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
-            metaMap.put("Time", timeMap);
-
-            metaMap.put("Owner", "local");
-
-            Map<String, String> permMap = new HashMap<>();
-            permMap.put("Owner", "read, write");
-            permMap.put("Others", "read");
-            metaMap.put("Permission", permMap);
-
-            Map<String, Object> lockMap = new HashMap<>();
-            lockMap.put("isLocked", false);
-            lockMap.put("lockedBy", null);
-            metaMap.put("locked", lockMap);
-
-            String metaJson = JsonUtil.toJson(metaMap);
-            String fileContent = "#<META>\n" + metaJson + "\n<META>#\n";
-
-            Files.write(metaFile.toPath(), fileContent.getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            Logger.error("Error creating directory metadata: " + e.getMessage());
-        }
-    }
-
-    private static void createFiles(String vfsPath) {
-        int[] time = TimeUtil.getTime();
-        String timeStr = String.format("[%d,%d,%d,%d,%d,%d,%d]",
-            time[0], time[1], time[2], time[3], time[4], time[5], time[6]);
-
-        String initJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "init.json";
-        String initContent = "{\n    \"root\": \"" + vfsPath.replace("\\", "\\\\") + "\"\n}";
-        writeFileWithMeta(initJsonPath, initContent, time);
-
-        String localJsonPath = vfsPath + File.separator + "user" + File.separator + "local" + File.separator + "local.json";
-        String localContent = "{\n" +
-            "    \"name\": \"local\",\n" +
-            "    \"id\": 1,\n" +
-            "    \"permission\": \"local\",\n" +
-            "    \"boot\": \"~/app/\",\n" +
-            "    \"createTime\": " + timeStr + ",\n" +
-            "    \"process\": []\n" +
-            "}";
-        writeFileWithMeta(localJsonPath, localContent, time);
-
-        String usersJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "users.json";
-        String usersContent = "{\n" +
-            "    \"currentUser\": \"local\",\n" +
-            "    \"users\": {\n" +
-            "        \"local\": {\n" +
-            "            \"password\": \"local\",\n" +
-            "            \"isLocal\": true,\n" +
-            "            \"home\": \"/user/local\",\n" +
-            "            \"created\": " + timeStr + "\n" +
-            "        }\n" +
-            "    }\n" +
-            "}";
-        writeFileWithMeta(usersJsonPath, usersContent, time);
-
-        String envJsonPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "env.json";
-        String envContent = "{\n" +
-            "    \"pathAliases\": {\n" +
-            "        \"~\": \"/user/local\",\n" +
-            "        \"$HOME\": \"/user/local\",\n" +
-            "        \"$SYSTEM\": \"/system\"\n" +
-            "    },\n" +
-            "    \"envVars\": {\n" +
-            "        \"PATH\": \"/system/app:~/app\",\n" +
-            "        \"HOME\": \"/user/local\"\n" +
-            "    }\n" +
-            "}";
-        writeFileWithMeta(envJsonPath, envContent, time);
-    }
-
-    private static void copyInitFile(String vfsPath) {
-        String initFclPath = vfsPath + File.separator + "system" + File.separator + "config" + File.separator + "INIT.fcl";
-        
-        if (new File(initFclPath).exists()) {
-            return;
-        }
-
-        try (InputStream is = FileInit.class.getResourceAsStream("/INIT.fcl")) {
-            if (is == null) {
-                Logger.warn("INIT.fcl not found in resources");
-                return;
-            }
-
-            String content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-            int[] time = TimeUtil.getTime();
-            writeFileWithMeta(initFclPath, content, time);
-        } catch (IOException e) {
-            Logger.error("Error copying INIT.fcl: " + e.getMessage());
-        }
-    }
-
-    private static void writeFileWithMeta(String path, String content, int[] time) {
-        File file = new File(path);
-        if (file.exists()) {
-            return;
-        }
+    /**
+     * 从 classpath 复制 INIT.fcl 到 VFS。
+     */
+    public static void copyInitFile() {
+        String destPath = Constants.SYSTEM_CONFIG_PATH + Constants.INIT_FCL;
+        if (FileUtil.exists(destPath)) return;
 
         try {
-            file.getParentFile().mkdirs();
+            // 尝试从 classpath 加载
+            InputStream in = FileInit.class.getClassLoader().getResourceAsStream(Constants.INIT_FCL);
+            if (in != null) {
+                String content = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                in.close();
 
-            Map<String, Object> metaMap = new HashMap<>();
+                // 创建文件并写入
+                FileUtil.createFile(Constants.SYSTEM_CONFIG_PATH, Constants.INIT_FCL);
 
-            Map<String, Object> timeMap = new HashMap<>();
-            timeMap.put("createTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
-            timeMap.put("lastEditTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
-            timeMap.put("lastOpenTime", new int[] { time[0], time[1], time[2], time[3], time[4], time[5], time[6] });
-            metaMap.put("Time", timeMap);
-
-            metaMap.put("Owner", "local");
-
-            Map<String, String> permMap = new HashMap<>();
-            permMap.put("Owner", "read, write");
-            permMap.put("Others", "read");
-            metaMap.put("Permission", permMap);
-
-            Map<String, Object> lockMap = new HashMap<>();
-            lockMap.put("isLocked", false);
-            lockMap.put("lockedBy", null);
-            metaMap.put("locked", lockMap);
-
-            metaMap.put("Size", new Object[] { content.getBytes(StandardCharsets.UTF_8).length, "B" });
-
-            String metaJson = JsonUtil.toJson(metaMap);
-            String fullContent = "#<META>\n" + metaJson + "\n<META>#\n" + content;
-
-            Files.write(file.toPath(), fullContent.getBytes(StandardCharsets.UTF_8));
+                if (content.trim().isEmpty()) {
+                    // 空文件时的 fallback
+                    content = "// CilExec INIT process\n"
+                            + "// Default: idle loop\n"
+                            + "print(\"INIT process started\")\n"
+                            + "while true {\n"
+                            + "    // idle\n"
+                            + "}";
+                }
+                FileUtil.write(destPath, content);
+                Logger.info("Copied INIT.fcl from classpath");
+            } else {
+                // 没有资源文件，创建默认 INIT.fcl
+                Logger.warn("INIT.fcl not found in classpath, creating default");
+                String defaultInit = "// CilExec INIT process\n"
+                        + "print(\"INIT process started\")\n"
+                        + "while true {\n"
+                        + "    // idle\n"
+                        + "}";
+                FileUtil.createFile(Constants.SYSTEM_CONFIG_PATH, Constants.INIT_FCL);
+                FileUtil.write(destPath, defaultInit);
+            }
         } catch (IOException e) {
-            Logger.error("Error writing file " + path + ": " + e.getMessage());
+            Logger.error("Failed to copy INIT.fcl: " + e.getMessage());
+        }
+    }
+
+    // 为了解决编译依赖，引入 UserUtil
+    private static class UserUtil {
+        static Map<String, Object> createDefaultUsersConfig() {
+            Map<String, Object> config = new LinkedHashMap<>();
+            config.put("currentUser", Constants.DEFAULT_USER_LOCAL);
+
+            Map<String, Object> users = new LinkedHashMap<>();
+            Map<String, Object> localUser = new LinkedHashMap<>();
+            localUser.put("password", Constants.DEFAULT_PASSWORD_LOCAL);
+            localUser.put("isLocal", true);
+            localUser.put("home", Constants.USER_LOCAL_PATH);
+            localUser.put("created", FileUtil.getCurrentTimeArray());
+            users.put(Constants.DEFAULT_USER_LOCAL, localUser);
+
+            config.put("users", users);
+            return config;
         }
     }
 }

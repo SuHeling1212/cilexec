@@ -1,18 +1,36 @@
-/target
-/.vscode
-
-*.log
-
-cilexec_root/
-
+# distribution
+target/
+*.jar
+*.war
 *.class
 
+# IDE
 .idea/
 *.iml
 .vscode/
-.trae/
+.settings/
+.project
+.classpath
+.factorypath
+*.swp
+*.swo
 
+# OS
 .DS_Store
 Thumbs.db
 
+# Logs
+*.log
+cilexec.log
+
+# VFS runtime state (auto-generated)
+cilexec_root/
+
+# CodeWhale
+.deepseek/
+
+# Maven dependency reduced pom
 dependency-reduced-pom.xml
+
+# extension
+fcl-vscode/
