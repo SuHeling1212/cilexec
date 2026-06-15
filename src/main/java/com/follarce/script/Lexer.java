@@ -164,7 +164,6 @@ public class Lexer {
     private Token readString() {
         int start = pos;
         pos++; // skip opening "
-        StringBuilder sb = new StringBuilder();
         while (pos < input.length()) {
             char c = input.charAt(pos);
             if (c == '"') {
@@ -172,20 +171,13 @@ public class Lexer {
                 break;
             }
             if (c == '\\' && pos + 1 < input.length()) {
-                char next = input.charAt(pos + 1);
-                switch (next) {
-                    case 'n':  sb.append('\n'); pos += 2; continue;
-                    case 't':  sb.append('\t'); pos += 2; continue;
-                    case 'r':  sb.append('\r'); pos += 2; continue;
-                    case '"':  sb.append('"');  pos += 2; continue;
-                    case '\\': sb.append('\\'); pos += 2; continue;
-                    default:   sb.append(c);    pos++;    continue;
-                }
+                pos += 2; // skip the escape sequence as-is (Parser handles unescaping)
+            } else {
+                pos++;
             }
-            sb.append(c);
-            pos++;
         }
-        // The lexeme stored is the original raw string including quotes
+        // The lexeme stored is the original raw string including quotes and escape sequences.
+        // The Parser will call StringEscape.unescape() to process escapes at evaluation time.
         String rawLexeme = input.substring(start, Math.min(pos, input.length()));
         return new Token(TokenType.STRING, rawLexeme, start);
     }

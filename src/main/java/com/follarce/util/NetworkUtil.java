@@ -32,7 +32,7 @@ public final class NetworkUtil {
 
             return "Response Code: " + responseCode + "\n" + responseBody;
         } catch (Exception e) {
-            return new String[]{Constants.ERROR_MARKER, "HTTP GET failed: " + e.getMessage()}.toString();
+            return "ERROR: HTTP GET failed: " + e.getMessage();
         } finally {
             if (conn != null) conn.disconnect();
         }
@@ -62,7 +62,7 @@ public final class NetworkUtil {
 
             return "Response Code: " + responseCode + "\n" + responseBody;
         } catch (Exception e) {
-            return new String[]{Constants.ERROR_MARKER, "HTTP POST failed: " + e.getMessage()}.toString();
+            return "ERROR: HTTP POST failed: " + e.getMessage();
         } finally {
             if (conn != null) conn.disconnect();
         }

@@ -1,6 +1,8 @@
 package com.follarce.process;
 
 import com.follarce.Constants;
+import com.follarce.exception.RecoverableException;
+import com.follarce.exception.UnrecoverableException;
 import com.follarce.function.FunctionContext;
 import com.follarce.function.FunctionRegistry;
 import com.follarce.log.Logger;
@@ -534,7 +536,11 @@ public class ProcessRunner extends Thread {
         Logger.info("Exec: PID " + pid + " loaded script " + scriptPath);
     }
 
-    private int allocatePid() {
+    /**
+     * 分配新的 PID。
+     * synchronized 防止并发 fork 时分配相同的 PID。
+     */
+    private synchronized int allocatePid() {
         String processDir = PathUtil.toRealPath(Constants.SYSTEM_PROCESS_PATH);
         java.io.File dir = new java.io.File(processDir);
         java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".json"));
@@ -1139,11 +1145,20 @@ public class ProcessRunner extends Thread {
         String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
         Logger.error("Process " + pid + " error at line " + currentLine + " (" + operation + "): " + msg);
 
-        // 写入 _error 或 _warning
-        if (e instanceof RuntimeException) {
+        // 区分异常类型：RecoverableException → 警告不终止，UnrecoverableException → 终止进程
+        if (e instanceof RecoverableException) {
+            // 可恢复异常：仅记录警告，进程继续运行
+            data.put("_warning", msg);
+        } else if (e instanceof UnrecoverableException) {
+            // 不可恢复异常：记录错误，终止进程
+            data.put("_error", msg);
+            running = false;
+        } else if (e instanceof RuntimeException) {
+            // 普通运行时异常：默认终止进程
             data.put("_error", msg);
             running = false;
         } else {
+            // 其余异常：记录警告
             data.put("_warning", msg);
         }
         saveToFile();

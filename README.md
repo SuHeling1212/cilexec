@@ -1,127 +1,156 @@
-# CilExec — 模拟操作系统
+# CilExec
 
-一个基于 Java 的教学演示模拟操作系统，将 Unix "一切皆文件" 的理念推向极致。
+> **Disclaimer: This project is developed by AI (TREA, DeepSeek), including documentations. I take no responsibility for code quality or any issues that may arise.**
 
-## 概述
+A single-binary, disk-based teaching simulated operating system implemented in Java. This is the **reconstructed version** (`reCilexec`) with comprehensive architecture improvements over the original.
 
-CilExec 是一个运行在 JVM 之上的模拟操作系统。它拥有自己的虚拟文件系统（VFS）、进程系统、用户权限管理、FCL 脚本语言以及网络通信能力。
+## What is CilExec?
 
-```
-┌─────────────────────────────────────────────────┐
-│                 CilExec System                   │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐ │
-│  │  VFS     │  │  Process  │  │  FCL Engine   │ │
-│  │  文件系统 │  │  进程调度  │  │  脚本解释器    │ │
-│  └──────────┘  └──────────┘  └───────────────┘ │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐ │
-│  │  User    │  │  Network  │  │  Function     │ │
-│  │  权限管理  │  │  网络通信  │  │  插件系统     │ │
-│  └──────────┘  └──────────┘  └───────────────┘ │
-└─────────────────────────────────────────────────┘
-```
+**Core Philosophy: Everything is a File, State Persistence**
 
-## 快速开始
+CilExec takes Unix's "everything is a file" philosophy to the **extreme**:
 
-### 构建要求
+- 💾 **Disk-based I/O** — The disk is the primary read/write device, all state persisted
+- 📁 **All state as files** — System states and processes are stored as files on disk
+- 🔄 **Transparent memory operations** — Runtime data is processed in memory but automatically synced to disk
+- 🚫 **Not bootable** — Cannot be BIOS/booted as a real OS (but that's fine, it's just for teaching) XD
+
+## Architecture
+
+### Single Executable File
+
+CilExec consists of **only one executable file** containing:
+
+- ✅ Installation
+- ✅ Startup
+- ✅ Hardware interaction APIs
+- ✅ Basic system kernel
+
+### Why Java?
+
+Because **the JVM is too useful!** Users can manipulate hardware by calling CilExec's APIs. Sure, efficiency decreases with disk I/O... but this is just a teaching system XD
+
+### Process Architecture
+
+Every FCL process runs as an independent Java thread. The scheduler polls `/system/process/` every 100ms to discover new processes, and each ProcessRunner executes one line of FCL code every 10ms. All state is persisted to JSON between ticks, giving the system **natural power-failure recovery**.
+
+## The "Benefits" of State Persistence
+
+> *just kidding*
+
+### 🛡️ "Better Null Safety!"
+
+No direct memory manipulation = no pointers = no null pointer exceptions!
+
+Actually... variables, arrays, and methods are defined within process files, but you may still access non-existent variables.
+
+### 🔒 "Better Data Security!"
+
+State persistence = no data loss from power outages!
+
+**But seriously:** Thanks to the state persistence design, you can directly modify process data:
+
+1. Save state (files)
+2. Shut down the system
+3. Open files on the host system
+4. Make modifications
+5. Restart CilExec
+6. It automatically loads "memory" and continues working
+
+## What's New in the Reconstructed Version
+
+This version (`reCilexec`) is a ground-up rewrite of the original CilExec with:
+
+- ✅ **Restructured plugin system** — Clean provider-based function architecture with namespace support
+- ✅ **Fixed permission system** — `switchUser()` now correctly propagates user context to permission checks
+- ✅ **ThreadLocal user context** — User identity persists across line executions, not reset per line
+- ✅ **File ownership inheritance** — Newly created files inherit the creator's identity instead of defaulting to `local`
+- ✅ **Clean output** — Debug markers (`[REG]`, `[UTIL]`, `[EXPR]`) removed for production use
+- ✅ **All original features preserved** — FCL engine, VFS, process system, swap pool IPC, network utilities
+
+## What It Actually Is
+
+CilExec is a proof-of-concept project demonstrating core simulated operating system mechanisms in Java:
+
+- Process management
+- Virtual file system
+- FCL script engine
+- Permission framework
+- Inter-process communication
+
+## Version
+
+**Current Version: 1.0-SNAPSHOT**
+
+Reconstructed version with fundamental architecture improvements.
+
+## Tech Stack
 
 - Java 17+
 - Maven 3.8+
+- Gson 2.10.1 (JSON processing)
 
-### 构建与运行
+## FCL Script Language
 
-```bash
-# 构建
-mvn package -DskipTests
+**`.fcl`** (Follarce CilExec Language) is the standard system script format.
 
-# 运行
-java -jar target/recilexec-1.0-SNAPSHOT.jar
-```
+### Features
 
-首次启动时会自动创建虚拟文件系统 (`cilexec_root/`) 并启动 INIT 进程 (PID 1)。
+| Feature | Syntax |
+|---------|--------|
+| Variable assignment | `x = 42` |
+| Arithmetic | `+ - * / %` |
+| String concat | `"Hello" + " " + "World"` |
+| Comparison | `== != < > <= >=` |
+| Boolean | `and or !` |
+| Control flow | `if` / `while` / `break` / `return` |
+| Arrays | `[1, 2, 3]` / `arr[0]` |
+| Maps | `{"key": "value"}` |
+| Functions | `func add(a, b) { return a + b }` |
+| Import | `import "lib.fcl"` |
+| Include | `include "util.fcl"` |
+| Process | `fork()` / `exec("script.fcl")` |
 
-### 停止
+### Built-in Functions
 
-按 `Ctrl+C` 安全关闭系统。
+All functions can be called with or without namespace prefix:
 
-## 架构
+| Namespace | Functions | Description |
+|-----------|-----------|-------------|
+| `io` | `print`, `println`, `input` | Standard I/O |
+| `io` | `readFile`, `writeFile` | File read/write |
+| `file` | `read`, `write`, `createFile`, `removeFile`, `append` | File operations (permission controlled) |
+| `file` | `createDir`, `removeDir`, `rename`, `listdir`, `exists` | Directory operations |
+| `file` | `lock`, `unlock`, `link` | File locking & linking |
+| `user` | `createUser`, `removeUser`, `switchUser` | User management |
+| `user` | `getCurrentUser`, `isLocal`, `getListOfUsers` | User queries |
+| `util` | `print`, `println`, `input` | Utility I/O |
+| `util` | `toJson`, `fromJson`, `typeOf`, `toString` | Type & JSON tools |
+| `util` | `isArray`, `isMap`, `isNumber`, `isString`, `isBool` | Type checks |
+| `util` | `exit` | Exit process |
+| `process` | `fork`, `exec`, `kill`, `wait`, `waitPid` | Process control |
+| `process` | `pause`, `continue`, `getPid`, `getProcessName` | Process info |
+| `swapPool` | `create`, `read`, `write`, `delete`, `exists` | IPC swap pool |
+| `swapPool` | `list`, `clear`, `waitFor`, `signal` | Swap pool sync |
+| `network` | `fetch`, `download` | HTTP requests |
+| `socket` | Socket functions | TCP/UDP communication |
+| `math` | `abs`, `ceil`, `floor`, `round`, `max`, `min` | Math functions |
+| `math` | `sin`, `cos`, `tan`, `sqrt`, `pow`, `log` | Math functions |
+| `math` | `random`, `randInt` | Random numbers |
+| `path` | `resolve`, `normalize`, `getParent`, `getFileName` | Path operations |
+| `path` | `toRealPath`, `isAbsolute`, `exists` | Path queries |
+| `system` | `kill`, `exec` | Privileged operations (local only) |
 
-### 虚拟文件系统 (VFS)
+### Permission System
 
-所有状态存储在宿主机文件系统的 `cilexec_root/` 目录下：
+CilExec has a user-based permission model:
 
-```
-cilexec_root/
-  ├── system/
-  │   ├── app/          ← 系统应用程序（.fcl 脚本）
-  │   ├── config/       ← 配置文件（users.json, env.json 等）
-  │   ├── process/      ← 进程文件（1.json, 2.json, ...）
-  │   └── swap/         ← 交换池（进程间通信）
-  └── user/
-      ├── local/        ← local 用户（超级用户）
-      ├── alice/        ← 普通用户
-      └── bob/          ← 普通用户
-```
+- **Owner** — File/directory creator, has read + write permissions
+- **Others** — Other users, default read-only
+- **local user** — Superuser, bypasses all permission checks
 
-每个文件和目录都附有 `.META` 元数据，包含 Owner、Permission、时间戳等信息。
+Each file and directory has a `.META` metadata file:
 
-### FCL 脚本语言
-
-FCL (CilExec Language) 是系统的内置脚本语言，支持：
-
-- 变量赋值：`x = 42`
-- 算术运算：`+ - * / %`
-- 字符串操作：`"Hello" + " " + "World"`
-- 比较与布尔运算：`== != < > <= >= and or !`
-- 控制流：`if` / `while` / `break` / `return`
-- 数组：`[1, 2, 3]` / `arr[0]`
-- 映射：`{"key": "value"}`
-- 函数定义：`func add(a, b) { return a + b }`
-- 内置函数调用（见下文）
-- 导入：`import "lib.fcl"`
-- 文件包含：`include "util.fcl"`
-- 进程操作：`fork()` / `exec("script.fcl")`
-
-### 内置函数
-
-所有内置函数通过命名空间调用（也可省略命名空间直接调用短名）：
-
-| 命名空间 | 函数 | 说明 |
-|----------|------|------|
-| `io` | `print`, `println`, `input` | 标准输入输出 |
-| `io` | `readFile`, `writeFile` | 文件读写 |
-| `file` | `read`, `write`, `createFile`, `removeFile`, `append` | 文件操作（受权限控制） |
-| `file` | `createDir`, `removeDir`, `rename`, `listdir`, `exists` | 目录操作 |
-| `file` | `lock`, `unlock`, `link` | 文件锁定与链接 |
-| `user` | `createUser`, `removeUser`, `switchUser` | 用户管理 |
-| `user` | `getCurrentUser`, `isLocal`, `getListOfUsers` | 用户查询 |
-| `util` | `print`, `println`, `input` | 工具类 I/O |
-| `util` | `toJson`, `fromJson`, `typeOf`, `toString` | 类型与 JSON 工具 |
-| `util` | `isArray`, `isMap`, `isNumber`, `isString`, `isBool` | 类型检查 |
-| `util` | `exit` | 退出进程 |
-| `process` | `fork`, `exec`, `kill`, `wait`, `waitPid` | 进程控制 |
-| `process` | `pause`, `continue`, `getPid`, `getProcessName` | 进程信息 |
-| `swapPool` | `create`, `read`, `write`, `delete`, `exists` | 交换池（IPC）|
-| `swapPool` | `list`, `clear`, `waitFor`, `signal` | 交换池同步 |
-| `network` | `fetch`, `download` | HTTP 请求 |
-| `socket` | 套接字通信函数 | TCP/UDP 通信 |
-| `math` | `abs`, `ceil`, `floor`, `round`, `max`, `min` | 数学函数 |
-| `math` | `sin`, `cos`, `tan`, `sqrt`, `pow`, `log` | 数学函数 |
-| `math` | `random`, `randInt` | 随机数 |
-| `path` | `resolve`, `normalize`, `getParent`, `getFileName` | 路径操作 |
-| `path` | `toRealPath`, `isAbsolute`, `exists` | 路径查询 |
-| `system` | `kill`, `exec` | 系统特权操作（仅 local）|
-
-### 权限系统
-
-CilExec 拥有基于用户的权限模型：
-
-- **Owner**：文件/目录的创建者，拥有读和写权限
-- **Others**：其他用户，默认只有读权限
-- **local 用户**：超级用户，自动绕过所有权限检查
-
-每个文件和目录通过 `.META` 文件的 `Owner` 和 `Permission` 字段配置权限。
-
-示例权限配置：
 ```json
 {
   "Owner": "alice",
@@ -132,40 +161,109 @@ CilExec 拥有基于用户的权限模型：
 }
 ```
 
-#### 使用 switchUser 切换用户
+Switch users at runtime:
 
+```fcl
+switchUser("alice", "p")      // Switch to alice
+switchUser("local", "local")  // Switch back to superuser
 ```
-switchUser("alice", "p")    // 切换到 alice（需密码）
-switchUser("local", "local")  // 切换回超级用户
-```
 
-### 进程系统
-
-- 每个进程对应 `/system/process/{pid}.json` 文件
-- Scheduler 每 100ms 扫描进程目录，管理进程生命周期
-- 每个 ProcessRunner 以独立线程运行，每 10ms 执行一行 FCL 代码
-- 进程状态持久化在 JSON 文件中，天然具备断电恢复能力
-- `fork()` 创建子进程，`exec()` 替换当前进程的代码
-- 进程间通过交换池（Swap Pool）进行通信
-
-### INIT 进程
-
-PID 1 是系统的 INIT 进程，在系统启动时自动创建。INIT 进程执行 `/system/config/INIT.fcl` 脚本。
-如果 INIT 进程终止且没有其他非守护线程，JVM 将退出。
-
-## 本地开发
+## Build and Run
 
 ```bash
-# 编译
+# Compile
 mvn compile
 
-# 运行测试
-mvn test
-
-# 打包
+# Package
 mvn package -DskipTests
+
+# Run
+java -jar target/recilexec-1.0-SNAPSHOT.jar
+
+# Or run directly
+mvn dependency:copy-dependencies -q
+java -cp "target/classes:target/dependency/*" com.follarce.Main
 ```
 
-## 许可
+## Virtual File System (VFS)
 
-MIT License
+```
+cilexec_root/
+  ├── system/
+  │   ├── app/          ← System applications (.fcl scripts)
+  │   ├── config/       ← Configuration (users.json, env.json, INIT.fcl)
+  │   ├── process/      ← Process files (1.json, 2.json, ...)
+  │   └── swap/         ← Swap pool (inter-process communication)
+  └── user/
+      ├── local/        ← local user (superuser home)
+      ├── alice/        ← Regular user
+      └── bob/          ← Regular user
+```
+
+## Project Structure
+
+```
+src/
+├── main/
+│   ├── java/com/follarce/
+│   │   ├── Main.java                 # Program entry
+│   │   ├── Constants.java            # System constants
+│   │   ├── init/
+│   │   │   ├── FileInit.java         # VFS initialization
+│   │   │   └── ProcessInit.java      # Process system init
+│   │   ├── process/
+│   │   │   ├── ProcessRunner.java    # Script execution engine
+│   │   │   └── Scheduler.java        # Process scheduler
+│   │   ├── script/
+│   │   │   ├── Lexer.java            # Tokenizer
+│   │   │   ├── Parser.java           # AST builder
+│   │   │   ├── NodeEvaluator.java    # Expression evaluator
+│   │   │   ├── AstNode.java          # AST node
+│   │   │   ├── NodeType.java         # Node type enum
+│   │   │   ├── Token.java            # Token
+│   │   │   └── TokenType.java        # Token type enum
+│   │   ├── function/
+│   │   │   ├── FunctionRegistry.java # Function registration & dispatch
+│   │   │   ├── FunctionContext.java  # Call context
+│   │   │   ├── FunctionProvider.java # Provider interface
+│   │   │   ├── FileFunctionProvider.java
+│   │   │   ├── IOFunctionProvider.java
+│   │   │   ├── UtilFunctionProvider.java
+│   │   │   ├── UserFunctionProvider.java
+│   │   │   ├── ProcessFunctionProvider.java
+│   │   │   ├── SwapFunctionProvider.java
+│   │   │   ├── NetworkFunctionProvider.java
+│   │   │   ├── SocketFunctionProvider.java
+│   │   │   ├── MathFunctionProvider.java
+│   │   │   ├── PathFunctionProvider.java
+│   │   │   └── PrivilegedFunctionProvider.java
+│   │   ├── util/
+│   │   │   ├── FileUtil.java         # Virtual file system
+│   │   │   ├── UserUtil.java         # User & permission management
+│   │   │   ├── PathUtil.java         # Path resolution
+│   │   │   ├── JsonUtil.java         # JSON utilities
+│   │   │   ├── NetworkUtil.java      # Network utilities
+│   │   │   └── SocketUtil.java       # Socket utilities
+│   │   ├── exception/
+│   │   │   ├── ProcessException.java
+│   │   │   ├── RecoverableException.java
+│   │   │   └── UnrecoverableException.java
+│   │   └── log/
+│   │       └── Logger.java           # Logging system
+│   └── resources/
+│       ├── INIT.fcl                  # INIT process startup script
+│       └── tests/                    # FCL test scripts
+└── test/
+    └── java/com/follarce/            # Unit tests (TODO)
+```
+
+## Use Cases
+
+- Simulated operating system teaching demonstrations
+- Virtualization technology research
+- Script engine development reference
+- Embedded system prototyping
+
+## License
+
+This project is open-sourced under the [MIT License](LICENSE).

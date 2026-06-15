@@ -43,10 +43,10 @@ public class ProcessFunctionProvider implements FunctionProvider {
                 case "waitPID":
                     return "WAITPID:" + getPidArg(args, 0);
 
-                case "Pause":
+                case "pause":
                     return "PAUSE:" + getPidArg(args, 0);
 
-                case "Continue":
+                case "continue":
                     return "CONTINUE:" + getPidArg(args, 0);
 
                 case "getPID":

@@ -156,7 +156,7 @@ public final class FileUtil {
     /**
      * 重命名文件或目录。
      */
-    public static void Rename(String path, String newName) {
+    public static void rename(String path, String newName) {
         File realFile = resolveFile(path);
         validateFile(realFile, path);
         checkLock(path);
@@ -180,7 +180,7 @@ public final class FileUtil {
     /**
      * 创建链接文件。
      */
-    public static void Link(String dirPath, String targetPath) {
+    public static void link(String dirPath, String targetPath) {
         String resolvedTarget = PathUtil.resolvePath(targetPath);
         String name = getLinkNameFromTarget(resolvedTarget);
         String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;

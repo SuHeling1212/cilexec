@@ -89,7 +89,7 @@ public class FileFunctionProvider implements FunctionProvider {
                 case "rename": {
                     String path = getStringArg(args, 0);
                     checkPerm(path, Constants.PERM_WRITE, context);
-                    FileUtil.Rename(path, getStringArg(args, 1));
+                    FileUtil.rename(path, getStringArg(args, 1));
                     return "";
                 }
 
@@ -103,7 +103,7 @@ public class FileFunctionProvider implements FunctionProvider {
                 case "link": {
                     String dir = getStringArg(args, 0);
                     checkPerm(dir, Constants.PERM_WRITE, context);
-                    FileUtil.Link(dir, getStringArg(args, 1));
+                    FileUtil.link(dir, getStringArg(args, 1));
                     return "";
                 }
 

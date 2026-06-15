@@ -162,7 +162,7 @@ public class Parser {
                 // Strip surrounding quotes and unescape
                 String raw = tok.lexeme;
                 String content = raw.substring(1, raw.length() - 1);
-                content = unescapeString(content);
+                content = StringEscape.unescape(content);
                 return AstNode.stringLiteral(content);
             }
             case BOOLEAN: {
@@ -256,27 +256,5 @@ public class Parser {
             || type == TokenType.LE || type == TokenType.GE;
     }
 
-    /**
-     * Unescape a string's content (without the surrounding quotes).
-     */
-    private static String unescapeString(String s) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '\\' && i + 1 < s.length()) {
-                char next = s.charAt(i + 1);
-                switch (next) {
-                    case 'n':  sb.append('\n'); i++; break;
-                    case 't':  sb.append('\t'); i++; break;
-                    case 'r':  sb.append('\r'); i++; break;
-                    case '"':  sb.append('"');  i++; break;
-                    case '\\': sb.append('\\'); i++; break;
-                    default:   sb.append(c); break;
-                }
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
-    }
+    // unescapeString moved to shared utility: StringEscape.unescape()
 }

@@ -1,4 +1,4 @@
-# Maven
+# distribution
 target/
 *.jar
 *.war
@@ -24,16 +24,13 @@ Thumbs.db
 cilexec.log
 
 # VFS runtime state (auto-generated)
-cilexec_root/system/process/
-cilexec_root/system/swap/
-cilexec_root/user/*/
-cilexec_root/system/config/users.json
-cilexec_root/system/config/init.json
-cilexec_root/system/config/env.json
-cilexec_root/user/local/local.json
+cilexec_root/
 
 # CodeWhale
 .deepseek/
 
 # Maven dependency reduced pom
 dependency-reduced-pom.xml
+
+# extension
+fcl-vscode/
