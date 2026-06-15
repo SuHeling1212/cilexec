@@ -7,8 +7,7 @@ import com.follarce.log.Logger;
 import com.follarce.process.ProcessRunner;
 import com.follarce.process.Scheduler;
 import com.follarce.util.FileUtil;
-import com.follarce.util.PathUtil;
-import com.follarce.util.UserUtil;
+import com.follarce.util.JsonUtil;
 
 import java.io.File;
 
@@ -120,14 +119,14 @@ public class Main {
      * 启动 INIT 进程（PID 1），返回 ProcessRunner。
      */
     private static ProcessRunner startInitProcess() {
-        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + Constants.PID_INIT + ".json";
+        String initProcessPath = com.follarce.util.PathUtil.getProcessFilePath("INIT");
         if (!FileUtil.exists(initProcessPath)) {
             Logger.warn("INIT process file not found, creating...");
             ProcessInit.createInitProcess();
         }
         String content = FileUtil.read(initProcessPath);
         if (content != null && !content.trim().isEmpty()) {
-            var processData = com.follarce.util.JsonUtil.parseToMap(content);
+            var processData = JsonUtil.parseToMap(content);
             ProcessRunner initRunner = new ProcessRunner(Constants.PID_INIT, processData);
             Logger.info("Started INIT process (PID=1)");
             return initRunner;

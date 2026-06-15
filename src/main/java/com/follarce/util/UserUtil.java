@@ -230,8 +230,8 @@ public final class UserUtil {
      * 直接读取进程文件（绕过 VFS API 以避免循环依赖）。
      */
     public static boolean checkProcessPermission(int pid) {
-        String processPath = Constants.SYSTEM_PROCESS_PATH + pid + ".json";
-        if (!FileUtil.exists(processPath)) return false;
+        String processPath = PathUtil.findProcessFilePathByPid(pid);
+        if (processPath == null || !FileUtil.exists(processPath)) return false;
 
         String content = FileUtil.read(processPath);
         if (content == null || content.trim().isEmpty()) return false;

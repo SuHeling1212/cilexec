@@ -73,6 +73,14 @@ public class ProcessRunner extends Thread {
         loadFromProcessData();
     }
 
+    /**
+     * 获取当前进程的 .pres 文件路径（基于 Name 字段）。
+     */
+    private String getProcessFilePath() {
+        String name = getProcessName();
+        return PathUtil.getProcessFilePath(name);
+    }
+
     public int getPid() { return pid; }
 
     public String getProcessName() {
@@ -204,13 +212,13 @@ public class ProcessRunner extends Thread {
                 return;
             }
 
-            if (line.startsWith("if ")) {
+            if (line.startsWith("if ") || line.startsWith("if(")) {
                 handleIf(line);
                 saveToFile();
                 return;
             }
 
-            if (line.startsWith("while ")) {
+            if (line.startsWith("while ") || line.startsWith("while(")) {
                 handleWhile(line);
                 saveToFile();
                 return;
@@ -448,8 +456,11 @@ public class ProcessRunner extends Thread {
 
             // 7. 写入子进程文件并保存父进程
             String childJson = JsonUtil.toMetaJson(childData);
-            FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childPid + ".json");
-            FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childPid + ".json", childJson);
+            String childName = (String) childData.get("Name");
+            if (childName == null) childName = String.valueOf(childPid);
+            String childFileName = PathUtil.getProcessFileName(childName);
+            FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childFileName);
+            FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
 
             // 8. 保存父进程（更新 Child 列表）
             saveToFile();
@@ -540,18 +551,12 @@ public class ProcessRunner extends Thread {
      * 分配新的 PID。
      * synchronized 防止并发 fork 时分配相同的 PID。
      */
+    @SuppressWarnings("unchecked")
     private synchronized int allocatePid() {
-        String processDir = PathUtil.toRealPath(Constants.SYSTEM_PROCESS_PATH);
-        java.io.File dir = new java.io.File(processDir);
-        java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".json"));
+        Map<Integer, String> pidMap = PathUtil.scanProcessFileNames();
         int maxPid = Constants.PID_INIT;
-        if (files != null) {
-            for (java.io.File f : files) {
-                try {
-                    int p = Integer.parseInt(f.getName().replace(".json", ""));
-                    if (p > maxPid) maxPid = p;
-                } catch (NumberFormatException ignored) {}
-            }
+        for (int p : pidMap.keySet()) {
+            if (p > maxPid) maxPid = p;
         }
         return maxPid + 1;
     }
@@ -684,8 +689,8 @@ public class ProcessRunner extends Thread {
     private void handleKill(String pidStr) {
         try {
             int targetPid = Integer.parseInt(pidStr.trim());
-            String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".json";
-            if (!FileUtil.exists(processPath)) return;
+            String processPath = PathUtil.findProcessFilePathByPid(targetPid);
+            if (processPath == null || !FileUtil.exists(processPath)) return;
 
             // 读取目标进程
             String content = FileUtil.read(processPath);
@@ -695,7 +700,7 @@ public class ProcessRunner extends Thread {
             Map<String, Object> children = (Map<String, Object>) targetData.get("Child");
             if (children != null && !children.isEmpty()) {
                 // 读取 INIT 进程
-                String initPath = Constants.SYSTEM_PROCESS_PATH + Constants.PID_INIT + ".json";
+                String initPath = PathUtil.getProcessFilePath("INIT");
                 String initContent = FileUtil.read(initPath);
                 Map<String, Object> initData = JsonUtil.parseToMap(initContent);
                 Map<String, Object> initChildren = (Map<String, Object>) initData.get("Child");
@@ -711,8 +716,8 @@ public class ProcessRunner extends Thread {
             Map<String, Object> parent = (Map<String, Object>) targetData.get("Parent");
             if (parent != null && parent.get("PID") != null) {
                 int parentPid = ((Number) parent.get("PID")).intValue();
-                String parentPath = Constants.SYSTEM_PROCESS_PATH + parentPid + ".json";
-                if (FileUtil.exists(parentPath)) {
+                String parentPath = PathUtil.findProcessFilePathByPid(parentPid);
+                if (parentPath != null && FileUtil.exists(parentPath)) {
                     String parentContent = FileUtil.read(parentPath);
                     Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
                     Map<String, Object> parentChildren = (Map<String, Object>) parentData.get("Child");
@@ -724,7 +729,7 @@ public class ProcessRunner extends Thread {
             }
 
             // 删除进程文件
-            FileUtil.removeFile(Constants.SYSTEM_PROCESS_PATH + targetPid + ".json");
+            FileUtil.removeFile(processPath);
             Logger.info("Kill: PID " + targetPid + " terminated by PID " + pid);
 
         } catch (Exception e) {
@@ -742,7 +747,7 @@ public class ProcessRunner extends Thread {
             for (Iterator<Map.Entry<String, Object>> it = children.entrySet().iterator(); it.hasNext();) {
                 Map.Entry<String, Object> entry = it.next();
                 int childPid = Integer.parseInt(entry.getKey());
-                String childPath = Constants.SYSTEM_PROCESS_PATH + childPid + ".json";
+                String childPath = PathUtil.findProcessFilePathByPid(childPid);
 
                 if (!FileUtil.exists(childPath)) {
                     it.remove();
@@ -774,8 +779,8 @@ public class ProcessRunner extends Thread {
     private void handleWaitPid(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
         while (running) {
-            String childPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".json";
-            if (!FileUtil.exists(childPath)) {
+            String childPath = PathUtil.findProcessFilePathByPid(targetPid);
+            if (childPath == null || !FileUtil.exists(childPath)) {
                 // 子进程已删除
                 Map<String, Object> children = (Map<String, Object>) processData.get("Child");
                 if (children != null) children.remove(pidStr);
@@ -792,8 +797,8 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handlePause(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
-        String targetPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".json";
-        if (FileUtil.exists(targetPath)) {
+        String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
+        if (targetPath != null && FileUtil.exists(targetPath)) {
             String content = FileUtil.read(targetPath);
             Map<String, Object> targetData = JsonUtil.parseToMap(content);
             targetData.put("Status", false);
@@ -804,8 +809,8 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handleContinue(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
-        String targetPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".json";
-        if (FileUtil.exists(targetPath)) {
+        String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
+        if (targetPath != null && FileUtil.exists(targetPath)) {
             String content = FileUtil.read(targetPath);
             Map<String, Object> targetData = JsonUtil.parseToMap(content);
             targetData.put("Status", true);
@@ -1057,7 +1062,7 @@ public class ProcessRunner extends Thread {
 
     @SuppressWarnings("unchecked")
     private void loadFromFile() {
-        String processPath = Constants.SYSTEM_PROCESS_PATH + pid + ".json";
+        String processPath = getProcessFilePath();
         if (!FileUtil.exists(processPath)) {
             running = false;
             return;
@@ -1129,7 +1134,7 @@ public class ProcessRunner extends Thread {
             program.put("Code", code);
 
             String json = JsonUtil.toMetaJson(processData);
-            String processPath = Constants.SYSTEM_PROCESS_PATH + pid + ".json";
+            String processPath = getProcessFilePath();
             FileUtil.write(processPath, json);
         } catch (Exception e) {
             Logger.error("Failed to save process " + pid + ": " + e.getMessage());

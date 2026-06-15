@@ -92,7 +92,7 @@ public class ProcessFunctionProvider implements FunctionProvider {
             return "(no process directory)";
         }
 
-        File[] files = processDir.listFiles((dir, name) -> name.endsWith(".json"));
+        File[] files = processDir.listFiles((dir, name) -> name.endsWith(".pres"));
         if (files == null || files.length == 0) {
             return "(no child processes)";
         }

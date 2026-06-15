@@ -158,23 +158,24 @@ public class Scheduler extends Thread {
 
         if (!dir.exists() || !dir.isDirectory()) return result;
 
-        File[] files = dir.listFiles((d, name) -> name.endsWith(".json"));
+        File[] files = dir.listFiles((d, name) -> name.endsWith(".pres"));
         if (files == null) return result;
 
         for (File file : files) {
             try {
                 String name = file.getName();
-                int pid = Integer.parseInt(name.replace(".json", ""));
 
                 // 读取进程文件
                 String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + name);
                 if (content == null || content.trim().isEmpty()) continue;
 
                 Map<String, Object> processData = JsonUtil.parseToMap(content);
+                Object pidObj = processData.get("PID");
+                if (!(pidObj instanceof Number)) continue;
+                int pid = ((Number) pidObj).intValue();
+
                 ProcessRunner runner = new ProcessRunner(pid, processData);
                 result.put(pid, runner);
-            } catch (NumberFormatException e) {
-                // 非数字文件名，跳过
             } catch (Exception e) {
                 Logger.warn("Failed to load process file: " + file.getName() + " - " + e.getMessage());
             }

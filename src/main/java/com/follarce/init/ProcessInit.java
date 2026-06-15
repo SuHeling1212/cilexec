@@ -15,6 +15,8 @@ public final class ProcessInit {
 
     private ProcessInit() {}
 
+    private static final String INIT_PROCESS_FILE = "INIT.pres";
+
     /**
      * 初始化进程系统。
      * 检查 PID 1 (INIT) 是否存在，不存在则创建并启动。
@@ -23,7 +25,7 @@ public final class ProcessInit {
         Logger.info("ProcessInit: Initializing process system");
 
         // 检查 PID 1 是否存在
-        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + Constants.PID_INIT + ".json";
+        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE;
         boolean initExists = FileUtil.exists(initProcessPath);
 
         if (!initExists) {
@@ -97,8 +99,8 @@ public final class ProcessInit {
 
         // 写入进程文件
         String json = JsonUtil.toMetaJson(processData);
-        FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, Constants.PID_INIT + ".json");
-        FileUtil.write(Constants.SYSTEM_PROCESS_PATH + Constants.PID_INIT + ".json", json);
+        FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, INIT_PROCESS_FILE);
+        FileUtil.write(Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE, json);
 
         Logger.info("Created INIT process (PID=1)");
     }
@@ -107,7 +109,7 @@ public final class ProcessInit {
      * 获取初始进程的启动参数。
      */
     public static Map<String, Object> getInitProcessData() {
-        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + Constants.PID_INIT + ".json";
+        String initProcessPath = Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE;
         if (!FileUtil.exists(initProcessPath)) return null;
 
         String content = FileUtil.read(initProcessPath);

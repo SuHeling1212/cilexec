@@ -1,53 +1,5 @@
-// CilExec INIT process - 权限系统测试
-println("")
-println("=== 权限系统验证测试 ===")
+a=1
 
-// 1. 创建用户
-createUser("alice", "p")
-createUser("bob", "p")
-println("1. 用户创建完成")
-
-// 2. local 创建公共文件
-createFile("/system/app/", "公告.txt")
-write("/system/app/公告.txt", "公共公告")
-println("2. local 创建公共文件: OK")
-
-// 3. alice 操作自己的目录
-switchUser("alice", "p")
-println("3. alice 用户:")
-createFile("/user/alice/", "日记.txt")
-write("/user/alice/日记.txt", "Alice的秘密")
-r = read("/user/alice/日记.txt")
-println("   读自己文件: " + r)
-
-// 4. alice 写 bob 目录（应拒绝）
-r = createFile("/user/bob/", "hack.txt")
-println("   写bob目录: " + r)
-
-// 5. bob 读 alice 文件（通过：Others有read）
-switchUser("bob", "p")
-println("5. bob 读alice文件: " + read("/user/alice/日记.txt"))
-
-// 6. bob 写 alice 文件（应拒绝）
-r = write("/user/alice/日记.txt", "bob改")
-println("   写alice文件: " + r)
-
-// 7. local 可以读写任何文件
-switchUser("local", "local")
-println("7. local:")
-r = write("/user/alice/日记.txt", "local改")
-println("   写alice文件: " + r)
-r = read("/user/alice/日记.txt")
-println("   读alice文件: " + r)
-
-// 8. system 特权
-r = system.kill(999)
-println("8. system.kill: " + r)
-r = system.exec("echo CIL_EXEC_TEST")
-println("   system.exec: " + r)
-
-println("")
-println("=== 权限测试完成 ===")
-
-while true {
+while(true){
+a=a+1
 }

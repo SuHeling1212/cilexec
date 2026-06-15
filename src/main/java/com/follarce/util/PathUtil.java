@@ -1,5 +1,7 @@
 package com.follarce.util;
 
+import com.follarce.Constants;
+
 import java.io.File;
 import java.util.*;
 
@@ -181,6 +183,97 @@ public final class PathUtil {
      */
     public static boolean isJsonFile(String path) {
         return path != null && path.toLowerCase().endsWith(".json");
+    }
+
+    // ════════════════════════════════════════════
+    // 进程文件命名（.pres）
+    // ════════════════════════════════════════════
+
+    private static final String PROCESS_EXT = ".pres";
+
+    /**
+     * 将进程名称安全地转为文件名（含 .pres 后缀）。
+     */
+    public static String getProcessFileName(String processName) {
+        String safe = sanitizeFileName(processName);
+        return safe + PROCESS_EXT;
+    }
+
+    /**
+     * 获取进程文件的 VFS 路径。
+     */
+    public static String getProcessFilePath(String processName) {
+        return Constants.SYSTEM_PROCESS_PATH + getProcessFileName(processName);
+    }
+
+    /**
+     * 根据 PID 扫描进程目录，找到对应的 .pres 文件名。
+     * 如果找不到则返回 null。
+     */
+    @SuppressWarnings("unchecked")
+    public static String findProcessFileNameByPid(int pid) {
+        String processDir = toRealPath(Constants.SYSTEM_PROCESS_PATH);
+        File dir = new File(processDir);
+        if (!dir.exists()) return null;
+        File[] files = dir.listFiles((d, name) -> name.endsWith(PROCESS_EXT));
+        if (files == null) return null;
+        for (File f : files) {
+            try {
+                String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + f.getName());
+                if (content == null) continue;
+                Map<String, Object> data = JsonUtil.parseToMap(content);
+                Object pidObj = data.get("PID");
+                if (pidObj instanceof Number && ((Number) pidObj).intValue() == pid) {
+                    return f.getName();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 根据 PID 扫描进程目录，找到对应的 .pres 文件完整路径。
+     * 如果找不到则返回 null。
+     */
+    public static String findProcessFilePathByPid(int pid) {
+        String fileName = findProcessFileNameByPid(pid);
+        if (fileName == null) return null;
+        return Constants.SYSTEM_PROCESS_PATH + fileName;
+    }
+
+    /**
+     * 扫描进程目录，返回 PID → 文件名 的映射。
+     */
+    @SuppressWarnings("unchecked")
+    public static Map<Integer, String> scanProcessFileNames() {
+        Map<Integer, String> result = new LinkedHashMap<>();
+        String processDir = toRealPath(Constants.SYSTEM_PROCESS_PATH);
+        File dir = new File(processDir);
+        if (!dir.exists()) return result;
+        File[] files = dir.listFiles((d, name) -> name.endsWith(PROCESS_EXT));
+        if (files == null) return result;
+        for (File f : files) {
+            try {
+                String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + f.getName());
+                if (content == null) continue;
+                Map<String, Object> data = JsonUtil.parseToMap(content);
+                Object pidObj = data.get("PID");
+                if (pidObj instanceof Number) {
+                    result.put(((Number) pidObj).intValue(), f.getName());
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 对文件名进行安全转义：只保留字母数字 . _ -
+     */
+    private static String sanitizeFileName(String name) {
+        if (name == null) return "unknown";
+        return name.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 
     /**

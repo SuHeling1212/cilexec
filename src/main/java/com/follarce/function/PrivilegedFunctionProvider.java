@@ -2,7 +2,6 @@ package com.follarce.function;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
-import com.follarce.util.FileUtil;
 import com.follarce.util.PathUtil;
 
 import java.io.File;
@@ -88,7 +87,8 @@ public class PrivilegedFunctionProvider implements FunctionProvider {
                 // ────────────────────────────────────────
                 case "kill": {
                     int pid = getIntArg(args, 0);
-                    String processPath = Constants.SYSTEM_PROCESS_PATH + pid + ".json";
+                    String processPath = PathUtil.findProcessFilePathByPid(pid);
+                    if (processPath == null) return "ERROR: Process not found: " + pid;
                     String realPath = PathUtil.toRealPath(processPath);
                     File file = new File(realPath);
                     if (file.delete()) {
