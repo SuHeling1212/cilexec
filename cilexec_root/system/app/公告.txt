@@ -1,0 +1,47 @@
+#<META>
+{
+  "Time": {
+    "createTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      638
+    ],
+    "lastEditTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      652
+    ],
+    "lastOpenTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      638
+    ]
+  },
+  "Owner": "local",
+  "Permission": {
+    "Owner": "read, write",
+    "Others": "read"
+  },
+  "locked": {
+    "isLocked": false,
+    "lockedBy": null
+  },
+  "Size": [
+    0,
+    "B"
+  ]
+}
+<META>#
+公共公告

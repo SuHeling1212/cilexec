@@ -1,0 +1,55 @@
+#<META>
+{
+  "Time": {
+    "createTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      488
+    ],
+    "lastEditTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      489
+    ],
+    "lastOpenTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      488
+    ]
+  },
+  "Owner": "local",
+  "Permission": {
+    "Owner": "read, write",
+    "Others": "read"
+  },
+  "locked": {
+    "isLocked": false,
+    "lockedBy": null
+  },
+  "Size": [
+    0,
+    "B"
+  ]
+}
+<META>#
+// lib1.fcl - 测试模块 1
+func greet(name) {
+    println("[lib1] Hello, " + name + "!")
+}
+
+func add(a, b) {
+    println("[lib1] " + a + " + " + b + " = " + (a + b))
+    return a + b
+}

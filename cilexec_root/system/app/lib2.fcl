@@ -1,0 +1,55 @@
+#<META>
+{
+  "Time": {
+    "createTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      489
+    ],
+    "lastEditTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      490
+    ],
+    "lastOpenTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      489
+    ]
+  },
+  "Owner": "local",
+  "Permission": {
+    "Owner": "read, write",
+    "Others": "read"
+  },
+  "locked": {
+    "isLocked": false,
+    "lockedBy": null
+  },
+  "Size": [
+    0,
+    "B"
+  ]
+}
+<META>#
+// lib2.fcl - 测试模块 2（同名函数 greet 制造冲突）
+func greet(name) {
+    println("[lib2] Bonjour, " + name + "!")
+}
+
+func add(x, y) {
+    println("[lib2] " + x + " + " + y + " = " + (x + y))
+    return x + y
+}

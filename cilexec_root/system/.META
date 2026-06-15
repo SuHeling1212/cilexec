@@ -1,0 +1,42 @@
+#<META>
+{
+  "Time": {
+    "createTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      456
+    ],
+    "lastEditTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      456
+    ],
+    "lastOpenTime": [
+      2026,
+      6,
+      15,
+      11,
+      34,
+      4,
+      456
+    ]
+  },
+  "Owner": "local",
+  "Permission": {
+    "Owner": "read, write",
+    "Others": "read"
+  },
+  "locked": {
+    "isLocked": false,
+    "lockedBy": null
+  }
+}
+<META>#
