@@ -103,13 +103,17 @@ public class ProcessFunctionProvider implements FunctionProvider {
                 String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + f.getName());
                 if (content == null || content.trim().isEmpty()) continue;
                 Map<String, Object> procData = JsonUtil.parseToMap(content);
-                Object ppidObj = procData.get("ppid");
-                if (ppidObj instanceof Number && ((Number) ppidObj).intValue() == pid) {
-                    Map<String, Object> entry = new LinkedHashMap<>();
-                    entry.put("pid", procData.get("pid"));
-                    entry.put("name", procData.get("name"));
-                    entry.put("status", procData.get("status"));
-                    children.add(entry);
+                Object parentObj = procData.get("Parent");
+                if (parentObj instanceof Map) {
+                    Map<String, Object> parentMap = (Map<String, Object>) parentObj;
+                    Object parentPidObj = parentMap.get("PID");
+                    if (parentPidObj instanceof Number && ((Number) parentPidObj).intValue() == pid) {
+                        Map<String, Object> entry = new LinkedHashMap<>();
+                        entry.put("pid", procData.get("PID"));
+                        entry.put("name", procData.get("Name"));
+                        entry.put("status", procData.get("Status"));
+                        children.add(entry);
+                    }
                 }
             } catch (Exception ignored) {
                 // 跳过无法读取的进程文件

@@ -17,20 +17,20 @@ public class NodeEvaluator {
 
     private final Map<String, Object> data;
     private final int pid;
+    private final int ppid;
     private final String currentUser;
 
     // 函数调用参数回调（由 ProcessRunner 设置，用于传递用户函数参数）
     private BiConsumer<String, List<Object>> functionArgCallback;
 
-    public NodeEvaluator(Map<String, Object> data, int pid) {
-        this.data = data;
-        this.pid = pid;
-        this.currentUser = "local";
+    public NodeEvaluator(Map<String, Object> data, int pid, String currentUser) {
+        this(data, pid, 0, currentUser);
     }
 
-    public NodeEvaluator(Map<String, Object> data, int pid, String currentUser) {
+    public NodeEvaluator(Map<String, Object> data, int pid, int ppid, String currentUser) {
         this.data = data;
         this.pid = pid;
+        this.ppid = ppid;
         this.currentUser = currentUser != null ? currentUser : "local";
     }
 
@@ -242,7 +242,7 @@ public class NodeEvaluator {
         }
         // 从 ThreadLocal 读取当前用户（switchUser 动态切换，不能使用构造时传入的固定值）
         String actualUser = UserUtil.getCurrentUser();
-        FunctionContext context = new FunctionContext(pid, 0, actualUser);
+        FunctionContext context = new FunctionContext(pid, ppid, actualUser);
         return FunctionRegistry.call(functionName, argValues, context);
     }
 

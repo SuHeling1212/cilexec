@@ -18,6 +18,7 @@ public final class Logger {
     private static Level currentLevel = Level.DEBUG;
     private static String logPath;
     private static boolean initialized = false;
+    private static boolean closed = false;
 
     private Logger() {}
 
@@ -91,6 +92,8 @@ public final class Logger {
      * 关闭日志系统。
      */
     public static synchronized void close() {
+        if (closed) return;
+        closed = true;
         if (writer != null) {
             writer.flush();
             writer.close();

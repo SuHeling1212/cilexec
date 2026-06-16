@@ -200,52 +200,42 @@ public final class PathUtil {
     }
 
     /**
-     * 获取进程文件的 VFS 路径。
+     * 获取进程文件的 VFS 路径（基于进程名称）。
      */
     public static String getProcessFilePath(String processName) {
         return Constants.SYSTEM_PROCESS_PATH + getProcessFileName(processName);
     }
 
     /**
-     * 根据 PID 扫描进程目录，找到对应的 .pres 文件名。
-     * 如果找不到则返回 null。
+     * 获取进程文件的 VFS 路径（基于 PID）。
+     * PID 是唯一标识，避免同名进程文件覆盖（#1）。
      */
-    @SuppressWarnings("unchecked")
-    public static String findProcessFileNameByPid(int pid) {
-        String processDir = toRealPath(Constants.SYSTEM_PROCESS_PATH);
-        File dir = new File(processDir);
-        if (!dir.exists()) return null;
-        File[] files = dir.listFiles((d, name) -> name.endsWith(PROCESS_EXT));
-        if (files == null) return null;
-        for (File f : files) {
-            try {
-                String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + f.getName());
-                if (content == null) continue;
-                Map<String, Object> data = JsonUtil.parseToMap(content);
-                Object pidObj = data.get("PID");
-                if (pidObj instanceof Number && ((Number) pidObj).intValue() == pid) {
-                    return f.getName();
-                }
-            } catch (Exception ignored) {
-            }
-        }
-        return null;
+    public static String getProcessFilePath(int pid) {
+        return Constants.SYSTEM_PROCESS_PATH + pid + PROCESS_EXT;
     }
 
     /**
-     * 根据 PID 扫描进程目录，找到对应的 .pres 文件完整路径。
-     * 如果找不到则返回 null。
+     * 根据 PID 查找 .pres 文件名。
+     * 文件名即为 {pid}.pres，不再需要扫描+解析 JSON（#11）。
+     */
+    public static String findProcessFileNameByPid(int pid) {
+        String fileName = pid + PROCESS_EXT;
+        String processDir = toRealPath(Constants.SYSTEM_PROCESS_PATH);
+        File file = new File(processDir, fileName);
+        return file.exists() ? fileName : null;
+    }
+
+    /**
+     * 根据 PID 获取 .pres 文件完整路径。
      */
     public static String findProcessFilePathByPid(int pid) {
-        String fileName = findProcessFileNameByPid(pid);
-        if (fileName == null) return null;
-        return Constants.SYSTEM_PROCESS_PATH + fileName;
+        return getProcessFilePath(pid);
     }
 
     /**
      * 扫描进程目录，返回 PID → 文件名 的映射。
+     * 文件名本身就是 {pid}.pres，从文件名解析 PID（#11）。
      */
-    @SuppressWarnings("unchecked")
     public static Map<Integer, String> scanProcessFileNames() {
         Map<Integer, String> result = new LinkedHashMap<>();
         String processDir = toRealPath(Constants.SYSTEM_PROCESS_PATH);
@@ -255,14 +245,23 @@ public final class PathUtil {
         if (files == null) return result;
         for (File f : files) {
             try {
-                String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + f.getName());
-                if (content == null) continue;
-                Map<String, Object> data = JsonUtil.parseToMap(content);
-                Object pidObj = data.get("PID");
-                if (pidObj instanceof Number) {
-                    result.put(((Number) pidObj).intValue(), f.getName());
+                String name = f.getName();
+                int extIdx = name.lastIndexOf(PROCESS_EXT);
+                if (extIdx <= 0) continue;
+                int pid = Integer.parseInt(name.substring(0, extIdx));
+                result.put(pid, name);
+            } catch (NumberFormatException ignored) {
+                // 兼容旧版 name-based 文件格式
+                try {
+                    String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + f.getName());
+                    if (content == null) continue;
+                    Map<String, Object> data = JsonUtil.parseToMap(content);
+                    Object pidObj = data.get("PID");
+                    if (pidObj instanceof Number) {
+                        result.put(((Number) pidObj).intValue(), f.getName());
+                    }
+                } catch (Exception ignored2) {
                 }
-            } catch (Exception ignored) {
             }
         }
         return result;

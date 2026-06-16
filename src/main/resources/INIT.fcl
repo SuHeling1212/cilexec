@@ -1,149 +1,261 @@
 // ============================================================
-// Swap Pool 交换池完整测试
+// Cilexec 综合功能测试
+// ============================================================
+// 涵盖：变量、运算、控制流、函数、import、include、fork
 // ============================================================
 
 println("")
-println("========================================")
-println("  Swap Pool 完整功能测试")
-println("========================================")
+println("╔═══════════════════════════════════════════╗")
+println("║     Cilexec 综合功能测试                  ║")
+println("╚═══════════════════════════════════════════╝")
 
-// ── 1. always 类型测试 ──
+// ────────────────────────────────────────────
+// 测试1: 变量与基本运算
+// ────────────────────────────────────────────
 println("")
-println("=== Test 1: always 类型 ===")
+println("=== Test 1: 变量与基本运算 ===")
 
-swapPool.create("pool_always")
-swapPool.add("msg:Hello World", "pool_always")
-swapPool.add("count:42", "pool_always", "type:always")
+x = 42
+println("  x = " + x + "  (期望 42)")
 
-println("ls: " + swapPool.ls("pool_always"))
+y = 3.14
+println("  y = " + y + "  (期望 3.14)")
 
-val1 = swapPool.get("msg", "pool_always")
-println("get(msg) = " + val1)
+name = "CilExec"
+println("  name = " + name + "  (期望 CilExec)")
 
-swapPool.update("msg", "pool_always", "Updated!")
-val1b = swapPool.get("msg", "pool_always")
-println("after update, get(msg) = " + val1b)
-println("ls: " + swapPool.ls("pool_always"))
+sum = 10 + 20
+println("  10 + 20 = " + sum + "  (期望 30)")
 
-// ── 2. sync 类型测试 ──
+diff = 100 - 45
+println("  100 - 45 = " + diff + "  (期望 55)")
+
+product = 7 * 8
+println("  7 * 8 = " + product + "  (期望 56)")
+
+quotient = 81 / 9
+println("  81 / 9 = " + quotient + "  (期望 9)")
+
+mod = 17 % 5
+println("  17 % 5 = " + mod + "  (期望 2)")
+
+// ────────────────────────────────────────────
+// 测试2: 字符串
+// ────────────────────────────────────────────
 println("")
-println("=== Test 2: sync 类型 ===")
+println("=== Test 2: 字符串拼接与长度 ===")
 
-swapPool.create("pool_sync")
-swapPool.add("data:initial", "pool_sync", "type:sync")
+greeting = "Hello" + " " + "World"
+println("  \"" + greeting + "\"  (期望 Hello World)")
 
-println("after add (should show CHANGED): " + swapPool.ls("pool_sync"))
+msg = "testing"
+len = #msg
+println("  #\"testing\" = " + len + "  (期望 7)")
 
-// 读取一次（消费变更，changed 应变为 false）
-v = swapPool.get("data", "pool_sync")
-println("get(data) = " + v)
-println("after get (should NOT show CHANGED): " + swapPool.ls("pool_sync"))
+mixed = "2" + 2
+println("  \"2\" + 2 = " + mixed + "  (期望 22)")
 
-// update 后 changed 应该再次变为 true
-swapPool.update("data", "pool_sync", "updated_value")
-println("after update (should show CHANGED): " + swapPool.ls("pool_sync"))
-
-// 再读取，消费变更
-v2 = swapPool.get("data", "pool_sync")
-println("get(data) again = " + v2)
-println("after get (should NOT show CHANGED): " + swapPool.ls("pool_sync"))
-
-// signal 测试
-swapPool.signal("data", "pool_sync")
-println("after signal (should show CHANGED): " + swapPool.ls("pool_sync"))
-
-// ── 3. times(N) 类型测试 ──
+// ────────────────────────────────────────────
+// 测试3: 布尔与比较
+// ────────────────────────────────────────────
 println("")
-println("=== Test 3: times(N) 类型 ===")
+println("=== Test 3: 布尔与比较运算 ===")
 
-swapPool.create("pool_times")
-swapPool.add("secret:read_me_3_times", "pool_times", "type:times(3)")
-println("after add: " + swapPool.ls("pool_times"))
+println("  10 > 5  = " + (10 > 5) + "  (期望 true)")
+println("  3 > 8   = " + (3 > 8) + "  (期望 false)")
+println("  5 <= 5  = " + (5 <= 5) + "  (期望 true)")
+println("  10 == 10 = " + (10 == 10) + "  (期望 true)")
+println("  10 != 20 = " + (10 != 20) + "  (期望 true)")
 
-// 第 1 次读取
-r1 = swapPool.get("secret", "pool_times")
-println("read 1: " + r1)
-println("after read 1: " + swapPool.ls("pool_times"))
+println("  true and false = " + (true and false) + "  (期望 false)")
+println("  true or false  = " + (true or false) + "  (期望 true)")
+println("  !true = " + (!true) + "  (期望 false)")
+println("  !false = " + (!false) + "  (期望 true)")
 
-// 第 2 次读取
-r2 = swapPool.get("secret", "pool_times")
-println("read 2: " + r2)
-println("after read 2: " + swapPool.ls("pool_times"))
-
-// 第 3 次读取（这次读完应自动删除）
-r3 = swapPool.get("secret", "pool_times")
-println("read 3: " + r3)
-println("after read 3 (should be empty): " + swapPool.ls("pool_times"))
-
-// 再次读取应返回 ERROR
-r4 = swapPool.get("secret", "pool_times")
-println("read 4 (should be ERROR): " + r4)
-
-// ── 4. lock/unlock 测试 ──
+// ────────────────────────────────────────────
+// 测试4: if 条件判断
+// ────────────────────────────────────────────
 println("")
-println("=== Test 4: 锁定测试 ===")
+println("=== Test 4: if 条件判断 ===")
 
-swapPool.create("pool_lock")
-swapPool.add("important:top_secret", "pool_lock")
-swapPool.lock("important", "pool_lock")
-println("after lock: " + swapPool.ls("pool_lock"))
+score = 85
+grade = ""
+if (score >= 90) {
+    grade = "A"
+}
+if (score >= 80 and score < 90) {
+    grade = "B"
+}
+if (score >= 70 and score < 80) {
+    grade = "C"
+}
+println("  score=85, grade=" + grade + "  (期望 B)")
 
-// 尝试读取锁定的变量
-r_lock = swapPool.get("important", "pool_lock")
-println("try get locked var: " + r_lock)
+// 嵌套 if
+outer = 5
+inner = 3
+result = ""
+if (outer > 0) {
+    if (inner > 0) {
+        result = "both-positive"
+    }
+}
+println("  嵌套if: " + result + "  (期望 both-positive)")
 
-// 解锁
-swapPool.unlock("important", "pool_lock")
-println("after unlock: " + swapPool.ls("pool_lock"))
-
-// 解锁后可以读取
-r_unlock = swapPool.get("important", "pool_lock")
-println("get after unlock: " + r_unlock)
-
-// ── 5. 额外功能测试 ──
+// ────────────────────────────────────────────
+// 测试5: while 循环
+// ────────────────────────────────────────────
 println("")
-println("=== Test 5: 额外功能 ===")
+println("=== Test 5: while 循环 ===")
 
-println("exists(pool_always): " + swapPool.exists("pool_always"))
-println("exists(nonexistent): " + swapPool.exists("nonexistent"))
+count = 0
+i = 0
+while i < 5 {
+    count = count + i
+    i = i + 1
+}
+println("  累加 0..4 = " + count + "  (期望 10)")
 
-swapPool.add("a:1", "pool_always")
-swapPool.add("b:2", "pool_always")
-swapPool.add("c:3", "pool_always")
-println("before clear: " + swapPool.ls("pool_always"))
+// break 测试
+sumBreak = 0
+k = 0
+while true {
+    if (k >= 4) {
+        break
+    }
+    sumBreak = sumBreak + k
+    k = k + 1
+}
+println("  break 测试: sum 0..3 = " + sumBreak + "  (期望 6)")
 
-swapPool.clear("pool_always")
-println("after clear: " + swapPool.ls("pool_always"))
-
+// ────────────────────────────────────────────
+// 测试6: 数组
+// ────────────────────────────────────────────
 println("")
-println("=== Test 6: 白名单测试 ===")
-swapPool.create("pool_whitelist")
-swapPool.add("restricted:only_pid1", "pool_whitelist", "whitelist:1")
-println(swapPool.ls("pool_whitelist"))
+println("=== Test 6: 数组 ===")
 
-// ── 6. webget / webpost 测试 ──
+arr = [1, 2, 3, 4, 5]
+println("  arr[0] = " + arr[0] + "  (期望 1)")
+println("  arr[2] = " + arr[2] + "  (期望 3)")
+println("  #arr = " + (#arr) + "  (期望 5)")
+
+arr[1] = 99
+println("  arr[1] 改为 99 后: " + arr[1] + "  (期望 99)")
+
+// ────────────────────────────────────────────
+// 测试7: Map
+// ────────────────────────────────────────────
 println("")
-println("=== Test 6: webget ===")
+println("=== Test 7: Map ===")
 
-// 测试 GET 请求
-result = webget("https://jsonplaceholder.typicode.com/todos/1")
-println("webget result: " + result)
+person = {"name": "Alice", "age": 30}
+println("  person[\"name\"] = " + person["name"] + "  (期望 Alice)")
+println("  person[\"age\"] = " + person["age"] + "  (期望 30)")
 
+// ────────────────────────────────────────────
+// 测试8: 用户函数
+// ────────────────────────────────────────────
 println("")
-println("=== Test 7: network.httpGet ===")
-result2 = network.httpGet("https://jsonplaceholder.typicode.com/posts/1")
-println("httpGet result: " + result2)
+println("=== Test 8: 用户函数定义与调用 ===")
 
-println("")
-println("=== Test 8: network.httpPost ===")
-result3 = network.httpPost("https://jsonplaceholder.typicode.com/posts", "{\"title\":\"test\",\"body\":\"hello\",\"userId\":1}")
-println("httpPost result: " + result3)
+func add2(a, b) {
+    return a + b
+}
+func greet2(name) {
+    println("  Hello, " + name + "!")
+}
 
-println("")
-println("=== Test 9: type check ===")
-println("type of result: " + typeOf(result))
+greet2("CilExec")
+r = add2(10, 20)
+println("  add2(10,20) = " + r + "  (期望 30)")
 
+// ────────────────────────────────────────────
+// 测试9: import
+// ────────────────────────────────────────────
 println("")
-println("========================================")
-println("  所有测试完成!")
-println("========================================")
+println("=== Test 9: import 跨文件函数复用 ===")
+
+import "/system/app/lib1.fcl"
+import "/system/app/lib2.fcl"
+
+// 命名空间调用
+lib1.greet("Alice")
+lib2.greet("Bob")
+
+r3 = lib1.add(5, 6)
+println("  lib1.add(5,6) = " + r3 + "  (期望 11)")
+
+// 短名调用（无冲突)
+greet("World")
+
+// ────────────────────────────────────────────
+// 测试10: include
+// ────────────────────────────────────────────
+println("")
+println("=== Test 10: include 代码插入 ===")
+
+include "/system/app/lib_unique.fcl"
+uniqueGreeting("Test")
+ans = getAnswer()
+println("  getAnswer() = " + ans + "  (期望 42)")
+
+// ────────────────────────────────────────────
+// 测试11: fork 进程创建
+// ────────────────────────────────────────────
+println("")
+println("=== Test 11: fork 进程创建 ===")
+
+forkResult = fork()
+if (forkResult != 0) {
+    println("  [父进程 PID=" + getPID() + "] fork 返回 " + forkResult + " (子 PID, 期望 >0)")
+}
+if (forkResult == 0) {
+    println("  [子进程 PID=" + getPID() + "] fork 返回 0 (期望 0), 父 PID=" + getPPID())
+}
+
+// 等待一会儿让子进程输出
+println("")
+println("  --- 等待子进程输出完毕 ---")
+waitPID(2)
+println("  --- 子进程已结束 ---")
+
+// ────────────────────────────────────────────
+// 测试12: fork 变量隔离
+// ────────────────────────────────────────────
+println("")
+println("=== Test 12: fork 变量独立 ===")
+
+var_before = "parent_value"
+println("  fork 前 var_before = " + var_before)
+
+forkVar = fork()
+if (forkVar != 0) {
+    // 父进程修改变量不影响子进程
+    var_before = "modified_by_parent"
+    println("  [父] 修改 var_before = " + var_before)
+}
+if (forkVar == 0) {
+    // 子进程看到的是 fork 前的值
+    println("  [子] var_before = " + var_before + " (期望 parent_value)")
+    println("  [子] fork = " + fork + " (期望 1)")
+}
+
+// ────────────────────────────────────────────
+// 测试13: 系统函数
+// ────────────────────────────────────────────
+println("")
+println("=== Test 13: 系统函数 ===")
+
+println("  当前 PID = " + getPID())
+ppid = getPPID()
+println("  父 PID = " + ppid)
+
+// ────────────────────────────────────────────
+println("")
+println("╔═══════════════════════════════════════════╗")
+println("║     全部测试完成                          ║")
+println("╚═══════════════════════════════════════════╝")
+println("")
+
+// 保持运行
+while true {}

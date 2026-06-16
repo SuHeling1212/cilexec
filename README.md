@@ -2,7 +2,7 @@
 
 > **Disclaimer: This project is developed by AI (TREA, DeepSeek), including documentations. I take no responsibility for code quality or any issues that may arise.**
 
-A single-binary, disk-based teaching simulated operating system implemented in Java. This is the **reconstructed version** (`reCilexec`) with comprehensive architecture improvements over the original.
+A single-binary, disk-based teaching simulated operating system implemented in Java. This is the **reconstructed version** (`Cilexec`) with comprehensive architecture improvements over the original.
 
 ## What is CilExec?
 
@@ -59,7 +59,7 @@ State persistence = no data loss from power outages!
 
 ## What's New in the Reconstructed Version
 
-This version (`reCilexec`) is a ground-up rewrite of the original CilExec with:
+This version (`Cilexec`) is a ground-up rewrite of the original CilExec with:
 
 - ✅ **Restructured plugin system** — Clean provider-based function architecture with namespace support
 - ✅ **Fixed permission system** — `switchUser()` now correctly propagates user context to permission checks
@@ -178,7 +178,7 @@ mvn compile
 mvn package -DskipTests
 
 # Run
-java -jar target/recilexec-1.0-SNAPSHOT.jar
+java -jar target/cilexec-1.0-SNAPSHOT.jar
 
 # Or run directly
 mvn dependency:copy-dependencies -q

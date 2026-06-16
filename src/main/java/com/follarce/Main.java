@@ -12,7 +12,7 @@ import com.follarce.util.JsonUtil;
 import java.io.File;
 
 /**
- * reCilexec (CilExec) 模拟操作系统入口。
+ * Cilexec (CilExec) 模拟操作系统入口。
  * <p>
  * 启动流程：
  * 1. 初始化日志
@@ -69,8 +69,8 @@ public class Main {
                 Logger.close();
             }));
 
-            Logger.info("=== reCilexec system ready ===");
-            System.out.println("reCilexec (CilExec) system started. PID 1 (INIT) running.");
+            Logger.info("=== Cilexec system ready ===");
+            System.out.println("Cilexec (CilExec) system started. PID 1 (INIT) running.");
             System.out.println("Type Ctrl+C to shutdown.");
 
         } catch (Exception e) {
@@ -119,7 +119,7 @@ public class Main {
      * 启动 INIT 进程（PID 1），返回 ProcessRunner。
      */
     private static ProcessRunner startInitProcess() {
-        String initProcessPath = com.follarce.util.PathUtil.getProcessFilePath("INIT");
+        String initProcessPath = com.follarce.util.PathUtil.getProcessFilePath(Constants.PID_INIT);
         if (!FileUtil.exists(initProcessPath)) {
             Logger.warn("INIT process file not found, creating...");
             ProcessInit.createInitProcess();

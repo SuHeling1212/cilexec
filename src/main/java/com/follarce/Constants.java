@@ -48,6 +48,10 @@ public final class Constants {
     public static final int PID_INIT = 1;
     public static final String ERROR_MARKER = "ERROR";
 
+    // ── 进程文件清理 ──
+    // 正常结束后是否删除进程文件。true=删除，false=保留
+    public static final boolean DELETE_PROCESS_FILE_ON_EXIT = false;
+
     // ── 权限 ──
     public static final String PERM_READ = "read";
     public static final String PERM_WRITE = "write";

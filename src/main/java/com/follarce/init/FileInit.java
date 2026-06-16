@@ -5,6 +5,7 @@ import com.follarce.log.Logger;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;
+import com.follarce.util.UserUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -224,22 +225,5 @@ public final class FileInit {
         }
     }
 
-    // 为了解决编译依赖，引入 UserUtil
-    private static class UserUtil {
-        static Map<String, Object> createDefaultUsersConfig() {
-            Map<String, Object> config = new LinkedHashMap<>();
-            config.put("currentUser", Constants.DEFAULT_USER_LOCAL);
-
-            Map<String, Object> users = new LinkedHashMap<>();
-            Map<String, Object> localUser = new LinkedHashMap<>();
-            localUser.put("password", Constants.DEFAULT_PASSWORD_LOCAL);
-            localUser.put("isLocal", true);
-            localUser.put("home", Constants.USER_LOCAL_PATH);
-            localUser.put("created", FileUtil.getCurrentTimeArray());
-            users.put(Constants.DEFAULT_USER_LOCAL, localUser);
-
-            config.put("users", users);
-            return config;
-        }
-    }
+    // UserUtil 由 import com.follarce.util.UserUtil 提供
 }

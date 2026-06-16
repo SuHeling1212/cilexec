@@ -166,10 +166,6 @@ public class FunctionRegistry {
         if (result == null) {
             return true;
         }
-        if (result instanceof String[]) {
-            String[] arr = (String[]) result;
-            return arr.length > 0 && Constants.ERROR_MARKER.equals(arr[0]);
-        }
         if (result instanceof Object[]) {
             Object[] arr = (Object[]) result;
             return arr.length > 0 && Constants.ERROR_MARKER.equals(arr[0]);

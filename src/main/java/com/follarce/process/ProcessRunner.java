@@ -54,6 +54,8 @@ public class ProcessRunner extends Thread {
     private int currentLine;
     private List<Map<String, Object>> blockStack;
     private Map<String, Object> returnValue;
+    // 进程启动时间戳（毫秒），用于计算 RunningTime
+    private long processStartMs;
 
     // ── 用户函数缓存 ──
     private final Map<String, FunctionDef> functions = new LinkedHashMap<>();
@@ -65,10 +67,18 @@ public class ProcessRunner extends Thread {
     private String pendingFuncName;
     private List<Object> pendingFuncArgs;
 
+    // ── fork 子进程 PID（由 handleFork 设置，供 handleAssignment 读取） ──
+    private int lastForkChildPid = -1;
+
+    // ── 赋值语境中的用户函数返回处理 ──
+    // 当在当前变量赋值中调用用户函数时，记录变量名，函数返回后自动赋值
+    private String pendingAssignVarName = null;
+
     public ProcessRunner(int pid, Map<String, Object> processData) {
         super("Process-" + pid);
         this.pid = pid;
         this.processData = processData;
+        this.processStartMs = System.currentTimeMillis();
         this.callStack.clear();
         loadFromProcessData();
     }
@@ -77,8 +87,7 @@ public class ProcessRunner extends Thread {
      * 获取当前进程的 .pres 文件路径（基于 Name 字段）。
      */
     private String getProcessFilePath() {
-        String name = getProcessName();
-        return PathUtil.getProcessFilePath(name);
+        return PathUtil.getProcessFilePath(pid);
     }
 
     public int getPid() { return pid; }
@@ -109,9 +118,6 @@ public class ProcessRunner extends Thread {
         // 初始化用户上下文（从进程 Owner 读取，但后续由 switchUser 接管）
         String initialOwner = (String) processData.get("Owner");
         UserUtil.setCurrentUser(initialOwner != null ? initialOwner : Constants.DEFAULT_USER_LOCAL);
-
-        // 进程启动标记
-        System.out.println("[PROCESS " + pid + " STARTED]");
 
         while (running) {
             try {
@@ -162,7 +168,8 @@ public class ProcessRunner extends Thread {
                 return;
             }
             running = false;
-            saveToFile();
+            // 正常终止：保留/删除进程文件
+            handleProcessTermination();
             return;
         }
 
@@ -242,6 +249,8 @@ public class ProcessRunner extends Thread {
                 saveToFile();
                 return;
             }
+
+
 
             // 7. exec() 特殊处理
             if (line.startsWith("exec(") || line.startsWith("exec (")) {
@@ -396,9 +405,18 @@ public class ProcessRunner extends Thread {
             this.data = frame.savedData;
             this.codeLines = frame.savedCodeLines;
             this.currentLine = frame.savedCurrentLine;
+
+            // 如果在赋值语境中调用了用户函数，自动完成赋值
+            Object retVal = null;
             if (returnValue != null) {
-                data.put("__return_value", returnValue.get("value"));
+                retVal = returnValue.get("value");
+                data.put("__return_value", retVal);
             }
+            if (pendingAssignVarName != null) {
+                data.put(pendingAssignVarName, retVal);
+                pendingAssignVarName = null;
+            }
+
             // 清空函数的代码
             currentLine++;
         }
@@ -409,7 +427,12 @@ public class ProcessRunner extends Thread {
     // ════════════════════════════════════════════
 
     @SuppressWarnings("unchecked")
-    private void handleFork() {
+    private int handleFork() {
+        return handleFork(null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private int handleFork(String varName) {
         try {
             // 1. 保存当前状态
             saveToFile();
@@ -420,9 +443,10 @@ public class ProcessRunner extends Thread {
             // 3. 深拷贝父进程数据
             Map<String, Object> childData = JsonUtil.deepCopy(processData);
 
-            // 4. 修改子进程属性
+            // 4. 修改子进程属性：PID、Name、Owner（#2 继承当前 ThreadLocal 用户）
             childData.put("PID", childPid);
             childData.put("Name", getProcessName() + "_fork");
+            childData.put("Owner", UserUtil.getCurrentUser());
             // 设置父进程信息
             Map<String, Object> parentInfo = new LinkedHashMap<>();
             parentInfo.put("Name", processData.get("Name"));
@@ -454,20 +478,43 @@ public class ProcessRunner extends Thread {
             childInfo.put("Path", childData.get("Path"));
             children.put(String.valueOf(childPid), childInfo);
 
-            // 7. 写入子进程文件并保存父进程
+            // 7. 保存父进程（更新 Child 列表）
+            saveToFile();
+
+            // 8. 注入 fork 返回值 + fork 特殊变量
+            //    - 子进程：varName=0（如果存在）、fork=1
+            //    - 父进程：fork=0
+            //    先深拷贝了全部变量，再添加 fork 相关变量
+            Map<String, Object> childProgram = (Map<String, Object>) childData.get("Program");
+            if (childProgram != null) {
+                Map<String, Object> childInnerData = (Map<String, Object>) childProgram.get("Data");
+                if (childInnerData == null) {
+                    childInnerData = new LinkedHashMap<>();
+                    childProgram.put("Data", childInnerData);
+                }
+                // 子进程 fork 返回值：var = 0
+                if (varName != null && !varName.isEmpty()) {
+                    childInnerData.put(varName, 0L);
+                }
+                // 子进程 fork 特殊变量：fork = 1（标志此进程是 fork 产物）
+                childInnerData.put("fork", 1L);
+            }
+            // 父进程 fork 特殊变量：fork = 0
+            this.data.put("fork", 0L);
+
+            // 9. 现在创建子进程文件（变量已注入，Scheduler 读到完整版）
+            String childFileName = childPid + ".pres";
             String childJson = JsonUtil.toMetaJson(childData);
-            String childName = (String) childData.get("Name");
-            if (childName == null) childName = String.valueOf(childPid);
-            String childFileName = PathUtil.getProcessFileName(childName);
             FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childFileName);
             FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
 
-            // 8. 保存父进程（更新 Child 列表）
-            saveToFile();
+            this.lastForkChildPid = childPid;
 
             Logger.info("Fork: PID " + pid + " created child PID " + childPid);
+            return childPid;
         } catch (Exception e) {
             Logger.error("Fork failed for PID " + pid + ": " + e.getMessage());
+            return -1;
         }
     }
 
@@ -561,6 +608,14 @@ public class ProcessRunner extends Thread {
         return maxPid + 1;
     }
 
+    /**
+     * fork 变量传播（已废弃）：变量注入已由 handleFork(varName) 在创建子进程文件时完成。
+     * 保留此方法仅用于 handleSpecialMarker 等无变量名的路径。
+     */
+    private void propagateForkVariable(String varName) {
+        // 变量已在 handleFork 中注入，无需额外操作
+    }
+
     // ════════════════════════════════════════════
     // 赋值处理
     // ════════════════════════════════════════════
@@ -568,7 +623,26 @@ public class ProcessRunner extends Thread {
     private void handleAssignment(Matcher matcher) {
         String varName = matcher.group(1).trim();
         String expr = matcher.group(2).trim();
+
+        // 特殊处理 var = fork() — 直接调 handleFork(varName) 使子进程得到 var=0
+        if (expr.trim().matches("^fork\\s*\\(\\s*\\)\\s*$")) {
+            int childPid = handleFork(varName);
+            data.put(varName, childPid);
+            return;
+        }
+
         Object value = evaluateExpression(expr);
+
+        // 如果结果是 USER: 标记（调用用户函数），设置 pendingAssignVarName
+        // handleReturn 会在函数返回时自动完成赋值
+        if (value instanceof String && ((String) value).startsWith("USER:")) {
+            pendingAssignVarName = varName;
+            // 触发用户函数调用（切换上下文到函数体）
+            String funcName = ((String) value).substring(5);
+            handleUserFunction(funcName);
+            return;
+        }
+
         data.put(varName, value);
     }
 
@@ -582,6 +656,7 @@ public class ProcessRunner extends Thread {
         Object index = evaluateExpression(indexExpr);
         Object value = evaluateExpression(valueExpr);
 
+        value = resolveMarkerValue(value, varName);
         if (target instanceof List) {
             int i = toIntIndex(index);
             ((List<Object>) target).set(i, value);
@@ -625,7 +700,12 @@ public class ProcessRunner extends Thread {
 
             String user = (String) processData.get("Owner");
             if (user == null) user = Constants.DEFAULT_USER_LOCAL;
-            NodeEvaluator evaluator = new NodeEvaluator(data, pid, user);
+            int ppid = 0;
+            Map<String, Object> parent = (Map<String, Object>) processData.get("Parent");
+            if (parent != null && parent.get("PID") instanceof Number) {
+                ppid = ((Number) parent.get("PID")).intValue();
+            }
+            NodeEvaluator evaluator = new NodeEvaluator(data, pid, ppid, user);
             // 设置函数回调，捕获函数名和参数
             evaluator.setFunctionArgCallback((name, args) -> {
                 pendingFuncName = name;
@@ -685,6 +765,49 @@ public class ProcessRunner extends Thread {
         }
     }
 
+    /**
+     * 解析表达式求值结果中的特殊标记：如果结果是标记字符串，
+     * 执行对应操作并返回真实值（如 fork 返回子 PID，kill 返回 true）。
+     * 使赋值语境（如 pid = fork()）也能正确触发操作。
+     */
+    private Object resolveMarkerValue(Object value) {
+        return resolveMarkerValue(value, null);
+    }
+
+    private Object resolveMarkerValue(Object value, String varName) {
+        if (!(value instanceof String)) return value;
+        String marker = (String) value;
+        if (marker.equals("FORK")) {
+            int childPid = handleFork(varName);
+            return childPid >= 0 ? childPid : value;
+        } else if (marker.startsWith("KILL:")) {
+            handleKill(marker.substring(5));
+            return true;
+        } else if (marker.equals("WAIT")) {
+            handleWait();
+            return true;
+        } else if (marker.startsWith("WAITPID:")) {
+            handleWaitPid(marker.substring(8));
+            return true;
+        } else if (marker.startsWith("PAUSE:")) {
+            handlePause(marker.substring(6));
+            return true;
+        } else if (marker.startsWith("CONTINUE:")) {
+            handleContinue(marker.substring(9));
+            return true;
+        } else if (marker.startsWith("USER:")) {
+            String funcName = marker.substring(5);
+            handleUserFunction(funcName);
+            // 用户函数执行后，获取返回值
+            Object retVal = data.get("__return_value");
+            if (retVal != null) {
+                data.remove("__return_value");
+            }
+            return retVal != null ? retVal : true;
+        }
+        return value;
+    }
+
     @SuppressWarnings("unchecked")
     private void handleKill(String pidStr) {
         try {
@@ -700,7 +823,7 @@ public class ProcessRunner extends Thread {
             Map<String, Object> children = (Map<String, Object>) targetData.get("Child");
             if (children != null && !children.isEmpty()) {
                 // 读取 INIT 进程
-                String initPath = PathUtil.getProcessFilePath("INIT");
+                String initPath = PathUtil.getProcessFilePath(Constants.PID_INIT);
                 String initContent = FileUtil.read(initPath);
                 Map<String, Object> initData = JsonUtil.parseToMap(initContent);
                 Map<String, Object> initChildren = (Map<String, Object>) initData.get("Child");
@@ -739,8 +862,10 @@ public class ProcessRunner extends Thread {
 
     @SuppressWarnings("unchecked")
     private void handleWait() {
-        // 等待任意子进程结束
-        while (running) {
+        // 等待任意子进程结束（最多 1000 次 ≈ 100s，防止永久挂起 #4）
+        int maxWaits = 1000;
+        int waitCount = 0;
+        while (running && waitCount < maxWaits) {
             Map<String, Object> children = (Map<String, Object>) processData.get("Child");
             if (children == null || children.isEmpty()) break;
 
@@ -766,6 +891,7 @@ public class ProcessRunner extends Thread {
                 }
             }
 
+            waitCount++;
             // 重新加载进程文件（子进程列表可能已变更）
             try { Thread.sleep(100); } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -773,12 +899,18 @@ public class ProcessRunner extends Thread {
             }
             loadFromFile();
         }
+        if (waitCount >= maxWaits) {
+            Logger.warn("Wait timeout for all children (PID " + pid + ")");
+        }
     }
 
     @SuppressWarnings("unchecked")
     private void handleWaitPid(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
-        while (running) {
+        // 最多等待 1000 次 ≈ 100s（#4）
+        int maxWaits = 1000;
+        int waitCount = 0;
+        while (running && waitCount < maxWaits) {
             String childPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (childPath == null || !FileUtil.exists(childPath)) {
                 // 子进程已删除
@@ -787,10 +919,14 @@ public class ProcessRunner extends Thread {
                 saveToFile();
                 return;
             }
+            waitCount++;
             try { Thread.sleep(100); } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
             }
+        }
+        if (waitCount >= maxWaits) {
+            Logger.warn("WaitPID timeout for PID " + targetPid + " (caller PID " + pid + ")");
         }
     }
 
@@ -934,14 +1070,13 @@ public class ProcessRunner extends Thread {
                         params.add(p.trim());
                     }
                 }
-                // 提取函数体
+                // 提取函数体（#3 逐字符匹配花括号）
                 int bodyStart = i + 1;
                 int braceDepth = l.contains("{") ? 1 : 0;
                 int bodyEnd = bodyStart;
                 for (int j = bodyStart; j < importLines.size(); j++) {
-                    String bl = importLines.get(j).trim();
-                    if (bl.contains("{")) braceDepth++;
-                    if (bl.contains("}")) braceDepth--;
+                    int[] counts = countBracesInLine(importLines.get(j));
+                    braceDepth += counts[0] - counts[1];
                     if (braceDepth <= 0) {
                         bodyEnd = j;
                         break;
@@ -991,16 +1126,13 @@ public class ProcessRunner extends Thread {
                         params.add(p.trim());
                     }
                 }
-                // 提取函数体
+                // 提取函数体（#3 逐字符匹配花括号）
                 int bodyStart = i + 1;
-                int braceDepth = 0;
                 int bodyEnd = bodyStart;
-                // 如果本行已经包含 {，则 depth 从 1 开始
-                if (line.contains("{")) braceDepth = 1;
+                int braceDepth = line.contains("{") ? 1 : 0;
                 for (int j = bodyStart; j < codeLines.size(); j++) {
-                    String bl = codeLines.get(j).trim();
-                    if (bl.contains("{")) braceDepth++;
-                    if (bl.contains("}")) braceDepth--;
+                    int[] counts = countBracesInLine(codeLines.get(j));
+                    braceDepth += counts[0] - counts[1];
                     if (braceDepth <= 0) {
                         bodyEnd = j;
                         break;
@@ -1029,9 +1161,8 @@ public class ProcessRunner extends Thread {
         while (currentLine < codeLines.size()) {
             currentLine++;
             if (currentLine >= codeLines.size()) break;
-            current = codeLines.get(currentLine).trim();
-            if (current.contains("{")) braceDepth++;
-            if (current.contains("}")) braceDepth--;
+            int[] counts = countBracesInLine(codeLines.get(currentLine));
+            braceDepth += counts[0] - counts[1];
             if (braceDepth <= 0) {
                 currentLine++;
                 return;
@@ -1046,14 +1177,40 @@ public class ProcessRunner extends Thread {
     private int skipToMatchingBrace(int startLine) {
         int depth = 1;
         for (int i = startLine; i < codeLines.size(); i++) {
-            String line = codeLines.get(i).trim();
-            if (line.contains("{")) depth++;
-            if (line.contains("}")) {
-                depth--;
-                if (depth <= 0) return i + 1;
-            }
+            int[] counts = countBracesInLine(codeLines.get(i));
+            depth += counts[0] - counts[1];
+            if (depth <= 0) return i + 1;
         }
         return codeLines.size();
+    }
+
+    /**
+     * 逐字符统计一行中 { 和 } 的数量，跳过字符串字面量和注释（#3）。
+     * @return int[2] = {openCount, closeCount}
+     */
+    private static int[] countBracesInLine(String line) {
+        int open = 0, close = 0;
+        boolean inString = false;
+        char stringChar = '"';
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (inString) {
+                if (c == '\\') { i++; continue; }
+                if (c == stringChar) { inString = false; }
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                inString = true;
+                stringChar = c;
+                continue;
+            }
+            if (c == '/' && i + 1 < line.length() && line.charAt(i + 1) == '/') {
+                break;
+            }
+            if (c == '{') open++;
+            if (c == '}') close++;
+        }
+        return new int[]{open, close};
     }
 
     // ════════════════════════════════════════════
@@ -1074,6 +1231,16 @@ public class ProcessRunner extends Thread {
                 return;
             }
             processData = JsonUtil.parseToMap(content);
+            // #15: 从文件同步 PID（防止 processData 中的 PID 被外部修改后与 this.pid 不一致）
+            Object filePidObj = processData.get("PID");
+            if (filePidObj instanceof Number) {
+                int filePid = ((Number) filePidObj).intValue();
+                if (filePid != pid) {
+                    Logger.warn("PID mismatch in loadFromFile: local=" + pid + " file=" + filePid + ", terminating");
+                    running = false;
+                    return;
+                }
+            }
             loadFromProcessData();
         } catch (Exception e) {
             Logger.error("Failed to load process " + pid + ": " + e.getMessage());
@@ -1115,9 +1282,9 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void saveToFile() {
         try {
-            // 更新运行时间
+            // 更新运行时间（自进程启动以来的秒数）
             processData.put("Status", running);
-            processData.put("RunningTime", 0); // 简化实现
+            processData.put("RunningTime", (System.currentTimeMillis() - processStartMs) / 1000);
 
             Map<String, Object> program = (Map<String, Object>) processData.get("Program");
             if (program == null) {
@@ -1135,9 +1302,61 @@ public class ProcessRunner extends Thread {
 
             String json = JsonUtil.toMetaJson(processData);
             String processPath = getProcessFilePath();
-            FileUtil.write(processPath, json);
+            FileUtil.writeAtomic(processPath, json);
         } catch (Exception e) {
             Logger.error("Failed to save process " + pid + ": " + e.getMessage());
+        }
+    }
+
+    // ════════════════════════════════════════════
+    // 进程终止与文件清理
+    // ════════════════════════════════════════════
+
+    /**
+     * 处理进程正常终止时的文件清理：
+     * - INIT (PID=1) 正常退出 → 清除所有进程文件
+     * - 普通进程正常退出 → 删除自身进程文件
+     * - 任何异常终止（错误、Ctrl+C）→ 文件保留（由其他路径处理）
+     */
+    private void handleProcessTermination() {
+        try {
+            if (pid == Constants.PID_INIT) {
+                if (Constants.DELETE_PROCESS_FILE_ON_EXIT) {
+                    clearAllProcessFiles();
+                    Logger.info("INIT process completed normally, all process files cleaned up");
+                } else {
+                    Logger.info("INIT process completed normally (files retained per config)");
+                }
+            } else {
+                if (Constants.DELETE_PROCESS_FILE_ON_EXIT) {
+                    String processPath = getProcessFilePath();
+                    if (FileUtil.exists(processPath)) {
+                        FileUtil.removeFile(processPath);
+                        Logger.info("Process " + pid + " terminated normally, file removed");
+                    }
+                } else {
+                    Logger.info("Process " + pid + " terminated normally (file retained per config)");
+                }
+            }
+        } catch (Exception e) {
+            Logger.warn("Process termination cleanup failed for PID " + pid + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * 清除 /system/process/ 下所有 .pres 文件。
+     * 在 INIT 正常退出时调用。
+     */
+    private void clearAllProcessFiles() {
+        String realDir = PathUtil.toRealPath(Constants.SYSTEM_PROCESS_PATH);
+        java.io.File dir = new java.io.File(realDir);
+        java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".pres"));
+        if (files != null) {
+            for (java.io.File f : files) {
+                if (f.exists()) {
+                    f.delete();
+                }
+            }
         }
     }
 

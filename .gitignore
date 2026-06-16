@@ -33,4 +33,5 @@ cilexec_root/
 dependency-reduced-pom.xml
 
 # extension
+fcl-vscode/.codewhale/
 fcl-vscode/

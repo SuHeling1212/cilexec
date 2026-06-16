@@ -15,7 +15,7 @@ public final class ProcessInit {
 
     private ProcessInit() {}
 
-    private static final String INIT_PROCESS_FILE = "INIT.pres";
+    private static final String INIT_PROCESS_FILE = Constants.PID_INIT + ".pres";
 
     /**
      * 初始化进程系统。
