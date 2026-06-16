@@ -127,6 +127,18 @@ public class FileFunctionProvider implements FunctionProvider {
                     return FileUtil.exists(path);
                 }
 
+                case "readMetaData": {
+                    String path = getStringArg(args, 0);
+                    checkPerm(path, Constants.PERM_READ, context);
+                    Map<String, Object> meta;
+                    if (path.endsWith("/")) {
+                        meta = FileUtil.readDirectoryMetaData(path);
+                    } else {
+                        meta = FileUtil.readFileMetaData(path);
+                    }
+                    return meta != null ? meta : "ERROR: No metadata found";
+                }
+
                 default:
                     return null;
             }

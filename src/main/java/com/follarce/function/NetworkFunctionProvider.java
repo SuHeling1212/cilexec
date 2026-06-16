@@ -21,9 +21,11 @@ public class NetworkFunctionProvider implements FunctionProvider {
         try {
             switch (functionName) {
                 case "httpGet":
+                case "webget":
                     return NetworkUtil.httpGet(getStringArg(args, 0));
 
                 case "httpPost":
+                case "webpost":
                     return NetworkUtil.httpPost(getStringArg(args, 0), getStringArg(args, 1));
 
                 default:

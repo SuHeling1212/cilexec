@@ -1,5 +1,149 @@
-a=1
+// ============================================================
+// Swap Pool 交换池完整测试
+// ============================================================
 
-while(true){
-a=a+1
-}
+println("")
+println("========================================")
+println("  Swap Pool 完整功能测试")
+println("========================================")
+
+// ── 1. always 类型测试 ──
+println("")
+println("=== Test 1: always 类型 ===")
+
+swapPool.create("pool_always")
+swapPool.add("msg:Hello World", "pool_always")
+swapPool.add("count:42", "pool_always", "type:always")
+
+println("ls: " + swapPool.ls("pool_always"))
+
+val1 = swapPool.get("msg", "pool_always")
+println("get(msg) = " + val1)
+
+swapPool.update("msg", "pool_always", "Updated!")
+val1b = swapPool.get("msg", "pool_always")
+println("after update, get(msg) = " + val1b)
+println("ls: " + swapPool.ls("pool_always"))
+
+// ── 2. sync 类型测试 ──
+println("")
+println("=== Test 2: sync 类型 ===")
+
+swapPool.create("pool_sync")
+swapPool.add("data:initial", "pool_sync", "type:sync")
+
+println("after add (should show CHANGED): " + swapPool.ls("pool_sync"))
+
+// 读取一次（消费变更，changed 应变为 false）
+v = swapPool.get("data", "pool_sync")
+println("get(data) = " + v)
+println("after get (should NOT show CHANGED): " + swapPool.ls("pool_sync"))
+
+// update 后 changed 应该再次变为 true
+swapPool.update("data", "pool_sync", "updated_value")
+println("after update (should show CHANGED): " + swapPool.ls("pool_sync"))
+
+// 再读取，消费变更
+v2 = swapPool.get("data", "pool_sync")
+println("get(data) again = " + v2)
+println("after get (should NOT show CHANGED): " + swapPool.ls("pool_sync"))
+
+// signal 测试
+swapPool.signal("data", "pool_sync")
+println("after signal (should show CHANGED): " + swapPool.ls("pool_sync"))
+
+// ── 3. times(N) 类型测试 ──
+println("")
+println("=== Test 3: times(N) 类型 ===")
+
+swapPool.create("pool_times")
+swapPool.add("secret:read_me_3_times", "pool_times", "type:times(3)")
+println("after add: " + swapPool.ls("pool_times"))
+
+// 第 1 次读取
+r1 = swapPool.get("secret", "pool_times")
+println("read 1: " + r1)
+println("after read 1: " + swapPool.ls("pool_times"))
+
+// 第 2 次读取
+r2 = swapPool.get("secret", "pool_times")
+println("read 2: " + r2)
+println("after read 2: " + swapPool.ls("pool_times"))
+
+// 第 3 次读取（这次读完应自动删除）
+r3 = swapPool.get("secret", "pool_times")
+println("read 3: " + r3)
+println("after read 3 (should be empty): " + swapPool.ls("pool_times"))
+
+// 再次读取应返回 ERROR
+r4 = swapPool.get("secret", "pool_times")
+println("read 4 (should be ERROR): " + r4)
+
+// ── 4. lock/unlock 测试 ──
+println("")
+println("=== Test 4: 锁定测试 ===")
+
+swapPool.create("pool_lock")
+swapPool.add("important:top_secret", "pool_lock")
+swapPool.lock("important", "pool_lock")
+println("after lock: " + swapPool.ls("pool_lock"))
+
+// 尝试读取锁定的变量
+r_lock = swapPool.get("important", "pool_lock")
+println("try get locked var: " + r_lock)
+
+// 解锁
+swapPool.unlock("important", "pool_lock")
+println("after unlock: " + swapPool.ls("pool_lock"))
+
+// 解锁后可以读取
+r_unlock = swapPool.get("important", "pool_lock")
+println("get after unlock: " + r_unlock)
+
+// ── 5. 额外功能测试 ──
+println("")
+println("=== Test 5: 额外功能 ===")
+
+println("exists(pool_always): " + swapPool.exists("pool_always"))
+println("exists(nonexistent): " + swapPool.exists("nonexistent"))
+
+swapPool.add("a:1", "pool_always")
+swapPool.add("b:2", "pool_always")
+swapPool.add("c:3", "pool_always")
+println("before clear: " + swapPool.ls("pool_always"))
+
+swapPool.clear("pool_always")
+println("after clear: " + swapPool.ls("pool_always"))
+
+println("")
+println("=== Test 6: 白名单测试 ===")
+swapPool.create("pool_whitelist")
+swapPool.add("restricted:only_pid1", "pool_whitelist", "whitelist:1")
+println(swapPool.ls("pool_whitelist"))
+
+// ── 6. webget / webpost 测试 ──
+println("")
+println("=== Test 6: webget ===")
+
+// 测试 GET 请求
+result = webget("https://jsonplaceholder.typicode.com/todos/1")
+println("webget result: " + result)
+
+println("")
+println("=== Test 7: network.httpGet ===")
+result2 = network.httpGet("https://jsonplaceholder.typicode.com/posts/1")
+println("httpGet result: " + result2)
+
+println("")
+println("=== Test 8: network.httpPost ===")
+result3 = network.httpPost("https://jsonplaceholder.typicode.com/posts", "{\"title\":\"test\",\"body\":\"hello\",\"userId\":1}")
+println("httpPost result: " + result3)
+
+println("")
+println("=== Test 9: type check ===")
+println("type of result: " + typeOf(result))
+
+println("")
+println("========================================")
+println("  所有测试完成!")
+println("========================================")
