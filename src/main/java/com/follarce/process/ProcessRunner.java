@@ -74,6 +74,9 @@ public class ProcessRunner extends Thread {
     // 当在当前变量赋值中调用用户函数时，记录变量名，函数返回后自动赋值
     private String pendingAssignVarName = null;
 
+    // ── 已导入的文件列表（用于断电恢复后重新导入） ──
+    private List<String> importedFiles = new ArrayList<>();
+
     public ProcessRunner(int pid, Map<String, Object> processData) {
         super("Process-" + pid);
         this.pid = pid;
@@ -1151,6 +1154,8 @@ public class ProcessRunner extends Thread {
             }
             i++;
         }
+        // 记录导入的文件路径（用于断电恢复后重新导入）
+        importedFiles.add(importPath);
     }
 
     // ════════════════════════════════════════════
@@ -1346,6 +1351,21 @@ public class ProcessRunner extends Thread {
             pendingAssignVarName = (String) program.get("pendingAssignVarName");
         }
 
+        // 恢复导入的文件列表并重新注册函数（断电恢复支持）
+        if (program != null) {
+            List<String> savedImports = (List<String>) program.get("imports");
+            if (savedImports != null && !savedImports.isEmpty()) {
+                if (importedFiles == null) {
+                    importedFiles = new ArrayList<>();
+                }
+                importedFiles.clear();
+                for (String importPath : savedImports) {
+                    importedFiles.add(importPath);
+                    handleImport("import \"" + importPath + "\"");
+                }
+            }
+        }
+
         // 每 tick 重新解析函数定义，确保与当前 codeLines 一致
         parseFunctionDefinitions();
     }
@@ -1382,6 +1402,13 @@ public class ProcessRunner extends Thread {
                 program.remove("pendingAssignVarName");
             }
 
+            // 持久化已导入的文件列表（断电恢复后重新注册函数）
+            if (importedFiles != null && !importedFiles.isEmpty()) {
+                program.put("imports", new ArrayList<>(importedFiles));
+            } else {
+                program.remove("imports");
+            }
+
             Map<String, Object> code = new LinkedHashMap<>();
             code.put("Code", codeLines);
             code.put("runningCodeLine", currentLine < codeLines.size() ? currentLine : codeLines.size());
@@ -1414,6 +1441,8 @@ public class ProcessRunner extends Thread {
         // callStack 和 pendingAssignVarName 已持久化到 processData 并写入文件
         this.callStack.clear();
         this.pendingAssignVarName = null;
+        // importedFiles 已持久化到 processData 的 Program.imports 中
+        this.importedFiles = null;
     }
 
     // ════════════════════════════════════════════
