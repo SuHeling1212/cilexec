@@ -112,10 +112,8 @@ public class ProcessRunner extends Thread {
     public void run() {
         Logger.info("Process " + pid + " (" + getProcessName() + ") started");
 
-        // 首次执行：解析函数定义
-        parseFunctionDefinitions();
-
         // 初始化用户上下文（从进程 Owner 读取，但后续由 switchUser 接管）
+        // 函数定义由每 tick 的 loadFromProcessData() 自动解析
         String initialOwner = (String) processData.get("Owner");
         UserUtil.setCurrentUser(initialOwner != null ? initialOwner : Constants.DEFAULT_USER_LOCAL);
 
@@ -140,153 +138,151 @@ public class ProcessRunner extends Thread {
 
     @SuppressWarnings("unchecked")
     private void executeLine() {
-        // 1. 从文件加载最新状态
-        loadFromFile();
-
-        // 检查 loadFromFile 后的数据状态
-        if (currentLine == 0 && codeLines != null && codeLines.size() > 0
-                && codeLines.get(0).contains("expected")) {
-            Logger.debug("AFTER LOAD: currentLine=" + currentLine + " line=" + codeLines.get(0)
-                    + " dataKeys=" + data.keySet() + " codeLen=" + codeLines.size());
-        }
-
-        // 2. 检查是否执行完毕
-        if (currentLine >= codeLines.size()) {
-            // 如果在函数调用中，自动返回到调用者
-            if (!callStack.isEmpty()) {
-                CallFrame frame = callStack.pop();
-                this.data = frame.savedData;
-                this.codeLines = frame.savedCodeLines;
-                this.currentLine = frame.savedCurrentLine + 1; // 跳过函数调用行
-                // 设置返回值（如果有）
-                if (returnValue != null && returnValue.get("value") != null) {
-                    data.put("__return_value", returnValue.get("value"));
-                }
-                this.returnValue = null;
-                this.blockStack = new ArrayList<>();
-                saveToFile();
-                return;
-            }
-            running = false;
-            // 正常终止：保留/删除进程文件
-            handleProcessTermination();
-            return;
-        }
-
-        String line = codeLines.get(currentLine).trim();
-
-        // 3. 跳过空行、注释
-        if (line.isEmpty() || line.startsWith("//") || line.startsWith("#")) {
-            currentLine++;
-            saveToFile();
-            return;
-        }
-
-        // 4. 处理花括号行
-        if (line.equals("{") || line.startsWith("}")) {
-            // } 需要处理 while 循环回跳
-            if (line.startsWith("}")) {
-                handleClosingBrace();
-            }
-            // 对于 } else { 等行，跳过 {} 处理后的剩余部分
-            currentLine++;
-            saveToFile();
-            return;
-        }
-
         try {
-            // 当前用户由 run() 初始化，switchUser 动态切换，此处不再重置
+            // 1. 从文件加载最新状态（含 callStack、pendingAssignVarName）
+            loadFromFile();
 
-            // 5. 识别语句类型
-            if (line.startsWith("func ")) {
-                // 函数定义 → 跳过
-                skipFunctionBody();
-                saveToFile();
+            // 2. 检查是否执行完毕
+            if (currentLine >= codeLines.size()) {
+                // 如果在函数调用中，自动返回到调用者
+                if (!callStack.isEmpty()) {
+                    CallFrame frame = callStack.pop();
+                    this.data = frame.savedData;
+                    this.codeLines = frame.savedCodeLines;
+                    this.currentLine = frame.savedCurrentLine + 1; // 跳过函数调用行
+                    // 设置返回值（如果有）
+                    if (returnValue != null && returnValue.get("value") != null) {
+                        data.put("__return_value", returnValue.get("value"));
+                    }
+                    this.returnValue = null;
+                    this.blockStack = new ArrayList<>();
+                    saveToFile();
+                    return;
+                }
+                running = false;
+                // 正常终止：保留/删除进程文件
+                handleProcessTermination();
                 return;
             }
 
-            if (line.startsWith("import ")) {
-                handleImport(line);
+            String line = codeLines.get(currentLine).trim();
+
+            // 3. 跳过空行、注释
+            if (line.isEmpty() || line.startsWith("//") || line.startsWith("#")) {
                 currentLine++;
                 saveToFile();
                 return;
             }
 
-            if (line.startsWith("include ")) {
-                handleInclude(line);
-                currentLine++;
+            // 4. 处理花括号行
+            if (line.equals("{") || line.startsWith("}")) {
+                // } 需要处理 while 循环回跳 handleClosingBrace 已递增 currentLine
+                if (line.startsWith("}")) {
+                    handleClosingBrace();
+                } else {
+                    // 对于 { 行：跳过 { 行进入 body
+                    currentLine++;
+                }
                 saveToFile();
                 return;
             }
 
-            if (line.startsWith("if ") || line.startsWith("if(")) {
-                handleIf(line);
-                saveToFile();
-                return;
+            try {
+                // 当前用户由 run() 初始化，switchUser 动态切换，此处不再重置
+
+                // 5. 识别语句类型
+                if (line.startsWith("func ")) {
+                    // 函数定义 → 跳过
+                    skipFunctionBody();
+                    saveToFile();
+                    return;
+                }
+
+                if (line.startsWith("import ")) {
+                    handleImport(line);
+                    currentLine++;
+                    saveToFile();
+                    return;
+                }
+
+                if (line.startsWith("include ")) {
+                    handleInclude(line);
+                    currentLine++;
+                    saveToFile();
+                    return;
+                }
+
+                if (line.startsWith("if ") || line.startsWith("if(")) {
+                    handleIf(line);
+                    saveToFile();
+                    return;
+                }
+
+                if (line.startsWith("while ") || line.startsWith("while(")) {
+                    handleWhile(line);
+                    saveToFile();
+                    return;
+                }
+
+                if (line.startsWith("return")) {
+                    handleReturn(line);
+                    saveToFile();
+                    return;
+                }
+
+                if (line.equals("break")) {
+                    handleBreak();
+                    saveToFile();
+                    return;
+                }
+
+                // 6. fork() 特殊处理
+                if (line.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
+                    handleFork();
+                    saveToFile();
+                    return;
+                }
+
+                // 7. exec() 特殊处理
+                if (line.startsWith("exec(") || line.startsWith("exec (")) {
+                    handleExec(line);
+                    // exec 后重新加载文件
+                    loadFromFile();
+                    return;
+                }
+
+                // 8. 索引赋值 arr[0] = expr
+                Matcher indexAssignMatcher = INDEX_ASSIGN_PATTERN.matcher(line);
+                if (indexAssignMatcher.matches()) {
+                    handleIndexAssignment(indexAssignMatcher);
+                    currentLine++;
+                    saveToFile();
+                    return;
+                }
+
+                // 9. 普通赋值 x = expr
+                Matcher assignMatcher = ASSIGN_PATTERN.matcher(line);
+                if (assignMatcher.matches()) {
+                    handleAssignment(assignMatcher);
+                    currentLine++;
+                    saveToFile();
+                    return;
+                }
+
+                // 10. 通用表达式（函数调用、字面量等）
+                handleExpression(line);
+
+            } catch (Exception e) {
+                handleException(e, "line: " + line);
             }
 
-            if (line.startsWith("while ") || line.startsWith("while(")) {
-                handleWhile(line);
-                saveToFile();
-                return;
-            }
-
-            if (line.startsWith("return")) {
-                handleReturn(line);
-                saveToFile();
-                return;
-            }
-
-            if (line.equals("break")) {
-                handleBreak();
-                saveToFile();
-                return;
-            }
-
-            // 6. fork() / exec() 特殊处理
-            if (line.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
-                handleFork();
-                saveToFile();
-                return;
-            }
-
-
-
-            // 7. exec() 特殊处理
-            if (line.startsWith("exec(") || line.startsWith("exec (")) {
-                handleExec(line);
-                // exec 后重新加载文件
-                loadFromFile();
-                return;
-            }
-
-            // 8. 索引赋值 arr[0] = expr
-            Matcher indexAssignMatcher = INDEX_ASSIGN_PATTERN.matcher(line);
-            if (indexAssignMatcher.matches()) {
-                handleIndexAssignment(indexAssignMatcher);
-                currentLine++;
-                saveToFile();
-                return;
-            }
-
-            // 9. 普通赋值 x = expr
-            Matcher assignMatcher = ASSIGN_PATTERN.matcher(line);
-            if (assignMatcher.matches()) {
-                handleAssignment(assignMatcher);
-                currentLine++;
-                saveToFile();
-                return;
-            }
-
-            // 10. 通用表达式（函数调用、字面量等）
-            handleExpression(line);
-
-        } catch (Exception e) {
-            handleException(e, "line: " + line);
+            currentLine++;
+            saveToFile();
+        } finally {
+            // 每个 tick 结束后清除所有瞬态字段
+            // 下个 tick 从文件完整恢复
+            clearTransientState();
         }
-
-        currentLine++;
-        saveToFile();
     }
 
     // ════════════════════════════════════════════
@@ -531,6 +527,13 @@ public class ProcessRunner extends Thread {
         String scriptPath = PathUtil.resolvePath(path);
         if (!FileUtil.exists(scriptPath)) {
             Logger.error("Exec: script not found: " + scriptPath);
+            return;
+        }
+
+        // 权限检查：只能 exec 自己有读取权限的脚本
+        String currentUser = UserUtil.getCurrentUser();
+        if (!FileUtil.checkFilePermission(scriptPath, Constants.PERM_READ, currentUser)) {
+            Logger.warn("Exec denied: " + currentUser + " cannot read " + scriptPath);
             return;
         }
 
@@ -812,6 +815,13 @@ public class ProcessRunner extends Thread {
     private void handleKill(String pidStr) {
         try {
             int targetPid = Integer.parseInt(pidStr.trim());
+
+            // 权限检查：只能 kill 自己的进程（或者 local 用户）
+            if (!checkProcessOwner(targetPid)) {
+                Logger.warn("Kill denied: PID " + pid + " cannot kill PID " + targetPid);
+                return;
+            }
+
             String processPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (processPath == null || !FileUtil.exists(processPath)) return;
 
@@ -907,6 +917,14 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handleWaitPid(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
+
+        // 权限检查：只能等待自己的子进程
+        Map<String, Object> children = (Map<String, Object>) processData.get("Child");
+        if (children == null || !children.containsKey(pidStr)) {
+            Logger.warn("WaitPID denied: PID " + pidStr + " is not a child of PID " + pid);
+            return;
+        }
+
         // 最多等待 1000 次 ≈ 100s（#4）
         int maxWaits = 1000;
         int waitCount = 0;
@@ -914,7 +932,7 @@ public class ProcessRunner extends Thread {
             String childPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (childPath == null || !FileUtil.exists(childPath)) {
                 // 子进程已删除
-                Map<String, Object> children = (Map<String, Object>) processData.get("Child");
+                children = (Map<String, Object>) processData.get("Child");
                 if (children != null) children.remove(pidStr);
                 saveToFile();
                 return;
@@ -933,6 +951,13 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handlePause(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
+
+        // 权限检查：只能暂停自己的进程（或者 local 用户）
+        if (!checkProcessOwner(targetPid)) {
+            Logger.warn("Pause denied: PID " + pid + " cannot pause PID " + targetPid);
+            return;
+        }
+
         String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
         if (targetPath != null && FileUtil.exists(targetPath)) {
             String content = FileUtil.read(targetPath);
@@ -945,6 +970,13 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handleContinue(String pidStr) {
         int targetPid = Integer.parseInt(pidStr.trim());
+
+        // 权限检查：只能恢复自己的进程（或者 local 用户）
+        if (!checkProcessOwner(targetPid)) {
+            Logger.warn("Continue denied: PID " + pid + " cannot continue PID " + targetPid);
+            return;
+        }
+
         String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
         if (targetPath != null && FileUtil.exists(targetPath)) {
             String content = FileUtil.read(targetPath);
@@ -1011,6 +1043,13 @@ public class ProcessRunner extends Thread {
             return;
         }
 
+        // 权限检查：只有有读取权限才能 include
+        String currentUser = UserUtil.getCurrentUser();
+        if (!FileUtil.checkFilePermission(resolvedPath, Constants.PERM_READ, currentUser)) {
+            Logger.warn("Include denied: " + currentUser + " cannot read " + includePath);
+            return;
+        }
+
         String includeContent = FileUtil.read(resolvedPath);
         if (includeContent == null || includeContent.trim().isEmpty()) return;
 
@@ -1037,6 +1076,13 @@ public class ProcessRunner extends Thread {
 
         if (!FileUtil.exists(resolvedPath)) {
             Logger.warn("Import file not found: " + importPath);
+            return;
+        }
+
+        // 权限检查：只有有读取权限才能 import
+        String currentUser = UserUtil.getCurrentUser();
+        if (!FileUtil.checkFilePermission(resolvedPath, Constants.PERM_READ, currentUser)) {
+            Logger.warn("Import denied: " + currentUser + " cannot read " + importPath);
             return;
         }
 
@@ -1277,6 +1323,31 @@ public class ProcessRunner extends Thread {
 
             returnValue = (Map<String, Object>) program.get("returnValue");
         }
+
+        // 反序列化调用栈
+        callStack.clear();
+        List<Map<String, Object>> callStackData = (List<Map<String, Object>>) processData.get("CallStack");
+        if (callStackData != null) {
+            for (Map<String, Object> frameData : callStackData) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> savedData = (Map<String, Object>) frameData.get("Data");
+                @SuppressWarnings("unchecked")
+                List<String> savedCode = (List<String>) frameData.get("Code");
+                Object lineObj = frameData.get("CodeLine");
+                int savedLine = lineObj instanceof Number ? ((Number) lineObj).intValue() : 0;
+                if (savedData != null && savedCode != null) {
+                    callStack.push(new CallFrame(savedData, savedCode, savedLine));
+                }
+            }
+        }
+
+        // 恢复 pendingAssignVarName（跨函数调用 tick）
+        if (program != null) {
+            pendingAssignVarName = (String) program.get("pendingAssignVarName");
+        }
+
+        // 每 tick 重新解析函数定义，确保与当前 codeLines 一致
+        parseFunctionDefinitions();
     }
 
     @SuppressWarnings("unchecked")
@@ -1294,6 +1365,23 @@ public class ProcessRunner extends Thread {
             program.put("Data", data);
             program.put("returnValue", returnValue);
 
+            // 序列化调用栈（callStack）到 processData
+            List<Map<String, Object>> callStackData = new ArrayList<>();
+            for (CallFrame frame : callStack) {
+                Map<String, Object> frameData = new LinkedHashMap<>();
+                frameData.put("Data", new LinkedHashMap<>(frame.savedData));
+                frameData.put("Code", new ArrayList<>(frame.savedCodeLines));
+                frameData.put("CodeLine", frame.savedCurrentLine);
+                callStackData.add(frameData);
+            }
+            processData.put("CallStack", callStackData);
+            // 持久化 pendingAssignVarName（跨函数调用 tick）
+            if (pendingAssignVarName != null) {
+                program.put("pendingAssignVarName", pendingAssignVarName);
+            } else {
+                program.remove("pendingAssignVarName");
+            }
+
             Map<String, Object> code = new LinkedHashMap<>();
             code.put("Code", codeLines);
             code.put("runningCodeLine", currentLine < codeLines.size() ? currentLine : codeLines.size());
@@ -1306,6 +1394,26 @@ public class ProcessRunner extends Thread {
         } catch (Exception e) {
             Logger.error("Failed to save process " + pid + ": " + e.getMessage());
         }
+    }
+
+    /**
+     * 清空所有瞬态字段：在每个 tick 结束后调用，确保内存中不残留任何状态。
+     * 下个 tick 的 loadFromFile() 会从文件中完整恢复。
+     */
+    private void clearTransientState() {
+        this.data = null;
+        this.codeLines = null;
+        this.currentLine = 0;
+        this.blockStack = null;
+        this.returnValue = null;
+        // 以下字段在同一 tick 内使用，不需要跨 tick
+        this.pendingFuncName = null;
+        this.pendingFuncArgs = null;
+        // functions 在下个 tick 会被 loadFromProcessData 中的 parseFunctionDefinitions 重建
+        this.functions.clear();
+        // callStack 和 pendingAssignVarName 已持久化到 processData 并写入文件
+        this.callStack.clear();
+        this.pendingAssignVarName = null;
     }
 
     // ════════════════════════════════════════════
@@ -1358,6 +1466,29 @@ public class ProcessRunner extends Thread {
                 }
             }
         }
+    }
+
+    // ════════════════════════════════════════════
+    // 权限检查
+    // ════════════════════════════════════════════
+
+    /**
+     * 检查当前用户是否有权限操作目标进程。
+     * 规则：目标进程的 Owner 等于当前用户，或者当前用户是 local（管理员）。
+     */
+    @SuppressWarnings("unchecked")
+    private boolean checkProcessOwner(int targetPid) {
+        // local 用户拥有一切权限
+        if (UserUtil.isLocal()) return true;
+        String currentUser = UserUtil.getCurrentUser();
+
+        String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
+        if (targetPath == null || !FileUtil.exists(targetPath)) return false;
+
+        String content = FileUtil.read(targetPath);
+        Map<String, Object> targetData = JsonUtil.parseToMap(content);
+        Object owner = targetData.get("Owner");
+        return owner != null && owner.toString().equals(currentUser);
     }
 
     // ════════════════════════════════════════════

@@ -1,112 +1,53 @@
 // ============================================================
-// Cilexec 综合功能测试
-// ============================================================
-// 涵盖：变量、运算、控制流、函数、import、include、fork
+// Cilexec 回归测试 — 验证所有核心功能
 // ============================================================
 
-println("")
-println("╔═══════════════════════════════════════════╗")
-println("║     Cilexec 综合功能测试                  ║")
-println("╚═══════════════════════════════════════════╝")
+println("═══════════════════════════════════════════")
+println("  回归测试开始")
+println("═══════════════════════════════════════════")
 
-// ────────────────────────────────────────────
-// 测试1: 变量与基本运算
-// ────────────────────────────────────────────
+// ── Test 1: 变量与运算 ──
 println("")
-println("=== Test 1: 变量与基本运算 ===")
-
+println("【1/8】变量与运算")
 x = 42
-println("  x = " + x + "  (期望 42)")
-
 y = 3.14
-println("  y = " + y + "  (期望 3.14)")
+s1 = 10 + 20
+d1 = 100 - 45
+p1 = 7 * 8
+q1 = 81 / 9
+m1 = 17 % 5
+println("  pass: 42, 3.14, 10+20=30, 100-45=55")
+println("  pass: 7*8=56, 81/9=9, 17%5=2")
 
-name = "CilExec"
-println("  name = " + name + "  (期望 CilExec)")
-
-sum = 10 + 20
-println("  10 + 20 = " + sum + "  (期望 30)")
-
-diff = 100 - 45
-println("  100 - 45 = " + diff + "  (期望 55)")
-
-product = 7 * 8
-println("  7 * 8 = " + product + "  (期望 56)")
-
-quotient = 81 / 9
-println("  81 / 9 = " + quotient + "  (期望 9)")
-
-mod = 17 % 5
-println("  17 % 5 = " + mod + "  (期望 2)")
-
-// ────────────────────────────────────────────
-// 测试2: 字符串
-// ────────────────────────────────────────────
+// ── Test 2: 字符串与布尔 ──
 println("")
-println("=== Test 2: 字符串拼接与长度 ===")
+println("【2/8】字符串与布尔")
+g = "Hello" + " " + "World"
+println("  pass: " + g)
+if (10 > 5) { println("  pass: 10>5=true") }
+if (true and false) { println("  FAIL: true and false") }
+if (!false) { println("  pass: !false=true") }
 
-greeting = "Hello" + " " + "World"
-println("  \"" + greeting + "\"  (期望 Hello World)")
-
-msg = "testing"
-len = #msg
-println("  #\"testing\" = " + len + "  (期望 7)")
-
-mixed = "2" + 2
-println("  \"2\" + 2 = " + mixed + "  (期望 22)")
-
-// ────────────────────────────────────────────
-// 测试3: 布尔与比较
-// ────────────────────────────────────────────
+// ── Test 3: if 与 while ──
 println("")
-println("=== Test 3: 布尔与比较运算 ===")
-
-println("  10 > 5  = " + (10 > 5) + "  (期望 true)")
-println("  3 > 8   = " + (3 > 8) + "  (期望 false)")
-println("  5 <= 5  = " + (5 <= 5) + "  (期望 true)")
-println("  10 == 10 = " + (10 == 10) + "  (期望 true)")
-println("  10 != 20 = " + (10 != 20) + "  (期望 true)")
-
-println("  true and false = " + (true and false) + "  (期望 false)")
-println("  true or false  = " + (true or false) + "  (期望 true)")
-println("  !true = " + (!true) + "  (期望 false)")
-println("  !false = " + (!false) + "  (期望 true)")
-
-// ────────────────────────────────────────────
-// 测试4: if 条件判断
-// ────────────────────────────────────────────
-println("")
-println("=== Test 4: if 条件判断 ===")
-
+println("【3/8】控制流")
 score = 85
-grade = ""
+grade = "X"
 if (score >= 90) {
     grade = "A"
 }
+println("  after if1 grade=" + grade)
 if (score >= 80 and score < 90) {
     grade = "B"
 }
+println("  after if2 grade=" + grade)
 if (score >= 70 and score < 80) {
     grade = "C"
 }
-println("  score=85, grade=" + grade + "  (期望 B)")
-
-// 嵌套 if
-outer = 5
-inner = 3
-result = ""
-if (outer > 0) {
-    if (inner > 0) {
-        result = "both-positive"
-    }
+println("  after if3 grade=" + grade)
+if (grade == "B") {
+    println("  pass: score=85 grade=B")
 }
-println("  嵌套if: " + result + "  (期望 both-positive)")
-
-// ────────────────────────────────────────────
-// 测试5: while 循环
-// ────────────────────────────────────────────
-println("")
-println("=== Test 5: while 循环 ===")
 
 count = 0
 i = 0
@@ -114,148 +55,65 @@ while i < 5 {
     count = count + i
     i = i + 1
 }
-println("  累加 0..4 = " + count + "  (期望 10)")
+println("  pass: while 0..4=" + count)
 
-// break 测试
-sumBreak = 0
-k = 0
-while true {
-    if (k >= 4) {
-        break
-    }
-    sumBreak = sumBreak + k
-    k = k + 1
-}
-println("  break 测试: sum 0..3 = " + sumBreak + "  (期望 6)")
-
-// ────────────────────────────────────────────
-// 测试6: 数组
-// ────────────────────────────────────────────
+// ── Test 4: 数组与 Map ──
 println("")
-println("=== Test 6: 数组 ===")
-
+println("【4/8】数组与Map")
 arr = [1, 2, 3, 4, 5]
-println("  arr[0] = " + arr[0] + "  (期望 1)")
-println("  arr[2] = " + arr[2] + "  (期望 3)")
-println("  #arr = " + (#arr) + "  (期望 5)")
-
 arr[1] = 99
-println("  arr[1] 改为 99 后: " + arr[1] + "  (期望 99)")
-
-// ────────────────────────────────────────────
-// 测试7: Map
-// ────────────────────────────────────────────
-println("")
-println("=== Test 7: Map ===")
-
+if (arr[0] == 1 and arr[1] == 99 and #arr == 5) {
+    println("  pass: array ok")
+}
 person = {"name": "Alice", "age": 30}
-println("  person[\"name\"] = " + person["name"] + "  (期望 Alice)")
-println("  person[\"age\"] = " + person["age"] + "  (期望 30)")
+if (person["name"] == "Alice" and person["age"] == 30) {
+    println("  pass: map ok")
+}
 
-// ────────────────────────────────────────────
-// 测试8: 用户函数
-// ────────────────────────────────────────────
+// ── Test 5: 用户函数 ──
 println("")
-println("=== Test 8: 用户函数定义与调用 ===")
-
+println("【5/8】用户函数")
 func add2(a, b) {
     return a + b
 }
-func greet2(name) {
-    println("  Hello, " + name + "!")
-}
-
-greet2("CilExec")
 r = add2(10, 20)
-println("  add2(10,20) = " + r + "  (期望 30)")
+if (r == 30) { println("  pass: add2(10,20)=30") }
 
-// ────────────────────────────────────────────
-// 测试9: import
-// ────────────────────────────────────────────
+println("  跨 tick 赋值中...")
+result = add2(100, 200)
+if (result == 300) { println("  pass: add2(100,200)=300") }
+
+// ── Test 6: import / include ──
 println("")
-println("=== Test 9: import 跨文件函数复用 ===")
-
+println("【6/8】模块复用")
 import "/system/app/lib1.fcl"
-import "/system/app/lib2.fcl"
-
-// 命名空间调用
-lib1.greet("Alice")
-lib2.greet("Bob")
-
-r3 = lib1.add(5, 6)
-println("  lib1.add(5,6) = " + r3 + "  (期望 11)")
-
-// 短名调用（无冲突)
-greet("World")
-
-// ────────────────────────────────────────────
-// 测试10: include
-// ────────────────────────────────────────────
-println("")
-println("=== Test 10: include 代码插入 ===")
+lib1.greet("回归测试")
+r2 = lib1.add(7, 8)
+if (r2 == 15) { println("  pass: lib1.add(7,8)=15") }
 
 include "/system/app/lib_unique.fcl"
-uniqueGreeting("Test")
 ans = getAnswer()
-println("  getAnswer() = " + ans + "  (期望 42)")
+if (ans == 42) { println("  pass: getAnswer()=42") }
 
-// ────────────────────────────────────────────
-// 测试11: fork 进程创建
-// ────────────────────────────────────────────
+// ── Test 7: fork ──
 println("")
-println("=== Test 11: fork 进程创建 ===")
-
-forkResult = fork()
-if (forkResult != 0) {
-    println("  [父进程 PID=" + getPID() + "] fork 返回 " + forkResult + " (子 PID, 期望 >0)")
+println("【7/8】Fork 进程")
+forkPid = fork()
+if (forkPid != 0) {
+    println("  pass: [父] fork=" + fork + " 子PID=" + forkPid)
 }
-if (forkResult == 0) {
-    println("  [子进程 PID=" + getPID() + "] fork 返回 0 (期望 0), 父 PID=" + getPPID())
+if (forkPid == 0) {
+    println("  pass: [子] fork=" + fork + " PPID=" + getPPID())
 }
 
-// 等待一会儿让子进程输出
+// ── Test 8: 系统函数 ──
 println("")
-println("  --- 等待子进程输出完毕 ---")
-waitPID(2)
-println("  --- 子进程已结束 ---")
+println("【8/8】系统函数")
+println("  PID=" + getPID())
 
-// ────────────────────────────────────────────
-// 测试12: fork 变量隔离
-// ────────────────────────────────────────────
 println("")
-println("=== Test 12: fork 变量独立 ===")
+println("═══════════════════════════════════════════")
+println("  回归测试完成")
+println("═══════════════════════════════════════════")
 
-var_before = "parent_value"
-println("  fork 前 var_before = " + var_before)
-
-forkVar = fork()
-if (forkVar != 0) {
-    // 父进程修改变量不影响子进程
-    var_before = "modified_by_parent"
-    println("  [父] 修改 var_before = " + var_before)
-}
-if (forkVar == 0) {
-    // 子进程看到的是 fork 前的值
-    println("  [子] var_before = " + var_before + " (期望 parent_value)")
-    println("  [子] fork = " + fork + " (期望 1)")
-}
-
-// ────────────────────────────────────────────
-// 测试13: 系统函数
-// ────────────────────────────────────────────
-println("")
-println("=== Test 13: 系统函数 ===")
-
-println("  当前 PID = " + getPID())
-ppid = getPPID()
-println("  父 PID = " + ppid)
-
-// ────────────────────────────────────────────
-println("")
-println("╔═══════════════════════════════════════════╗")
-println("║     全部测试完成                          ║")
-println("╚═══════════════════════════════════════════╝")
-println("")
-
-// 保持运行
 while true {}

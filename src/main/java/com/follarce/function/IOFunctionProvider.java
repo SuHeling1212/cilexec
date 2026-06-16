@@ -43,12 +43,22 @@ public class IOFunctionProvider implements FunctionProvider {
                     }
                     return readInput();
 
-                case "readFile":
-                    return FileUtil.read(getStringArg(args, 0));
+                case "readFile": {
+                    String rfPath = getStringArg(args, 0);
+                    if (!FileUtil.checkFilePermission(rfPath, Constants.PERM_READ, context.getCurrentUser())) {
+                        return new String[]{Constants.ERROR_MARKER, "Permission denied: read " + rfPath};
+                    }
+                    return FileUtil.read(rfPath);
+                }
 
-                case "writeFile":
-                    FileUtil.write(getStringArg(args, 0), getStringArg(args, 1));
-                    return null;
+                case "writeFile": {
+                    String wfPath = getStringArg(args, 0);
+                    if (!FileUtil.checkFilePermission(wfPath, Constants.PERM_WRITE, context.getCurrentUser())) {
+                        return new String[]{Constants.ERROR_MARKER, "Permission denied: write " + wfPath};
+                    }
+                    FileUtil.write(wfPath, getStringArg(args, 1));
+                    return "";
+                }
 
                 default:
                     return null;

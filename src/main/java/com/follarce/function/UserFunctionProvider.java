@@ -20,11 +20,20 @@ public class UserFunctionProvider implements FunctionProvider {
     @SuppressWarnings("unchecked")
     public Object call(String functionName, List<Object> args, FunctionContext context) {
         try {
+            // 只有 local 用户可以管理用户
+            boolean isLocal = "local".equals(context.getCurrentUser());
+
             switch (functionName) {
                 case "createUser":
+                    if (!isLocal) {
+                        return new String[]{Constants.ERROR_MARKER, "Permission denied: only local can create users"};
+                    }
                     return UserUtil.createUser(getStringArg(args, 0), getStringArg(args, 1), false);
 
                 case "removeUser":
+                    if (!isLocal) {
+                        return new String[]{Constants.ERROR_MARKER, "Permission denied: only local can remove users"};
+                    }
                     return UserUtil.removeUser(getStringArg(args, 0), getStringArg(args, 1));
 
                 case "switchUser":
