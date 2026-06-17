@@ -1,6 +1,8 @@
 package com.follarce.process;
 
 import com.follarce.Constants;
+import com.follarce.exception.ExceptionContext;
+import com.follarce.exception.ProcessException;
 import com.follarce.exception.RecoverableException;
 import com.follarce.exception.UnrecoverableException;
 import com.follarce.function.FunctionContext;
@@ -31,9 +33,9 @@ public class ProcessRunner extends Thread {
     private static final Pattern INCLUDE_PATTERN =
             Pattern.compile("^include\\s+\"([^\"]+)\"\\s*$");
     private static final Pattern IF_PATTERN =
-            Pattern.compile("^if\\s*\\(?([^{)]+)\\)?\\s*\\{?\\s*$");
+            Pattern.compile("^if\\s*\\(?([^{)]+)\\)?\\s*\\{?.*");
     private static final Pattern WHILE_PATTERN =
-            Pattern.compile("^while\\s*\\(?([^{)]+)\\)?\\s*\\{?\\s*$");
+            Pattern.compile("^while\\s*\\(?([^{)]+)\\)?\\s*\\{?.*");
     private static final Pattern ASSIGN_PATTERN =
             Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)$");
     private static final Pattern INDEX_ASSIGN_PATTERN =
@@ -67,15 +69,15 @@ public class ProcessRunner extends Thread {
     private String pendingFuncName;
     private List<Object> pendingFuncArgs;
 
-    // ── fork 子进程 PID（由 handleFork 设置，供 handleAssignment 读取） ──
-    private int lastForkChildPid = -1;
-
     // ── 赋值语境中的用户函数返回处理 ──
     // 当在当前变量赋值中调用用户函数时，记录变量名，函数返回后自动赋值
     private String pendingAssignVarName = null;
 
     // ── 已导入的文件列表（用于断电恢复后重新导入） ──
     private List<String> importedFiles = new ArrayList<>();
+
+    // ── 进程间等待通知锁（替代轮询） ──
+    private final Object waitLock = new Object();
 
     public ProcessRunner(int pid, Map<String, Object> processData) {
         super("Process-" + pid);
@@ -123,6 +125,7 @@ public class ProcessRunner extends Thread {
         while (running) {
             try {
                 executeLine();
+                clearTransientState();
                 Thread.sleep(Constants.PROCESS_TICK_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -131,6 +134,9 @@ public class ProcessRunner extends Thread {
                 handleException(e, "executeLine");
             }
         }
+
+        // 进程终止时通知父进程（仅唤醒等待该子进程的父进程，而非所有进程）
+        notifyParentOnTermination();
 
         Logger.info("Process " + pid + " (" + getProcessName() + ") terminated");
     }
@@ -178,14 +184,19 @@ public class ProcessRunner extends Thread {
             }
 
             // 4. 处理花括号行
-            if (line.equals("{") || line.startsWith("}")) {
-                // } 需要处理 while 循环回跳 handleClosingBrace 已递增 currentLine
-                if (line.startsWith("}")) {
-                    handleClosingBrace();
-                } else {
-                    // 对于 { 行：跳过 { 行进入 body
+            // 使用 startsWith("}") 捕获纯 }、}}} 和 } else {，但不捕获 while (true){ 这样的代码行
+            if (line.startsWith("}")) {
+                int[] counts = countBracesInLine(line);
+                handleClosingBraces(counts[1]);  // 支持 }}} 同时关闭多层嵌套
+                if (counts[0] > 0) {
+                    // } else { 这种平衡情况，跳过该行 body
                     currentLine++;
                 }
+                saveToFile();
+                return;
+            }
+            if (line.equals("{")) {
+                currentLine++;
                 saveToFile();
                 return;
             }
@@ -202,16 +213,16 @@ public class ProcessRunner extends Thread {
                 }
 
                 if (line.startsWith("import ")) {
-                    handleImport(line);
                     currentLine++;
-                    saveToFile();
+                    saveToFile();  // ✅ 在文件读取前持久化行号推进
+                    handleImport(line);
                     return;
                 }
 
                 if (line.startsWith("include ")) {
-                    handleInclude(line);
                     currentLine++;
-                    saveToFile();
+                    saveToFile();  // ✅ 在文件读取前持久化行号推进
+                    handleInclude(line);
                     return;
                 }
 
@@ -239,6 +250,12 @@ public class ProcessRunner extends Thread {
                     return;
                 }
 
+                if (line.equals("continue")) {
+                    handleContinue();
+                    saveToFile();
+                    return;
+                }
+
                 // 6. fork() 特殊处理
                 if (line.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
                     handleFork();
@@ -257,30 +274,38 @@ public class ProcessRunner extends Thread {
                 // 8. 索引赋值 arr[0] = expr
                 Matcher indexAssignMatcher = INDEX_ASSIGN_PATTERN.matcher(line);
                 if (indexAssignMatcher.matches()) {
-                    handleIndexAssignment(indexAssignMatcher);
                     currentLine++;
-                    saveToFile();
+                    saveToFile();  // ✅ 在副作用操作前持久化行号推进
+                    handleIndexAssignment(indexAssignMatcher);
+                    saveToFile();  // 持久化数据变更
                     return;
                 }
 
                 // 9. 普通赋值 x = expr
                 Matcher assignMatcher = ASSIGN_PATTERN.matcher(line);
                 if (assignMatcher.matches()) {
-                    handleAssignment(assignMatcher);
                     currentLine++;
-                    saveToFile();
+                    saveToFile();  // ✅ 在 fork/用户函数调用前持久化行号推进
+                    handleAssignment(assignMatcher);
+                    saveToFile();  // 持久化数据变更
                     return;
                 }
 
                 // 10. 通用表达式（函数调用、字面量等）
-                handleExpression(line);
+                currentLine++;
+                saveToFile();  // ✅ 在可能的 side-effect (fork/exec/wait) 前持久化
+                Object exprResult = evaluateExpression(line);
+                if (exprResult == null) {
+                    Logger.warn("Unknown statement or expression evaluation returned null in PID " + pid
+                            + ", line=" + (currentLine - 1) + ": " + line);
+                } else if (exprResult instanceof String) {
+                    handleSpecialMarker((String) exprResult);
+                }
+                saveToFile();  // 持久化数据变更
 
             } catch (Exception e) {
                 handleException(e, "line: " + line);
             }
-
-            currentLine++;
-            saveToFile();
         } finally {
             // 每个 tick 结束后清除所有瞬态字段
             // 下个 tick 从文件完整恢复
@@ -296,6 +321,7 @@ public class ProcessRunner extends Thread {
     private void handleIf(String line) {
         Matcher matcher = IF_PATTERN.matcher(line);
         if (!matcher.matches()) {
+            Logger.error("Invalid if syntax in PID " + pid + ", line=" + currentLine + ": " + line);
             currentLine++;
             return;
         }
@@ -319,67 +345,110 @@ public class ProcessRunner extends Thread {
     private void handleWhile(String line) {
         Matcher matcher = WHILE_PATTERN.matcher(line);
         if (!matcher.matches()) {
+            Logger.error("Invalid while syntax in PID " + pid + ", line=" + currentLine + ": " + line);
             currentLine++;
             return;
         }
         String condition = matcher.group(1).trim();
         boolean result = evaluateToBoolean(condition);
+
+        // 搜索整个 blockStack 查找与当前行匹配的 WHILE 块
+        // 嵌套 IF 可能在 WHILE 之上，不能只检查栈顶，否则会重复 push WHILE block
+        boolean alreadyInLoop = false;
+        for (int i = blockStack.size() - 1; i >= 0; i--) {
+            Map<String, Object> block = blockStack.get(i);
+            if ("WHILE".equals(block.get("type"))
+                    && ((Number) block.get("startLine")).intValue() == currentLine) {
+                alreadyInLoop = true;
+                break;
+            }
+        }
+
         if (result) {
-            // 条件成立：push WHILE block，进入 body
-            Map<String, Object> block = new LinkedHashMap<>();
-            block.put("type", "WHILE");
-            block.put("startLine", currentLine);
-            block.put("condition", condition);
-            blockStack.add(block);
+            if (!alreadyInLoop) {
+                // 首次进入循环：push WHILE block
+                Map<String, Object> block = new LinkedHashMap<>();
+                block.put("type", "WHILE");
+                block.put("startLine", currentLine);
+                block.put("condition", condition);
+                blockStack.add(block);
+            }
             currentLine++;
         } else {
-            // 条件不成立：跳过 body
+            // 条件不成立：如果之前在循环中，pop block 退出循环
+            if (alreadyInLoop) {
+                blockStack.remove(blockStack.size() - 1);
+            }
             currentLine = skipToMatchingBrace(currentLine + 1);
         }
     }
 
-    private void handleClosingBrace() {
-        if (blockStack.isEmpty()) {
-            currentLine++;
-            return;
-        }
-        Map<String, Object> block = blockStack.get(blockStack.size() - 1);
-        String type = (String) block.get("type");
-        if ("WHILE".equals(type)) {
-            // 重新检查 while 条件
-            String condition = (String) block.get("condition");
-            boolean result = evaluateToBoolean(condition);
-            if (result) {
-                // 条件仍成立：跳回 while 开头
-                int startLine = ((Number) block.get("startLine")).intValue();
-                currentLine = startLine;
-            } else {
-                // 条件不成立：pop block，继续
-                blockStack.remove(blockStack.size() - 1);
+    /**
+     * 处理连续 N 个花括号闭合（支持 }}} 一次性关闭多层嵌套）。
+     * 若某层为 WHILE 且条件仍成立，直接跳回循环开头，不再处理后续闭括号。
+     */
+    private void handleClosingBraces(int count) {
+        for (int i = 0; i < count; i++) {
+            if (blockStack.isEmpty()) {
                 currentLine++;
+                return;
             }
-        } else if ("IF".equals(type)) {
-            // if body 结束，pop block
-            blockStack.remove(blockStack.size() - 1);
-            currentLine++;
-        } else {
-            currentLine++;
+            Map<String, Object> block = blockStack.get(blockStack.size() - 1);
+            String type = (String) block.get("type");
+            if ("WHILE".equals(type)) {
+                String condition = (String) block.get("condition");
+                if (evaluateToBoolean(condition)) {
+                    // 条件仍成立：跳回 while 开头，不再处理后面的 }
+                    int startLine = ((Number) block.get("startLine")).intValue();
+                    currentLine = startLine;
+                    return;
+                }
+                // 条件不成立：pop block，继续处理下一个 }
+                blockStack.remove(blockStack.size() - 1);
+            } else if ("IF".equals(type)) {
+                blockStack.remove(blockStack.size() - 1);
+            } else {
+                currentLine++;
+                return;
+            }
         }
+        // 所有闭括号处理完毕，前进到下一行
+        currentLine++;
     }
 
     private void handleBreak() {
-        // 从当前行向前扫描 }，计数
-        int depth = 0;
-        int start = currentLine;
-        // 先看当前 blockStack
-        if (!blockStack.isEmpty()) {
-            Map<String, Object> top = blockStack.get(blockStack.size() - 1);
-            if ("WHILE".equals(top.get("type"))) {
-                blockStack.remove(blockStack.size() - 1);
+        // 从 blockStack 中从顶向下找最近的 WHILE 块，移除它及之上的所有块
+        boolean foundWhile = false;
+        for (int i = blockStack.size() - 1; i >= 0; i--) {
+            Map<String, Object> block = blockStack.get(i);
+            if ("WHILE".equals(block.get("type"))) {
+                // 移除从该 WHILE 到栈顶的所有块
+                int removeCount = blockStack.size() - i;
+                for (int j = 0; j < removeCount; j++) {
+                    blockStack.remove(blockStack.size() - 1);
+                }
+                foundWhile = true;
+                break;
             }
+        }
+        if (!foundWhile) {
+            Logger.warn("Break outside while loop in PID " + pid + ", line=" + currentLine);
         }
         // 找到匹配的 }
         currentLine = skipToMatchingBrace(currentLine + 1);
+    }
+
+    private void handleContinue() {
+        // 从 blockStack 中从顶向下找最近的 WHILE 块
+        for (int i = blockStack.size() - 1; i >= 0; i--) {
+            Map<String, Object> block = blockStack.get(i);
+            if ("WHILE".equals(block.get("type"))) {
+                // 跳回到 while 条件行重新判断（不 pop block）
+                currentLine = ((Number) block.get("startLine")).intValue();
+                return;
+            }
+        }
+        Logger.warn("Continue outside while loop in PID " + pid + ", line=" + currentLine);
     }
 
     private void handleReturn(String line) {
@@ -465,22 +534,7 @@ public class ProcessRunner extends Thread {
                 program.put("returnValue", null);
             }
 
-            // 6. 更新父进程的 Child 列表
-            Map<String, Object> children = (Map<String, Object>) processData.get("Child");
-            if (children == null) {
-                children = new LinkedHashMap<>();
-                processData.put("Child", children);
-            }
-            Map<String, Object> childInfo = new LinkedHashMap<>();
-            childInfo.put("Name", childData.get("Name"));
-            childInfo.put("PID", childPid);
-            childInfo.put("Path", childData.get("Path"));
-            children.put(String.valueOf(childPid), childInfo);
-
-            // 7. 保存父进程（更新 Child 列表）
-            saveToFile();
-
-            // 8. 注入 fork 返回值 + fork 特殊变量
+            // 6. 注入 fork 返回值 + fork 特殊变量
             //    - 子进程：varName=0（如果存在）、fork=1
             //    - 父进程：fork=0
             //    先深拷贝了全部变量，再添加 fork 相关变量
@@ -501,13 +555,24 @@ public class ProcessRunner extends Thread {
             // 父进程 fork 特殊变量：fork = 0
             this.data.put("fork", 0L);
 
-            // 9. 现在创建子进程文件（变量已注入，Scheduler 读到完整版）
+            // 7. 先创建子进程文件，确保子进程持久化成功后再更新父进程
             String childFileName = childPid + ".pres";
             String childJson = JsonUtil.toMetaJson(childData);
             FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childFileName);
             FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
 
-            this.lastForkChildPid = childPid;
+            // 8. 子进程文件创建成功后，再更新父进程的 Child 列表并保存
+            Map<String, Object> children = (Map<String, Object>) processData.get("Child");
+            if (children == null) {
+                children = new LinkedHashMap<>();
+                processData.put("Child", children);
+            }
+            Map<String, Object> childInfo = new LinkedHashMap<>();
+            childInfo.put("Name", childData.get("Name"));
+            childInfo.put("PID", childPid);
+            childInfo.put("Path", childData.get("Path"));
+            children.put(String.valueOf(childPid), childInfo);
+            saveToFile();
 
             Logger.info("Fork: PID " + pid + " created child PID " + childPid);
             return childPid;
@@ -584,6 +649,7 @@ public class ProcessRunner extends Thread {
 
         // 重新解析函数定义
         this.codeLines = newCodeLines;
+        expandInlineBraces();
         this.data = newData;
         this.currentLine = 0;
         this.blockStack = new ArrayList<>();
@@ -679,18 +745,6 @@ public class ProcessRunner extends Thread {
     // ════════════════════════════════════════════
 
     /**
-     * 处理表达式语句（函数调用）。
-     */
-    private void handleExpression(String line) {
-        Object result = evaluateExpression(line);
-        // 检查是否是特殊标记
-        if (result instanceof String) {
-            String marker = (String) result;
-            handleSpecialMarker(marker);
-        }
-    }
-
-    /**
      * 对表达式字符串进行全面求值。
      */
     private Object evaluateExpression(String expr) {
@@ -717,14 +771,13 @@ public class ProcessRunner extends Thread {
                 pendingFuncName = name;
                 pendingFuncArgs = args;
             });
-            if (expr.contains("expected") || expr.contains("actual")) {
-                Logger.debug("DATA CHECK: expr=" + expr + " data=" + data + " dataKeys=" + data.keySet());
-            }
             Object result = evaluator.evaluate(ast);
 
-            // 注意：特殊标记由 handleExpression 统一处理，
-            // 这里只返回结果，不做标记处理
-
+            // 如果结果不是 USER: 标记，清理 pending 字段防止残留
+            if (!(result instanceof String && ((String) result).startsWith("USER:"))) {
+                pendingFuncName = null;
+                pendingFuncArgs = null;
+            }
             return result;
         } catch (Exception e) {
             Logger.warn("Expression evaluation error in PID " + pid + ": " + e.getMessage()
@@ -875,45 +928,56 @@ public class ProcessRunner extends Thread {
 
     @SuppressWarnings("unchecked")
     private void handleWait() {
-        // 等待任意子进程结束（最多 1000 次 ≈ 100s，防止永久挂起 #4）
-        int maxWaits = 1000;
-        int waitCount = 0;
-        while (running && waitCount < maxWaits) {
-            Map<String, Object> children = (Map<String, Object>) processData.get("Child");
-            if (children == null || children.isEmpty()) break;
+        synchronized (waitLock) {
+            while (running) {
+                // 仅重新加载 Child 列表，不覆盖完整运行时状态
+                String processPath = getProcessFilePath();
+                if (FileUtil.exists(processPath)) {
+                    String content = FileUtil.read(processPath);
+                    Map<String, Object> freshData = JsonUtil.parseToMap(content);
+                    Map<String, Object> children = (Map<String, Object>) freshData.get("Child");
+                    if (children == null || children.isEmpty()) break;
 
-            for (Iterator<Map.Entry<String, Object>> it = children.entrySet().iterator(); it.hasNext();) {
-                Map.Entry<String, Object> entry = it.next();
-                int childPid = Integer.parseInt(entry.getKey());
-                String childPath = PathUtil.findProcessFilePathByPid(childPid);
+                    for (Iterator<Map.Entry<String, Object>> it = children.entrySet().iterator(); it.hasNext();) {
+                        Map.Entry<String, Object> entry = it.next();
+                        int childPid = Integer.parseInt(entry.getKey());
+                        String childPath = PathUtil.findProcessFilePathByPid(childPid);
 
-                if (!FileUtil.exists(childPath)) {
-                    it.remove();
-                    saveToFile();
-                    Logger.info("Wait: child PID " + childPid + " finished (parent PID " + pid + ")");
-                    return;
+                        if (!FileUtil.exists(childPath)) {
+                            // 从内存中的 processData 移除子进程
+                            Map<String, Object> memChildren = (Map<String, Object>) processData.get("Child");
+                            if (memChildren != null) {
+                                memChildren.remove(entry.getKey());
+                            }
+                            saveToFile();
+                            Logger.info("Wait: child PID " + childPid + " finished (parent PID " + pid + ")");
+                            return;
+                        }
+
+                        String childContent = FileUtil.read(childPath);
+                        Map<String, Object> childData = JsonUtil.parseToMap(childContent);
+                        Object status = childData.get("Status");
+                        if (status instanceof Boolean && !(Boolean) status) {
+                            Map<String, Object> memChildren = (Map<String, Object>) processData.get("Child");
+                            if (memChildren != null) {
+                                memChildren.remove(entry.getKey());
+                            }
+                            saveToFile();
+                            return;
+                        }
+                    }
+                } else {
+                    break;
                 }
 
-                String childContent = FileUtil.read(childPath);
-                Map<String, Object> childData = JsonUtil.parseToMap(childContent);
-                Object status = childData.get("Status");
-                if (status instanceof Boolean && !(Boolean) status) {
-                    it.remove();
-                    saveToFile();
+                // 没有子进程结束，阻塞等待通知
+                try {
+                    waitLock.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     return;
                 }
             }
-
-            waitCount++;
-            // 重新加载进程文件（子进程列表可能已变更）
-            try { Thread.sleep(100); } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-            loadFromFile();
-        }
-        if (waitCount >= maxWaits) {
-            Logger.warn("Wait timeout for all children (PID " + pid + ")");
         }
     }
 
@@ -928,26 +992,24 @@ public class ProcessRunner extends Thread {
             return;
         }
 
-        // 最多等待 1000 次 ≈ 100s（#4）
-        int maxWaits = 1000;
-        int waitCount = 0;
-        while (running && waitCount < maxWaits) {
-            String childPath = PathUtil.findProcessFilePathByPid(targetPid);
-            if (childPath == null || !FileUtil.exists(childPath)) {
-                // 子进程已删除
-                children = (Map<String, Object>) processData.get("Child");
-                if (children != null) children.remove(pidStr);
-                saveToFile();
-                return;
+        synchronized (waitLock) {
+            while (running) {
+                String childPath = PathUtil.findProcessFilePathByPid(targetPid);
+                if (childPath == null || !FileUtil.exists(childPath)) {
+                    // 子进程已删除
+                    children = (Map<String, Object>) processData.get("Child");
+                    if (children != null) children.remove(pidStr);
+                    saveToFile();
+                    return;
+                }
+
+                try {
+                    waitLock.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
-            waitCount++;
-            try { Thread.sleep(100); } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-        if (waitCount >= maxWaits) {
-            Logger.warn("WaitPID timeout for PID " + targetPid + " (caller PID " + pid + ")");
         }
     }
 
@@ -1023,8 +1085,7 @@ public class ProcessRunner extends Thread {
         // 保存到文件
         saveToFile();
         Logger.debug("After saveToFile in handleUserFunction, data keys: " + data.keySet());
-        // 设置 currentLine = -1，因为外层 executeLine 会 +1 变为 0，使函数体从第一行开始执行
-        this.currentLine = -1;
+        // currentLine 已设为 0，executeLine 会从第 0 行开始执行函数体
     }
 
     // ════════════════════════════════════════════
@@ -1264,6 +1325,61 @@ public class ProcessRunner extends Thread {
         return new int[]{open, close};
     }
 
+    /**
+     * 展开内联花括号：将 while (true){x} 拆分为多行以支持块处理。
+     * 执行引擎要求 { 和 } 在单独的行上，所以将混合行拆分为纯代码行和纯花括号行。
+     */
+    private void expandInlineBraces() {
+        if (codeLines == null || codeLines.isEmpty()) return;
+
+        List<String> expanded = new ArrayList<>();
+        for (String line : codeLines) {
+            String trimmed = line.trim();
+            // 跳过空行、纯花括号行、注释行
+            if (trimmed.isEmpty() || trimmed.equals("{") || trimmed.equals("}") ||
+                trimmed.startsWith("//") || trimmed.startsWith("#")) {
+                expanded.add(line);
+                continue;
+            }
+            // 检查是否包含花括号
+            if (!trimmed.contains("{") && !trimmed.contains("}")) {
+                expanded.add(line);
+                continue;
+            }
+
+            // 逐字符拆分：将 { 和 } 分离到单独的行
+            StringBuilder current = new StringBuilder();
+            boolean hasContent = false;
+            for (int i = 0; i < trimmed.length(); i++) {
+                char c = trimmed.charAt(i);
+                if (c == '{' || c == '}') {
+                    if (current.length() > 0) {
+                        String seg = current.toString().trim();
+                        if (!seg.isEmpty()) {
+                            expanded.add(seg);
+                        }
+                        current.setLength(0);
+                    }
+                    expanded.add(String.valueOf(c));
+                } else {
+                    current.append(c);
+                }
+            }
+            if (current.length() > 0) {
+                String seg = current.toString().trim();
+                if (!seg.isEmpty()) {
+                    expanded.add(seg);
+                }
+            }
+        }
+
+        if (expanded.size() != codeLines.size()) {
+            codeLines.clear();
+            codeLines.addAll(expanded);
+            Logger.debug("expandInlineBraces: expanded " + codeLines.size() + " lines");
+        }
+    }
+
     // ════════════════════════════════════════════
     // 文件状态管理
     // ════════════════════════════════════════════
@@ -1317,6 +1433,8 @@ public class ProcessRunner extends Thread {
             if (code != null) {
                 codeLines = (List<String>) code.get("Code");
                 if (codeLines == null) codeLines = new ArrayList<>();
+                // 展开内联花括号：将 while (true){x} 拆分为多行以支持块处理
+                expandInlineBraces();
                 Object lineObj = code.get("runningCodeLine");
                 currentLine = lineObj instanceof Number ? ((Number) lineObj).intValue() : 0;
                 blockStack = (List<Map<String, Object>>) code.get("BlockStack");
@@ -1450,9 +1568,62 @@ public class ProcessRunner extends Thread {
     // ════════════════════════════════════════════
 
     /**
+     * 通知父进程本子进程已终止：使用父进程的 waitLock 唤醒，
+     * 避免全局单个锁导致虚假唤醒全部等待进程。
+     */
+    private void notifyParentOnTermination() {
+        try {
+            Map<String, Object> parent = (Map<String, Object>) processData.get("Parent");
+            if (parent == null) return;
+            Object ppidObj = parent.get("PID");
+            if (!(ppidObj instanceof Number)) return;
+            int ppid = ((Number) ppidObj).intValue();
+
+            ProcessRunner parentRunner = Scheduler.getRunner(ppid);
+            if (parentRunner != null) {
+                synchronized (parentRunner.waitLock) {
+                    parentRunner.waitLock.notifyAll();
+                }
+            }
+        } catch (Exception e) {
+            Logger.warn("Failed to notify parent on termination for PID " + pid + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * 清理父进程的 Child 列表：告知父进程本子进程已退出。
+     * 读取父进程文件，从 Child Map 中移除本 PID。
+     */
+    private void cleanParentChildList() {
+        try {
+            Map<String, Object> parent = (Map<String, Object>) processData.get("Parent");
+            if (parent == null) return;
+            Object ppidObj = parent.get("PID");
+            if (!(ppidObj instanceof Number)) return;
+            int ppid = ((Number) ppidObj).intValue();
+
+            String parentPath = Constants.SYSTEM_PROCESS_PATH + ppid + ".pres";
+            String parentContent = FileUtil.read(parentPath);
+            if (parentContent == null || parentContent.trim().isEmpty()) return;
+
+            Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
+            Map<String, Object> children = (Map<String, Object>) parentData.get("Child");
+            if (children == null || !children.containsKey(String.valueOf(pid))) return;
+
+            children.remove(String.valueOf(pid));
+            parentData.put("Child", children);
+            String updatedJson = JsonUtil.toMetaJson(parentData);
+            FileUtil.write(parentPath, updatedJson);
+            Logger.info("Child " + pid + " removed from parent " + ppid + "'s Child list");
+        } catch (Exception e) {
+            Logger.warn("Failed to clean parent Child list for PID " + pid + ": " + e.getMessage());
+        }
+    }
+
+    /**
      * 处理进程正常终止时的文件清理：
      * - INIT (PID=1) 正常退出 → 清除所有进程文件
-     * - 普通进程正常退出 → 删除自身进程文件
+     * - 普通进程正常退出 → 删除自身进程文件，并清理父进程 Child 列表
      * - 任何异常终止（错误、Ctrl+C）→ 文件保留（由其他路径处理）
      */
     private void handleProcessTermination() {
@@ -1465,6 +1636,8 @@ public class ProcessRunner extends Thread {
                     Logger.info("INIT process completed normally (files retained per config)");
                 }
             } else {
+                // 清理父进程 Child 列表，防止内存泄漏
+                cleanParentChildList();
                 if (Constants.DELETE_PROCESS_FILE_ON_EXIT) {
                     String processPath = getProcessFilePath();
                     if (FileUtil.exists(processPath)) {
@@ -1527,7 +1700,24 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handleException(Exception e, String operation) {
         String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-        Logger.error("Process " + pid + " error at line " + currentLine + " (" + operation + "): " + msg);
+
+        // 构建完整的异常上下文（pid、行号、代码行、操作）
+        String currentLineText = (currentLine >= 0 && codeLines != null && currentLine < codeLines.size())
+                ? codeLines.get(currentLine) : null;
+        ExceptionContext ctx = new ExceptionContext(pid, currentLine, null, currentLineText, operation);
+
+        // 如果是 ProcessException 且已有的 context 未填充，自动补充
+        if (e instanceof ProcessException) {
+            ProcessException pe = (ProcessException) e;
+            ExceptionContext existingCtx = pe.getContext();
+            if (existingCtx.getProcessId() <= 0) existingCtx.setProcessId(pid);
+            if (existingCtx.getLineNumber() <= 0) existingCtx.setLineNumber(currentLine);
+            if (existingCtx.getCurrentLine() == null) existingCtx.setCurrentLine(currentLineText);
+            if (existingCtx.getOperation() == null) existingCtx.setOperation(operation);
+        }
+
+        Logger.error("Process " + pid + " error at line " + currentLine + " (" + operation + "): " + msg
+                + " | context=" + ctx.toDetailedString());
 
         // 区分异常类型：RecoverableException → 警告不终止，UnrecoverableException → 终止进程
         if (e instanceof RecoverableException) {

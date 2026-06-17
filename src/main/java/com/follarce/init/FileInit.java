@@ -172,8 +172,6 @@ public final class FileInit {
                     FileUtil.createFile(destDir, fileName);
                     FileUtil.write(destPath, content);
                     Logger.info("Copied test script: " + resourcePath + " -> " + destPath);
-                } else {
-                    Logger.warn("Test resource not found in classpath: " + resourcePath);
                 }
             } catch (IOException e) {
                 Logger.error("Failed to copy test file: " + resourcePath + " - " + e.getMessage());

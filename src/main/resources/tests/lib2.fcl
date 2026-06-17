@@ -1,9 +1,0 @@
-// lib2.fcl - 测试模块 2（同名函数 greet 制造冲突）
-func greet(name) {
-    println("[lib2] Bonjour, " + name + "!")
-}
-
-func add(x, y) {
-    println("[lib2] " + x + " + " + y + " = " + (x + y))
-    return x + y
-}

@@ -28,7 +28,12 @@ public final class NetworkUtil {
             conn.setReadTimeout(Constants.DEFAULT_TIMEOUT);
 
             int responseCode = conn.getResponseCode();
-            String responseBody = readStream(conn.getInputStream());
+            InputStream responseStream = responseCode >= 400
+                    ? conn.getErrorStream()
+                    : conn.getInputStream();
+            String responseBody = responseStream != null
+                    ? readStream(responseStream)
+                    : "(no response body)";
 
             return "Response Code: " + responseCode + "\n" + responseBody;
         } catch (Exception e) {
@@ -58,7 +63,12 @@ public final class NetworkUtil {
             }
 
             int responseCode = conn.getResponseCode();
-            String responseBody = readStream(conn.getInputStream());
+            InputStream responseStream = responseCode >= 400
+                    ? conn.getErrorStream()
+                    : conn.getInputStream();
+            String responseBody = responseStream != null
+                    ? readStream(responseStream)
+                    : "(no response body)";
 
             return "Response Code: " + responseCode + "\n" + responseBody;
         } catch (Exception e) {

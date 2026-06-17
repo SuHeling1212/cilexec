@@ -1,9 +1,0 @@
-// lib1.fcl - 测试模块 1
-func greet(name) {
-    println("[lib1] Hello, " + name + "!")
-}
-
-func add(a, b) {
-    println("[lib1] " + a + " + " + b + " = " + (a + b))
-    return a + b
-}

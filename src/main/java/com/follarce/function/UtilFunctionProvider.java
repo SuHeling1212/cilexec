@@ -83,6 +83,13 @@ public class UtilFunctionProvider implements FunctionProvider {
                 case "exit":
                     return "EXIT";
 
+                case "sleep":
+                    if (args != null && !args.isEmpty()) {
+                        long ms = ((Number) args.get(0)).longValue();
+                        Thread.sleep(ms);
+                    }
+                    return "";
+
                 default:
                     return null;
             }

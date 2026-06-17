@@ -102,8 +102,9 @@ public class Scheduler extends Thread {
         for (Map.Entry<Integer, ProcessRunner> entry : existing.entrySet()) {
             int pid = entry.getKey();
             if (pid == Constants.PID_INIT) {
-                // INIT 进程需要手动启动
+                // INIT 进程需要手动启动，由 Main.java 的 registerRunner 处理
                 Logger.info("Found existing INIT process (PID=1)");
+                continue;
             }
             if (!runners.containsKey(pid)) {
                 ProcessRunner runner = entry.getValue();
