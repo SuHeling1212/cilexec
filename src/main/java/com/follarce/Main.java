@@ -12,7 +12,7 @@ import com.follarce.util.JsonUtil;
 import java.io.File;
 
 /**
- * Cilexec (CilExec) 模拟操作系统入口。
+ * Cilexec 模拟操作系统入口。
  * <p>
  * 启动流程：
  * 1. 初始化日志

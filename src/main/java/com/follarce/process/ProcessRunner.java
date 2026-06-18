@@ -169,6 +169,7 @@ public class ProcessRunner extends Thread {
                     return;
                 }
                 running = false;
+                saveToFile();
                 // 正常终止：保留/删除进程文件
                 handleProcessTermination();
                 return;
@@ -258,8 +259,10 @@ public class ProcessRunner extends Thread {
 
                 // 6. fork() 特殊处理
                 if (line.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
+                    currentLine++;
+                    saveToFile();  // ✅ 先持久化行号推进，再执行 fork（与 assignment 模式一致）
                     handleFork();
-                    saveToFile();
+                    // handleFork 内部已调用 saveToFile() 保存子进程和父进程状态
                     return;
                 }
 
@@ -528,7 +531,9 @@ public class ProcessRunner extends Thread {
             if (program != null) {
                 Map<String, Object> code = (Map<String, Object>) program.get("Code");
                 if (code != null) {
-                    code.put("runningCodeLine", currentLine + 1);
+                    // 调用方已推进 currentLine（standalone fork 和 var=fork 都在前），
+                    // 子进程从 currentLine（即 fork 下一行）继续执行
+                    code.put("runningCodeLine", currentLine);
                     code.put("BlockStack", new ArrayList<>());
                 }
                 program.put("returnValue", null);
@@ -549,11 +554,10 @@ public class ProcessRunner extends Thread {
                 if (varName != null && !varName.isEmpty()) {
                     childInnerData.put(varName, 0L);
                 }
-                // 子进程 fork 特殊变量：fork = 1（标志此进程是 fork 产物）
-                childInnerData.put("fork", 1L);
+                // 子进程标记：fork 标记写入 processData 顶层而非 Data（不污染用户变量空间）
+                childData.put("__isForked", true);
             }
-            // 父进程 fork 特殊变量：fork = 0
-            this.data.put("fork", 0L);
+            // 父进程不需要注入任何标记到 data 中
 
             // 7. 先创建子进程文件，确保子进程持久化成功后再更新父进程
             String childFileName = childPid + ".pres";
@@ -749,41 +753,35 @@ public class ProcessRunner extends Thread {
      */
     private Object evaluateExpression(String expr) {
         // 预处理：处理行首函数调用
-        try {
-            Lexer lexer = new Lexer(expr);
-            List<Token> tokens = lexer.tokenize();
-            if (tokens.isEmpty()) return null;
+        Lexer lexer = new Lexer(expr);
+        List<Token> tokens = lexer.tokenize();
+        if (tokens.isEmpty()) return null;
 
-            Parser parser = new Parser(tokens);
-            AstNode ast = parser.parse();
-            if (ast == null) return null;
+        Parser parser = new Parser(tokens);
+        AstNode ast = parser.parse();
+        if (ast == null) return null;
 
-            String user = (String) processData.get("Owner");
-            if (user == null) user = Constants.DEFAULT_USER_LOCAL;
-            int ppid = 0;
-            Map<String, Object> parent = (Map<String, Object>) processData.get("Parent");
-            if (parent != null && parent.get("PID") instanceof Number) {
-                ppid = ((Number) parent.get("PID")).intValue();
-            }
-            NodeEvaluator evaluator = new NodeEvaluator(data, pid, ppid, user);
-            // 设置函数回调，捕获函数名和参数
-            evaluator.setFunctionArgCallback((name, args) -> {
-                pendingFuncName = name;
-                pendingFuncArgs = args;
-            });
-            Object result = evaluator.evaluate(ast);
-
-            // 如果结果不是 USER: 标记，清理 pending 字段防止残留
-            if (!(result instanceof String && ((String) result).startsWith("USER:"))) {
-                pendingFuncName = null;
-                pendingFuncArgs = null;
-            }
-            return result;
-        } catch (Exception e) {
-            Logger.warn("Expression evaluation error in PID " + pid + ": " + e.getMessage()
-                    + " expr=" + expr);
-            return null;
+        String user = (String) processData.get("Owner");
+        if (user == null) user = Constants.DEFAULT_USER_LOCAL;
+        int ppid = 0;
+        Map<String, Object> parent = (Map<String, Object>) processData.get("Parent");
+        if (parent != null && parent.get("PID") instanceof Number) {
+            ppid = ((Number) parent.get("PID")).intValue();
         }
+        NodeEvaluator evaluator = new NodeEvaluator(data, pid, ppid, user);
+        // 设置函数回调，捕获函数名和参数
+        evaluator.setFunctionArgCallback((name, args) -> {
+            pendingFuncName = name;
+            pendingFuncArgs = args;
+        });
+        Object result = evaluator.evaluate(ast);
+
+        // 如果结果不是 USER: 标记，清理 pending 字段防止残留
+        if (!(result instanceof String && ((String) result).startsWith("USER:"))) {
+            pendingFuncName = null;
+            pendingFuncArgs = null;
+        }
+        return result;
     }
 
     /**
@@ -1442,6 +1440,11 @@ public class ProcessRunner extends Thread {
                     blockStack = new ArrayList<>();
                     code.put("BlockStack", blockStack);
                 }
+            } else {
+                // #3: code 为 null 时初始化空代码列表，防止后续 NPE
+                codeLines = new ArrayList<>();
+                currentLine = 0;
+                blockStack = new ArrayList<>();
             }
 
             returnValue = (Map<String, Object>) program.get("returnValue");
@@ -1700,6 +1703,17 @@ public class ProcessRunner extends Thread {
     @SuppressWarnings("unchecked")
     private void handleException(Exception e, String operation) {
         String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+
+        // #2: 保护 data 不为 null — 当异常发生在 clearTransientState 之后（run() 捕获时 data 已被置 null）
+        if (data == null) {
+            data = new LinkedHashMap<>();
+            Map<String, Object> program = (Map<String, Object>) processData.get("Program");
+            if (program == null) {
+                program = new LinkedHashMap<>();
+                processData.put("Program", program);
+            }
+            program.put("Data", data);
+        }
 
         // 构建完整的异常上下文（pid、行号、代码行、操作）
         String currentLineText = (currentLine >= 0 && codeLines != null && currentLine < codeLines.size())

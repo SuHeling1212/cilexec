@@ -21,7 +21,9 @@ public class Scheduler extends Thread {
 
     public Scheduler() {
         super("ProcessScheduler");
-        setDaemon(true);
+        // 非守护线程：确保子进程在 INIT 完成后仍能运行
+        // JVM 在 Scheduler 线程停止前不会退出（参见 shutdown hook）
+        setDaemon(false);
     }
 
     @Override
@@ -145,6 +147,21 @@ public class Scheduler extends Thread {
             if (runner != null) {
                 runner.stopProcess();
                 Logger.info("Process removed: PID=" + pid);
+            }
+        }
+
+        // #4: 检查是否所有进程已完成 — 无活跃进程时自动退出
+        if (!runners.isEmpty()) {
+            boolean anyAlive = false;
+            for (ProcessRunner r : runners.values()) {
+                if (r.isRunning()) {
+                    anyAlive = true;
+                    break;
+                }
+            }
+            if (!anyAlive) {
+                Logger.info("All processes completed, scheduler shutting down");
+                running = false;
             }
         }
     }
