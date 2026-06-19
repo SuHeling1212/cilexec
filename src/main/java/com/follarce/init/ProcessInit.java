@@ -2,6 +2,7 @@ package com.follarce.init;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
+import com.follarce.process.code.CodeLoader;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.UserUtil;
@@ -51,16 +52,17 @@ public final class ProcessInit {
             initCode = "while true {}";
         }
 
-        // 分割代码为行
-        List<String> codeLines = new ArrayList<>();
+        // 分割代码为行，剔除注释，确保 .proc 写入干净代码
+        List<String> rawLines = new ArrayList<>();
         if (initCode != null && !initCode.trim().isEmpty()) {
             for (String line : initCode.split("\n")) {
-                codeLines.add(line);
+                rawLines.add(line);
             }
         }
-        if (codeLines.isEmpty()) {
-            codeLines.add("while true {}");
+        if (rawLines.isEmpty()) {
+            rawLines.add("while true {}");
         }
+        List<String> codeLines = CodeLoader.stripComments(rawLines);
 
         // 读取用户配置
         String currentUser = UserUtil.getCurrentUserFromFile();
