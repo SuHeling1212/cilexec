@@ -590,10 +590,12 @@ public final class FileUtil {
                 finalContent = PathUtil.buildMetaFile(newMetaJson, content);
             }
             Files.writeString(tempFile.toPath(), finalContent, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            Files.move(tempFile.toPath(), realFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(tempFile.toPath(), realFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
         } catch (IOException e) {
             tempFile.delete();
-            throw new RuntimeException("Failed to write atomically: " + path, e);
+            // 保存文件头信息和错误详情
+            String detail = e.getClass().getSimpleName() + ": " + e.getMessage();
+            throw new RuntimeException("Failed to write atomically: " + path + " [" + detail + "]", e);
         }
     }
 

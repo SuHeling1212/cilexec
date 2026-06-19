@@ -76,6 +76,7 @@ public final class ProcessInit {
         processData.put("Status", true);
         processData.put("startTime", FileUtil.getCurrentTimeArray());
         processData.put("RunningTime", 0);
+        processData.put("Priority", Constants.PRIORITY_LOW);
         processData.put("Parent", new LinkedHashMap<>());
         processData.put("Child", new LinkedHashMap<>());
 

@@ -48,23 +48,25 @@ public class Main {
             ProcessInit.init();
             Logger.info("Process system initialized");
 
-            // 6. 手动启动 INIT 进程并注册到调度器
+            // 6. 创建调度器
+            scheduler = new Scheduler();
+
+            // 7. 手动启动 INIT 进程并注册到调度器
             ProcessRunner initRunner = startInitProcess();
             if (initRunner != null) {
-                Scheduler.registerRunner(Constants.PID_INIT, initRunner);
-                initRunner.start();
+                initRunner.init();
+                scheduler.addProcess(initRunner);
             }
 
-            // 7. 启动调度器（会跳过已注册的 INIT 进程）
-            scheduler = new Scheduler();
+            // 8. 启动调度器
             scheduler.start();
             Logger.info("Scheduler started");
 
-            // 8. 注册 shutdown hook
+            // 9. 注册 shutdown hook
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 Logger.logShutdown();
                 if (scheduler != null) {
-                    Scheduler.shutdown();
+                    scheduler.shutdownScheduler();
                 }
                 Logger.close();
             }));

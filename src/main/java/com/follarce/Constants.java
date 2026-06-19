@@ -11,7 +11,19 @@ public final class Constants {
 
     // ── 调度 ──
     public static final long PROCESS_TICK_MS = 10L;
-    public static final long SCHEDULER_SLEEP_MS = 100L;
+
+    // 调度器休眠间隔（每轮调度后的休眠时间）
+    public static final long SCHEDULER_TICK_MS = 50L;
+
+    // ── 进程优先级 ──
+    public static final int PRIORITY_HIGH = 5;
+    public static final int PRIORITY_NORMAL = 3;
+    public static final int PRIORITY_LOW = 1;
+    public static final int DEFAULT_PRIORITY = PRIORITY_NORMAL;
+
+    // ── 调度量子 ──
+    // 每次调度允许一个进程连续执行的最大行数
+    public static final int SCHEDULER_QUANTUM = 5;
 
     // ── 网络 ──
     public static final int DEFAULT_TIMEOUT = 10000;
