@@ -19,6 +19,8 @@ import com.follarce.script.FunctionDef;
 import com.follarce.util.UserUtil;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * 进程执行引擎 —— 由调度器驱动，每次 step() 执行一行 FCL 代码。
@@ -76,6 +78,10 @@ public class ProcessRunner {
     private int priority = Constants.DEFAULT_PRIORITY;
     private BlockReason blockReason = BlockReason.NONE;
     private final long processStartMs;
+
+    // ── 虚拟线程管理（全局） ──
+    // PID → 虚拟线程映射，用于跨进程 unpark（kill 唤醒 wait）
+    private static final ConcurrentHashMap<Integer, Thread> VIRTUAL_THREADS = new ConcurrentHashMap<>();
 
     // 运行时状态（每次 tick 从文件加载 → 执行 → 写回）
     private Map<String, Object> processData;
@@ -203,6 +209,108 @@ public class ProcessRunner {
     public ProcessState getState() { return state; }
     public String getProcessName() { return stateManager.extractName(); }
     public boolean isRunning() { return running && state != ProcessState.TERMINATED; }
+
+    // ════════════════════════════════════════════
+    // 虚拟线程运行
+    // ════════════════════════════════════════════
+
+    /**
+     * 虚拟线程入口 —— 每进程一个虚拟线程，自循环执行 FCL 代码。
+     * <p>
+     * 设计要点：
+     * <ul>
+     *   <li>每次量子后 {@link Thread#yield()} 让出 CPU，供其他虚拟线程竞争</li>
+     *   <li>BLOCKED 时用 {@link LockSupport#parkNanos(long)} 休眠，不占平台线程</li>
+     *   <li>每行执行后持久化到 .proc 文件</li>
+     *   <li>自然结束或因异常退出时自动清理</li>
+     * </ul>
+     */
+    public void virtualThreadRun() {
+        Thread.currentThread().setName("vt-process-" + pid);
+        VIRTUAL_THREADS.put(pid, Thread.currentThread());
+        Logger.info("Virtual thread started for PID " + pid + " (" + getProcessName() + ")");
+
+        try {
+            String owner = stateManager.extractOwner();
+            UserUtil.setCurrentUser(owner != null ? owner : Constants.DEFAULT_USER_LOCAL);
+
+            while (running && state != ProcessState.TERMINATED) {
+                int quantum = getQuantumByPriority();
+
+                boolean wasBlocked = false;
+                for (int i = 0; i < quantum; i++) {
+                    if (!running || state == ProcessState.TERMINATED) break;
+
+                    StepResult result = step();
+
+                    if (result == StepResult.TERMINATED) {
+                        Logger.info("Virtual thread: PID " + pid + " terminated naturally");
+                        VIRTUAL_THREADS.remove(pid);
+                        return;
+                    }
+
+                    if (result == StepResult.BLOCKED) {
+                        wasBlocked = true;
+                        break;
+                    }
+                }
+
+                if (wasBlocked) {
+                    parkWhileBlocked();
+                }
+
+                // 让出 CPU 给其他虚拟线程
+                if (running && state != ProcessState.TERMINATED && state != ProcessState.BLOCKED) {
+                    Thread.yield();
+                }
+            }
+        } catch (Exception e) {
+            Logger.error("Virtual thread for PID " + pid + " crashed: " + e.getMessage());
+        } finally {
+            VIRTUAL_THREADS.remove(pid);
+            Logger.info("Virtual thread for PID " + pid + " (" + getProcessName() + ") finished");
+        }
+    }
+
+    /**
+     * 根据优先级返回量子大小（每次让出 CPU 前执行的行数）。
+     */
+    private int getQuantumByPriority() {
+        if (priority >= Constants.PRIORITY_HIGH) return Constants.QUANTUM_HIGH;
+        if (priority <= Constants.PRIORITY_LOW) return Constants.QUANTUM_LOW;
+        return Constants.QUANTUM_NORMAL;
+    }
+
+    /**
+     * 虚拟线程阻塞等待 —— 用 parkNanos 轮询子进程状态。
+     * <p>
+     * 虚拟线程 park 时不占用平台线程，JVM 会将其从载体线程卸载。
+     * 每 50ms 检查一次唤醒条件，或被 kill 处理中的 unpark 提前唤醒。
+     */
+    private void parkWhileBlocked() {
+        while (state == ProcessState.BLOCKED && running) {
+            // 检查是否可唤醒
+            if (checkWakeup()) {
+                state = ProcessState.READY;
+                blockReason = BlockReason.NONE;
+                Logger.info("Process " + pid + " woken from wait (virtual thread)");
+                return;
+            }
+            // park 50ms —— 不占平台线程
+            LockSupport.parkNanos(50_000_000L);
+        }
+    }
+
+    /**
+     * 唤醒指定 PID 的虚拟线程（用于 kill 处理中告知等待的父进程）。
+     */
+    public static void unparkProcess(int pid) {
+        Thread vt = VIRTUAL_THREADS.get(pid);
+        if (vt != null) {
+            LockSupport.unpark(vt);
+            Logger.info("Unparked virtual thread for PID " + pid);
+        }
+    }
 
     // ════════════════════════════════════════════
     // 主执行逻辑

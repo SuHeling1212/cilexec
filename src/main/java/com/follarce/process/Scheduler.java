@@ -9,6 +9,8 @@ import com.follarce.util.PathUtil;
 import java.io.File;
 import java.util.*;
 
+import static com.follarce.Constants.USE_VIRTUAL_THREADS;
+
 /**
  * 进程调度器 —— 基于优先级的轮转调度。
  * <p>
@@ -59,6 +61,14 @@ public class Scheduler extends Thread {
         enqueueByPriority(runner);
         Logger.info("Scheduler: PID " + runner.getPid() + " (" + runner.getProcessName()
                 + ") added to ready queue (priority=" + runner.getPriority() + ")");
+
+        // 虚拟线程模式：为每个添加的进程启动虚拟线程
+        if (USE_VIRTUAL_THREADS) {
+            Thread vt = Thread.ofVirtual()
+                    .name("vt-process-" + runner.getPid())
+                    .start(runner::virtualThreadRun);
+            Logger.info("Virtual thread started for PID " + runner.getPid());
+        }
     }
 
     /**
@@ -116,6 +126,12 @@ public class Scheduler extends Thread {
         for (ProcessRunner runner : allProcesses.values()) {
             runner.stopProcess();
         }
+        // 虚拟线程模式：中断所有虚拟线程
+        if (USE_VIRTUAL_THREADS) {
+            for (ProcessRunner runner : allProcesses.values()) {
+                ProcessRunner.unparkProcess(runner.getPid());
+            }
+        }
         allProcesses.clear();
         highPriorityQueue.clear();
         normalPriorityQueue.clear();
@@ -129,24 +145,28 @@ public class Scheduler extends Thread {
 
     @Override
     public void run() {
-        Logger.info("Scheduler started (tick=" + Constants.SCHEDULER_TICK_MS
+        if (USE_VIRTUAL_THREADS) {
+            virtualThreadSchedulerLoop();
+        } else {
+            legacySchedulerLoop();
+        }
+        Logger.info("Scheduler stopped");
+    }
+
+    /**
+     * 传统单线程调度循环（USE_VIRTUAL_THREADS = false）。
+     */
+    private void legacySchedulerLoop() {
+        Logger.info("Scheduler started (legacy mode, tick=" + Constants.SCHEDULER_TICK_MS
                 + "ms, quantum=" + Constants.SCHEDULER_QUANTUM + " lines)");
 
-        // 首次扫描：为已有进程创建 runner
         initialScan();
 
         while (running) {
             try {
-                // 1. 扫描新进程
                 scanForNewProcesses();
-
-                // 2. 检查阻塞进程的可唤醒状态
                 checkBlockedProcesses();
-
-                // 3. 调度执行
                 dispatchNext();
-
-                // 4. 休眠
                 Thread.sleep(Constants.SCHEDULER_TICK_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -156,8 +176,35 @@ public class Scheduler extends Thread {
                 Logger.error("Scheduler error: " + e.getMessage());
             }
         }
+    }
 
-        Logger.info("Scheduler stopped");
+    /**
+     * 虚拟线程调度循环（USE_VIRTUAL_THREADS = true）。
+     * <p>
+     * 职责大幅简化，仅保留：
+     * <ol>
+     *   <li>进程发现 — 发现新 .proc 文件 → 创建 ProcessRunner → 启动虚拟线程</li>
+     *   <li>进程终止检测 — 虚拟线程自然结束，扫描检查已结束进程</li>
+     * </ol>
+     * 不再需要就绪队列、阻塞队列和 dispatch 逻辑 —— JVM 虚拟线程调度器承担。
+     */
+    private void virtualThreadSchedulerLoop() {
+        Logger.info("Virtual thread scheduler started (tick=" + Constants.SCHEDULER_TICK_MS + "ms)");
+
+        initialScan();
+
+        while (running) {
+            try {
+                scanForNewProcesses();
+                Thread.sleep(Constants.SCHEDULER_TICK_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Logger.warn("Scheduler interrupted");
+                break;
+            } catch (Exception e) {
+                Logger.error("Scheduler error: " + e.getMessage());
+            }
+        }
     }
 
     // ════════════════════════════════════════════
@@ -200,7 +247,20 @@ public class Scheduler extends Thread {
             }
         }
 
-        // 检查已删除的进程文件
+        if (USE_VIRTUAL_THREADS) {
+            // 虚拟线程模式：仅清理已删除的进程记录
+            cleanupRemovedProcesses(current);
+        } else {
+            // 传统模式：清理 + 全终止检测
+            cleanupRemovedProcesses(current);
+            checkAllProcessesTerminated();
+        }
+    }
+
+    /**
+     * 从 allProcesses 中移除磁盘上已删除的进程。
+     */
+    private void cleanupRemovedProcesses(Map<Integer, Map<String, Object>> current) {
         Set<Integer> toRemove = new LinkedHashSet<>();
         for (int pid : allProcesses.keySet()) {
             if (!current.containsKey(pid)) {
@@ -211,26 +271,30 @@ public class Scheduler extends Thread {
             ProcessRunner runner = allProcesses.remove(pid);
             if (runner != null) {
                 runner.stopProcess();
-                // 从就绪队列中移除
-                removeFromQueues(runner);
-                blockedProcesses.remove(pid);
+                if (!USE_VIRTUAL_THREADS) {
+                    removeFromQueues(runner);
+                    blockedProcesses.remove(pid);
+                }
                 Logger.info("Process removed: PID=" + pid);
             }
         }
+    }
 
-        // 检查是否所有进程已完成
-        if (!allProcesses.isEmpty()) {
-            boolean anyAlive = false;
-            for (ProcessRunner r : allProcesses.values()) {
-                if (r.isRunning()) {
-                    anyAlive = true;
-                    break;
-                }
+    /**
+     * 检查是否所有进程已完成（仅传统模式）。
+     */
+    private void checkAllProcessesTerminated() {
+        if (allProcesses.isEmpty()) return;
+        boolean anyAlive = false;
+        for (ProcessRunner r : allProcesses.values()) {
+            if (r.isRunning()) {
+                anyAlive = true;
+                break;
             }
-            if (!anyAlive) {
-                Logger.info("All processes completed, scheduler shutting down");
-                running = false;
-            }
+        }
+        if (!anyAlive) {
+            Logger.info("All processes completed, scheduler shutting down");
+            running = false;
         }
     }
 

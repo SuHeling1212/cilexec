@@ -2,12 +2,16 @@ package com.follarce.process.ipc;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
+import com.follarce.process.ProcessRunner;
 import com.follarce.process.code.CodeLoader;
+import com.follarce.process.state.ProcessFileLock;
 import com.follarce.process.state.StateManager;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;
 import com.follarce.util.UserUtil;
+
+import static com.follarce.Constants.USE_VIRTUAL_THREADS;
 
 import java.util.*;
 import java.util.function.Supplier;
@@ -223,46 +227,77 @@ public class IpcHandler {
             String processPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (processPath == null || !FileUtil.exists(processPath)) return;
 
+            // 从目标进程文件获取父 PID（用于后续解锁顺序）
             String content = FileUtil.read(processPath);
             Map<String, Object> targetData = JsonUtil.parseToMap(content);
-
-            // 子进程迁移到 INIT
-            Map<String, Object> children = (Map<String, Object>) targetData.get("Child");
-            if (children != null && !children.isEmpty()) {
-                String initPath = PathUtil.getProcessFilePath(Constants.PID_INIT);
-                String initContent = FileUtil.read(initPath);
-                Map<String, Object> initData = JsonUtil.parseToMap(initContent);
-                Map<String, Object> initChildren = (Map<String, Object>) initData.get("Child");
-                if (initChildren == null) {
-                    initChildren = new LinkedHashMap<>();
-                    initData.put("Child", initChildren);
-                }
-                initChildren.putAll(children);
-                FileUtil.write(initPath, JsonUtil.toMetaJson(initData));
-            }
-
-            // 从父进程 Child 列表移除
+            int parentPid = -1;
             Map<String, Object> parent = (Map<String, Object>) targetData.get("Parent");
             if (parent != null && parent.get("PID") != null) {
-                int parentPid = ((Number) parent.get("PID")).intValue();
-                String parentPath = PathUtil.findProcessFilePathByPid(parentPid);
-                if (parentPath != null && FileUtil.exists(parentPath)) {
-                    String parentContent = FileUtil.read(parentPath);
-                    Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
-                    Map<String, Object> parentChildren = (Map<String, Object>) parentData.get("Child");
-                    if (parentChildren != null) {
-                        parentChildren.remove(String.valueOf(targetPid));
-                        parentData.put("Child", parentChildren);
-                        FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
+                parentPid = ((Number) parent.get("PID")).intValue();
+            }
+
+            // 虚拟线程模式：锁定受影响的所有 PID
+            if (USE_VIRTUAL_THREADS) {
+                if (parentPid > 0) {
+                    ProcessFileLock.lockTwo(parentPid, targetPid);
+                } else {
+                    ProcessFileLock.lock(targetPid);
+                }
+            }
+
+            try {
+                // 子进程迁移到 INIT
+                Map<String, Object> children = (Map<String, Object>) targetData.get("Child");
+                if (children != null && !children.isEmpty()) {
+                    String initPath = PathUtil.getProcessFilePath(Constants.PID_INIT);
+                    String initContent = FileUtil.read(initPath);
+                    Map<String, Object> initData = JsonUtil.parseToMap(initContent);
+                    Map<String, Object> initChildren = (Map<String, Object>) initData.get("Child");
+                    if (initChildren == null) {
+                        initChildren = new LinkedHashMap<>();
+                        initData.put("Child", initChildren);
+                    }
+                    initChildren.putAll(children);
+                    FileUtil.write(initPath, JsonUtil.toMetaJson(initData));
+                }
+
+                // 从父进程 Child 列表移除
+                if (parentPid > 0) {
+                    String parentPath = PathUtil.findProcessFilePathByPid(parentPid);
+                    if (parentPath != null && FileUtil.exists(parentPath)) {
+                        String parentContent = FileUtil.read(parentPath);
+                        Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
+                        Map<String, Object> parentChildren = (Map<String, Object>) parentData.get("Child");
+                        if (parentChildren != null) {
+                            parentChildren.remove(String.valueOf(targetPid));
+                            parentData.put("Child", parentChildren);
+                            FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
+                        }
+                    }
+                }
+
+                // 标记为已终止
+                targetData.put("Status", false);
+                targetData.put("_killed", true);
+                FileUtil.write(processPath, JsonUtil.toMetaJson(targetData));
+                Logger.info("Kill: PID " + targetPid + " killed by PID " + pid);
+            } finally {
+                if (USE_VIRTUAL_THREADS) {
+                    if (parentPid > 0) {
+                        ProcessFileLock.unlockTwo(parentPid, targetPid);
+                    } else {
+                        ProcessFileLock.unlock(targetPid);
                     }
                 }
             }
 
-            // 标记为已终止
-            targetData.put("Status", false);
-            targetData.put("_killed", true);
-            FileUtil.write(processPath, JsonUtil.toMetaJson(targetData));
-            Logger.info("Kill: PID " + targetPid + " killed by PID " + pid);
+            // 虚拟线程模式：唤醒目标进程和父进程的虚拟线程
+            if (USE_VIRTUAL_THREADS) {
+                ProcessRunner.unparkProcess(targetPid);
+                if (parentPid > 0) {
+                    ProcessRunner.unparkProcess(parentPid);
+                }
+            }
         } catch (Exception e) {
             Logger.error("Kill failed: " + e.getMessage());
         }

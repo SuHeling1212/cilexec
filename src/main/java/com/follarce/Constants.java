@@ -22,8 +22,19 @@ public final class Constants {
     public static final int DEFAULT_PRIORITY = PRIORITY_NORMAL;
 
     // ── 调度量子 ──
-    // 每次调度允许一个进程连续执行的最大行数
+    // 每次调度允许一个进程连续执行的最大行数（单线程模式）
     public static final int SCHEDULER_QUANTUM = 5;
+
+    // ── 执行引擎模式 ──
+    // true  = 每进程一个虚拟线程（需 Java 21+）
+    // false = 单线程调度器（当前模式，兼容 Java 11+）
+    public static final boolean USE_VIRTUAL_THREADS = false;
+
+    // ── 虚拟线程量子（优先级 → 行数映射） ──
+    // 每次让出 CPU 前执行的最大行数，优先级越高量子越大
+    public static final int QUANTUM_HIGH = 20;
+    public static final int QUANTUM_NORMAL = 5;
+    public static final int QUANTUM_LOW = 2;
 
     // ── 网络 ──
     public static final int DEFAULT_TIMEOUT = 10000;

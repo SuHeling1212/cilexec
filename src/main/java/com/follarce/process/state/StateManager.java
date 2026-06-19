@@ -2,12 +2,15 @@ package com.follarce.process.state;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
+import com.follarce.process.ProcessRunner;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;
 
 import java.io.File;
 import java.util.*;
+
+import static com.follarce.Constants.USE_VIRTUAL_THREADS;
 
 /**
  * 进程状态持久化管理器 —— 负责 .proc 文件的读/写/清理。
@@ -150,6 +153,7 @@ public class StateManager {
      */
     @SuppressWarnings("unchecked")
     public void saveToFile(RuntimeSnapshot snapshot) {
+        if (USE_VIRTUAL_THREADS) ProcessFileLock.lock(pid);
         try {
             processData.put("Status", running);
             processData.put("RunningTime", (System.currentTimeMillis() - processStartMs) / 1000);
@@ -182,6 +186,8 @@ public class StateManager {
             FileUtil.write(processPath, json);
         } catch (Exception e) {
             Logger.error("StateManager: failed to save PID " + pid + ": " + e.getMessage());
+        } finally {
+            if (USE_VIRTUAL_THREADS) ProcessFileLock.unlock(pid);
         }
     }
 
@@ -210,18 +216,27 @@ public class StateManager {
             if (!(ppidObj instanceof Number)) return;
             int ppid = ((Number) ppidObj).intValue();
 
-            String parentPath = Constants.SYSTEM_PROCESS_PATH + ppid + ".proc";
-            String parentContent = FileUtil.read(parentPath);
-            if (parentContent == null || parentContent.trim().isEmpty()) return;
+            if (USE_VIRTUAL_THREADS) ProcessFileLock.lock(ppid);
+            try {
+                String parentPath = Constants.SYSTEM_PROCESS_PATH + ppid + ".proc";
+                String parentContent = FileUtil.read(parentPath);
+                if (parentContent == null || parentContent.trim().isEmpty()) return;
 
-            Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
-            Map<String, Object> children = (Map<String, Object>) parentData.get("Child");
-            if (children == null || !children.containsKey(String.valueOf(pid))) return;
+                Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
+                Map<String, Object> children = (Map<String, Object>) parentData.get("Child");
+                if (children == null || !children.containsKey(String.valueOf(pid))) return;
 
-            children.remove(String.valueOf(pid));
-            parentData.put("Child", children);
-            FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
-            Logger.info("StateManager: child " + pid + " removed from parent " + ppid + "'s Child list");
+                children.remove(String.valueOf(pid));
+                parentData.put("Child", children);
+                FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
+                Logger.info("StateManager: child " + pid + " removed from parent " + ppid + "'s Child list");
+                // 虚拟线程模式：通知父进程子进程已结束
+                if (USE_VIRTUAL_THREADS) {
+                    ProcessRunner.unparkProcess(ppid);
+                }
+            } finally {
+                if (USE_VIRTUAL_THREADS) ProcessFileLock.unlock(ppid);
+            }
         } catch (Exception e) {
             Logger.warn("StateManager: failed to clean parent Child list for PID " + pid + ": " + e.getMessage());
         }
