@@ -380,7 +380,7 @@ public class Scheduler extends Thread {
 
         if (!dir.exists() || !dir.isDirectory()) return result;
 
-        File[] files = dir.listFiles((d, name) -> name.endsWith(".pres"));
+        File[] files = dir.listFiles((d, name) -> name.endsWith(".proc"));
         if (files == null) return result;
 
         for (File file : files) {

@@ -98,7 +98,9 @@ public class CodeLoader {
     }
 
     /**
-     * 查找行内注释位置（跳过字符串内的 //）。
+     * 查找行内注释位置（跳过字符串内的 // 和 #）。
+     * <p>
+     * {@code #} 作为注释的条件：前一个字符是空白或 {@code {}}（排除 {@code #var} 长度运算符）。
      */
     private static int findInlineComment(String line) {
         boolean inString = false;
@@ -115,8 +117,16 @@ public class CodeLoader {
                 stringChar = c;
                 continue;
             }
+            // //
             if (c == '/' && i + 1 < line.length() && line.charAt(i + 1) == '/') {
                 return i;
+            }
+            // # 注释：仅当前面是空白/{/( 或行首时视为注释（排除 #var 长度运算符）
+            if (c == '#') {
+                if (i == 0 || Character.isWhitespace(line.charAt(i - 1))
+                        || line.charAt(i - 1) == '{' || line.charAt(i - 1) == '(') {
+                    return i;
+                }
             }
         }
         return -1;
@@ -168,17 +178,19 @@ public class CodeLoader {
 
             // 处理 { 后面的内容
             String after = trimmed.substring(openPos + 1).trim();
-            if (!after.isEmpty()) {
+            // { 后面如果是 # 或 // 开头的注释，直接丢弃
+            if (!after.isEmpty() && !after.startsWith("#") && !after.startsWith("//")) {
                 // 检查是否有 }
                 int closePos = findMatchingCloseBrace(after);
                 if (closePos >= 0) {
                     String body = after.substring(0, closePos).trim();
-                    if (!body.isEmpty()) {
+                    // body 本身也可能是注释
+                    if (!body.isEmpty() && !body.startsWith("#") && !body.startsWith("//")) {
                         result.add(body);
                     }
                     result.add("}");
                     String rest = after.substring(closePos + 1).trim();
-                    if (!rest.isEmpty()) {
+                    if (!rest.isEmpty() && !rest.startsWith("#") && !rest.startsWith("//")) {
                         result.add(rest);
                     }
                 } else {

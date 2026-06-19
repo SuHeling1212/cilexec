@@ -96,7 +96,6 @@ public final class ProcessInit {
         code.put("BlockStack", blockStack);
 
         program.put("Code", code);
-        program.put("returnValue", null);
 
         processData.put("Program", program);
 

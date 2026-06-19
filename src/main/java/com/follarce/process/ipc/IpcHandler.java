@@ -103,7 +103,6 @@ public class IpcHandler {
                     code.put("runningCodeLine", 0);
                     code.put("BlockStack", new ArrayList<>());
                 }
-                childProgram.remove("returnValue");
                 childProgram.remove("pendingAssignVarName");
                 childProgram.remove("imports");
             }
@@ -175,7 +174,6 @@ public class IpcHandler {
             processData.put("Program", program);
         }
         program.remove("Data");
-        program.remove("returnValue");
         program.remove("pendingAssignVarName");
         program.remove("imports");
 

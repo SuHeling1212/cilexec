@@ -226,7 +226,7 @@ public final class PathUtil {
     }
 
     /**
-     * 根据 PID 获取 .pres 文件完整路径。
+     * 根据 PID 获取 .proc 文件完整路径。
      */
     public static String findProcessFilePathByPid(int pid) {
         return getProcessFilePath(pid);

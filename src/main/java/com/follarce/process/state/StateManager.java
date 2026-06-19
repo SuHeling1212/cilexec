@@ -102,7 +102,6 @@ public class StateManager {
         List<String> codeLines = new ArrayList<>();
         int currentLine = 0;
         List<Map<String, Object>> blockStack = new ArrayList<>();
-        Map<String, Object> returnValue = null;
         List<Map<String, Object>> callStackData = new ArrayList<>();
         String pendingAssignVar = null;
         List<String> imports = new ArrayList<>();
@@ -113,8 +112,6 @@ public class StateManager {
             if (dataObj instanceof Map) {
                 data = (Map<String, Object>) dataObj;
             }
-
-            returnValue = (Map<String, Object>) program.get("returnValue");
 
             Object codeObj = program.get("Code");
             if (codeObj instanceof Map) {
@@ -141,7 +138,7 @@ public class StateManager {
         }
 
         return new RuntimeSnapshot(
-                data, codeLines, currentLine, blockStack, returnValue,
+                data, codeLines, currentLine, blockStack,
                 callStackData, pendingAssignVar, imports
         );
     }
@@ -167,7 +164,6 @@ public class StateManager {
             program.put("Data", snapshot.data);
 
             // ── 显式清除瞬态字段，确保 .proc 文件不包含它们 ──
-            program.remove("returnValue");
             processData.remove("CallStack");
             program.remove("pendingAssignVarName");
             program.remove("imports");
@@ -279,7 +275,6 @@ public class StateManager {
         public final List<String> codeLines;
         public final int currentLine;
         public final List<Map<String, Object>> blockStack;
-        public final Map<String, Object> returnValue;
         public final List<Map<String, Object>> callStackData;
         public final String pendingAssignVarName;
         public final List<String> imports;
@@ -289,7 +284,6 @@ public class StateManager {
                 List<String> codeLines,
                 int currentLine,
                 List<Map<String, Object>> blockStack,
-                Map<String, Object> returnValue,
                 List<Map<String, Object>> callStackData,
                 String pendingAssignVarName,
                 List<String> imports
@@ -298,7 +292,6 @@ public class StateManager {
             this.codeLines = codeLines != null ? codeLines : new ArrayList<>();
             this.currentLine = currentLine;
             this.blockStack = blockStack != null ? blockStack : new ArrayList<>();
-            this.returnValue = returnValue;
             this.callStackData = callStackData != null ? callStackData : new ArrayList<>();
             this.pendingAssignVarName = pendingAssignVarName;
             this.imports = imports != null ? imports : new ArrayList<>();

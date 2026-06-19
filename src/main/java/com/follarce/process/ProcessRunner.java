@@ -83,7 +83,6 @@ public class ProcessRunner {
     private List<String> codeLines;
     private int currentLine;
     private List<Map<String, Object>> blockStack;
-    private Map<String, Object> returnValue;
 
     // ════════════════════════════════════════════
     // 构造
@@ -223,10 +222,7 @@ public class ProcessRunner {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
                     this.currentLine = frame.savedCurrentLine + 1;
-                    if (returnValue != null && returnValue.get("value") != null) {
-                        data.put("__return_value", returnValue.get("value"));
-                    }
-                    this.returnValue = null;
+                    // 函数结束没有 return 语句 = 无返回值，不设置 __return_value
                     this.blockStack = new ArrayList<>();
                     codeChanged();
                     persistState();
@@ -337,9 +333,7 @@ public class ProcessRunner {
                 stateManager.setRunning(false);
                 currentLine = codeLines.size();
             }
-            this.returnValue = ret.value != null
-                    ? Collections.singletonMap("value", ret.value)
-                    : new LinkedHashMap<>();
+            // ret.value 已通过 data.put 写入 __return_value，无需额外存储
             persistState();
             return;
         }
@@ -537,7 +531,6 @@ public class ProcessRunner {
         this.codeLines = new ArrayList<>(def.bodyLines);
         this.currentLine = 0;
         this.blockStack = new ArrayList<>();
-        this.returnValue = null;
 
         List<Object> args = functionManager.getPendingFuncArgs();
         functionManager.clearPending();
@@ -586,7 +579,7 @@ public class ProcessRunner {
         this.codeLines = snap.codeLines;
         this.currentLine = snap.currentLine;
         this.blockStack = snap.blockStack;
-        this.returnValue = snap.returnValue;
+        // returnValue 已不再作为字段维护（直接通过 data.__return_value 传递）
 
         // 用 codeLoader 重新加载并扫描边界表，结果覆盖运行时副本
         codeLoader.load(codeLines);
@@ -625,7 +618,6 @@ public class ProcessRunner {
                 codeLines,
                 currentLine,
                 blockStack,
-                returnValue,
                 serializeCallStack(),
                 functionManager.getPendingFuncName(),
                 importManager.getImportedFiles()
