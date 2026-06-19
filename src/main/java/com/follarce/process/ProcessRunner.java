@@ -618,7 +618,7 @@ public class ProcessRunner {
                 childData.put("__isForked", true);
             }
 
-            String childFileName = childPid + ".pres";
+            String childFileName = childPid + ".proc";
             String childJson = JsonUtil.toMetaJson(childData);
             FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childFileName);
             FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
@@ -1532,7 +1532,7 @@ public class ProcessRunner {
             if (!(ppidObj instanceof Number)) return;
             int ppid = ((Number) ppidObj).intValue();
 
-            String parentPath = Constants.SYSTEM_PROCESS_PATH + ppid + ".pres";
+            String parentPath = Constants.SYSTEM_PROCESS_PATH + ppid + ".proc";
             String parentContent = FileUtil.read(parentPath);
             if (parentContent == null || parentContent.trim().isEmpty()) return;
 
@@ -1578,7 +1578,7 @@ public class ProcessRunner {
     private void clearAllProcessFiles() {
         String realDir = PathUtil.toRealPath(Constants.SYSTEM_PROCESS_PATH);
         java.io.File dir = new java.io.File(realDir);
-        java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".pres"));
+        java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".proc"));
         if (files != null) {
             for (java.io.File f : files) {
                 if (f.exists()) {

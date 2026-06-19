@@ -186,13 +186,13 @@ public final class PathUtil {
     }
 
     // ════════════════════════════════════════════
-    // 进程文件命名（.pres）
+    // 进程文件命名（.proc）
     // ════════════════════════════════════════════
 
-    private static final String PROCESS_EXT = ".pres";
+    private static final String PROCESS_EXT = ".proc";
 
     /**
-     * 将进程名称安全地转为文件名（含 .pres 后缀）。
+     * 将进程名称安全地转为文件名（含 .proc 后缀）。
      */
     public static String getProcessFileName(String processName) {
         String safe = sanitizeFileName(processName);
@@ -215,8 +215,8 @@ public final class PathUtil {
     }
 
     /**
-     * 根据 PID 查找 .pres 文件名。
-     * 文件名即为 {pid}.pres，不再需要扫描+解析 JSON（#11）。
+     * 根据 PID 查找 .proc 文件名。
+     * 文件名即为 {pid}.proc。
      */
     public static String findProcessFileNameByPid(int pid) {
         String fileName = pid + PROCESS_EXT;
@@ -234,7 +234,7 @@ public final class PathUtil {
 
     /**
      * 扫描进程目录，返回 PID → 文件名 的映射。
-     * 文件名本身就是 {pid}.pres，从文件名解析 PID（#11）。
+     * 文件名本身就是 {pid}.proc，从文件名解析 PID。
      */
     public static Map<Integer, String> scanProcessFileNames() {
         Map<Integer, String> result = new LinkedHashMap<>();
