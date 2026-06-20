@@ -1,4 +1,4 @@
-package com.follarce.process.state;
+package com.follarce.process;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;

@@ -1,4 +1,4 @@
-package com.follarce.process.imp;
+package com.follarce.process;
 
 import com.follarce.log.Logger;
 import com.follarce.util.FileUtil;

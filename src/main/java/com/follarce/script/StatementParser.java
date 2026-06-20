@@ -278,7 +278,7 @@ public class StatementParser {
 
         // 索引赋值 arr[0] = expr
         java.util.regex.Matcher indexAssignMatcher =
-                com.follarce.process.expr.ExpressionEvaluator.INDEX_ASSIGN_PATTERN.matcher(rawCode.trim());
+                com.follarce.process.ExpressionEvaluator.INDEX_ASSIGN_PATTERN.matcher(rawCode.trim());
         if (indexAssignMatcher.matches()) {
             instructions.add(new IndexAssignmentInstruction(
                     indexAssignMatcher.group(1).trim(),
@@ -290,7 +290,7 @@ public class StatementParser {
 
         // 普通赋值 x = expr
         java.util.regex.Matcher assignMatcher =
-                com.follarce.process.expr.ExpressionEvaluator.ASSIGN_PATTERN.matcher(rawCode.trim());
+                com.follarce.process.ExpressionEvaluator.ASSIGN_PATTERN.matcher(rawCode.trim());
         if (assignMatcher.matches()) {
             instructions.add(new AssignmentInstruction(
                     assignMatcher.group(1).trim(),

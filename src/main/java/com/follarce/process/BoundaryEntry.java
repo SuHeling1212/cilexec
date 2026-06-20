@@ -1,4 +1,4 @@
-package com.follarce.process.boundary;
+package com.follarce.process;
 
 /**
  * 边界表条目 —— 记录 if/while 控制流的起止范围。

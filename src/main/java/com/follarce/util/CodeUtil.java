@@ -6,7 +6,7 @@ import java.util.List;
 /**
  * 代码处理工具 —— 提供注释剔除等静态方法。
  * <p>
- * 从原 {@link com.follarce.process.code.CodeLoader} 迁移而来，
+ * 从原 {@link com.follarce.process.CodeLoader} 迁移而来，
  * 在移除 CodeLoader 后作为替代。
  */
 public final class CodeUtil {

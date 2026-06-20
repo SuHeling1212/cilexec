@@ -1,9 +1,6 @@
-package com.follarce.process.control;
+package com.follarce.process;
 
 import com.follarce.log.Logger;
-import com.follarce.process.boundary.BoundaryEntry;
-import com.follarce.process.boundary.BoundaryTable;
-import com.follarce.process.expr.ExpressionEvaluator;
 
 import java.util.*;
 import java.util.function.BiFunction;

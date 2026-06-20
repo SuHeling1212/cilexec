@@ -2,7 +2,7 @@ package com.follarce.init;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
-import com.follarce.process.code.CodeLoader;
+import com.follarce.process.CodeLoader;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.UserUtil;

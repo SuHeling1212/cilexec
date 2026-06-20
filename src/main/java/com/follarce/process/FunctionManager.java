@@ -1,7 +1,6 @@
-package com.follarce.process.func;
+package com.follarce.process;
 
 import com.follarce.log.Logger;
-import com.follarce.process.expr.ExpressionEvaluator;
 import com.follarce.script.FunctionDef;
 import com.follarce.script.Lexer;
 import com.follarce.script.Parser;

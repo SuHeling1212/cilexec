@@ -1,8 +1,7 @@
-package com.follarce.process.state;
+package com.follarce.process;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
-import com.follarce.process.ProcessRunner;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;

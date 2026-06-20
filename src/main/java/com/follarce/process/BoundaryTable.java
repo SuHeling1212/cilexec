@@ -1,4 +1,4 @@
-package com.follarce.process.boundary;
+package com.follarce.process;
 
 import java.util.*;
 

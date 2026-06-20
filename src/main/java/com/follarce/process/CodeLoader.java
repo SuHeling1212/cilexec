@@ -1,7 +1,6 @@
-package com.follarce.process.code;
+package com.follarce.process;
 
 import com.follarce.log.Logger;
-import com.follarce.process.boundary.BoundaryTable;
 import com.follarce.script.StatementParser;
 
 import java.util.ArrayList;
