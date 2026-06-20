@@ -157,8 +157,7 @@ public class Scheduler extends Thread {
      * 传统单线程调度循环（USE_VIRTUAL_THREADS = false）。
      */
     private void legacySchedulerLoop() {
-        Logger.info("Scheduler started (legacy mode, tick=" + Constants.SCHEDULER_TICK_MS
-                + "ms, quantum=" + Constants.SCHEDULER_QUANTUM + " lines)");
+        Logger.info("Scheduler started (legacy mode, tick=" + Constants.SCHEDULER_TICK_MS + "ms)");
 
         initialScan();
 
@@ -222,6 +221,13 @@ public class Scheduler extends Thread {
                 Logger.info("Found existing INIT process (PID=1)");
                 continue;
             }
+
+            // 跳过已终止的进程文件（Status=false）
+            Object statusObj = entry.getValue().get("Status");
+            if (statusObj instanceof Boolean && !(Boolean) statusObj) {
+                continue;
+            }
+
             if (!allProcesses.containsKey(pid)) {
                 ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
                 runner.init();
@@ -239,6 +245,13 @@ public class Scheduler extends Thread {
 
         for (Map.Entry<Integer, Map<String, Object>> entry : current.entrySet()) {
             int pid = entry.getKey();
+
+            // 跳过已终止的进程（Status=false），避免无限循环套娃
+            Object statusObj = entry.getValue().get("Status");
+            if (statusObj instanceof Boolean && !(Boolean) statusObj) {
+                continue;
+            }
+
             if (!allProcesses.containsKey(pid)) {
                 ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
                 runner.init();
@@ -337,32 +350,27 @@ public class Scheduler extends Thread {
         ProcessRunner next = dequeueHighestPriority();
         if (next == null) return;
 
-        int quantum = Constants.SCHEDULER_QUANTUM;
-        for (int i = 0; i < quantum; i++) {
-            // 每次 step() 前设置用户上下文（进程可能在上次执行后切换了用户）
-            String owner = getProcessOwnerFromFile(next.getPid());
-            if (owner != null) {
-                com.follarce.util.UserUtil.setCurrentUser(owner);
-            }
-
-            ProcessRunner.StepResult result = next.step();
-
-            if (result == ProcessRunner.StepResult.TERMINATED) {
-                Logger.info("Scheduler: PID " + next.getPid() + " terminated");
-                allProcesses.remove(next.getPid());
-                blockedProcesses.remove(next.getPid());
-                return;
-            }
-
-            if (result == ProcessRunner.StepResult.BLOCKED) {
-                blockedProcesses.put(next.getPid(), next);
-                Logger.info("Scheduler: PID " + next.getPid() + " blocked");
-                return;
-            }
-            // COMPLETED: continue to next quantum iteration
+        // 每次 step() 前设置用户上下文（进程可能在上次执行后切换了用户）
+        String owner = getProcessOwnerFromFile(next.getPid());
+        if (owner != null) {
+            com.follarce.util.UserUtil.setCurrentUser(owner);
         }
 
-        // 量子用尽，进程仍在运行 → 回就绪队列队尾
+        ProcessRunner.StepResult result = next.step();
+
+        if (result == ProcessRunner.StepResult.TERMINATED) {
+            Logger.info("Scheduler: PID " + next.getPid() + " terminated");
+            blockedProcesses.remove(next.getPid());
+            return;
+        }
+
+        if (result == ProcessRunner.StepResult.BLOCKED) {
+            blockedProcesses.put(next.getPid(), next);
+            Logger.info("Scheduler: PID " + next.getPid() + " blocked");
+            return;
+        }
+
+        // 进程仍在运行 → 回就绪队列队尾
         if (next.isRunning()) {
             enqueueByPriority(next);
         }

@@ -10,5 +10,8 @@ public enum TokenType {
     NOT, AND, OR,
     LPAREN, RPAREN, LBRACKET, RBRACKET,
     LBRACE, RBRACE, COMMA, COLON,
+    // ── FCL 语句关键字 ──
+    IF, WHILE, FUNC, RETURN, BREAK, CONTINUE,
+    IMPORT, INCLUDE,
     EOF
 }

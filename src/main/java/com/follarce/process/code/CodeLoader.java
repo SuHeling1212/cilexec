@@ -2,6 +2,7 @@ package com.follarce.process.code;
 
 import com.follarce.log.Logger;
 import com.follarce.process.boundary.BoundaryTable;
+import com.follarce.script.StatementParser;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +36,7 @@ public class CodeLoader {
         this.rawCodeLines = new ArrayList<>(rawLines);
         this.codeLines = stripComments(rawLines);
         this.codeLines = splitControlBraces(codeLines);
+        this.codeLines = splitBySemicolons(codeLines);
         this.boundaryTable = BoundaryTable.scan(codeLines);
         return codeLines;
     }
@@ -196,6 +198,24 @@ public class CodeLoader {
                 } else {
                     // 没有 }，整段作为 body
                     result.add(after);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 将一行中以 {@code ;} 分隔的多条语句拆分为独立行。
+     * 复用 {@link StatementParser#splitBySemicolon} 的逻辑（跳过字符串和括号内的 {@code ;}）。
+     */
+    static List<String> splitBySemicolons(List<String> lines) {
+        List<String> result = new ArrayList<>(lines.size() + 4);
+        for (String line : lines) {
+            List<String> parts = StatementParser.splitBySemicolon(line);
+            for (String part : parts) {
+                String trimmed = part.trim();
+                if (!trimmed.isEmpty()) {
+                    result.add(trimmed);
                 }
             }
         }

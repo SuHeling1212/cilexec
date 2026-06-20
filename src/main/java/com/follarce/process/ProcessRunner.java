@@ -219,7 +219,7 @@ public class ProcessRunner {
      * <p>
      * 设计要点：
      * <ul>
-     *   <li>每次量子后 {@link Thread#yield()} 让出 CPU，供其他虚拟线程竞争</li>
+     *   <li>每次 step() 后 {@link Thread#yield()} 让出 CPU，供其他虚拟线程竞争</li>
      *   <li>BLOCKED 时用 {@link LockSupport#parkNanos(long)} 休眠，不占平台线程</li>
      *   <li>每行执行后持久化到 .proc 文件</li>
      *   <li>自然结束或因异常退出时自动清理</li>
@@ -235,28 +235,17 @@ public class ProcessRunner {
             UserUtil.setCurrentUser(owner != null ? owner : Constants.DEFAULT_USER_LOCAL);
 
             while (running && state != ProcessState.TERMINATED) {
-                int quantum = getQuantumByPriority();
+                StepResult result = step();
 
-                boolean wasBlocked = false;
-                for (int i = 0; i < quantum; i++) {
-                    if (!running || state == ProcessState.TERMINATED) break;
-
-                    StepResult result = step();
-
-                    if (result == StepResult.TERMINATED) {
-                        Logger.info("Virtual thread: PID " + pid + " terminated naturally");
-                        VIRTUAL_THREADS.remove(pid);
-                        return;
-                    }
-
-                    if (result == StepResult.BLOCKED) {
-                        wasBlocked = true;
-                        break;
-                    }
+                if (result == StepResult.TERMINATED) {
+                    Logger.info("Virtual thread: PID " + pid + " terminated naturally");
+                    VIRTUAL_THREADS.remove(pid);
+                    return;
                 }
 
-                if (wasBlocked) {
+                if (result == StepResult.BLOCKED) {
                     parkWhileBlocked();
+                    continue;
                 }
 
                 // 让出 CPU 给其他虚拟线程
@@ -270,15 +259,6 @@ public class ProcessRunner {
             VIRTUAL_THREADS.remove(pid);
             Logger.info("Virtual thread for PID " + pid + " (" + getProcessName() + ") finished");
         }
-    }
-
-    /**
-     * 根据优先级返回量子大小（每次让出 CPU 前执行的行数）。
-     */
-    private int getQuantumByPriority() {
-        if (priority >= Constants.PRIORITY_HIGH) return Constants.QUANTUM_HIGH;
-        if (priority <= Constants.PRIORITY_LOW) return Constants.QUANTUM_LOW;
-        return Constants.QUANTUM_NORMAL;
     }
 
     /**
@@ -387,14 +367,14 @@ public class ProcessRunner {
 
         // import
         if (trimmed.startsWith("import ")) {
-            currentLine++;
-            persistState();
             List<String> imported = importManager.handleImport(trimmed, codeLines);
             for (String imp : imported) {
                 importManager.addImportedFile(imp);
             }
             codeChanged();
             functionManager.parseFunctions(codeLines);
+            currentLine++;
+            persistState();
             return;
         }
 
@@ -462,9 +442,9 @@ public class ProcessRunner {
 
         // fork()
         if (trimmed.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
+            int childPid = ipcHandler.handleFork();
             currentLine++;
             persistState();
-            int childPid = ipcHandler.handleFork();
             // fork 的结果通过赋值语境传递，单独执行时忽略
             return;
         }
@@ -480,9 +460,8 @@ public class ProcessRunner {
         // 索引赋值 arr[0] = expr
         java.util.regex.Matcher indexAssignMatcher = ExpressionEvaluator.INDEX_ASSIGN_PATTERN.matcher(trimmed);
         if (indexAssignMatcher.matches()) {
-            currentLine++;
-            persistState();
             handleIndexAssignment(indexAssignMatcher, line);
+            currentLine++;
             persistState();
             return;
         }
@@ -490,22 +469,20 @@ public class ProcessRunner {
         // 普通赋值 x = expr
         java.util.regex.Matcher assignMatcher = ExpressionEvaluator.ASSIGN_PATTERN.matcher(trimmed);
         if (assignMatcher.matches()) {
-            currentLine++;
-            persistState();
             handleAssignment(assignMatcher, line);
+            currentLine++;
             persistState();
             return;
         }
 
         // 通用表达式（函数调用、字面量等）
-        currentLine++;
-        persistState();
         Object exprResult = expressionEvaluator.evaluateExpression(trimmed);
         if (exprResult instanceof String) {
             String marker = (String) exprResult;
             handleMarker(marker);
             if (state == ProcessState.BLOCKED) return;
         }
+        currentLine++;
         persistState();
     }
 

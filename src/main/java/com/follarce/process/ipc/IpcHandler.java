@@ -104,7 +104,9 @@ public class IpcHandler {
                         List<String> rawLines = (List<String>) codeLinesObj;
                         code.put("Code", CodeLoader.stripComments(rawLines));
                     }
-                    code.put("runningCodeLine", 0);
+                    // 子进程复制父进程的程序计数器，然后各自 +1（父进程在调用方 +1）
+                    int parentLine = currentLineSupplier.get();
+                    code.put("runningCodeLine", parentLine + 1);
                     code.put("BlockStack", new ArrayList<>());
                 }
                 childProgram.remove("pendingAssignVarName");
@@ -403,8 +405,8 @@ public class IpcHandler {
     // ════════════════════════════════════════════
 
     private int allocatePid() {
-        // 从 100 开始分配（1-99 保留给系统进程）
-        int base = 100;
+        // 从 2 开始分配（PID 1 固定为 INIT）
+        int base = 2;
         Map<Integer, Map<String, Object>> existing = stateManager != null
                 ? scanProcessFiles()
                 : new LinkedHashMap<>();

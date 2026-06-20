@@ -203,14 +203,20 @@ public class Lexer {
 
         // Keywords (only for non-#-prefixed identifiers)
         if (start < input.length() && input.charAt(start) != '#') {
-            if (lexeme.equals("and")) {
-                return new Token(TokenType.AND, lexeme, start);
-            }
-            if (lexeme.equals("or")) {
-                return new Token(TokenType.OR, lexeme, start);
-            }
-            if (lexeme.equals("true") || lexeme.equals("false")) {
-                return new Token(TokenType.BOOLEAN, lexeme, start);
+            switch (lexeme) {
+                case "and":   return new Token(TokenType.AND, lexeme, start);
+                case "or":    return new Token(TokenType.OR, lexeme, start);
+                case "true":
+                case "false": return new Token(TokenType.BOOLEAN, lexeme, start);
+                // ── FCL 语句关键字 ──
+                case "if":       return new Token(TokenType.IF, lexeme, start);
+                case "while":    return new Token(TokenType.WHILE, lexeme, start);
+                case "func":     return new Token(TokenType.FUNC, lexeme, start);
+                case "return":   return new Token(TokenType.RETURN, lexeme, start);
+                case "break":    return new Token(TokenType.BREAK, lexeme, start);
+                case "continue": return new Token(TokenType.CONTINUE, lexeme, start);
+                case "import":   return new Token(TokenType.IMPORT, lexeme, start);
+                case "include":  return new Token(TokenType.INCLUDE, lexeme, start);
             }
         }
         return new Token(TokenType.IDENTIFIER, lexeme, start);
