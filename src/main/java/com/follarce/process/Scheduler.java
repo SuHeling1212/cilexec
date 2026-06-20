@@ -261,8 +261,9 @@ public class Scheduler extends Thread {
         }
 
         if (USE_VIRTUAL_THREADS) {
-            // 虚拟线程模式：仅清理已删除的进程记录
+            // 虚拟线程模式：清理 + 全终止检测
             cleanupRemovedProcesses(current);
+            checkAllProcessesTerminated();
         } else {
             // 传统模式：清理 + 全终止检测
             cleanupRemovedProcesses(current);
