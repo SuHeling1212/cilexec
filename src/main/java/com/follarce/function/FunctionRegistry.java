@@ -84,7 +84,7 @@ public class FunctionRegistry {
             functionName = name.substring(dotIndex + 1);
         }
 
-        // 2. 遍历所有 providers 匹配
+        // 2. 遍历所有 providers 匹配（全名 / 空命名空间精确匹配）
         for (FunctionProvider provider : providers) {
             String providerNs = provider.getNamespace();
 
@@ -107,7 +107,14 @@ public class FunctionRegistry {
             }
         }
 
-        // 无命名空间时：第二次遍历，匹配非空命名空间 provider 的短名
+        // 3. 无命名空间时：优先检查用户函数（用户定义的函数应优先于短名 provider 回退）
+        if (namespace == null || namespace.isEmpty()) {
+            if (userFunctions.containsKey(name)) {
+                return "USER:" + name;
+            }
+        }
+
+        // 4. 无命名空间时：短名回退 —— 匹配非空命名空间 provider
         if (namespace == null || namespace.isEmpty()) {
             for (FunctionProvider provider : providers) {
                 String providerNs = provider.getNamespace();
@@ -121,9 +128,11 @@ public class FunctionRegistry {
             }
         }
 
-        // 3. 检查用户函数
-        if (userFunctions.containsKey(name)) {
-            return "USER:" + name;
+        // 5. 有命名空间时：检查用户函数（仅当命名空间 provider 未找到时）
+        if (namespace != null && !namespace.isEmpty()) {
+            if (userFunctions.containsKey(name)) {
+                return "USER:" + name;
+            }
         }
 
         return new String[]{Constants.ERROR_MARKER, "Function not found: " + name};

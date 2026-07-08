@@ -166,10 +166,13 @@ public class StateManager {
             // 写入 Data（进程变量）
             program.put("Data", snapshot.data);
 
-            // ── 显式清除瞬态字段，确保 .proc 文件不包含它们 ──
+            // ── 显式清除瞬态字段，确保 .proc 文件不包含过时数据 ──
             processData.remove("CallStack");
-            program.remove("pendingAssignVarName");
             program.remove("imports");
+
+            // 持久化字段
+            program.put("CallStack", snapshot.callStackData);         // 函数调用栈
+            program.put("pendingAssignVarName", snapshot.pendingAssignVarName); // 待赋值变量名
 
             // 写入 Code / runningCodeLine / BlockStack（持久化字段）
             Map<String, Object> code = new LinkedHashMap<>();

@@ -71,6 +71,12 @@ public class ProcessRunner {
     private BlockReason blockReason = BlockReason.NONE;
     private final long processStartMs;
 
+    // 进入用户函数体后置为 true，dispatchStatement 据此跳过 currentLine++
+    private volatile boolean enteredUserFunction = false;
+
+    // 待赋值变量名：调用用户函数时的赋值目标变量，函数返回后完成赋值
+    private String pendingAssignmentVar = null;
+
     // ── 虚拟线程管理（全局） ──
     // PID → 虚拟线程映射，用于跨进程 unpark（kill 唤醒 wait）
     private static final ConcurrentHashMap<Integer, Thread> VIRTUAL_THREADS = new ConcurrentHashMap<>();
@@ -302,8 +308,8 @@ public class ProcessRunner {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
                     this.currentLine = frame.savedCurrentLine + 1;
-                    // 函数结束没有 return 语句 = 无返回值，不设置 __return_value
                     this.blockStack = new ArrayList<>();
+                    completePendingAssignment();
                     codeChanged();
                     persistState();
                     return;
@@ -407,6 +413,7 @@ public class ProcessRunner {
                     if (ret.value != null) {
                         data.put("__return_value", ret.value);
                     }
+                    completePendingAssignment();
                 }
             } else {
                 running = false;
@@ -462,6 +469,7 @@ public class ProcessRunner {
         java.util.regex.Matcher assignMatcher = ExpressionEvaluator.ASSIGN_PATTERN.matcher(trimmed);
         if (assignMatcher.matches()) {
             handleAssignment(assignMatcher, line);
+            if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
             currentLine++;
             persistState();
             return;
@@ -474,6 +482,7 @@ public class ProcessRunner {
             handleMarker(marker);
             if (state == ProcessState.BLOCKED) return;
         }
+        if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
         currentLine++;
         persistState();
     }
@@ -498,8 +507,17 @@ public class ProcessRunner {
         Object value = expressionEvaluator.evaluateExpression(expr);
 
         if (value instanceof String) {
-            value = handleMarkerResult((String) value, varName);
+            String marker = (String) value;
+            // 用户函数调用：在被 handleMarkerResult 替换代码/数据前，
+            // 先将赋值目标存入 __pending_assign，随 call frame 一起保存
+            if (marker.startsWith("USER:")) {
+                data.put("__pending_assign", varName);
+            }
+            value = handleMarkerResult(marker, varName);
         }
+
+        // 若进入了用户函数体，赋值延迟到函数返回后完成
+        if (enteredUserFunction) return;
 
         data.put(varName, value);
     }
@@ -618,6 +636,7 @@ public class ProcessRunner {
             }
         }
         codeChanged();
+        enteredUserFunction = true;  // 告知 dispatchStatement 跳过 currentLine++
         persistState();
     }
 
@@ -685,6 +704,22 @@ public class ProcessRunner {
 
         if (snap.pendingAssignVarName != null) {
             functionManager.setPendingFuncName(snap.pendingAssignVarName);
+        }
+    }
+
+    /**
+     * 函数调用返回后，将返回值写入之前记录的赋值目标变量。
+     * {@code __pending_assign} 在进入函数体前由 handleAssignment 存入 data，
+     * 随调用帧保存/恢复，因此函数返回后 data 中已包含该标记。
+     */
+    @SuppressWarnings("unchecked")
+    private void completePendingAssignment() {
+        Object varName = data.remove("__pending_assign");
+        if (varName != null) {
+            Object retVal = data.remove("__return_value");
+            if (retVal != null) {
+                data.put(varName.toString(), retVal);
+            }
         }
     }
 

@@ -1,10 +1,12 @@
 package com.follarce.process;
 
+import com.follarce.function.FunctionRegistry;
 import com.follarce.log.Logger;
 import com.follarce.script.FunctionDef;
 import com.follarce.script.Lexer;
 import com.follarce.script.Parser;
 import com.follarce.script.AstNode;
+import com.follarce.script.StatementParser;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -23,7 +25,7 @@ import java.util.regex.Pattern;
 public class FunctionManager {
 
     private static final Pattern FUNC_DEF_PATTERN =
-            Pattern.compile("^func\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{?\\s*$");
+            Pattern.compile("^func\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{?.*$");
 
     private final int pid;
     private final ExpressionEvaluator evaluator;
@@ -58,6 +60,9 @@ public class FunctionManager {
      */
     public void parseFunctions(List<String> codeLines) {
         functions.clear();
+        // 注意：不清除 FunctionRegistry —— 每次 step 都会调用 parseFunctions()，
+        // 进入用户函数体后 codeLines 被替换为函数体（无 func 定义），
+        // 若 clear 会导致递归调用时找不到函数定义。
         if (codeLines == null) return;
 
         for (int i = 0; i < codeLines.size(); i++) {
@@ -70,13 +75,40 @@ public class FunctionManager {
                         ? new ArrayList<>()
                         : Arrays.asList(paramsStr.split("\\s*,\\s*"));
 
-                // 查找函数体
-                int bodyStart = i + 1;
-                int bodyEnd = findFunctionBodyEnd(codeLines, bodyStart);
-                List<String> bodyLines = codeLines.subList(bodyStart, bodyEnd);
+                // 检测是否为内联函数体 func name(params) { body }
+                int afterParenPos = matcher.end(2) + 1; // 跳过 )
+                List<String> bodyLines;
+                int bodyStartLine;
 
-                functions.put(funcName, new FunctionDef(funcName, params, new ArrayList<>(bodyLines), bodyStart));
-                Logger.debug("Parsed function: " + funcName + "(" + params + ") at lines " + bodyStart + "-" + bodyEnd);
+                if (afterParenPos < line.length()) {
+                    String remainder = line.substring(afterParenPos).trim();
+                    // 仅在余下部分包含完整 { ... } 对时才算内联函数体
+                    if (remainder.startsWith("{") && remainder.length() > 1 && remainder.endsWith("}")) {
+                        // 内联函数体：提取 { 和 } 之间的内容
+                        String bodyContent = remainder.substring(1, remainder.length() - 1).trim();
+                        bodyLines = new ArrayList<>();
+                        if (!bodyContent.isEmpty()) {
+                            bodyLines = StatementParser.splitBySemicolon(bodyContent);
+                        }
+                        bodyStartLine = i;
+                    } else {
+                        // 多行函数体（{ 后无内容，或 { 在后续行）
+                        int bodyEnd = findFunctionBodyEnd(codeLines, i + 1);
+                        bodyLines = codeLines.subList(i + 1, bodyEnd);
+                        bodyStartLine = i + 1;
+                    }
+                } else {
+                    // 多行函数体（{ 在后续行）
+                    int bodyEnd = findFunctionBodyEnd(codeLines, i + 1);
+                    bodyLines = codeLines.subList(i + 1, bodyEnd);
+                    bodyStartLine = i + 1;
+                }
+
+                FunctionDef def = new FunctionDef(funcName, params, new ArrayList<>(bodyLines), bodyStartLine);
+                functions.put(funcName, def);
+                // 同步注册到全局 FunctionRegistry，使函数调用能被正常分发
+                FunctionRegistry.registerUserFunction(funcName, def);
+                Logger.debug("Parsed function: " + funcName + "(" + params + ") body=" + bodyLines.size() + " lines");
             }
         }
     }

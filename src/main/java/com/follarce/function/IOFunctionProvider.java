@@ -2,6 +2,7 @@ package com.follarce.function;
 
 import com.follarce.Constants;
 import com.follarce.util.FileUtil;
+import com.follarce.util.PathUtil;
 
 import java.util.List;
 import java.util.Scanner;
@@ -53,6 +54,14 @@ public class IOFunctionProvider implements FunctionProvider {
 
                 case "writeFile": {
                     String wfPath = getStringArg(args, 0);
+                    // Auto-create file if it doesn't exist
+                    if (!FileUtil.exists(wfPath)) {
+                        String parentPath = PathUtil.getParentPath(wfPath);
+                        String fileName = PathUtil.getFileName(wfPath);
+                        if (parentPath != null && fileName != null) {
+                            FileUtil.createFile(parentPath, fileName);
+                        }
+                    }
                     if (!FileUtil.checkFilePermission(wfPath, Constants.PERM_WRITE, context.getCurrentUser())) {
                         return new String[]{Constants.ERROR_MARKER, "Permission denied: write " + wfPath};
                     }

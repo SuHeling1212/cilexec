@@ -100,9 +100,11 @@ public class ExpressionEvaluator {
                 return Double.parseDouble(expression);
             }
 
-            // 纯字符串字面量
+            // 纯字符串字面量 —— 仅当整个表达式是一对引号包围的单段字符串
+            // 排除多段拼接如 "Hello" + "World"（包含多对引号）
             if (expression.startsWith("\"") && expression.endsWith("\"")
-                    && expression.length() >= 2) {
+                    && expression.length() >= 2
+                    && countUnescapedDoubleQuotes(expression) == 2) {
                 String inner = expression.substring(1, expression.length() - 1);
                 return unescapeFclString(inner);
             }
@@ -231,5 +233,21 @@ public class ExpressionEvaluator {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * 统计字符串中未被转义的双引号数量。
+     * 用于区分纯字符串字面量（2 个引号）和多段拼接表达式（≥4 个引号）。
+     */
+    private static int countUnescapedDoubleQuotes(String s) {
+        int count = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == '\\' && i + 1 < s.length()) {
+                i++; // 跳过转义字符
+                continue;
+            }
+            if (s.charAt(i) == '"') count++;
+        }
+        return count;
     }
 }

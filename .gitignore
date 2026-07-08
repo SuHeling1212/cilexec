@@ -30,9 +30,11 @@ cilexec_root/
 .deepseek/
 .codewhale/
 .claude/
+CLAUDE.md
 # Maven dependency reduced pom
 dependency-reduced-pom.xml
 
 # extension
 fcl-vscode/.codewhale/
 fcl-vscode/
+

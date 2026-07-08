@@ -122,10 +122,14 @@ public class CodeLoader {
             if (c == '/' && i + 1 < line.length() && line.charAt(i + 1) == '/') {
                 return i;
             }
-            // # 注释：仅当前面是空白/{/( 或行首时视为注释（排除 #var 长度运算符）
+            // # 注释：仅当前面是空白/{/( 或行首，且 # 后面不是标识符字符时视为注释
+            // （# 后跟字母/下划线的是长度运算符 #varName，不是注释）
             if (c == '#') {
-                if (i == 0 || Character.isWhitespace(line.charAt(i - 1))
-                        || line.charAt(i - 1) == '{' || line.charAt(i - 1) == '(') {
+                boolean afterBoundary = i == 0 || Character.isWhitespace(line.charAt(i - 1))
+                        || line.charAt(i - 1) == '{' || line.charAt(i - 1) == '(';
+                boolean isLengthOp = i + 1 < line.length()
+                        && (Character.isLetter(line.charAt(i + 1)) || line.charAt(i + 1) == '_');
+                if (afterBoundary && !isLengthOp) {
                     return i;
                 }
             }
