@@ -18,13 +18,22 @@ public class BoundaryEntry {
     private final int conditionLine;
     private final int bodyStart;
     private final int bodyEnd;
+    private final boolean hasElse;
+    private final int elseBodyStart;
 
     public BoundaryEntry(Type type, String condition, int conditionLine, int bodyStart, int bodyEnd) {
+        this(type, condition, conditionLine, bodyStart, bodyEnd, false, -1);
+    }
+
+    public BoundaryEntry(Type type, String condition, int conditionLine, int bodyStart, int bodyEnd,
+                         boolean hasElse, int elseBodyStart) {
         this.type = type;
         this.condition = condition != null ? condition.trim() : "";
         this.conditionLine = conditionLine;
         this.bodyStart = bodyStart;
         this.bodyEnd = bodyEnd;
+        this.hasElse = hasElse;
+        this.elseBodyStart = elseBodyStart;
     }
 
     public Type getType() { return type; }
@@ -32,9 +41,13 @@ public class BoundaryEntry {
     public int getConditionLine() { return conditionLine; }
     public int getBodyStart() { return bodyStart; }
     public int getBodyEnd() { return bodyEnd; }
+    public boolean hasElse() { return hasElse; }
+    public int getElseBodyStart() { return elseBodyStart; }
 
     @Override
     public String toString() {
-        return type + "{cond=" + conditionLine + ",body=" + bodyStart + "-" + bodyEnd + "}";
+        String s = type + "{cond=" + conditionLine + ",body=" + bodyStart + "-" + bodyEnd;
+        if (hasElse) s += ",else=" + elseBodyStart;
+        return s + "}";
     }
 }

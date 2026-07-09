@@ -62,25 +62,29 @@ public class ControlFlow {
     @SuppressWarnings("unchecked")
     public int handleIf(String condition, int currentLine) {
         boolean result = evaluator.evaluateToBoolean(condition);
+        BoundaryEntry entry = boundaryTable != null ? boundaryTable.getEntryAtLine(currentLine) : null;
         if (result) {
             Map<String, Object> block = new LinkedHashMap<>();
             block.put("type", "IF");
             block.put("startLine", currentLine);
             block.put("condition", condition);
+            // 有 else 时记录最终 }，handleClosingBraces 据此跳过 else body
+            if (entry != null && entry.hasElse()) {
+                block.put("elseBodyEnd", entry.getBodyEnd());
+            }
             blockStack.add(block);
-            // 用边界表定位 bodyStart
-            BoundaryEntry entry = boundaryTable != null ? boundaryTable.getEntryAtLine(currentLine) : null;
             if (entry != null) {
                 return entry.getBodyStart();
             }
             return currentLine + 1;
         } else {
-            // 跳转到 bodyEnd + 1
-            BoundaryEntry entry = boundaryTable != null ? boundaryTable.getEntryAtLine(currentLine) : null;
+            // 有 else 时跳到 else body，否则跳到 bodyEnd + 1
             if (entry != null) {
+                if (entry.hasElse()) {
+                    return entry.getElseBodyStart();
+                }
                 return entry.getBodyEnd() + 1;
             }
-            // fallback: 手动匹配括号
             return skipToMatchingBrace(currentLine + 1);
         }
     }
@@ -152,6 +156,12 @@ public class ControlFlow {
                 }
                 blockStack.remove(blockStack.size() - 1);
             } else if ("IF".equals(type)) {
+                // 有 else 且这是 if body 的 }：弹出并跳过 else body
+                if (block.containsKey("elseBodyEnd")) {
+                    int finalEnd = ((Number) block.get("elseBodyEnd")).intValue();
+                    blockStack.remove(blockStack.size() - 1);
+                    return finalEnd + 1;
+                }
                 blockStack.remove(blockStack.size() - 1);
             }
         }

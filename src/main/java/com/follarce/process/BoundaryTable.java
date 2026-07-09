@@ -55,12 +55,28 @@ public class BoundaryTable {
             // 检测花括号闭合 —— 只处理行首的 }
             if (line.equals("}") || line.startsWith("}")) {
                 if (!stack.isEmpty()) {
-                    ScanFrame frame = stack.pop();
-                    // bodyStart: conditionLine 之后跳过 { 所在行
-                    int bodyStart = findBodyStart(codeLines, frame.conditionLine, i);
+                    ScanFrame frame = stack.peek();
+                    // IF 遇到 else：先标记，不弹出，等 else body 结束的 }
+                    if (frame.type == BoundaryEntry.Type.IF && !frame.hasElse
+                            && hasElseAfter(codeLines, i)) {
+                        frame.hasElse = true;
+                        frame.elseBraceLine = i;
+                        continue;
+                    }
+                    // 正常闭合（或 else body 的 }）
+                    ScanFrame closed = stack.pop();
+                    int bodyStart = findBodyStart(codeLines, closed.conditionLine, i);
                     int bodyEnd = i;
-                    table.entriesByStartLine.put(frame.conditionLine,
-                            new BoundaryEntry(frame.type, frame.condition, frame.conditionLine, bodyStart, bodyEnd));
+                    if (closed.hasElse) {
+                        int elseBodyStart = findBodyStart(codeLines, closed.elseBraceLine, i);
+                        table.entriesByStartLine.put(closed.conditionLine,
+                                new BoundaryEntry(closed.type, closed.condition, closed.conditionLine,
+                                        bodyStart, bodyEnd, true, elseBodyStart));
+                    } else {
+                        table.entriesByStartLine.put(closed.conditionLine,
+                                new BoundaryEntry(closed.type, closed.condition, closed.conditionLine,
+                                        bodyStart, bodyEnd));
+                    }
                 }
                 continue;
             }
@@ -180,12 +196,33 @@ public class BoundaryTable {
     }
 
     /**
+     * 检查 } 之后是否紧跟 else（同一行或下一非空行）。
+     */
+    private static boolean hasElseAfter(List<String> codeLines, int braceLine) {
+        String line = codeLines.get(braceLine).trim();
+        // } else { 同行
+        if (line.length() > 1) {
+            String after = line.substring(1).trim();
+            if (after.startsWith("else")) return true;
+        }
+        // 检查后续非空行
+        for (int j = braceLine + 1; j < codeLines.size(); j++) {
+            String next = codeLines.get(j).trim();
+            if (next.isEmpty()) continue;
+            return next.startsWith("else");
+        }
+        return false;
+    }
+
+    /**
      * 扫描栈帧（内部辅助类）。
      */
     private static class ScanFrame {
         final BoundaryEntry.Type type;
         final String condition;
         final int conditionLine;
+        boolean hasElse;
+        int elseBraceLine = -1;  // the } else { line
 
         ScanFrame(BoundaryEntry.Type type, String condition, int conditionLine) {
             this.type = type;

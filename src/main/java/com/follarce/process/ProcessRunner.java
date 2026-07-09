@@ -392,6 +392,18 @@ public class ProcessRunner {
             return;
         }
 
+        // else — if 条件为 false 且无边界表时回退到此处
+        if (trimmed.equals("else") || trimmed.startsWith("else ")) {
+            currentLine++;
+            while (currentLine < codeLines.size()) {
+                String nl = codeLines.get(currentLine).trim();
+                if (nl.equals("{")) { currentLine++; continue; }
+                break;
+            }
+            persistState();
+            return;
+        }
+
         // while
         if (trimmed.startsWith("while ") || trimmed.startsWith("while(")) {
             String condition = extractCondition(trimmed, "while");
