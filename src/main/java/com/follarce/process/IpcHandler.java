@@ -126,7 +126,8 @@ public class IpcHandler {
             childInfo.put("PID", childPid);
             childInfo.put("Path", childData.get("Path"));
             children.put(String.valueOf(childPid), childInfo);
-            saveToFile.run();
+            // 不在此处 persist —— 调用者 dispatchStatement 会在 currentLine++ 后
+            // 统一调用 persistState()，确保 Child 更新和行号推进在同一次写入中完成。
 
             Logger.info("Fork: PID " + pid + " created child PID " + childPid);
             return childPid;
