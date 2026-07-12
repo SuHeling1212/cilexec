@@ -24,7 +24,7 @@ public final class Constants {
     // ── 执行引擎模式 ──
     // true  = 每进程一个虚拟线程（需 Java 21+）
     // false = 单线程调度器（当前模式，兼容 Java 11+）
-    public static final boolean USE_VIRTUAL_THREADS = true;
+
 
     // ── 网络 ──
     public static final int DEFAULT_TIMEOUT = 10000;

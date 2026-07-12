@@ -12,7 +12,7 @@ import java.io.File;
  * <p>
  * <strong>原子字段操作</strong>：{@link #getField}, {@link #setField}, {@link #removeField}
  * 将"锁 → 读 → 改单个字段 → 写"合为一步，消除 TOCTOU 窗口。
- * 按文件路径锁定，与 {@link com.follarce.process.ProcessFileLock}（按 PID 锁定）互补。
+ * 按文件路径锁定，确保多线程写入安全。
  */
 public final class JsonUtil {
 

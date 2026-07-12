@@ -14,7 +14,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.LockSupport;
 
-import static com.follarce.Constants.USE_VIRTUAL_THREADS;
+
 
 /**
  * 进程执行引擎 —— 由调度器驱动，每次 step() 执行一行 FCL 代码。
@@ -464,7 +464,7 @@ public class ProcessRunner {
                     this.blockStack = new ArrayList<>();
                     completePendingAssignment();
                     codeChanged();
-                    commitAndPersist(frame.savedCurrentLine + 1);
+                    settle(frame.savedCurrentLine + 1);
                     return;
                 }
                 running = false;
@@ -479,18 +479,18 @@ public class ProcessRunner {
             // 3. 跳过空行和残留注释（兼容旧 .proc 文件中未剔除的注释行）
             String trimmedLine = line.trim();
             if (trimmedLine.isEmpty() || trimmedLine.startsWith("//") || trimmedLine.startsWith("#")) {
-                commitAndPersist(currentLine + 1);
+                settle(currentLine + 1);
                 return;
             }
 
             // 4. 处理花括号行
             if (line.trim().startsWith("}")) {
                 int[] counts = ControlFlow.countBraces(line);
-                commitAndPersist(controlFlow.handleClosingBraces(counts[1], currentLine));
+                settle(controlFlow.handleClosingBraces(counts[1], currentLine));
                 return;
             }
             if (line.trim().equals("{")) {
-                commitAndPersist(currentLine + 1);
+                settle(currentLine + 1);
                 return;
             }
 
@@ -508,7 +508,7 @@ public class ProcessRunner {
 
         // func 定义
         if (trimmed.startsWith("func ")) {
-            commitAndPersist(skipFunctionBody(currentLine));
+            settle(skipFunctionBody(currentLine));
             return;
         }
 
@@ -520,7 +520,7 @@ public class ProcessRunner {
             }
             codeChanged();
             functionManager.parseFunctions(codeLines);
-            commitAndPersist(currentLine + 1);
+            settle(currentLine + 1);
             return;
         }
 
@@ -528,14 +528,14 @@ public class ProcessRunner {
         if (trimmed.startsWith("include ")) {
             int newLine = importManager.handleInclude(trimmed, codeLines, currentLine);
             codeChanged();
-            commitAndPersist(newLine);
+            settle(newLine);
             return;
         }
 
         // if
         if (trimmed.startsWith("if ") || trimmed.startsWith("if(")) {
             String condition = extractCondition(trimmed, "if");
-            commitAndPersist(controlFlow.handleIf(condition, currentLine));
+            settle(controlFlow.handleIf(condition, currentLine));
             return;
         }
 
@@ -547,21 +547,21 @@ public class ProcessRunner {
                 if (nl.equals("{")) { newLine++; continue; }
                 break;
             }
-            commitAndPersist(newLine);
+            settle(newLine);
             return;
         }
 
         // while
         if (trimmed.startsWith("while ") || trimmed.startsWith("while(")) {
             String condition = extractCondition(trimmed, "while");
-            commitAndPersist(controlFlow.handleWhile(condition, currentLine));
+            settle(controlFlow.handleWhile(condition, currentLine));
             return;
         }
 
         // switch
         if (trimmed.startsWith("switch ") || trimmed.startsWith("switch(")) {
             String expr = extractCondition(trimmed, "switch");
-            commitAndPersist(controlFlow.handleSwitch(expr, currentLine));
+            settle(controlFlow.handleSwitch(expr, currentLine));
             return;
         }
 
@@ -574,11 +574,11 @@ public class ProcessRunner {
                     int el = ((Number) top.get("endLine")).intValue();
                     controlFlow.getBlockStack().remove(
                             controlFlow.getBlockStack().size() - 1);
-                    commitAndPersist(el + 1);
+                    settle(el + 1);
                     return;
                 }
             }
-            commitAndPersist(currentLine + 1);
+            settle(currentLine + 1);
             return;
         }
 
@@ -591,11 +591,11 @@ public class ProcessRunner {
                     int el = ((Number) top.get("endLine")).intValue();
                     controlFlow.getBlockStack().remove(
                             controlFlow.getBlockStack().size() - 1);
-                    commitAndPersist(el + 1);
+                    settle(el + 1);
                     return;
                 }
             }
-            commitAndPersist(currentLine + 1);
+            settle(currentLine + 1);
             return;
         }
 
@@ -608,38 +608,38 @@ public class ProcessRunner {
                 if (frame != null) {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
-                    // 数据变更必须在 commitAndPersist 之前完成
+                    // 数据变更必须在 settle 之前完成
                     if (ret.value != null) {
                         data.put("__return_value", ret.value);
                     }
                     completePendingAssignment();
                     codeChanged();
-                    commitAndPersist(frame.savedCurrentLine + 1);
+                    settle(frame.savedCurrentLine + 1);
                 }
             } else {
                 running = false;
                 stateManager.setRunning(false);
-                commitAndPersist(codeLines.size());
+                settle(codeLines.size());
             }
             return;
         }
 
         // break
         if (trimmed.equals("break")) {
-            commitAndPersist(controlFlow.handleBreak(currentLine));
+            settle(controlFlow.handleBreak(currentLine));
             return;
         }
 
         // continue
         if (trimmed.equals("continue")) {
-            commitAndPersist(controlFlow.handleContinue(currentLine));
+            settle(controlFlow.handleContinue(currentLine));
             return;
         }
 
         // fork()
         if (trimmed.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
             int childPid = ipcHandler.handleFork();
-            commitAndPersist(currentLine + 1);
+            settle(currentLine + 1);
             return;
         }
 
@@ -656,7 +656,7 @@ public class ProcessRunner {
         if (indexAssignMatcher.matches()) {
             // 数据变更在 handleIndexAssignment 内完成，然后行号+数据一起落盘
             handleIndexAssignment(indexAssignMatcher, line);
-            commitAndPersist(currentLine + 1);
+            settle(currentLine + 1);
             return;
         }
 
@@ -666,7 +666,7 @@ public class ProcessRunner {
             // 数据变更在 handleAssignment 内完成，然后行号+数据一起落盘
             handleAssignment(assignMatcher, line);
             if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
-            commitAndPersist(currentLine + 1);
+            settle(currentLine + 1);
             return;
         }
 
@@ -678,7 +678,7 @@ public class ProcessRunner {
             if (state == ProcessState.BLOCKED) return;
         }
         if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
-        commitAndPersist(currentLine + 1);
+        settle(currentLine + 1);
     }
 
     // ════════════════════════════════════════════
@@ -939,7 +939,7 @@ public class ProcessRunner {
      *
      * @param newLine 新的程序计数器行号
      */
-    private void commitAndPersist(int newLine) {
+    private void settle(int newLine) {
         this.currentLine = newLine;
         persistState();
     }

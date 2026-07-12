@@ -9,7 +9,7 @@ import com.follarce.util.PathUtil;
 import java.io.File;
 import java.util.*;
 
-import static com.follarce.Constants.USE_VIRTUAL_THREADS;
+
 
 /**
  * 进程状态持久化管理器 —— 负责 .proc 文件的读/写/清理。
@@ -152,7 +152,6 @@ public class StateManager {
      */
     @SuppressWarnings("unchecked")
     public void saveToFile(RuntimeSnapshot snapshot) {
-        if (USE_VIRTUAL_THREADS) ProcessFileLock.lock(pid);
         try {
             processData.put("Status", running);
             processData.put("RunningTime", (System.currentTimeMillis() - processStartMs) / 1000);
@@ -185,11 +184,9 @@ public class StateManager {
 
             String json = JsonUtil.toMetaJson(processData);
             String processPath = getProcessFilePath();
-            FileUtil.write(processPath, json);
+            JsonUtil.writeFile(processPath, json);
         } catch (Exception e) {
             Logger.error("StateManager: failed to save PID " + pid + ": " + e.getMessage());
-        } finally {
-            if (USE_VIRTUAL_THREADS) ProcessFileLock.unlock(pid);
         }
     }
 
