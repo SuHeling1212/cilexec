@@ -187,8 +187,14 @@ public class NodeEvaluator {
             case "+":
                 return plus(left, right);
             case "-":
+                if (isIntegerType(left) && isIntegerType(right)) {
+                    return ((Number) left).longValue() - ((Number) right).longValue();
+                }
                 return asNumber(left) - asNumber(right);
             case "*":
+                if (isIntegerType(left) && isIntegerType(right)) {
+                    return ((Number) left).longValue() * ((Number) right).longValue();
+                }
                 return asNumber(left) * asNumber(right);
             case "/":
                 double divisor = asNumber(right);
@@ -312,6 +318,10 @@ public class NodeEvaluator {
         return 0L;
     }
 
+    private static boolean isIntegerType(Object val) {
+        return val instanceof Long || val instanceof Integer || val instanceof Short || val instanceof Byte;
+    }
+
     private static int toIntIndex(Object val) {
         if (val instanceof Number) return ((Number) val).intValue();
         if (val instanceof String) {
@@ -345,6 +355,9 @@ public class NodeEvaluator {
             return result;
         }
         // Numeric addition
+        if (isIntegerType(left) && isIntegerType(right)) {
+            return ((Number) left).longValue() + ((Number) right).longValue();
+        }
         return asNumber(left) + asNumber(right);
     }
 

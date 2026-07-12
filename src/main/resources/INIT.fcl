@@ -1,1 +1,9 @@
-a = 1;fork();fork()
+io.println(term.paint("red", "红色文字"))
+io.println(term.paint("green", "绿色文字"))
+io.println(term.paint("blue", "蓝色文字"))
+io.println(term.paint("yellow", "黄色文字"))
+io.println(term.paint("magenta", "紫色文字"))
+io.println(term.paint("cyan", "青色文字"))
+io.println(term.bold() + term.paint("red", "粗体红色") + term.reset())
+io.println(term.green() + "绿色" + term.reset() + " 普通")
+while true {}

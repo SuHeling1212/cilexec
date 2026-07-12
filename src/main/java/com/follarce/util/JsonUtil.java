@@ -130,6 +130,22 @@ public final class JsonUtil {
     }
 
     /**
+     * 在 VFS 路径上写入完整文件内容（使用文件级锁）。
+     * 与 {@link #setField} / {@link #getField} 共享同一锁机制。
+     * 使用 {@link FileUtil#write} 写入（非 atomic，无 .tmp 文件）。
+     */
+    public static void writeFile(String vfsPath, String content) {
+        String realPath = PathUtil.toRealPath(vfsPath);
+        ReentrantLock lock = getFileLock(realPath);
+        lock.lock();
+        try {
+            FileUtil.writeAtomic(vfsPath, content);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * 判断字符串是否为整数。
      */
     private static boolean isInteger(String s) {

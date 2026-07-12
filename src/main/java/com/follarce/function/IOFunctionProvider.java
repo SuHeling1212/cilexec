@@ -5,6 +5,7 @@ import com.follarce.util.FileUtil;
 import com.follarce.util.PathUtil;
 
 import java.util.List;
+import java.io.*;
 import java.util.Scanner;
 
 /**
@@ -68,6 +69,9 @@ public class IOFunctionProvider implements FunctionProvider {
                     return "";
                 }
 
+                case "readChar":
+                    return readChar();
+
                 default:
                     return null;
             }
@@ -85,6 +89,16 @@ public class IOFunctionProvider implements FunctionProvider {
             return "";
         } catch (Exception e) {
             throw new RuntimeException("Input error: " + e.getMessage());
+        }
+    }
+
+    private static String readChar() {
+        try {
+            int c = System.in.read();
+            if (c < 0) return "";
+            return String.valueOf((char) c);
+        } catch (IOException e) {
+            return "";
         }
     }
 

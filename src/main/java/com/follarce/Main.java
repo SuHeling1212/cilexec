@@ -115,6 +115,7 @@ public class Main {
         FunctionRegistry.registerProvider(new MathFunctionProvider());
         FunctionRegistry.registerProvider(new PathFunctionProvider());
         FunctionRegistry.registerProvider(new IOFunctionProvider());
+        FunctionRegistry.registerProvider(new TermFunctionProvider());
         FunctionRegistry.registerProvider(new PrivilegedFunctionProvider());
     }
 

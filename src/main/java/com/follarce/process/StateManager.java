@@ -185,7 +185,7 @@ public class StateManager {
 
             String json = JsonUtil.toMetaJson(processData);
             String processPath = getProcessFilePath();
-            FileUtil.writeAtomic(processPath, json);
+            FileUtil.write(processPath, json);
         } catch (Exception e) {
             Logger.error("StateManager: failed to save PID " + pid + ": " + e.getMessage());
         } finally {
