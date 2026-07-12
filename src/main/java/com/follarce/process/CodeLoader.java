@@ -163,10 +163,12 @@ public class CodeLoader {
         for (String line : lines) {
             String trimmed = line.trim();
 
-            // 仅处理 if/while 开头的行
+            // 仅处理 if/while/case 开头的行
             boolean isControl =
                     trimmed.startsWith("if ") || trimmed.startsWith("if(") ||
-                    trimmed.startsWith("while ") || trimmed.startsWith("while(");
+                    trimmed.startsWith("while ") || trimmed.startsWith("while(") ||
+                    trimmed.startsWith("case ") ||
+                    trimmed.startsWith("default ");
             if (!isControl || !trimmed.contains("{")) {
                 result.add(line);
                 continue;

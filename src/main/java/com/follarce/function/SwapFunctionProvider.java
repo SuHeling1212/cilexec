@@ -260,15 +260,9 @@ public class SwapFunctionProvider implements FunctionProvider {
             return error("Invalid format, expected varName:value");
         }
 
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
-        }
-
-        Map<String, Object> content = getContent(pool);
-        if (content == null) {
-            content = new LinkedHashMap<>();
-            pool.put("content", content);
         }
 
         // 解析 varName:value
@@ -306,19 +300,16 @@ public class SwapFunctionProvider implements FunctionProvider {
         varMeta.put("whitelist", whitelist);
         varMeta.put("blacklist", blacklist);
 
-        content.put(varName, varMeta);
+        // 原子写入 content.varName
+        JsonUtil.setField(path, "content." + varName, varMeta);
 
-        // 更新池的时间
-        updatePoolTime(pool);
-
-        writePool(poolName, pool);
-
-        // 如果是 sync 类型，自动触发 signal
+        // 如果是 sync 类型，自动设置 changed=true
         if (type.equals(Constants.SWAP_TYPE_SYNC)) {
-            varMeta.put("changed", true);
-            writePool(poolName, pool);
+            JsonUtil.setField(path, "content." + varName + ".changed", true);
         }
 
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Variable added: " + varName + " (type=" + type + ")";
     }
 
@@ -335,71 +326,52 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
-        }
-        Map<String, Object> content = getContent(pool);
-        if (content == null) {
-            return error("Variable not found: " + varName);
-        }
-
-        Object raw = content.get(varName);
-        if (raw == null) {
-            return error("Variable not found: " + varName);
-        }
-
-        Map<String, Object> varMeta;
-        if (raw instanceof Map) {
-            varMeta = (Map<String, Object>) raw;
-        } else {
-            // 兼容旧格式：直接返回原始值
-            return raw;
         }
 
         // 访问控制检查
+        Object raw = JsonUtil.getField(path, "content." + varName);
+        if (raw == null) {
+            return error("Variable not found: " + varName);
+        }
+        if (!(raw instanceof Map)) {
+            return raw; // 兼容旧格式：直接返回原始值
+        }
+
+        Map<String, Object> varMeta = (Map<String, Object>) raw;
         if (!checkAccess(varMeta, pid)) {
             return error("Access denied: PID " + pid + " cannot access " + varName);
         }
-
-        // 锁定检查
         if (Boolean.TRUE.equals(varMeta.get("locked"))) {
             return error("Variable is locked: " + varName);
         }
 
         Object value = varMeta.get("value");
         String type = (String) varMeta.getOrDefault("type", Constants.SWAP_TYPE_ALWAYS);
-        boolean needsSave = false;
+        int[] timeArray = FileUtil.getCurrentTimeArray();
 
         // sync 类型：标记已读，清除 changed
         if (Constants.SWAP_TYPE_SYNC.equals(type)) {
             if (Boolean.TRUE.equals(varMeta.get("changed"))) {
-                varMeta.put("changed", false);
-                varMeta.put("editTime", FileUtil.getCurrentTimeArray());
-                needsSave = true;
+                JsonUtil.setField(path, "content." + varName + ".changed", false);
+                JsonUtil.setField(path, "content." + varName + ".editTime", timeArray);
+                JsonUtil.setField(path, "time.lastEditTime", timeArray);
             }
         }
 
         // times(N) 类型：递减，到 0 删除
         if (type != null && type.startsWith(Constants.SWAP_TYPE_TIMES_PREFIX)) {
-            int readCount = varMeta.containsKey("readCount") ? ((Number) varMeta.get("readCount")).intValue() : 0;
-            if (readCount <= 0) {
-                content.remove(varName);
-                needsSave = true;
+            int readCount = varMeta.containsKey("readCount")
+                    ? ((Number) varMeta.get("readCount")).intValue() : 0;
+            if (readCount <= 1) {
+                JsonUtil.removeField(path, "content." + varName);
             } else {
-                readCount--;
-                varMeta.put("readCount", readCount);
-                varMeta.put("editTime", FileUtil.getCurrentTimeArray());
-                if (readCount <= 0) {
-                    content.remove(varName);
-                }
-                needsSave = true;
+                JsonUtil.setField(path, "content." + varName + ".readCount", readCount - 1);
+                JsonUtil.setField(path, "content." + varName + ".editTime", timeArray);
             }
-        }
-
-        if (needsSave) {
-            updatePoolTime(pool);
-            writePool(poolName, pool);
+            JsonUtil.setField(path, "time.lastEditTime", timeArray);
         }
 
         return value;
@@ -413,17 +385,16 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        Map<String, Object> content = getContent(pool);
-        if (content == null || !content.containsKey(varName)) {
+        if (JsonUtil.getField(path, "content." + varName) == null) {
             return error("Variable not found: " + varName);
         }
-        content.remove(varName);
-        updatePoolTime(pool);
-        writePool(poolName, pool);
+        JsonUtil.removeField(path, "content." + varName);
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Variable removed: " + varName;
     }
 
@@ -439,43 +410,32 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        Map<String, Object> content = getContent(pool);
-        if (content == null || !content.containsKey(varName)) {
-            return error("Variable not found: " + varName);
-        }
 
-        Object raw = content.get(varName);
-        if (!(raw instanceof Map)) {
-            return error("Variable has no metadata (old format)");
-        }
-
-        Map<String, Object> varMeta = (Map<String, Object>) raw;
-
-        // 锁定检查
-        if (Boolean.TRUE.equals(varMeta.get("locked"))) {
-            Object lockedBy = varMeta.get("lockedBy");
+        // 锁定检查：先读 locked 和 type 字段
+        Object locked = JsonUtil.getField(path, "content." + varName + ".locked");
+        if (Boolean.TRUE.equals(locked)) {
+            Object lockedBy = JsonUtil.getField(path, "content." + varName + ".lockedBy");
             if (lockedBy instanceof Number && ((Number) lockedBy).intValue() != pid) {
                 return error("Variable is locked by PID " + lockedBy);
             }
         }
+        Object type = JsonUtil.getField(path, "content." + varName + ".type");
 
-        varMeta.put("value", newValue);
-        varMeta.put("editTime", FileUtil.getCurrentTimeArray());
-
-        String type = (String) varMeta.getOrDefault("type", Constants.SWAP_TYPE_ALWAYS);
+        JsonUtil.setField(path, "content." + varName + ".value", newValue);
+        JsonUtil.setField(path, "content." + varName + ".editTime",
+                          FileUtil.getCurrentTimeArray());
 
         // sync 类型：标记 changed
         if (Constants.SWAP_TYPE_SYNC.equals(type)) {
-            varMeta.put("changed", true);
+            JsonUtil.setField(path, "content." + varName + ".changed", true);
         }
 
-        content.put(varName, varMeta);
-        updatePoolTime(pool);
-        writePool(poolName, pool);
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Variable updated: " + varName;
     }
 
@@ -488,23 +448,21 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        Map<String, Object> content = getContent(pool);
-        if (content == null || !content.containsKey(varName)) {
+        Object raw = JsonUtil.getField(path, "content." + varName);
+        if (raw == null) {
             return error("Variable not found: " + varName);
         }
-        Object raw = content.get(varName);
         if (!(raw instanceof Map)) {
             return error("Variable has no metadata");
         }
-        Map<String, Object> varMeta = (Map<String, Object>) raw;
-        varMeta.put("locked", true);
-        varMeta.put("lockedBy", pid);
-        updatePoolTime(pool);
-        writePool(poolName, pool);
+        JsonUtil.setField(path, "content." + varName + ".locked", true);
+        JsonUtil.setField(path, "content." + varName + ".lockedBy", pid);
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Variable locked: " + varName;
     }
 
@@ -517,23 +475,21 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        Map<String, Object> content = getContent(pool);
-        if (content == null || !content.containsKey(varName)) {
+        Object raw = JsonUtil.getField(path, "content." + varName);
+        if (raw == null) {
             return error("Variable not found: " + varName);
         }
-        Object raw = content.get(varName);
         if (!(raw instanceof Map)) {
             return error("Variable has no metadata");
         }
-        Map<String, Object> varMeta = (Map<String, Object>) raw;
-        varMeta.put("locked", false);
-        varMeta.put("lockedBy", null);
-        updatePoolTime(pool);
-        writePool(poolName, pool);
+        JsonUtil.setField(path, "content." + varName + ".locked", false);
+        JsonUtil.setField(path, "content." + varName + ".lockedBy", null);
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Variable unlocked: " + varName;
     }
 
@@ -546,14 +502,15 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        Map<String, Object> content = getContent(pool);
-        if (content == null || content.isEmpty()) {
+        Object rawContent = JsonUtil.getField(path, "content");
+        if (!(rawContent instanceof Map) || ((Map) rawContent).isEmpty()) {
             return "(empty)";
         }
+        Map<String, Object> content = (Map<String, Object>) rawContent;
 
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, Object> entry : content.entrySet()) {
@@ -585,13 +542,13 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        pool.put("content", new LinkedHashMap<String, Object>());
-        updatePoolTime(pool);
-        writePool(poolName, pool);
+        JsonUtil.setField(path, "content", new LinkedHashMap<String, Object>());
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Pool cleared: " + poolName;
     }
 
@@ -618,19 +575,19 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
+            return error("Swap pool not found: " + poolName);
+        }
+
         long start = System.currentTimeMillis();
         long timeout = 30000; // 30 秒超时
 
         while (System.currentTimeMillis() - start < timeout) {
-            Map<String, Object> pool = readPool(poolName);
-            if (pool == null) {
-                return error("Swap pool not found: " + poolName);
-            }
-            Map<String, Object> content = getContent(pool);
-            if (content == null || !content.containsKey(varName)) {
+            Object raw = JsonUtil.getField(path, "content." + varName);
+            if (raw == null) {
                 return error("Variable not found: " + varName);
             }
-            Object raw = content.get(varName);
             if (!(raw instanceof Map)) {
                 return raw; // 旧格式，直接返回
             }
@@ -643,10 +600,11 @@ public class SwapFunctionProvider implements FunctionProvider {
 
             if (Boolean.TRUE.equals(varMeta.get("changed"))) {
                 // 找到变更，消费它
-                varMeta.put("changed", false);
-                varMeta.put("editTime", FileUtil.getCurrentTimeArray());
-                updatePoolTime(pool);
-                writePool(poolName, pool);
+                JsonUtil.setField(path, "content." + varName + ".changed", false);
+                JsonUtil.setField(path, "content." + varName + ".editTime",
+                                  FileUtil.getCurrentTimeArray());
+                JsonUtil.setField(path, "time.lastEditTime",
+                                  FileUtil.getCurrentTimeArray());
                 return varMeta.get("value");
             }
 
@@ -671,23 +629,22 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (poolName == null || poolName.trim().isEmpty()) {
             return error("Pool name cannot be empty");
         }
-        Map<String, Object> pool = readPool(poolName);
-        if (pool == null) {
+        String path = getPoolPath(poolName);
+        if (!FileUtil.exists(path)) {
             return error("Swap pool not found: " + poolName);
         }
-        Map<String, Object> content = getContent(pool);
-        if (content == null || !content.containsKey(varName)) {
+        Object raw = JsonUtil.getField(path, "content." + varName);
+        if (raw == null) {
             return error("Variable not found: " + varName);
         }
-        Object raw = content.get(varName);
         if (!(raw instanceof Map)) {
             return error("Variable has no metadata");
         }
-        Map<String, Object> varMeta = (Map<String, Object>) raw;
-        varMeta.put("changed", true);
-        varMeta.put("editTime", FileUtil.getCurrentTimeArray());
-        updatePoolTime(pool);
-        writePool(poolName, pool);
+        JsonUtil.setField(path, "content." + varName + ".changed", true);
+        JsonUtil.setField(path, "content." + varName + ".editTime",
+                          FileUtil.getCurrentTimeArray());
+        JsonUtil.setField(path, "time.lastEditTime",
+                          FileUtil.getCurrentTimeArray());
         return "Signal sent for: " + varName;
     }
 
@@ -700,8 +657,6 @@ public class SwapFunctionProvider implements FunctionProvider {
         if (!FileUtil.exists(swapDir)) {
             return "(no pools)";
         }
-        String listing = FileUtil.read(swapDir + ".");
-        // 直接用 FileUtil 的 listdir 能力
         var dirs = FileUtil.getListOfFileAndDirectory(swapDir);
         if (dirs == null || dirs.isEmpty()) {
             return "(no pools)";

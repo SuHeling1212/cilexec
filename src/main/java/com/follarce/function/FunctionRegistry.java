@@ -11,7 +11,8 @@ import java.util.*;
 public class FunctionRegistry {
 
     private static final List<FunctionProvider> providers = new ArrayList<>();
-    private static final Map<String, FunctionDef> userFunctions = new LinkedHashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Map<String, FunctionDef>> userFunctionsByPid =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private FunctionRegistry() {}
 
@@ -28,32 +29,36 @@ public class FunctionRegistry {
     /**
      * 注册一个用户自定义函数。
      */
-    public static void registerUserFunction(String name, FunctionDef def) {
+    public static void registerUserFunction(int pid, String name, FunctionDef def) {
         if (name == null || name.isEmpty()) {
             throw new IllegalArgumentException("Function name must not be empty");
         }
-        userFunctions.put(name, def);
+        userFunctionsByPid.computeIfAbsent(pid, k -> new LinkedHashMap<>()).put(name, def);
     }
 
     /**
      * 获取用户自定义函数。
      */
-    public static FunctionDef getUserFunction(String name) {
-        return userFunctions.get(name);
+    public static FunctionDef getUserFunction(int pid, String name) {
+        Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+        return pidFunctions != null ? pidFunctions.get(name) : null;
     }
 
     /**
      * 检查用户自定义函数是否已存在。
      */
-    public static boolean hasUserFunction(String name) {
-        return userFunctions.containsKey(name);
+    public static boolean hasUserFunction(int pid, String name) {
+        Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+        return pidFunctions != null && pidFunctions.containsKey(name);
     }
 
     /**
      * 清除所有用户自定义函数。
      */
-    public static void clearUserFunctions() {
-        userFunctions.clear();
+    public static void clearUserFunctions(int pid) {
+        if (pid > 0) {
+            userFunctionsByPid.remove(pid);
+        }
     }
 
     /**
@@ -107,9 +112,11 @@ public class FunctionRegistry {
             }
         }
 
-        // 3. 无命名空间时：优先检查用户函数（用户定义的函数应优先于短名 provider 回退）
+        // 3. 无命名空间时：优先检查用户函数（按 PID 隔离）
         if (namespace == null || namespace.isEmpty()) {
-            if (userFunctions.containsKey(name)) {
+            int pid = context.getPid();
+            Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+            if (pidFunctions != null && pidFunctions.containsKey(name)) {
                 return "USER:" + name;
             }
         }
@@ -128,9 +135,11 @@ public class FunctionRegistry {
             }
         }
 
-        // 5. 有命名空间时：检查用户函数（仅当命名空间 provider 未找到时）
+        // 5. 有命名空间时：检查用户函数（按 PID 隔离）
         if (namespace != null && !namespace.isEmpty()) {
-            if (userFunctions.containsKey(name)) {
+            int pid = context.getPid();
+            Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+            if (pidFunctions != null && pidFunctions.containsKey(name)) {
                 return "USER:" + name;
             }
         }

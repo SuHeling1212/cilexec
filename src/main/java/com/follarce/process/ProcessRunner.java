@@ -14,6 +14,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.LockSupport;
 
+import static com.follarce.Constants.USE_VIRTUAL_THREADS;
+
 /**
  * 进程执行引擎 —— 由调度器驱动，每次 step() 执行一行 FCL 代码。
  * <p>
@@ -47,6 +49,25 @@ public class ProcessRunner {
     public enum BlockReason {
         NONE, WAIT_ANY, WAIT_PID
     }
+
+    /**
+     * 通用进程间消息 —— 字段名 + 新值。
+     * 任何 Java 层组件想修改某个进程的某字段，必须通过
+     * {@link #postMessage} 发送消息，由该进程的 ProcessRunner
+     * 在 executeLine() 开头统一处理，保证字段和行号同时落盘。
+     */
+    public record ProcessMessage(String field, Object value) {}
+
+    // ════════════════════════════════════════════
+    // 全局注册表 + 消息队列
+    // ════════════════════════════════════════════
+
+    /** PID → ProcessRunner 映射，供 postMessage 查找目标进程 */
+    private static final ConcurrentHashMap<Integer, ProcessRunner> RUNNERS = new ConcurrentHashMap<>();
+
+    /** 待处理的外部消息队列（线程安全） */
+    private final java.util.concurrent.ConcurrentLinkedQueue<ProcessMessage> pendingMessages =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     // ════════════════════════════════════════════
     // 组件
@@ -119,6 +140,9 @@ public class ProcessRunner {
 
         // 从进程数据加载初始状态
         loadFromProcessDataInternal();
+
+        // 注册到全局表，供 postMessage 查找
+        RUNNERS.put(pid, this);
     }
 
     // ════════════════════════════════════════════
@@ -198,6 +222,9 @@ public class ProcessRunner {
         running = false;
         state = ProcessState.TERMINATED;
         stateManager.setRunning(false);
+        RUNNERS.remove(pid);
+        // 清理本进程的函数定义，防止跨进程残留
+        com.follarce.function.FunctionRegistry.clearUserFunctions(pid);
     }
 
     // ── 访问器 ──
@@ -255,6 +282,7 @@ public class ProcessRunner {
             Logger.error("Virtual thread for PID " + pid + " crashed: " + e.getMessage());
         } finally {
             VIRTUAL_THREADS.remove(pid);
+            RUNNERS.remove(pid);
             Logger.info("Virtual thread for PID " + pid + " (" + getProcessName() + ") finished");
         }
     }
@@ -290,6 +318,125 @@ public class ProcessRunner {
         }
     }
 
+    /**
+     * 向指定进程发送字段更新消息。
+     * <p>
+     * 这是 Java 层修改进程数据的<strong>唯一入口</strong>——任何外部组件
+     * 想修改某个进程的某字段，必须通过此方法。消息由目标进程的
+     * ProcessRunner 在 executeLine() 开头处理，保证字段与行号同时落盘。
+     * <p>
+     * 若目标进程不在 RUNNERS 注册表中（已终止或尚未启动），
+     * 则直接写 .proc 文件作为兜底。
+     *
+     * @param targetPid 目标进程 PID
+     * @param field     要更新的字段名
+     * @param value     新值
+     */
+    public static void postMessage(int targetPid, String field, Object value) {
+        // 主路径：目标进程在运行中 → 发消息由目标进程自行落盘
+        // 每个进程文件只有其自身的 ProcessRunner 写入，保证单一写入者原则
+        ProcessRunner target = RUNNERS.get(targetPid);
+        if (target != null) {
+            target.pendingMessages.offer(new ProcessMessage(field, value));
+            unparkProcess(targetPid);
+            return;
+        }
+
+        // 兜底：目标进程已不在运行，直接原子写入 .proc 文件
+        // 此时不可能有并发写入者，但使用 JsonUtil.setField 确保写入完整
+        String procPath = com.follarce.Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        if (com.follarce.util.FileUtil.exists(procPath)) {
+            com.follarce.util.JsonUtil.setField(procPath, field, value);
+        }
+    }
+
+
+
+    /**
+     * 统一的字段更新入口 —— 外部消息和 ProcessRunner 内部都走此方法。
+     * <p>
+     * 支持点号分隔的嵌套路径，例如：
+     * <ul>
+     *   <li>{@code "Status"} — 顶层字段</li>
+     *   <li>{@code "Program.Data.x"} — 等价于 {@code processData.Program.Data.x = value}</li>
+     *   <li>{@code "Child.2.Status"} — 等价于 {@code processData.Child["2"].Status = value}</li>
+     * </ul>
+     * 路径中的每一段都是 Map 的 key，末段为最终设置值的 key。
+     * 中间路径若不存在则自动创建 LinkedHashMap。
+     * <p>
+     * 副作用（仅对顶层字段生效）：Status=true → READY，Status=false → BLOCKED/TERMINATED。
+     *
+     * @param field 字段路径，点号分隔
+     * @param value 新值
+     */
+    @SuppressWarnings("unchecked")
+    private void applyFieldUpdate(String field, Object value) {
+        String[] parts = field.split("\\.");
+        Map<String, Object> current = processData;
+
+        // 沿路径深入到倒数第二段
+        for (int i = 0; i < parts.length - 1; i++) {
+            Object next = current.get(parts[i]);
+            if (!(next instanceof Map)) {
+                next = new LinkedHashMap<>();
+                current.put(parts[i], next);
+            }
+            current = (Map<String, Object>) next;
+        }
+
+        // 末段设值
+        String leafKey = parts[parts.length - 1];
+        current.put(leafKey, value);
+
+        // 副作用：仅对顶层字段做状态同步
+        if (parts.length == 1) {
+            if ("Status".equals(leafKey)) {
+                boolean isAlive = value instanceof Boolean && (Boolean) value;
+                if (isAlive) {
+                    // Status=true：从阻塞恢复
+                    if (state == ProcessState.BLOCKED) {
+                        state = ProcessState.READY;
+                    }
+                } else {
+                    // Status=false：阻塞（暂停）
+                    state = ProcessState.BLOCKED;
+                }
+            }
+        }
+    }
+
+    /**
+     * 终止指定进程 —— 停止 ProcessRunner 并删除 .proc 文件。
+     * <p>
+     * kill 操作始终删除进程文件，不受 {@link Constants#DELETE_PROCESS_FILE_ON_EXIT} 影响。
+     * 与 pause 不同：pause 只设 Status=false 让进程阻塞，kill 是彻底终止。
+     */
+    public static void terminateProcess(int targetPid) {
+        ProcessRunner target = RUNNERS.get(targetPid);
+        if (target != null) {
+            target.running = false;
+            target.state = ProcessState.TERMINATED;
+            target.stateManager.setRunning(false);
+        }
+        // kill 始终删除 .proc 文件
+        String path = com.follarce.util.PathUtil.findProcessFilePathByPid(targetPid);
+        if (path != null && com.follarce.util.FileUtil.exists(path)) {
+            com.follarce.util.FileUtil.removeFile(path);
+            Logger.info("Terminated process PID " + targetPid + ", file removed");
+        }
+    }
+
+    /**
+     * 处理所有待处理的外部消息 —— 在 executeLine() 开头调用，
+     * 确保任何外部请求在当前行执行前落地。
+     */
+    private void processPendingMessages() {
+        ProcessMessage msg;
+        while ((msg = pendingMessages.poll()) != null) {
+            applyFieldUpdate(msg.field, msg.value);
+        }
+    }
+
     // ════════════════════════════════════════════
     // 主执行逻辑
     // ════════════════════════════════════════════
@@ -297,6 +444,13 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private void executeLine() {
         try {
+            // 0. 处理所有待处理的外部消息（必须在任何 FCL 代码执行前处理）
+            processPendingMessages();
+            if (!running) {
+                persistState();
+                return;
+            }
+
             // 1. 从文件加载最新状态
             loadRuntimeState();
 
@@ -307,11 +461,10 @@ public class ProcessRunner {
                     FunctionManager.CallFrame frame = functionManager.popFrame();
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
-                    this.currentLine = frame.savedCurrentLine + 1;
                     this.blockStack = new ArrayList<>();
                     completePendingAssignment();
                     codeChanged();
-                    persistState();
+                    commitAndPersist(frame.savedCurrentLine + 1);
                     return;
                 }
                 running = false;
@@ -326,21 +479,18 @@ public class ProcessRunner {
             // 3. 跳过空行和残留注释（兼容旧 .proc 文件中未剔除的注释行）
             String trimmedLine = line.trim();
             if (trimmedLine.isEmpty() || trimmedLine.startsWith("//") || trimmedLine.startsWith("#")) {
-                currentLine++;
-                persistState();
+                commitAndPersist(currentLine + 1);
                 return;
             }
 
             // 4. 处理花括号行
             if (line.trim().startsWith("}")) {
                 int[] counts = ControlFlow.countBraces(line);
-                currentLine = controlFlow.handleClosingBraces(counts[1], currentLine);
-                persistState();
+                commitAndPersist(controlFlow.handleClosingBraces(counts[1], currentLine));
                 return;
             }
             if (line.trim().equals("{")) {
-                currentLine++;
-                persistState();
+                commitAndPersist(currentLine + 1);
                 return;
             }
 
@@ -358,8 +508,7 @@ public class ProcessRunner {
 
         // func 定义
         if (trimmed.startsWith("func ")) {
-            currentLine = skipFunctionBody(currentLine);
-            persistState();
+            commitAndPersist(skipFunctionBody(currentLine));
             return;
         }
 
@@ -371,44 +520,82 @@ public class ProcessRunner {
             }
             codeChanged();
             functionManager.parseFunctions(codeLines);
-            currentLine++;
-            persistState();
+            commitAndPersist(currentLine + 1);
             return;
         }
 
         // include
         if (trimmed.startsWith("include ")) {
-            currentLine = importManager.handleInclude(trimmed, codeLines, currentLine);
+            int newLine = importManager.handleInclude(trimmed, codeLines, currentLine);
             codeChanged();
-            persistState();
+            commitAndPersist(newLine);
             return;
         }
 
         // if
         if (trimmed.startsWith("if ") || trimmed.startsWith("if(")) {
             String condition = extractCondition(trimmed, "if");
-            currentLine = controlFlow.handleIf(condition, currentLine);
-            persistState();
+            commitAndPersist(controlFlow.handleIf(condition, currentLine));
             return;
         }
 
         // else — if 条件为 false 且无边界表时回退到此处
         if (trimmed.equals("else") || trimmed.startsWith("else ")) {
-            currentLine++;
-            while (currentLine < codeLines.size()) {
-                String nl = codeLines.get(currentLine).trim();
-                if (nl.equals("{")) { currentLine++; continue; }
+            int newLine = currentLine + 1;
+            while (newLine < codeLines.size()) {
+                String nl = codeLines.get(newLine).trim();
+                if (nl.equals("{")) { newLine++; continue; }
                 break;
             }
-            persistState();
+            commitAndPersist(newLine);
             return;
         }
 
         // while
         if (trimmed.startsWith("while ") || trimmed.startsWith("while(")) {
             String condition = extractCondition(trimmed, "while");
-            currentLine = controlFlow.handleWhile(condition, currentLine);
-            persistState();
+            commitAndPersist(controlFlow.handleWhile(condition, currentLine));
+            return;
+        }
+
+        // switch
+        if (trimmed.startsWith("switch ") || trimmed.startsWith("switch(")) {
+            String expr = extractCondition(trimmed, "switch");
+            commitAndPersist(controlFlow.handleSwitch(expr, currentLine));
+            return;
+        }
+
+        // case：隐式 break —— 已在 switch 内且匹配完成，跳到 switch 结尾
+        if (trimmed.startsWith("case ")) {
+            if (!controlFlow.getBlockStack().isEmpty()) {
+                java.util.Map<String, Object> top = controlFlow.getBlockStack()
+                        .get(controlFlow.getBlockStack().size() - 1);
+                if ("SWITCH".equals(top.get("type"))) {
+                    int el = ((Number) top.get("endLine")).intValue();
+                    controlFlow.getBlockStack().remove(
+                            controlFlow.getBlockStack().size() - 1);
+                    commitAndPersist(el + 1);
+                    return;
+                }
+            }
+            commitAndPersist(currentLine + 1);
+            return;
+        }
+
+        // default：与 case 相同处理
+        if (trimmed.equals("default")) {
+            if (!controlFlow.getBlockStack().isEmpty()) {
+                java.util.Map<String, Object> top = controlFlow.getBlockStack()
+                        .get(controlFlow.getBlockStack().size() - 1);
+                if ("SWITCH".equals(top.get("type"))) {
+                    int el = ((Number) top.get("endLine")).intValue();
+                    controlFlow.getBlockStack().remove(
+                            controlFlow.getBlockStack().size() - 1);
+                    commitAndPersist(el + 1);
+                    return;
+                }
+            }
+            commitAndPersist(currentLine + 1);
             return;
         }
 
@@ -421,42 +608,38 @@ public class ProcessRunner {
                 if (frame != null) {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
-                    this.currentLine = frame.savedCurrentLine + 1;
+                    // 数据变更必须在 commitAndPersist 之前完成
                     if (ret.value != null) {
                         data.put("__return_value", ret.value);
                     }
                     completePendingAssignment();
+                    codeChanged();
+                    commitAndPersist(frame.savedCurrentLine + 1);
                 }
             } else {
                 running = false;
                 stateManager.setRunning(false);
-                currentLine = codeLines.size();
+                commitAndPersist(codeLines.size());
             }
-            // ret.value 已通过 data.put 写入 __return_value，无需额外存储
-            persistState();
             return;
         }
 
         // break
         if (trimmed.equals("break")) {
-            currentLine = controlFlow.handleBreak(currentLine);
-            persistState();
+            commitAndPersist(controlFlow.handleBreak(currentLine));
             return;
         }
 
         // continue
         if (trimmed.equals("continue")) {
-            currentLine = controlFlow.handleContinue(currentLine);
-            persistState();
+            commitAndPersist(controlFlow.handleContinue(currentLine));
             return;
         }
 
         // fork()
         if (trimmed.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
             int childPid = ipcHandler.handleFork();
-            currentLine++;
-            persistState();
-            // fork 的结果通过赋值语境传递，单独执行时忽略
+            commitAndPersist(currentLine + 1);
             return;
         }
 
@@ -471,19 +654,19 @@ public class ProcessRunner {
         // 索引赋值 arr[0] = expr
         java.util.regex.Matcher indexAssignMatcher = ExpressionEvaluator.INDEX_ASSIGN_PATTERN.matcher(trimmed);
         if (indexAssignMatcher.matches()) {
+            // 数据变更在 handleIndexAssignment 内完成，然后行号+数据一起落盘
             handleIndexAssignment(indexAssignMatcher, line);
-            currentLine++;
-            persistState();
+            commitAndPersist(currentLine + 1);
             return;
         }
 
         // 普通赋值 x = expr
         java.util.regex.Matcher assignMatcher = ExpressionEvaluator.ASSIGN_PATTERN.matcher(trimmed);
         if (assignMatcher.matches()) {
+            // 数据变更在 handleAssignment 内完成，然后行号+数据一起落盘
             handleAssignment(assignMatcher, line);
             if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
-            currentLine++;
-            persistState();
+            commitAndPersist(currentLine + 1);
             return;
         }
 
@@ -495,8 +678,7 @@ public class ProcessRunner {
             if (state == ProcessState.BLOCKED) return;
         }
         if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
-        currentLine++;
-        persistState();
+        commitAndPersist(currentLine + 1);
     }
 
     // ════════════════════════════════════════════
@@ -747,6 +929,19 @@ public class ProcessRunner {
                 importManager.getImportedFiles()
         );
         stateManager.saveToFile(snap);
+    }
+
+    /**
+     * 原子提交：行号与当前数据状态同时生效、同时落盘。
+     * 调用前必须确保所有数据变更已应用到 {@link #data}。
+     * 断电恢复时，要么读到旧行号+旧数据（指令未执行），
+     * 要么读到新行号+新数据（指令已完成），不会出现中间态。
+     *
+     * @param newLine 新的程序计数器行号
+     */
+    private void commitAndPersist(int newLine) {
+        this.currentLine = newLine;
+        persistState();
     }
 
     private List<Map<String, Object>> serializeCallStack() {

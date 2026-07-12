@@ -185,7 +185,7 @@ public class StateManager {
 
             String json = JsonUtil.toMetaJson(processData);
             String processPath = getProcessFilePath();
-            FileUtil.write(processPath, json);
+            FileUtil.writeAtomic(processPath, json);
         } catch (Exception e) {
             Logger.error("StateManager: failed to save PID " + pid + ": " + e.getMessage());
         } finally {
@@ -218,27 +218,8 @@ public class StateManager {
             if (!(ppidObj instanceof Number)) return;
             int ppid = ((Number) ppidObj).intValue();
 
-            if (USE_VIRTUAL_THREADS) ProcessFileLock.lock(ppid);
-            try {
-                String parentPath = Constants.SYSTEM_PROCESS_PATH + ppid + ".proc";
-                String parentContent = FileUtil.read(parentPath);
-                if (parentContent == null || parentContent.trim().isEmpty()) return;
-
-                Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
-                Map<String, Object> children = (Map<String, Object>) parentData.get("Child");
-                if (children == null || !children.containsKey(String.valueOf(pid))) return;
-
-                children.remove(String.valueOf(pid));
-                parentData.put("Child", children);
-                FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
-                Logger.info("StateManager: child " + pid + " removed from parent " + ppid + "'s Child list");
-                // 虚拟线程模式：通知父进程子进程已结束
-                if (USE_VIRTUAL_THREADS) {
-                    ProcessRunner.unparkProcess(ppid);
-                }
-            } finally {
-                if (USE_VIRTUAL_THREADS) ProcessFileLock.unlock(ppid);
-            }
+            ProcessRunner.postMessage(ppid, "Child." + pid, null);
+            Logger.info("StateManager: child " + pid + " removed from parent " + ppid + "'s Child list");
         } catch (Exception e) {
             Logger.warn("StateManager: failed to clean parent Child list for PID " + pid + ": " + e.getMessage());
         }

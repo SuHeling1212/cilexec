@@ -7,8 +7,6 @@ import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;
 import com.follarce.util.UserUtil;
 
-import static com.follarce.Constants.USE_VIRTUAL_THREADS;
-
 import java.util.*;
 import java.util.function.Supplier;
 
@@ -109,25 +107,28 @@ public class IpcHandler {
                 childProgram.remove("imports");
             }
 
-            // 写入子进程文件
+            // 写入子进程文件（PID 已在 allocatePid 中原子创建）
             String childFileName = childPid + ".proc";
             String childJson = JsonUtil.toMetaJson(childData);
-            FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, childFileName);
             FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
 
             // 更新父进程 Child 列表
+            Map<String, Object> childInfo = new LinkedHashMap<>();
+            childInfo.put("Name", childData.get("Name"));
+            childInfo.put("PID", childPid);
+            childInfo.put("Path", childData.get("Path"));
+
+            // 同步更新内存中的 processData，供后续 commitAndPersist 落盘
+            @SuppressWarnings("unchecked")
             Map<String, Object> children = (Map<String, Object>) processData.get("Child");
             if (children == null) {
                 children = new LinkedHashMap<>();
                 processData.put("Child", children);
             }
-            Map<String, Object> childInfo = new LinkedHashMap<>();
-            childInfo.put("Name", childData.get("Name"));
-            childInfo.put("PID", childPid);
-            childInfo.put("Path", childData.get("Path"));
             children.put(String.valueOf(childPid), childInfo);
-            // 不在此处 persist —— 调用者 dispatchStatement 会在 currentLine++ 后
-            // 统一调用 persistState()，确保 Child 更新和行号推进在同一次写入中完成。
+
+            // 通知调度器本次 fork 新增子进程
+            ProcessRunner.postMessage(pid, "Child." + childPid, childInfo);
 
             Logger.info("Fork: PID " + pid + " created child PID " + childPid);
             return childPid;
@@ -214,6 +215,10 @@ public class IpcHandler {
 
     /**
      * 处理 kill(pid) —— 终止指定进程。
+     * <p>
+     * 子进程迁移到 INIT、从父进程移除引用通过 postMessage 发送，
+     * 目标进程本身直接删除 .proc 文件并停止 ProcessRunner。
+     * 与 pause（设 Status=false 阻塞）不同，kill 是彻底终止。
      */
     @SuppressWarnings("unchecked")
     public void handleKill(String pidStr) {
@@ -226,77 +231,29 @@ public class IpcHandler {
             String processPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (processPath == null || !FileUtil.exists(processPath)) return;
 
-            // 从目标进程文件获取父 PID（用于后续解锁顺序）
-            String content = FileUtil.read(processPath);
-            Map<String, Object> targetData = JsonUtil.parseToMap(content);
-            int parentPid = -1;
-            Map<String, Object> parent = (Map<String, Object>) targetData.get("Parent");
-            if (parent != null && parent.get("PID") != null) {
-                parentPid = ((Number) parent.get("PID")).intValue();
-            }
+            // 读取目标进程的父 PID 和子进程信息
+            Object parentPidObj = JsonUtil.getField(processPath, "Parent.PID");
+            int parentPid = parentPidObj instanceof Number ? ((Number) parentPidObj).intValue() : -1;
 
-            // 虚拟线程模式：锁定受影响的所有 PID
-            if (USE_VIRTUAL_THREADS) {
-                if (parentPid > 0) {
-                    ProcessFileLock.lockTwo(parentPid, targetPid);
-                } else {
-                    ProcessFileLock.lock(targetPid);
+            // 子进程迁移到 INIT —— 通过 postMessage 由 INIT 自行处理 Child 列表
+            Object childrenObj = JsonUtil.getField(processPath, "Child");
+            if (childrenObj instanceof Map && !((Map) childrenObj).isEmpty()) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> children = (Map<String, Object>) childrenObj;
+                for (Map.Entry<String, Object> entry : children.entrySet()) {
+                    ProcessRunner.postMessage(Constants.PID_INIT,
+                            "Child." + entry.getKey(), entry.getValue());
                 }
             }
 
-            try {
-                // 子进程迁移到 INIT
-                Map<String, Object> children = (Map<String, Object>) targetData.get("Child");
-                if (children != null && !children.isEmpty()) {
-                    String initPath = PathUtil.getProcessFilePath(Constants.PID_INIT);
-                    String initContent = FileUtil.read(initPath);
-                    Map<String, Object> initData = JsonUtil.parseToMap(initContent);
-                    Map<String, Object> initChildren = (Map<String, Object>) initData.get("Child");
-                    if (initChildren == null) {
-                        initChildren = new LinkedHashMap<>();
-                        initData.put("Child", initChildren);
-                    }
-                    initChildren.putAll(children);
-                    FileUtil.write(initPath, JsonUtil.toMetaJson(initData));
-                }
-
-                // 从父进程 Child 列表移除
-                if (parentPid > 0) {
-                    String parentPath = PathUtil.findProcessFilePathByPid(parentPid);
-                    if (parentPath != null && FileUtil.exists(parentPath)) {
-                        String parentContent = FileUtil.read(parentPath);
-                        Map<String, Object> parentData = JsonUtil.parseToMap(parentContent);
-                        Map<String, Object> parentChildren = (Map<String, Object>) parentData.get("Child");
-                        if (parentChildren != null) {
-                            parentChildren.remove(String.valueOf(targetPid));
-                            parentData.put("Child", parentChildren);
-                            FileUtil.write(parentPath, JsonUtil.toMetaJson(parentData));
-                        }
-                    }
-                }
-
-                // 标记为已终止
-                targetData.put("Status", false);
-                targetData.put("_killed", true);
-                FileUtil.write(processPath, JsonUtil.toMetaJson(targetData));
-                Logger.info("Kill: PID " + targetPid + " killed by PID " + pid);
-            } finally {
-                if (USE_VIRTUAL_THREADS) {
-                    if (parentPid > 0) {
-                        ProcessFileLock.unlockTwo(parentPid, targetPid);
-                    } else {
-                        ProcessFileLock.unlock(targetPid);
-                    }
-                }
+            // 从父进程 Child 列表移除
+            if (parentPid > 0) {
+                ProcessRunner.postMessage(parentPid, "Child." + targetPid, null);
             }
 
-            // 虚拟线程模式：唤醒目标进程和父进程的虚拟线程
-            if (USE_VIRTUAL_THREADS) {
-                ProcessRunner.unparkProcess(targetPid);
-                if (parentPid > 0) {
-                    ProcessRunner.unparkProcess(parentPid);
-                }
-            }
+            // 终止目标进程：删文件 + 停 runner
+            ProcessRunner.terminateProcess(targetPid);
+            Logger.info("Kill: PID " + targetPid + " killed by PID " + pid);
         } catch (Exception e) {
             Logger.error("Kill failed: " + e.getMessage());
         }
@@ -351,10 +308,7 @@ public class IpcHandler {
             }
             String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (targetPath != null && FileUtil.exists(targetPath)) {
-                String content = FileUtil.read(targetPath);
-                Map<String, Object> targetData = JsonUtil.parseToMap(content);
-                targetData.put("Status", false);
-                FileUtil.write(targetPath, JsonUtil.toMetaJson(targetData));
+                ProcessRunner.postMessage(targetPid, "Status", false);
             }
         } catch (Exception e) {
             Logger.warn("Pause failed: " + e.getMessage());
@@ -371,10 +325,7 @@ public class IpcHandler {
             }
             String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (targetPath != null && FileUtil.exists(targetPath)) {
-                String content = FileUtil.read(targetPath);
-                Map<String, Object> targetData = JsonUtil.parseToMap(content);
-                targetData.put("Status", true);
-                FileUtil.write(targetPath, JsonUtil.toMetaJson(targetData));
+                ProcessRunner.postMessage(targetPid, "Status", true);
             }
         } catch (Exception e) {
             Logger.warn("Continue failed: " + e.getMessage());
@@ -401,16 +352,30 @@ public class IpcHandler {
     // 辅助
     // ════════════════════════════════════════════
 
+    private static final java.util.concurrent.locks.ReentrantLock PID_ALLOC_LOCK =
+            new java.util.concurrent.locks.ReentrantLock();
+
     private int allocatePid() {
-        // 从 2 开始分配（PID 1 固定为 INIT）
-        int base = 2;
-        Map<Integer, Map<String, Object>> existing = stateManager != null
-                ? scanProcessFiles()
-                : new LinkedHashMap<>();
-        while (existing.containsKey(base)) {
-            base++;
+        PID_ALLOC_LOCK.lock();
+        try {
+            String processDir = com.follarce.util.PathUtil.toRealPath(
+                    com.follarce.Constants.SYSTEM_PROCESS_PATH);
+            int base = 2;
+            while (true) {
+                java.io.File procFile = new java.io.File(processDir, base + ".proc");
+                try {
+                    if (procFile.createNewFile()) {
+                        // 原子创建成功 → 这个 PID 被我独占
+                        return base;
+                    }
+                } catch (java.io.IOException e) {
+                    // 创建失败（权限等），尝试下一个
+                }
+                base++;
+            }
+        } finally {
+            PID_ALLOC_LOCK.unlock();
         }
-        return base;
     }
 
     private Map<Integer, Map<String, Object>> scanProcessFiles() {

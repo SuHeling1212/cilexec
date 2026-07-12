@@ -151,18 +151,21 @@ public class ControlFlow {
             if ("WHILE".equals(type)) {
                 String condition = (String) block.get("condition");
                 if (evaluator.evaluateToBoolean(condition)) {
-                    // 回到 conditionLine（不弹出 BlockStack）
                     return startLine;
                 }
                 blockStack.remove(blockStack.size() - 1);
             } else if ("IF".equals(type)) {
-                // 有 else 且这是 if body 的 }：弹出并跳过 else body
                 if (block.containsKey("elseBodyEnd")) {
                     int finalEnd = ((Number) block.get("elseBodyEnd")).intValue();
                     blockStack.remove(blockStack.size() - 1);
                     return finalEnd + 1;
                 }
                 blockStack.remove(blockStack.size() - 1);
+            } else if ("SWITCH".equals(type)) {
+                int endLine = ((Number) block.get("endLine")).intValue();
+                if (currentLine == endLine) {
+                    blockStack.remove(blockStack.size() - 1);
+                }
             }
         }
         return nextLine;
@@ -219,6 +222,112 @@ public class ControlFlow {
 
         Logger.warn("continue outside while loop");
         return defaultNext;
+    }
+
+    // ════════════════════════════════════════════
+    // switch/case
+    // ════════════════════════════════════════════
+
+    /**
+     * 处理 switch 语句。
+     * 扫描后续代码行查找 case 值，匹配时进入对应 body，无匹配时进入 default。
+     * 每个 case 执行完毕后隐式 break（不会 fall-through）。
+     *
+     * @param expr       switch 表达式
+     * @param currentLine 当前行号
+     * @return 执行后下一行行号
+     */
+    @SuppressWarnings("unchecked")
+    public int handleSwitch(String expr, int currentLine) {
+        Object switchValue = evaluator.evaluateExpression(expr);
+
+        // 找到 switch 块结束的行号（匹配的 }）
+        int endLine = findSwitchEnd(currentLine);
+
+        // 扫描 case 行
+        int i = currentLine + 1;
+        while (i < codeLines.size() && i <= endLine) {
+            String trimmed = codeLines.get(i).trim();
+
+            if (trimmed.startsWith("case ")) {
+                String caseExpr = trimmed.substring(5).trim();
+                Object caseValue = evaluator.evaluateExpression(caseExpr);
+
+                if (compareSwitchValues(switchValue, caseValue)) {
+                    Map<String, Object> block = new LinkedHashMap<>();
+                    block.put("type", "SWITCH");
+                    block.put("startLine", currentLine);
+                    block.put("endLine", endLine);
+                    block.put("matched", true);
+                    blockStack.add(block);
+                    return i + 2; // case X   + 1 → {   + 1 → body 首行
+                } else {
+                    // 不匹配，跳过此 case 的 body
+                    i = skipPastCaseBody(i + 1, endLine);
+                    continue;
+                }
+            }
+
+            if (trimmed.startsWith("default")) {
+                // 无匹配，进入 default
+                Map<String, Object> block = new LinkedHashMap<>();
+                block.put("type", "SWITCH");
+                block.put("startLine", currentLine);
+                block.put("endLine", endLine);
+                blockStack.add(block);
+                return i + 2; // default + 1 → {   + 1 → body 首行
+            }
+
+            i++;
+        }
+
+        // 无匹配且无 default → 跳过整个 switch
+        return endLine + 1;
+    }
+
+    /**
+     * 从 start 行开始跳过整个 case body（到下一个 case/default 或 switch end）。
+     */
+    private int skipPastCaseBody(int start, int endLine) {
+        int depth = 0;
+        for (int i = start; i <= endLine; i++) {
+            String trimmed = codeLines.get(i).trim();
+            int[] counts = countBraces(trimmed);
+            depth += counts[0] - counts[1];
+            if (depth < 0) return i - 1;        // switch 的 }，回退一行等循环 ++
+            if (depth == 0 && (trimmed.startsWith("case ") || trimmed.equals("default"))) {
+                return i - 1;                    // 下一个 case/default，回退一行等循环 ++
+            }
+        }
+        return endLine;
+    }
+
+    /**
+     * 查找 switch 块的结束行号（从 switch 行开始数配对的 }）。
+     */
+    private int findSwitchEnd(int startLine) {
+        int depth = 0;
+        // switch 行自带 {（如 "switch x {"），depth 从 0 到 1
+        // 扫描后续行，switch 的 } 让 depth 回到 0
+        for (int i = startLine; i < codeLines.size(); i++) {
+            String line = codeLines.get(i).trim();
+            int[] counts = countBraces(line);
+            depth += counts[0] - counts[1];
+            if (depth <= 0) return i;
+        }
+        return codeLines.size() - 1;
+    }
+
+    /**
+     * 比较 switch 值和 case 值，兼容 Integer/Long/Float/Double 的混合。
+     */
+    private static boolean compareSwitchValues(Object a, Object b) {
+        if (a == b) return true;
+        if (a == null || b == null) return false;
+        if (a instanceof Number && b instanceof Number) {
+            return ((Number) a).doubleValue() == ((Number) b).doubleValue();
+        }
+        return a.equals(b);
     }
 
     /**

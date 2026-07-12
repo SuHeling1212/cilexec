@@ -1,14 +1,18 @@
 package com.follarce.util;
 
 import com.google.gson.*;
-import com.google.gson.reflect.TypeToken;
-
-import java.lang.reflect.Type;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.io.File;
 
 /**
  * JSON 工具类 —— 封装 Gson 操作。
  * 返回类型约定：成功返回 Map/List/String/Number/Boolean，失败返回 String[]。
+ * <p>
+ * <strong>原子字段操作</strong>：{@link #getField}, {@link #setField}, {@link #removeField}
+ * 将"锁 → 读 → 改单个字段 → 写"合为一步，消除 TOCTOU 窗口。
+ * 按文件路径锁定，与 {@link com.follarce.process.ProcessFileLock}（按 PID 锁定）互补。
  */
 public final class JsonUtil {
 
@@ -21,7 +25,120 @@ public final class JsonUtil {
             .serializeNulls()
             .create();
 
+    // ── 文件级锁表（路径 → ReentrantLock） ──
+    private static final ConcurrentHashMap<String, ReentrantLock> FILE_LOCKS = new ConcurrentHashMap<>();
+
     private JsonUtil() {}
+
+    // ════════════════════════════════════════════
+    // 原子字段操作（按文件路径锁定）
+    // ════════════════════════════════════════════
+
+    /**
+     * 获取或创建指定真实路径的文件锁。
+     */
+    private static ReentrantLock getFileLock(String realPath) {
+        return FILE_LOCKS.computeIfAbsent(realPath, k -> new ReentrantLock());
+    }
+
+    /**
+     * 原子读取 VFS 文件中 dotPath 指定字段的值。
+     *
+     * @param vfsPath VFS 路径（如 "/system/process/2.proc"）
+     * @param dotPath 点号分隔的字段路径
+     * @return 字段值，或 null
+     */
+    @SuppressWarnings("unchecked")
+    public static Object getField(String vfsPath, String dotPath) {
+        String realPath = PathUtil.toRealPath(vfsPath);
+        ReentrantLock lock = getFileLock(realPath);
+        lock.lock();
+        try {
+            File f = new File(realPath);
+            if (!f.exists()) return null;
+
+            String body = FileUtil.read(vfsPath);
+            if (body == null || body.trim().isEmpty()) return null;
+
+            Map<String, Object> data = parseToMap(body);
+
+            String[] parts = dotPath.split("\\.");
+            Object cur = data;
+            for (String part : parts) {
+                if (cur instanceof Map) {
+                    cur = ((Map<String, Object>) cur).get(part);
+                } else if (cur instanceof List && isInteger(part)) {
+                    int idx = Integer.parseInt(part);
+                    List<Object> list = (List<Object>) cur;
+                    cur = (idx >= 0 && idx < list.size()) ? list.get(idx) : null;
+                } else {
+                    return null;
+                }
+                if (cur == null) return null;
+            }
+            return cur;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 原子设置 VFS 文件中 dotPath 指定字段的值。
+     * 中间路径不存在时自动创建 LinkedHashMap。
+     * value 为 null 时删除该字段。
+     */
+    @SuppressWarnings("unchecked")
+    public static void setField(String vfsPath, String dotPath, Object value) {
+        String realPath = PathUtil.toRealPath(vfsPath);
+        ReentrantLock lock = getFileLock(realPath);
+        lock.lock();
+        try {
+            String body = FileUtil.read(vfsPath);
+            Map<String, Object> data = parseToMap(body);
+
+            String[] parts = dotPath.split("\\.");
+            Map<String, Object> cur = data;
+
+            for (int i = 0; i < parts.length - 1; i++) {
+                String part = parts[i];
+                Object next = cur.get(part);
+                if (!(next instanceof Map)) {
+                    next = new LinkedHashMap<>();
+                    cur.put(part, next);
+                }
+                cur = (Map<String, Object>) next;
+            }
+
+            String leaf = parts[parts.length - 1];
+            if (value == null) {
+                cur.remove(leaf);
+            } else {
+                cur.put(leaf, value);
+            }
+
+            FileUtil.writeAtomic(vfsPath, toJson(data));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * 原子删除 VFS 文件中 dotPath 指定的字段。
+     */
+    public static void removeField(String vfsPath, String dotPath) {
+        setField(vfsPath, dotPath, null);
+    }
+
+    /**
+     * 判断字符串是否为整数。
+     */
+    private static boolean isInteger(String s) {
+        if (s == null || s.isEmpty()) return false;
+        for (int i = 0; i < s.length(); i++) {
+            if (!Character.isDigit(s.charAt(i))) return false;
+        }
+        return true;
+    }
 
     // ── 序列化 ──
 

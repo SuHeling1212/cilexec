@@ -60,9 +60,8 @@ public class FunctionManager {
      */
     public void parseFunctions(List<String> codeLines) {
         functions.clear();
-        // 注意：不清除 FunctionRegistry —— 每次 step 都会调用 parseFunctions()，
-        // 进入用户函数体后 codeLines 被替换为函数体（无 func 定义），
-        // 若 clear 会导致递归调用时找不到函数定义。
+        // 清除本 PID 在 FunctionRegistry 中的旧定义（避免跨进程污染）
+        com.follarce.function.FunctionRegistry.clearUserFunctions(pid);
         if (codeLines == null) return;
 
         for (int i = 0; i < codeLines.size(); i++) {
@@ -107,7 +106,7 @@ public class FunctionManager {
                 FunctionDef def = new FunctionDef(funcName, params, new ArrayList<>(bodyLines), bodyStartLine);
                 functions.put(funcName, def);
                 // 同步注册到全局 FunctionRegistry，使函数调用能被正常分发
-                FunctionRegistry.registerUserFunction(funcName, def);
+                FunctionRegistry.registerUserFunction(pid, funcName, def);
                 Logger.debug("Parsed function: " + funcName + "(" + params + ") body=" + bodyLines.size() + " lines");
             }
         }

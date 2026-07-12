@@ -24,9 +24,9 @@ public class IOFunctionProvider implements FunctionProvider {
             switch (functionName) {
                 case "print":
                     if (args != null && !args.isEmpty()) {
-                        System.out.println(args.get(0));
+                        System.out.print(args.get(0));
                     } else {
-                        System.out.println();
+                        System.out.print("");
                     }
                     return "";
 
@@ -54,7 +54,6 @@ public class IOFunctionProvider implements FunctionProvider {
 
                 case "writeFile": {
                     String wfPath = getStringArg(args, 0);
-                    // Auto-create file if it doesn't exist
                     if (!FileUtil.exists(wfPath)) {
                         String parentPath = PathUtil.getParentPath(wfPath);
                         String fileName = PathUtil.getFileName(wfPath);
