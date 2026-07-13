@@ -23,6 +23,10 @@ public class Scheduler extends Thread {
     // 所有已知进程（用于快速查找）
     private final Map<Integer, ProcessRunner> allProcesses = new LinkedHashMap<>();
 
+    // 进程文件连续缺失计数（PID → 连续未扫描到的次数）
+    // 用于容忍 writeAtomic 原子重命名期间的瞬时读取失败
+    private final Map<Integer, Integer> missingCounts = new LinkedHashMap<>();
+
     private volatile boolean running = true;
 
     public Scheduler() {
@@ -181,9 +185,25 @@ public class Scheduler extends Thread {
         Set<Integer> toRemove = new LinkedHashSet<>();
         for (int pid : allProcesses.keySet()) {
             if (!current.containsKey(pid)) {
-                toRemove.add(pid);
+                // 确认 .proc 文件确实不在磁盘上，而非因 writeAtomic 瞬时读取失败
+                String procPath = Constants.SYSTEM_PROCESS_PATH + pid + ".proc";
+                if (!com.follarce.util.FileUtil.exists(procPath)) {
+                    int misses = missingCounts.getOrDefault(pid, 0) + 1;
+                    missingCounts.put(pid, misses);
+                    // 连续 3 次（~150ms）文件确实不存在才确认死亡
+                    if (misses >= 3) {
+                        toRemove.add(pid);
+                        missingCounts.remove(pid);
+                    }
+                }
+                // 文件存在但读取失败 → 保留进程，不计入缺失
+            } else {
+                missingCounts.remove(pid);  // 重新扫描到，重置计数
             }
         }
+        // 清理已不追踪的 PID 的计数
+        missingCounts.keySet().removeIf(pid -> !allProcesses.containsKey(pid));
+
         for (int pid : toRemove) {
             ProcessRunner runner = allProcesses.remove(pid);
             if (runner != null) {

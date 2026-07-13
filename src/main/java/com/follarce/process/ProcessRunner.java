@@ -169,6 +169,7 @@ public class ProcessRunner {
             if (state == ProcessState.BLOCKED) return StepResult.BLOCKED;
             if (!running) {
                 state = ProcessState.TERMINATED;
+                persistState();  // 先落盘 Status=false，防止调度器误认为进程仍存活
                 stateManager.cleanup();
                 return StepResult.TERMINATED;
             }

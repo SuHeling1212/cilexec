@@ -567,7 +567,17 @@ public final class FileUtil {
     public static void writeAtomic(String path, String content) {
         File realFile = resolveFile(path);
         if (!realFile.exists()) {
-            write(path, content);
+            // 文件不存在：直接创建并写入默认元数据，避免 write() 中抛 "File not found"
+            Map<String, Object> defaultMeta = createDefaultFileMeta();
+            defaultMeta.put("Size", new Object[]{content.length(), "B"});
+            String metaJson = JsonUtil.toMetaJson(defaultMeta);
+            String fullContent = PathUtil.buildMetaFile(metaJson, content);
+            try {
+                realFile.getParentFile().mkdirs();
+                writeFileContent(realFile, fullContent);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to create file: " + path, e);
+            }
             return;
         }
         File parent = realFile.getParentFile();

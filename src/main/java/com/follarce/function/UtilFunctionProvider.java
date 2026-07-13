@@ -3,6 +3,7 @@ package com.follarce.function;
 import com.follarce.Constants;
 import com.follarce.util.JsonUtil;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Scanner;
 
@@ -89,6 +90,19 @@ public class UtilFunctionProvider implements FunctionProvider {
                         Thread.sleep(ms);
                     }
                     return "";
+
+                case "getTime": {
+                    LocalDateTime now = LocalDateTime.now();
+                    int year = now.getYear();
+                    int month = now.getMonthValue();
+                    int day = now.getDayOfMonth();
+                    int hour = now.getHour();
+                    int minute = now.getMinute();
+                    int second = now.getSecond();
+                    int nano = now.getNano();
+                    int millis = nano / 1_000_000;
+                    return new int[] { year, month, day, hour, minute, second, millis };
+                }
 
                 default:
                     return null;
