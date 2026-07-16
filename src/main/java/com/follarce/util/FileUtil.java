@@ -8,6 +8,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -28,8 +29,13 @@ public final class FileUtil {
     public static String read(String path) {
         File realFile = resolveFile(path);
         validateFile(realFile, path);
-        String content = readFileContent(realFile);
-        return PathUtil.extractBodyContent(content);
+        ReentrantLock lock = com.follarce.util.JsonUtil.lockFile(path);
+        try {
+            String content = readFileContent(realFile);
+            return PathUtil.extractBodyContent(content);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -561,51 +567,56 @@ public final class FileUtil {
     }
 
     /**
-     * 原子写入：先写 .tmp 临时文件，再原子重命名。
-     * 防止并发读取时读到半写状态的文件（#8 Scheduler 竞态）。
+     * 原子写入：持锁 → 写 .tmp 临时文件 → 原子重命名替换原文件 → 释放锁。
+     * 锁保证写入期间无读者，重命名保证文件始终存在（旧或新），不会出现「读到一半」的窗口。
      */
     public static void writeAtomic(String path, String content) {
         File realFile = resolveFile(path);
-        if (!realFile.exists()) {
-            // 文件不存在：直接创建并写入默认元数据，避免 write() 中抛 "File not found"
-            Map<String, Object> defaultMeta = createDefaultFileMeta();
-            defaultMeta.put("Size", new Object[]{content.length(), "B"});
-            String metaJson = JsonUtil.toMetaJson(defaultMeta);
-            String fullContent = PathUtil.buildMetaFile(metaJson, content);
-            try {
-                realFile.getParentFile().mkdirs();
-                writeFileContent(realFile, fullContent);
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to create file: " + path, e);
-            }
-            return;
-        }
-        File parent = realFile.getParentFile();
-        if (parent == null) parent = new File(".");
-        File tempFile = new File(parent, realFile.getName() + ".tmp");
+        ReentrantLock lock = JsonUtil.lockFile(path);
         try {
-            String existingContent = readFileContent(realFile);
-            String metaJson = PathUtil.extractMetaContent(existingContent);
-            String finalContent;
-            if (metaJson != null) {
-                Map<String, Object> meta = JsonUtil.parseToMap(metaJson);
-                updateTimeField(meta, "lastEditTime");
-                meta.put("Size", new Object[]{content.length(), "B"});
-                String newMetaJson = JsonUtil.toMetaJson(meta);
-                finalContent = PathUtil.buildMetaFile(newMetaJson, content);
-            } else {
+            if (!realFile.exists()) {
+                // 文件不存在：直接创建并写入默认元数据
                 Map<String, Object> defaultMeta = createDefaultFileMeta();
                 defaultMeta.put("Size", new Object[]{content.length(), "B"});
-                String newMetaJson = JsonUtil.toMetaJson(defaultMeta);
-                finalContent = PathUtil.buildMetaFile(newMetaJson, content);
+                String metaJson = JsonUtil.toMetaJson(defaultMeta);
+                String fullContent = PathUtil.buildMetaFile(metaJson, content);
+                realFile.getParentFile().mkdirs();
+                try {
+                    Files.writeString(realFile.toPath(), fullContent,
+                            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to write file: " + path, e);
+                }
+                return;
             }
-            Files.writeString(tempFile.toPath(), finalContent, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            Files.move(tempFile.toPath(), realFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException e) {
-            tempFile.delete();
-            // 保存文件头信息和错误详情
-            String detail = e.getClass().getSimpleName() + ": " + e.getMessage();
-            throw new RuntimeException("Failed to write atomically: " + path + " [" + detail + "]", e);
+            // 写临时文件
+            File parent = realFile.getParentFile();
+            if (parent == null) parent = new File(".");
+            File tempFile = new File(parent, realFile.getName() + ".tmp");
+            try {
+                String existingContent = readFileContent(realFile);
+                String metaJson = PathUtil.extractMetaContent(existingContent);
+                String finalContent;
+                if (metaJson != null) {
+                    Map<String, Object> meta = JsonUtil.parseToMap(metaJson);
+                    updateTimeField(meta, "lastEditTime");
+                    meta.put("Size", new Object[]{content.length(), "B"});
+                    String newMetaJson = JsonUtil.toMetaJson(meta);
+                    finalContent = PathUtil.buildMetaFile(newMetaJson, content);
+                } else {
+                    Map<String, Object> defaultMeta = createDefaultFileMeta();
+                    defaultMeta.put("Size", new Object[]{content.length(), "B"});
+                    String newMetaJson = JsonUtil.toMetaJson(defaultMeta);
+                    finalContent = PathUtil.buildMetaFile(newMetaJson, content);
+                }
+                Files.writeString(tempFile.toPath(), finalContent, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                Files.move(tempFile.toPath(), realFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                tempFile.delete();
+                throw new RuntimeException("Failed to write file: " + path, e);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 

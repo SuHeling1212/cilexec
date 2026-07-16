@@ -1,15 +1,5 @@
-start = getTime()
-i = 0
-while i < 1000 {
+
+while true {
     i = i + 1
 }
-end = getTime()
 
-elapsed = end[6] - start[6]
-elapsed = elapsed + (end[5] - start[5]) * 1000
-elapsed = elapsed + (end[4] - start[4]) * 60000
-elapsed = elapsed + (end[3] - start[3]) * 3600000
-
-print("1000 iterations: ")
-print(elapsed)
-print(" ms")

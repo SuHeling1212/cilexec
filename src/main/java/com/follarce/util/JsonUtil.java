@@ -42,6 +42,17 @@ public final class JsonUtil {
     }
 
     /**
+     * 对指定 VFS 路径加锁并返回锁对象，调用方负责在 finally 中 unlock()。
+     * 读写均须持锁：写锁保证写入期间无读者看到半写状态，读锁保证读取期间文件不被替换。
+     */
+    public static ReentrantLock lockFile(String vfsPath) {
+        String realPath = PathUtil.toRealPath(vfsPath);
+        ReentrantLock lock = getFileLock(realPath);
+        lock.lock();
+        return lock;
+    }
+
+    /**
      * 原子读取 VFS 文件中 dotPath 指定字段的值。
      *
      * @param vfsPath VFS 路径（如 "/system/process/2.proc"）
@@ -130,19 +141,11 @@ public final class JsonUtil {
     }
 
     /**
-     * 在 VFS 路径上写入完整文件内容（使用文件级锁）。
-     * 与 {@link #setField} / {@link #getField} 共享同一锁机制。
-     * 使用 {@link FileUtil#write} 写入（非 atomic，无 .tmp 文件）。
+     * 在 VFS 路径上写入完整文件内容。
+     * 委托给 {@link FileUtil#writeAtomic}，锁由 writeAtomic 内部管理。
      */
     public static void writeFile(String vfsPath, String content) {
-        String realPath = PathUtil.toRealPath(vfsPath);
-        ReentrantLock lock = getFileLock(realPath);
-        lock.lock();
-        try {
-            FileUtil.writeAtomic(vfsPath, content);
-        } finally {
-            lock.unlock();
-        }
+        FileUtil.writeAtomic(vfsPath, content);
     }
 
     /**
