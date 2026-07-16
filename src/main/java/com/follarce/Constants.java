@@ -14,6 +14,7 @@ public final class Constants {
 
     // 调度器休眠间隔（每轮调度后的休眠时间）
     public static final long SCHEDULER_TICK_MS = 50L;
+    public static final int MANAGEMENT_PORT = 8080;
 
     // ── 进程优先级 ──
     public static final int PRIORITY_HIGH = 5;

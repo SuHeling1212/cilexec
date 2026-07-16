@@ -4,6 +4,7 @@ import com.follarce.function.*;
 import com.follarce.init.FileInit;
 import com.follarce.init.ProcessInit;
 import com.follarce.log.Logger;
+import com.follarce.management.ManagementServer;
 import com.follarce.process.ProcessRunner;
 import com.follarce.process.Scheduler;
 import com.follarce.util.FileUtil;
@@ -25,6 +26,7 @@ import java.io.File;
 public class Main {
 
     private static Scheduler scheduler;
+    private static ManagementServer managementServer;
 
     public static void main(String[] args) {
         // 1. 初始化日志
@@ -62,18 +64,26 @@ public class Main {
             scheduler.start();
             Logger.info("Scheduler started");
 
+            managementServer = new ManagementServer();
+            managementServer.start();
+            Logger.info("Management UI available at http://127.0.0.1:" + Constants.MANAGEMENT_PORT);
+
             // 9. 注册 shutdown hook
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 Logger.logShutdown();
                 if (scheduler != null) {
                     scheduler.shutdownScheduler();
                 }
+                if (managementServer != null) managementServer.stop();
                 Logger.close();
             }));
 
             Logger.info("=== Cilexec system ready ===");
             System.out.println("Cilexec (CilExec) system started. PID 1 (INIT) running.");
             System.out.println("Type Ctrl+C to shutdown.");
+            // 管理服务不应在调度器退出后继续单独存活。
+            scheduler.join();
+            if (managementServer != null) managementServer.stop();
 
         } catch (Exception e) {
             Logger.logException("System startup failed", e);
