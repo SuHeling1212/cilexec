@@ -90,7 +90,6 @@ public class ProcessRunner {
     private ProcessState state = ProcessState.NEW;
     private int priority = Constants.DEFAULT_PRIORITY;
     private BlockReason blockReason = BlockReason.NONE;
-    private boolean manuallyPaused;
     private final long processStartMs;
 
     // 进入用户函数体后置为 true，dispatchStatement 据此跳过 currentLine++
@@ -297,12 +296,6 @@ public class ProcessRunner {
      */
     private void parkWhileBlocked() {
         while (state == ProcessState.BLOCKED && running) {
-            if (processPendingMessages()) persistState();
-            if (manuallyPaused) {
-                persistState();
-                LockSupport.parkNanos(50_000_000L);
-                continue;
-            }
             // 检查是否可唤醒
             if (checkWakeup()) {
                 state = ProcessState.READY;
@@ -411,10 +404,6 @@ public class ProcessRunner {
                 }
             }
         }
-        if ("Control.Paused".equals(field)) {
-            manuallyPaused = Boolean.TRUE.equals(value);
-            state = manuallyPaused ? ProcessState.BLOCKED : ProcessState.READY;
-        }
     }
 
     /**
@@ -442,14 +431,11 @@ public class ProcessRunner {
      * 处理所有待处理的外部消息 —— 在 executeLine() 开头调用，
      * 确保任何外部请求在当前行执行前落地。
      */
-    private boolean processPendingMessages() {
-        boolean changed = false;
+    private void processPendingMessages() {
         ProcessMessage msg;
         while ((msg = pendingMessages.poll()) != null) {
             applyFieldUpdate(msg.field, msg.value);
-            changed = true;
         }
-        return changed;
     }
 
     // ════════════════════════════════════════════
@@ -459,20 +445,17 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private void executeLine() {
         try {
-            // 0. 先从磁盘加载，再合并外部控制消息。反向顺序会使旧快照覆盖消息。
-            loadRuntimeState();
+            // 0. 处理所有待处理的外部消息（必须在任何 FCL 代码执行前处理）
             processPendingMessages();
-            if (manuallyPaused) {
-                state = ProcessState.BLOCKED;
-                persistState();
-                return;
-            }
             if (!running) {
                 persistState();
                 return;
             }
 
-            // 1. 检查是否执行完毕
+            // 1. 从文件加载最新状态
+            loadRuntimeState();
+
+            // 2. 检查是否执行完毕
             if (currentLine >= codeLines.size()) {
                 // 如果在函数调用中，自动返回到调用者
                 if (functionManager.isInCall()) {
@@ -887,10 +870,6 @@ public class ProcessRunner {
         this.codeLines = snap.codeLines;
         this.currentLine = snap.currentLine;
         this.blockStack = snap.blockStack;
-        Object control = processData.get("Control");
-        if (control instanceof Map) {
-            manuallyPaused = Boolean.TRUE.equals(((Map<String, Object>) control).get("Paused"));
-        }
         // returnValue 已不再作为字段维护（直接通过 data.__return_value 传递）
 
         // 用 codeLoader 重新加载并扫描边界表，结果覆盖运行时副本
