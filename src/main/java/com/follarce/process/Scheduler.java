@@ -141,7 +141,13 @@ public class Scheduler extends Thread {
                 continue;
             }
 
-            if (!allProcesses.containsKey(pid)) {
+            ProcessRunner known = allProcesses.get(pid);
+            if (known != null && !known.isRunning()) {
+                allProcesses.remove(pid);
+                missingCounts.remove(pid);
+                known = null;
+            }
+            if (known == null) {
                 ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
                 runner.init();
                 addProcess(runner);
@@ -159,11 +165,20 @@ public class Scheduler extends Thread {
         for (Map.Entry<Integer, Map<String, Object>> entry : current.entrySet()) {
             int pid = entry.getKey();
 
+            // Main owns INIT registration; discovery must never create a second PID 1 runner.
+            if (pid == Constants.PID_INIT) continue;
+
             if (isTerminal(entry.getValue())) {
                 continue;
             }
 
-            if (!allProcesses.containsKey(pid)) {
+            ProcessRunner known = allProcesses.get(pid);
+            if (known != null && !known.isRunning()) {
+                allProcesses.remove(pid);
+                missingCounts.remove(pid);
+                known = null;
+            }
+            if (known == null) {
                 ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
                 runner.init();
                 addProcess(runner);
@@ -242,28 +257,36 @@ public class Scheduler extends Thread {
 
         if (!dir.exists() || !dir.isDirectory()) return result;
 
-        File[] files = dir.listFiles((d, name) -> name.endsWith(".proc"));
+        File[] files = dir.listFiles((d, name) -> name.matches("\\d+\\.proc(?:\\.tmp)?"));
         if (files == null) return result;
 
+        Set<String> processNames = new LinkedHashSet<>();
         for (File file : files) {
-            try {
-                String name = file.getName();
-                String vfsPath = Constants.SYSTEM_PROCESS_PATH + name;
+            processNames.add(file.getName().replaceFirst("\\.tmp$", ""));
+        }
 
-                // 跳过正在写入的临时文件
-                if (name.endsWith(".tmp")) continue;
+        for (String name : processNames) {
+            try {
+                String vfsPath = Constants.SYSTEM_PROCESS_PATH + name;
+                // exists() promotes a valid tmp-only snapshot before it is read.
+                if (!FileUtil.exists(vfsPath)) continue;
 
                 String content = FileUtil.read(vfsPath);
                 if (content == null || content.trim().isEmpty()) continue;
 
-                Map<String, Object> processData = JsonUtil.parseToMap(content);
+                Map<String, Object> processData = JsonUtil.parseToMapStrict(content);
                 Object pidObj = processData.get("PID");
                 if (!(pidObj instanceof Number)) continue;
                 int pid = ((Number) pidObj).intValue();
+                int filePid = Integer.parseInt(name.substring(0, name.indexOf('.')));
+                if (pid != filePid) {
+                    Logger.warn("Rejected process file with mismatched PID: " + name);
+                    continue;
+                }
 
                 result.put(pid, processData);
             } catch (Exception e) {
-                Logger.warn("Failed to load process file: " + file.getName() + " - " + e.getMessage());
+                Logger.warn("Failed to load process file: " + name + " - " + e.getMessage());
             }
         }
 

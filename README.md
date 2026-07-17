@@ -42,7 +42,7 @@ The persisted process state machine is:
 NEW -> READY -> RUNNING -> READY / BLOCKED / PAUSED / TERMINATED / FAILED
 ```
 
-Each `.proc` snapshot stores `ProcessState`, `BlockReason`, `ExitReason`, and `StateMessage`. The legacy boolean `Status` field remains readable for older snapshots but is not the lifecycle source of truth.
+Each `.proc` snapshot stores `ProcessState`, `BlockReason`, `ExitReason`, and `StateMessage`. Child exits are retained in `ExitedChildren` until consumed by `wait()` or `waitPID()`, so concurrent exits are not lost. The legacy boolean `Status` field remains readable for older snapshots but is not the lifecycle source of truth.
 
 Process control semantics:
 
@@ -56,7 +56,9 @@ Process control semantics:
 | `continue(pid)` | Restores the state held before the pause |
 | `kill(pid)` | Terminates the process and removes its process file |
 
-Process files are committed through a temporary file and atomic rename. On restart, an interrupted valid `.proc.tmp` snapshot can be promoted when the primary `.proc` is missing or invalid.
+When a parent terminates, each active direct child is reparented to INIT in both process snapshots. Process files are committed through a temporary file and atomic rename. On restart, an interrupted valid `.proc.tmp` snapshot can be promoted when the primary `.proc` is missing or invalid; two invalid snapshots are preserved for diagnosis and rejected by the scheduler.
+
+The JUnit suite includes normal process operations, lifecycle edge cases, 256 concurrent forks, PID reuse checks, random forced JVM termination, and repeated restart recovery. Run it with `mvn test`.
 
 ## The "Benefits" of State Persistence
 

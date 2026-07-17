@@ -86,6 +86,7 @@ public final class ProcessInit {
         processData.put("Priority", Constants.PRIORITY_LOW);
         processData.put("Parent", new LinkedHashMap<>());
         processData.put("Child", new LinkedHashMap<>());
+        processData.put("ExitedChildren", new LinkedHashMap<>());
 
         // Program 部分
         Map<String, Object> program = new LinkedHashMap<>();
@@ -106,8 +107,7 @@ public final class ProcessInit {
 
         // 写入进程文件
         String json = JsonUtil.toMetaJson(processData);
-        FileUtil.createFile(Constants.SYSTEM_PROCESS_PATH, INIT_PROCESS_FILE);
-        FileUtil.write(Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE, json);
+        JsonUtil.writeFile(Constants.SYSTEM_PROCESS_PATH + INIT_PROCESS_FILE, json);
 
         Logger.info("Created INIT process (PID=1)");
     }

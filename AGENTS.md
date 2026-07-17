@@ -28,7 +28,7 @@ java -cp "target/classes:target/dependency/*" com.follarce.Main
 bash build/run.sh
 ```
 
-**Note:** JUnit 5 process integration tests are available under `src/test/`. Run them with `mvn test`.
+**Note:** JUnit 5 process, lifecycle, and crash-recovery tests are available under `src/test/`. Run them with `mvn test`.
 
 ## Completion Notification
 

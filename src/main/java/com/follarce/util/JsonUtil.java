@@ -4,6 +4,7 @@ import com.google.gson.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.io.File;
 
 /**
@@ -141,6 +142,20 @@ public final class JsonUtil {
     }
 
     /**
+     * Atomically read, mutate, and replace a JSON object stored in a VFS file.
+     */
+    public static void updateFile(String vfsPath, Consumer<Map<String, Object>> updater) {
+        ReentrantLock lock = lockFile(vfsPath);
+        try {
+            Map<String, Object> data = parseToMapStrict(FileUtil.read(vfsPath));
+            updater.accept(data);
+            FileUtil.writeAtomic(vfsPath, toJson(data));
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
      * 在 VFS 路径上写入完整文件内容。
      * 委托给 {@link FileUtil#writeAtomic}，锁由 writeAtomic 内部管理。
      */
@@ -200,6 +215,16 @@ public final class JsonUtil {
             return (Map<String, Object>) result;
         }
         return new LinkedHashMap<>();
+    }
+
+    /** Parse a JSON object without silently converting malformed input to an empty map. */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> parseToMapStrict(String json) {
+        Object result = parseJson(json);
+        if (result instanceof Map) {
+            return (Map<String, Object>) result;
+        }
+        throw new IllegalArgumentException("Expected a valid JSON object");
     }
 
     /**

@@ -108,15 +108,26 @@ public final class FileUtil {
      * 删除文件。
      */
     public static void removeFile(String path) {
-        File realFile = resolveFile(path);
-        validateFile(realFile, path);
-        // 检查锁
-        checkLock(path);
-        if (realFile.isDirectory()) {
-            throw new RuntimeException("Is a directory: " + path);
-        }
-        if (!realFile.delete()) {
-            throw new RuntimeException("Failed to delete file: " + path);
+        ReentrantLock lock = JsonUtil.lockFile(path);
+        try {
+            File realFile = resolveFile(path);
+            validateFile(realFile, path);
+            checkLock(path);
+            if (realFile.isDirectory()) {
+                throw new RuntimeException("Is a directory: " + path);
+            }
+            if (!realFile.delete()) {
+                throw new RuntimeException("Failed to delete file: " + path);
+            }
+            if (path.endsWith(".proc")) {
+                try {
+                    Files.deleteIfExists(realFile.toPath().resolveSibling(realFile.getName() + ".tmp"));
+                } catch (IOException e) {
+                    Logger.warn("Failed to remove process temporary file: " + path + ".tmp");
+                }
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -823,8 +834,11 @@ public final class FileUtil {
                 } catch (IOException e) {
                     throw new RuntimeException("Failed to recover process file: " + path, e);
                 }
-            } else if (realValid || !tempValid) {
+            } else if (realValid) {
                 tempFile.delete();
+            } else {
+                // Preserve both damaged snapshots for diagnosis; the scheduler will reject them.
+                Logger.error("Both process snapshots are invalid: " + path + " and " + path + ".tmp");
             }
         } finally {
             lock.unlock();
@@ -835,8 +849,12 @@ public final class FileUtil {
         if (file == null || !file.isFile() || file.length() == 0) return false;
         try {
             String body = PathUtil.extractBodyContent(Files.readString(file.toPath()));
-            Map<String, Object> process = JsonUtil.parseToMap(body);
-            return process.get("PID") instanceof Number && process.get("Program") instanceof Map;
+            Map<String, Object> process = JsonUtil.parseToMapStrict(body);
+            Object pid = process.get("PID");
+            Object program = process.get("Program");
+            if (!(pid instanceof Number) || !(program instanceof Map)) return false;
+            String name = file.getName().replaceFirst("\\.proc(?:\\.tmp)?$", "");
+            return Integer.toString(((Number) pid).intValue()).equals(name);
         } catch (Exception e) {
             return false;
         }

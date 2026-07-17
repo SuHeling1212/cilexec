@@ -61,6 +61,11 @@ public class IpcHandler {
      */
     @SuppressWarnings("unchecked")
     public int handleFork() {
+        return handleFork(null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public int handleFork(String childResultVariable) {
         try {
             Map<String, Object> processData = processDataSupplier.get();
             int childPid = allocatePid();
@@ -85,6 +90,10 @@ public class IpcHandler {
             // 复制 Program 数据，剔除注释后写入（确保 .proc 文件干净）
             Map<String, Object> childProgram = (Map<String, Object>) childData.get("Program");
             if (childProgram != null) {
+                Object childVariables = childProgram.get("Data");
+                if (childResultVariable != null && childVariables instanceof Map) {
+                    ((Map<String, Object>) childVariables).put(childResultVariable, 0);
+                }
                 Map<String, Object> code = (Map<String, Object>) childProgram.get("Code");
                 if (code != null) {
                     Object codeLinesObj = code.get("Code");
@@ -223,28 +232,8 @@ public class IpcHandler {
             String processPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (processPath == null || !FileUtil.exists(processPath)) return;
 
-            // 读取目标进程的父 PID 和子进程信息
-            Object parentPidObj = JsonUtil.getField(processPath, "Parent.PID");
-            int parentPid = parentPidObj instanceof Number ? ((Number) parentPidObj).intValue() : -1;
-
-            // 子进程迁移到 INIT —— 通过 postMessage 由 INIT 自行处理 Child 列表
-            Object childrenObj = JsonUtil.getField(processPath, "Child");
-            if (childrenObj instanceof Map && !((Map) childrenObj).isEmpty()) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> children = (Map<String, Object>) childrenObj;
-                for (Map.Entry<String, Object> entry : children.entrySet()) {
-                    ProcessRunner.postMessage(Constants.PID_INIT,
-                            "Child." + entry.getKey(), entry.getValue());
-                }
-            }
-
-            // 从父进程 Child 列表移除
-            if (parentPid > 0) {
-                ProcessRunner.postMessage(parentPid, "Child." + targetPid, null);
-            }
-
-            // 终止目标进程：删文件 + 停 runner
-            ProcessRunner.terminateProcess(targetPid);
+            // FCL kills are applied at the target's next instruction boundary.
+            ProcessRunner.requestTermination(targetPid);
             Logger.info("Kill: PID " + targetPid + " killed by PID " + pid);
         } catch (Exception e) {
             Logger.error("Kill failed: " + e.getMessage());
@@ -260,7 +249,9 @@ public class IpcHandler {
      * 设置阻塞状态，返回 true。
      */
     public void handleWait() {
-        processDataSupplier.get().remove("BlockTargetPid");
+        Map<String, Object> processData = processDataSupplier.get();
+        processData.remove("BlockTargetPid");
+        if (consumeExitedChild(processData, null)) return;
         Logger.info("Process " + pid + " blocked on wait()");
         blockProcess.accept(BlockReason.WAIT_ANY);
     }
@@ -273,6 +264,7 @@ public class IpcHandler {
         try {
             int targetPid = Integer.parseInt(pidStr.trim());
             Map<String, Object> processData = processDataSupplier.get();
+            if (consumeExitedChild(processData, targetPid)) return;
             Map<String, Object> children = (Map<String, Object>) processData.get("Child");
             if (children != null && children.containsKey(String.valueOf(targetPid))) {
                 Map<String, Object> blockingInfo = new LinkedHashMap<>();
@@ -348,26 +340,16 @@ public class IpcHandler {
 
     private static final java.util.concurrent.locks.ReentrantLock PID_ALLOC_LOCK =
             new java.util.concurrent.locks.ReentrantLock();
-    private static final Set<Integer> RESERVED_PIDS = new HashSet<>();
-
-    static void reservePid(int pid) {
-        if (pid <= 0) return;
-        PID_ALLOC_LOCK.lock();
-        try {
-            RESERVED_PIDS.add(pid);
-        } finally {
-            PID_ALLOC_LOCK.unlock();
-        }
-    }
 
     private int allocatePid() {
         PID_ALLOC_LOCK.lock();
         try {
             String processDir = com.follarce.util.PathUtil.toRealPath(
                     com.follarce.Constants.SYSTEM_PROCESS_PATH);
+            Set<Integer> unavailable = unavailablePids(processDir);
             int base = 2;
             while (true) {
-                if (RESERVED_PIDS.contains(base)) {
+                if (unavailable.contains(base)) {
                     base++;
                     continue;
                 }
@@ -375,7 +357,6 @@ public class IpcHandler {
                 try {
                     if (procFile.createNewFile()) {
                         // 原子创建成功 → 这个 PID 被我独占
-                        RESERVED_PIDS.add(base);
                         return base;
                     }
                 } catch (java.io.IOException e) {
@@ -388,27 +369,44 @@ public class IpcHandler {
         }
     }
 
-    private Map<Integer, Map<String, Object>> scanProcessFiles() {
-        Map<Integer, Map<String, Object>> result = new LinkedHashMap<>();
-        String processDir = PathUtil.toRealPath(Constants.SYSTEM_PROCESS_PATH);
+    @SuppressWarnings("unchecked")
+    private Set<Integer> unavailablePids(String processDir) {
+        Set<Integer> result = new HashSet<>();
         java.io.File dir = new java.io.File(processDir);
-        if (!dir.exists() || !dir.isDirectory()) return result;
-        java.io.File[] files = dir.listFiles((d, name) -> name.endsWith(".proc"));
+        java.io.File[] files = dir.listFiles((d, name) -> name.matches("\\d+\\.proc(?:\\.tmp)?"));
         if (files == null) return result;
         for (java.io.File file : files) {
+            String name = file.getName();
             try {
-                String content = FileUtil.read(Constants.SYSTEM_PROCESS_PATH + file.getName());
-                if (content == null || content.trim().isEmpty()) continue;
-                Map<String, Object> data = JsonUtil.parseToMap(content);
-                Object pidObj = data.get("PID");
-                if (!(pidObj instanceof Number)) continue;
-                int existingPid = ((Number) pidObj).intValue();
-                if (existingPid > 0) {
-                    result.put(existingPid, data);
+                int filePid = Integer.parseInt(name.substring(0, name.indexOf('.')));
+                result.add(filePid);
+                String canonicalName = filePid + ".proc";
+                if (!FileUtil.exists(Constants.SYSTEM_PROCESS_PATH + canonicalName)) continue;
+                Map<String, Object> data = JsonUtil.parseToMapStrict(
+                        FileUtil.read(Constants.SYSTEM_PROCESS_PATH + canonicalName));
+                Object exitedObj = data.get("ExitedChildren");
+                if (exitedObj instanceof Map) {
+                    for (String exitedPid : ((Map<String, Object>) exitedObj).keySet()) {
+                        result.add(Integer.parseInt(exitedPid));
+                    }
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+                // A malformed or temporary snapshot still reserves its filename PID.
+            }
         }
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean consumeExitedChild(Map<String, Object> processData, Integer targetPid) {
+        Object exitedObj = processData.get("ExitedChildren");
+        if (!(exitedObj instanceof Map)) return false;
+        Map<String, Object> exited = (Map<String, Object>) exitedObj;
+        String key = targetPid != null ? String.valueOf(targetPid)
+                : exited.keySet().stream().findFirst().orElse(null);
+        if (key == null || !exited.containsKey(key)) return false;
+        exited.remove(key);
+        return true;
     }
 
     public static String[] parseExecArgs(String inner) {

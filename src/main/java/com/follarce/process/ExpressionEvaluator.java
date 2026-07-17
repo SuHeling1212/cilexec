@@ -11,6 +11,7 @@ import com.follarce.util.UserUtil;
 
 import java.util.*;
 import java.util.function.BiConsumer;
+import java.util.function.IntSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -55,14 +56,15 @@ public class ExpressionEvaluator {
             Pattern.compile("^exec\\s*\\(\\s*(.*)\\s*\\)\\s*$");
 
     private final int pid;
-    private final int ppid;
+    private final IntSupplier ppidSupplier;
     private final BiConsumer<String, List<Object>> functionArgCallback;
     private NodeEvaluator nodeEvaluator;
     private Map<String, Object> data;
 
-    public ExpressionEvaluator(int pid, int ppid, BiConsumer<String, List<Object>> functionArgCallback) {
+    public ExpressionEvaluator(int pid, IntSupplier ppidSupplier,
+                               BiConsumer<String, List<Object>> functionArgCallback) {
         this.pid = pid;
-        this.ppid = ppid;
+        this.ppidSupplier = ppidSupplier;
         this.functionArgCallback = functionArgCallback;
     }
 
@@ -78,7 +80,7 @@ public class ExpressionEvaluator {
 
     private void rebuildNodeEvaluator() {
         String user = UserUtil.getCurrentUser();
-        this.nodeEvaluator = new NodeEvaluator(data, pid, ppid, user);
+        this.nodeEvaluator = new NodeEvaluator(data, pid, ppidSupplier.getAsInt(), user);
         if (functionArgCallback != null) {
             this.nodeEvaluator.setFunctionArgCallback(functionArgCallback);
         }

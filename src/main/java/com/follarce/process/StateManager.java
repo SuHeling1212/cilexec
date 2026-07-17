@@ -216,6 +216,8 @@ public class StateManager {
             JsonUtil.writeFile(processPath, json);
         } catch (Exception e) {
             Logger.error("StateManager: failed to save PID " + pid + ": " + e.getMessage());
+            throw e instanceof RuntimeException ? (RuntimeException) e
+                    : new RuntimeException("Failed to persist PID " + pid, e);
         }
     }
 
@@ -223,20 +225,15 @@ public class StateManager {
     // 进程生命周期
     // ════════════════════════════════════════════
 
-    /**
-     * 终止时清理：从父进程 Child 列表移除自己，然后删除/保留进程文件。
-     */
+    /** Reparent active children, notify the parent, then delete or retain the snapshot. */
     public void cleanup() {
-        try {
-            cleanParentChildList();
-            handleTermination();
-        } catch (Exception e) {
-            Logger.warn("StateManager: cleanup failed for PID " + pid + ": " + e.getMessage());
-        }
+        reparentChildrenToInit();
+        notifyParentOfExit();
+        handleTermination();
     }
 
     @SuppressWarnings("unchecked")
-    private void cleanParentChildList() {
+    private void notifyParentOfExit() {
         try {
             Map<String, Object> parent = (Map<String, Object>) processData.get("Parent");
             if (parent == null) return;
@@ -244,10 +241,28 @@ public class StateManager {
             if (!(ppidObj instanceof Number)) return;
             int ppid = ((Number) ppidObj).intValue();
 
-            ProcessRunner.postMessage(ppid, "Child." + pid, null);
-            Logger.info("StateManager: child " + pid + " removed from parent " + ppid + "'s Child list");
+            ProcessRunner.recordChildExit(ppid, pid, exitReason);
+            Logger.info("StateManager: child " + pid + " exit recorded by parent " + ppid);
         } catch (Exception e) {
-            Logger.warn("StateManager: failed to clean parent Child list for PID " + pid + ": " + e.getMessage());
+            Logger.warn("StateManager: failed to notify parent for PID " + pid + ": " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void reparentChildrenToInit() {
+        if (pid == Constants.PID_INIT) return;
+        Object childrenObj = processData.get("Child");
+        if (!(childrenObj instanceof Map)) return;
+
+        Map<String, Object> children = new LinkedHashMap<>((Map<String, Object>) childrenObj);
+        for (Map.Entry<String, Object> child : children.entrySet()) {
+            try {
+                int childPid = Integer.parseInt(child.getKey());
+                ProcessRunner.reparentToInit(childPid, child.getValue());
+            } catch (Exception e) {
+                Logger.warn("StateManager: failed to reparent child " + child.getKey()
+                        + " of PID " + pid + ": " + e.getMessage());
+            }
         }
     }
 

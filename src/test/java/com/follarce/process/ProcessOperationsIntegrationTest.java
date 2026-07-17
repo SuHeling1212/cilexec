@@ -206,7 +206,8 @@ class ProcessOperationsIntegrationTest {
         ProcessRunner controller = createRunner(71, List.of("kill(70)"));
 
         controller.step();
-        await(() -> !target.isRunning(), "target runner did not stop");
+        await(() -> !target.isRunning() && !FileUtil.exists(processPath(70)),
+                "target runner or process file did not stop");
         assertFalse(FileUtil.exists(processPath(70)),
                 () -> FileUtil.read(processPath(70)));
         assertEquals(ProcessState.TERMINATED, target.getState());
