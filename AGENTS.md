@@ -8,24 +8,20 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 # Compile
 mvn compile
 
-# Package uber-JAR (with dependencies)
-mvn package -DskipTests
+# Package
+mac/linux bash ./build/package.sh
+windows ./build/package.bat
 
 # Clean compile
 mvn clean compile
 
-# Run (from source)
-mvn exec:java
+#clean Cilexec dirt
+bash ./build/clean.sh
 
-# Run (packaged JAR)
-java -jar target/cilexec-1.0-SNAPSHOT.jar
+# Dev rebuild+run
+mac/linux bash ./build/run.sh
+windows ./build/run.bat
 
-# Run (classpath)
-mvn dependency:copy-dependencies -q
-java -cp "target/classes:target/dependency/*" com.follarce.Main
-
-# Dev build+run
-bash build/run.sh
 ```
 
 **Note:** JUnit 5 process, lifecycle, and crash-recovery tests are available under `src/test/`. Run them with `mvn test`.
@@ -35,8 +31,8 @@ bash build/run.sh
 After completing a task, run the appropriate script before sending the final response so the user hears a sound:
 
 - **Sub-agent (completing its own delegated task):** uses Glass sound
-  - macOS / Linux: `./build/when_users_listen_to_this_they_will_not_come_like_a_dog.sh`
-  - Windows: `build\when_users_listen_to_this_they_will_not_come_like_a_dog.bat`
+  - macOS / Linux: `./build/when_users_listen_to_this_they_will_not_come_like_a_cat.sh`
+  - Windows: `build\when_users_listen_to_this_they_will_not_come_like_a_cat.bat`
 - **Main agent (completing all tasks in the current conversation):** uses Blow sound
   - macOS / Linux: `./build/when_users_listen_to_this_they_will_come_like_a_dog.sh`
   - Windows: `build\when_users_listen_to_this_they_will_come_like_a_dog.bat`
