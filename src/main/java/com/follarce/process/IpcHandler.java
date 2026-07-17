@@ -88,6 +88,9 @@ public class IpcHandler {
                     if (effectId.equals(savedChild.get("CreatedByEffectId"))
                             && ledger.childGeneration().equals(savedChild.get("ProcessGeneration"))) {
                         restoreParentChildRelation(processData, ledger.childPid());
+                    } else {
+                        throw new UnknownEffectOutcomeException("Fork result PID " + ledger.childPid()
+                                + " is now owned by another process generation", null);
                     }
                 } else {
                     recordMissingForkResult(processData, ledger.childPid(), ledger.childGeneration());

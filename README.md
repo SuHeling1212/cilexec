@@ -60,6 +60,12 @@ When a parent terminates, each active direct child is reparented to INIT in both
 
 The JUnit suite includes normal process operations, lifecycle edge cases, 256 concurrent forks, PID reuse checks, random forced JVM termination, and repeated restart recovery. Run it with `mvn test`.
 
+### Durable Effects and Recovery
+
+Each process incarnation has an immutable `ProcessGeneration`; PID alone is never used to authorize lifecycle updates. Every stateful instruction creates a persisted attempt with effect receipts. Internal effects such as file, swap-pool, user, and process changes are replayed from their receipts instead of being executed twice. Effects whose external outcome cannot be determined, such as an interrupted HTTP POST, block with `EFFECT_RECOVERY` until an operator resolves the effect.
+
+Process control messages are stored in a generation-scoped disk inbox. A durable delivery ledger binds each message ID to its original target incarnation, orders messages, and allows startup recovery to republish a message if the JVM stopped between ledger and inbox commits. Fork reservations, lifecycle cleanup, leases, and fencing tokens are also persisted. Recovery reconciles these records before scheduling any process.
+
 ## The "Benefits" of State Persistence
 
 > *just kidding*

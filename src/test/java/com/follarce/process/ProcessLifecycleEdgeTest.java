@@ -297,11 +297,28 @@ class ProcessLifecycleEdgeTest {
         process.put("Name", pid == Constants.PID_INIT ? "INIT" : "test-" + pid);
         process.put("Owner", "local");
         process.put("PID", pid);
+        process.put("ProcessGeneration", "generation-" + pid);
         process.put("Path", "/system/app/test-" + pid + ".fcl");
         process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
-        process.put("Parent", new LinkedHashMap<>(parent));
-        process.put("Child", new LinkedHashMap<>(children));
+        Map<String, Object> parentInfo = new LinkedHashMap<>(parent);
+        Object parentPid = parentInfo.get("PID");
+        if (parentPid instanceof Number) {
+            parentInfo.putIfAbsent("Generation", "generation-" + ((Number) parentPid).intValue());
+        }
+        Map<String, Object> childInfo = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : children.entrySet()) {
+            if (entry.getValue() instanceof Map) {
+                Map<String, Object> child = new LinkedHashMap<>((Map<String, Object>) entry.getValue());
+                Object childPid = child.get("PID");
+                if (childPid instanceof Number) {
+                    child.putIfAbsent("Generation", "generation-" + ((Number) childPid).intValue());
+                }
+                childInfo.put(entry.getKey(), child);
+            }
+        }
+        process.put("Parent", parentInfo);
+        process.put("Child", childInfo);
         process.put("ExitedChildren", new LinkedHashMap<>());
 
         Map<String, Object> code = new LinkedHashMap<>();

@@ -99,6 +99,20 @@ class ProcessPersistenceContextTest {
     }
 
     @Test
+    void forkReplayRejectsPidReusedByAnotherGeneration() {
+        Map<String, Object> parent = process(604, List.of("while true", "{", "}"), "local", Map.of());
+        writeProcess(parent);
+        IpcHandler handler = new IpcHandler(604, () -> {}, () -> 0, () -> parent,
+                ignored -> {}, null, null);
+        int childPid = handler.handleFork(null, "reused-fork-effect");
+        writeProcess(process(childPid, List.of("while true", "{", "}"), "local", Map.of()));
+
+        assertThrows(com.follarce.function.UnknownEffectOutcomeException.class,
+                () -> handler.handleFork(null, "reused-fork-effect"));
+        ProcessRunner.terminateProcess(childPid);
+    }
+
+    @Test
     void interruptedExternalEffectBlocksUntilExplicitResolution() {
         String line = "answer = network.httpPost(\"https://example.invalid\", \"{}\")";
         Map<String, Object> process = process(603, List.of(line), "local", Map.of());

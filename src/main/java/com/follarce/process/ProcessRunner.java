@@ -608,6 +608,8 @@ public class ProcessRunner {
 
     public static void recordChildExit(int parentPid, String parentGeneration,
                                        int childPid, String childGeneration, ExitReason reason) {
+        // A PID without its incarnation is never a safe lifecycle target.
+        if (parentGeneration == null || childGeneration == null) return;
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("PID", childPid);
         if (childGeneration != null) event.put("Generation", childGeneration);
@@ -641,6 +643,7 @@ public class ProcessRunner {
         String childGeneration = childInfo instanceof Map
                 && ((Map<?, ?>) childInfo).get("Generation") instanceof String
                 ? ((Map<?, ?>) childInfo).get("Generation").toString() : null;
+        if (childGeneration == null) return;
         String initGeneration = readProcessGeneration(Constants.PID_INIT);
         Map<String, Object> initParent = new LinkedHashMap<>();
         initParent.put("PID", Constants.PID_INIT);

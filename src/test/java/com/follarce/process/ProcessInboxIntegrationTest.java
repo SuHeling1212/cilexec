@@ -103,10 +103,10 @@ class ProcessInboxIntegrationTest {
     @Test
     void offlineTerminationFinishesRelationshipCleanup() {
         Map<String, Object> parent = process(510, "parent-generation", List.of("while true", "{", "}"));
-        parent.put("Child", new LinkedHashMap<>(Map.of("511", Map.of("PID", 511))));
+        parent.put("Child", new LinkedHashMap<>(Map.of("511", Map.of("PID", 511, "Generation", "child-generation"))));
         writeProcess(parent);
         Map<String, Object> child = process(511, "child-generation", List.of("while true", "{", "}"));
-        child.put("Parent", new LinkedHashMap<>(Map.of("PID", 510)));
+        child.put("Parent", new LinkedHashMap<>(Map.of("PID", 510, "Generation", "parent-generation")));
         writeProcess(child);
 
         ProcessRunner.postMessage(511, "__Terminate", ExitReason.KILLED.name(),
@@ -130,6 +130,38 @@ class ProcessInboxIntegrationTest {
         assertEquals(ProcessState.PAUSED.name(), recovered.get("ProcessState"));
         assertTrue(ProcessInbox.isApplied(recovered, "startup-pause"));
         assertTrue(ProcessInbox.list(520, "generation-520").isEmpty());
+    }
+
+    @Test
+    void startupRecoveryRepublishesDeliveryWhoseInboxMessageWasNotCommitted() {
+        writeProcess(process(521, "generation-521", List.of("while true", "{", "}")));
+        ProcessMessage message = ProcessInbox.publish(521, "generation-521", "delivery-only",
+                1, "sender", "ProcessState", ProcessState.PAUSED.name());
+        ProcessInbox.acknowledge(message); // Simulate a crash after the delivery ledger rename.
+
+        RecoveryManager.recoverAll();
+
+        Map<String, Object> recovered = readProcess(521);
+        assertEquals(ProcessState.PAUSED.name(), recovered.get("ProcessState"));
+        assertTrue(ProcessInbox.isApplied(recovered, "delivery-only"));
+    }
+
+    @Test
+    void recoveryDiscardsLegacyChildRelationWhenPidNowBelongsToAnotherProcess() {
+        Map<String, Object> parent = process(522, "parent-generation", List.of("while true", "{", "}"));
+        parent.put("Child", new LinkedHashMap<>(Map.of("523", new LinkedHashMap<>(Map.of("PID", 523)))));
+        writeProcess(parent);
+        Map<String, Object> replacement = process(523, "replacement-generation", List.of("while true", "{", "}"));
+        replacement.put("Parent", new LinkedHashMap<>());
+        writeProcess(replacement);
+        Map<String, Object> staleChild = process(524, "stale-child-generation", List.of("while true", "{", "}"));
+        staleChild.put("Parent", new LinkedHashMap<>(Map.of("PID", 522)));
+        writeProcess(staleChild);
+
+        RecoveryManager.recoverAll();
+
+        assertNull(nested(readProcess(522), "Child", "523"));
+        assertNull(nested(readProcess(524), "Parent", "PID"));
     }
 
     private static Map<String, Object> process(int pid, String generation, List<String> lines) {

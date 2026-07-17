@@ -88,6 +88,24 @@ public final class ProcessInbox {
         return result;
     }
 
+    /** Re-publish messages whose durable delivery record survived a crash before inbox publication. */
+    public static void recoverDeliveries() {
+        Path deliveries = Path.of(PathUtil.toRealPath(Constants.SYSTEM_PROCESS_INBOX_PATH)).resolve("deliveries");
+        if (!Files.isDirectory(deliveries)) return;
+        try (var stream = Files.list(deliveries)) {
+            stream.filter(path -> path.getFileName().toString().endsWith(".delivery"))
+                    .forEach(path -> {
+                        try {
+                            ensurePublished(read(path));
+                        } catch (IOException | RuntimeException e) {
+                            throw new RuntimeException("Failed to recover process delivery " + path, e);
+                        }
+                    });
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to scan process deliveries", e);
+        }
+    }
+
     public static void acknowledge(ProcessMessage message) {
         Path directory = inboxDirectory(message.targetPid(), message.targetGeneration());
         Path path = messagePath(directory, message.messageId());
