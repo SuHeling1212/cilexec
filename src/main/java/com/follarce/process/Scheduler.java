@@ -136,9 +136,8 @@ public class Scheduler extends Thread {
                 continue;
             }
 
-            // 跳过已终止的进程文件（Status=false）
-            Object statusObj = entry.getValue().get("Status");
-            if (statusObj instanceof Boolean && !(Boolean) statusObj) {
+            // 终态文件用于诊断，不应重新创建执行线程。
+            if (isTerminal(entry.getValue())) {
                 continue;
             }
 
@@ -160,9 +159,7 @@ public class Scheduler extends Thread {
         for (Map.Entry<Integer, Map<String, Object>> entry : current.entrySet()) {
             int pid = entry.getKey();
 
-            // 跳过已终止的进程（Status=false），避免无限循环套娃
-            Object statusObj = entry.getValue().get("Status");
-            if (statusObj instanceof Boolean && !(Boolean) statusObj) {
+            if (isTerminal(entry.getValue())) {
                 continue;
             }
 
@@ -271,5 +268,9 @@ public class Scheduler extends Thread {
         }
 
         return result;
+    }
+
+    private boolean isTerminal(Map<String, Object> processData) {
+        return ProcessState.restore(processData.get("ProcessState"), processData.get("Status")).isTerminal();
     }
 }

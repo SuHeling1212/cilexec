@@ -2,6 +2,8 @@ package com.follarce.process;
 
 import com.follarce.function.FunctionContext;
 import com.follarce.function.FunctionRegistry;
+import com.follarce.exception.ProcessException;
+import com.follarce.exception.UnrecoverableException;
 import com.follarce.log.Logger;
 import com.follarce.script.*;
 import com.follarce.util.UserUtil;
@@ -53,12 +55,14 @@ public class ExpressionEvaluator {
             Pattern.compile("^exec\\s*\\(\\s*(.*)\\s*\\)\\s*$");
 
     private final int pid;
+    private final int ppid;
     private final BiConsumer<String, List<Object>> functionArgCallback;
     private NodeEvaluator nodeEvaluator;
     private Map<String, Object> data;
 
-    public ExpressionEvaluator(int pid, BiConsumer<String, List<Object>> functionArgCallback) {
+    public ExpressionEvaluator(int pid, int ppid, BiConsumer<String, List<Object>> functionArgCallback) {
         this.pid = pid;
+        this.ppid = ppid;
         this.functionArgCallback = functionArgCallback;
     }
 
@@ -74,7 +78,7 @@ public class ExpressionEvaluator {
 
     private void rebuildNodeEvaluator() {
         String user = UserUtil.getCurrentUser();
-        this.nodeEvaluator = new NodeEvaluator(data, pid, user);
+        this.nodeEvaluator = new NodeEvaluator(data, pid, ppid, user);
         if (functionArgCallback != null) {
             this.nodeEvaluator.setFunctionArgCallback(functionArgCallback);
         }
@@ -129,7 +133,15 @@ public class ExpressionEvaluator {
         } catch (Exception e) {
             Logger.warn("Expression evaluation error in PID " + pid + ": " + e.getMessage()
                     + " | expr=" + expression);
-            return null;
+            if (e instanceof ProcessException processException) throw processException;
+            // Preserve FCL's existing implicit-null behavior for first-use variables.
+            if (e.getMessage() != null && e.getMessage().startsWith("Undefined variable '")) {
+                return null;
+            }
+            if ("Division by zero".equals(e.getMessage())) {
+                throw UnrecoverableException.divisionByZero();
+            }
+            throw new UnrecoverableException("Expression evaluation failed: " + e.getMessage(), e);
         }
     }
 

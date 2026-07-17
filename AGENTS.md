@@ -28,7 +28,11 @@ java -cp "target/classes:target/dependency/*" com.follarce.Main
 bash build/run.sh
 ```
 
-**Note:** No test framework is declared in pom.xml — there are no test files in the source tree. `mvn test` does nothing.
+**Note:** JUnit 5 process integration tests are available under `src/test/`. Run them with `mvn test`.
+
+## Completion Notification
+
+After completing and verifying a task, run `./build/notify-complete.sh` immediately before sending the final response so the user hears a completion sound.
 
 ## High-Level Architecture
 

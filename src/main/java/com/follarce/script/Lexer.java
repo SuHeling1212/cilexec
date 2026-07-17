@@ -201,6 +201,15 @@ public class Lexer {
         }
         String lexeme = input.substring(start, pos);
 
+        // "continue" is both a loop statement and a process-control function.
+        if ("continue".equals(lexeme)) {
+            int next = pos;
+            while (next < input.length() && Character.isWhitespace(input.charAt(next))) next++;
+            if (next < input.length() && input.charAt(next) == '(') {
+                return new Token(TokenType.IDENTIFIER, lexeme, start);
+            }
+        }
+
         // Keywords (only for non-#-prefixed identifiers)
         if (start < input.length() && input.charAt(start) != '#') {
             switch (lexeme) {

@@ -19,7 +19,7 @@ import java.util.concurrent.locks.LockSupport;
 /**
  * 进程执行引擎 —— 由调度器驱动，每次 step() 执行一行 FCL 代码。
  * <p>
- * 状态机：NEW → READY → RUNNING → (COMPLETED → READY | BLOCKED | TERMINATED)
+ * 状态机：NEW → READY → RUNNING → READY/BLOCKED/PAUSED/TERMINATED/FAILED
  * <p>
  * <strong>重构说明：</strong>本类已拆分为多个专注组件，此处仅作为协调器：
  * <ul>
@@ -40,14 +40,6 @@ public class ProcessRunner {
 
     public enum StepResult {
         COMPLETED, BLOCKED, TERMINATED
-    }
-
-    public enum ProcessState {
-        NEW, READY, RUNNING, BLOCKED, TERMINATED
-    }
-
-    public enum BlockReason {
-        NONE, WAIT_ANY, WAIT_PID
     }
 
     /**
@@ -86,10 +78,15 @@ public class ProcessRunner {
     // ════════════════════════════════════════════
 
     private volatile boolean running = true;
+    private volatile boolean killed;
+    private final Object persistenceLock = new Object();
     private final int pid;
     private ProcessState state = ProcessState.NEW;
     private int priority = Constants.DEFAULT_PRIORITY;
     private BlockReason blockReason = BlockReason.NONE;
+    private ExitReason exitReason = ExitReason.NONE;
+    private String stateMessage;
+    private ProcessState resumeState = ProcessState.READY;
     private final long processStartMs;
 
     // 进入用户函数体后置为 true，dispatchStatement 据此跳过 currentLine++
@@ -115,25 +112,28 @@ public class ProcessRunner {
 
     public ProcessRunner(int pid, Map<String, Object> processData) {
         this.pid = pid;
+        IpcHandler.reservePid(pid);
         this.processData = processData;
         this.processStartMs = System.currentTimeMillis();
 
         // 创建组件 —— ProcessRunner 负责构造和生命周期
         this.stateManager = new StateManager(pid, processStartMs, processData);
+        this.state = stateManager.getState();
+        this.blockReason = stateManager.getBlockReason();
+        this.exitReason = stateManager.getExitReason();
+        this.stateMessage = stateManager.getStateMessage();
         this.codeLoader = new CodeLoader();
-        this.expressionEvaluator = new ExpressionEvaluator(pid, this::onFunctionArgCallback);
+        this.expressionEvaluator = new ExpressionEvaluator(
+                pid, stateManager.extractParentPid(), this::onFunctionArgCallback);
         this.controlFlow = new ControlFlow(expressionEvaluator);
         this.importManager = new ImportManager();
         this.functionManager = new FunctionManager(pid, expressionEvaluator);
         this.ipcHandler = new IpcHandler(
                 pid,
-                this::saveToFile,
                 this::reloadFromFile,
                 () -> currentLine,
-                () -> processData,
-                () -> data,
-                () -> state.ordinal(),
-                (s) -> { state = ProcessState.values()[s]; },
+                () -> this.processData,
+                this::blockProcess,
                 codeLoader,
                 stateManager
         );
@@ -155,62 +155,84 @@ public class ProcessRunner {
         priority = stateManager.extractPriority();
         // 解析函数定义
         functionManager.parseFunctions(codeLines);
-        state = ProcessState.READY;
+        // A crash may leave RUNNING on disk; the committed instruction snapshot is safe to resume.
+        if (state == ProcessState.NEW || state == ProcessState.RUNNING) {
+            transitionTo(ProcessState.READY, null);
+        }
+        if (!state.isTerminal()) persistState();
         Logger.info("Process " + pid + " (" + getProcessName() + ") initialized, priority=" + priority);
     }
 
     public StepResult step() {
-        if (state == ProcessState.TERMINATED) return StepResult.TERMINATED;
-        if (state == ProcessState.BLOCKED) return StepResult.BLOCKED;
+        if (state.isTerminal()) return StepResult.TERMINATED;
+        if (state == ProcessState.BLOCKED || state == ProcessState.PAUSED) return StepResult.BLOCKED;
 
-        state = ProcessState.RUNNING;
         try {
+            // Disk is the baseline. Merge queued control requests before entering RUNNING.
+            loadRuntimeState();
+            boolean externallyChanged = processPendingMessages();
+            if (state.isTerminal()) return StepResult.TERMINATED;
+            if (state == ProcessState.BLOCKED || state == ProcessState.PAUSED) {
+                if (externallyChanged) persistState();
+                return StepResult.BLOCKED;
+            }
+            transitionTo(ProcessState.RUNNING, null);
             executeLine();
-            if (state == ProcessState.BLOCKED) return StepResult.BLOCKED;
-            if (!running) {
-                state = ProcessState.TERMINATED;
-                persistState();  // 先落盘 Status=false，防止调度器误认为进程仍存活
+            if (state == ProcessState.BLOCKED || state == ProcessState.PAUSED) return StepResult.BLOCKED;
+            if (state == ProcessState.FAILED) {
                 stateManager.cleanup();
                 return StepResult.TERMINATED;
             }
-            state = ProcessState.READY;
+            if (!running) {
+                if (!state.isTerminal()) terminateNormally("Program completed");
+                persistState();
+                stateManager.cleanup();
+                return StepResult.TERMINATED;
+            }
+            transitionTo(ProcessState.READY, null);
             return StepResult.COMPLETED;
         } catch (Exception e) {
             handleException(e, "step");
-            state = ProcessState.TERMINATED;
-            return StepResult.TERMINATED;
+            if (state.isTerminal()) {
+                stateManager.cleanup();
+                return StepResult.TERMINATED;
+            }
+            transitionTo(ProcessState.READY, null);
+            return StepResult.COMPLETED;
         }
     }
 
     public boolean checkWakeup() {
         if (state != ProcessState.BLOCKED) return true;
         if (blockReason == BlockReason.NONE) {
-            state = ProcessState.READY;
+            unblockProcess();
             return true;
         }
         // 从文件加载以获取最新子进程状态
         reloadFromFile();
         if (!running) {
-            state = ProcessState.TERMINATED;
             return false;
         }
         // 没有子进程 → 不阻塞
         @SuppressWarnings("unchecked")
         Map<String, Object> children = (Map<String, Object>) processData.get("Child");
         if (children == null || children.isEmpty()) {
-            state = ProcessState.READY;
-            blockReason = BlockReason.NONE;
+            unblockProcess();
             Logger.info("Process " + pid + " woken from wait (no children)");
             return true;
         }
-        // 检查子进程文件是否存在
+        Integer waitPid = null;
+        if (blockReason == BlockReason.WAIT_PID) {
+            Object target = processData.get("BlockTargetPid");
+            if (target instanceof Number) waitPid = ((Number) target).intValue();
+        }
+        // WAIT_PID 只关注目标进程；WAIT_ANY 在任意子进程结束时唤醒。
         for (String pidStr : children.keySet()) {
             try {
                 int childPid = Integer.parseInt(pidStr);
-                if (!com.follarce.util.FileUtil.exists(
-                        com.follarce.util.PathUtil.findProcessFilePathByPid(childPid))) {
-                    state = ProcessState.READY;
-                    blockReason = BlockReason.NONE;
+                if (waitPid != null && childPid != waitPid) continue;
+                if (isChildFinished(childPid)) {
+                    unblockProcess();
                     Logger.info("Process " + pid + " woken from wait (child " + childPid + " terminated)");
                     return true;
                 }
@@ -220,9 +242,9 @@ public class ProcessRunner {
     }
 
     public void stopProcess() {
+        // Stop the Java executor without changing the persisted FCL lifecycle.
+        // A later Cilexec start can resume the last committed process snapshot.
         running = false;
-        state = ProcessState.TERMINATED;
-        stateManager.setRunning(false);
         RUNNERS.remove(pid);
         // 清理本进程的函数定义，防止跨进程残留
         com.follarce.function.FunctionRegistry.clearUserFunctions(pid);
@@ -234,7 +256,7 @@ public class ProcessRunner {
     public int getPriority() { return priority; }
     public ProcessState getState() { return state; }
     public String getProcessName() { return stateManager.extractName(); }
-    public boolean isRunning() { return running && state != ProcessState.TERMINATED; }
+    public boolean isRunning() { return running && !state.isTerminal(); }
 
     // ════════════════════════════════════════════
     // 虚拟线程运行
@@ -260,7 +282,7 @@ public class ProcessRunner {
             String owner = stateManager.extractOwner();
             UserUtil.setCurrentUser(owner != null ? owner : Constants.DEFAULT_USER_LOCAL);
 
-            while (running && state != ProcessState.TERMINATED) {
+            while (running && !state.isTerminal()) {
                 StepResult result = step();
 
                 if (result == StepResult.TERMINATED) {
@@ -275,7 +297,8 @@ public class ProcessRunner {
                 }
 
                 // 让出 CPU 给其他虚拟线程
-                if (running && state != ProcessState.TERMINATED && state != ProcessState.BLOCKED) {
+                if (running && !state.isTerminal()
+                        && state != ProcessState.BLOCKED && state != ProcessState.PAUSED) {
                     Thread.yield();
                 }
             }
@@ -295,11 +318,14 @@ public class ProcessRunner {
      * 每 50ms 检查一次唤醒条件，或被 kill 处理中的 unpark 提前唤醒。
      */
     private void parkWhileBlocked() {
-        while (state == ProcessState.BLOCKED && running) {
+        while ((state == ProcessState.BLOCKED || state == ProcessState.PAUSED) && running) {
+            if (processPendingMessages()) persistState();
+            if (state == ProcessState.PAUSED) {
+                LockSupport.parkNanos(50_000_000L);
+                continue;
+            }
             // 检查是否可唤醒
             if (checkWakeup()) {
-                state = ProcessState.READY;
-                blockReason = BlockReason.NONE;
                 Logger.info("Process " + pid + " woken from wait (virtual thread)");
                 return;
             }
@@ -347,6 +373,10 @@ public class ProcessRunner {
         // 此时不可能有并发写入者，但使用 JsonUtil.setField 确保写入完整
         String procPath = com.follarce.Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
         if (com.follarce.util.FileUtil.exists(procPath)) {
+            if ("ProcessState".equals(field)) {
+                applyOfflineStateRequest(procPath, value);
+                return;
+            }
             com.follarce.util.JsonUtil.setField(procPath, field, value);
         }
     }
@@ -365,7 +395,7 @@ public class ProcessRunner {
      * 路径中的每一段都是 Map 的 key，末段为最终设置值的 key。
      * 中间路径若不存在则自动创建 LinkedHashMap。
      * <p>
-     * 副作用（仅对顶层字段生效）：Status=true → READY，Status=false → BLOCKED/TERMINATED。
+     * {@code ProcessState} 是生命周期控制入口；布尔 {@code Status} 仅兼容旧调用方。
      *
      * @param field 字段路径，点号分隔
      * @param value 新值
@@ -373,6 +403,15 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private void applyFieldUpdate(String field, Object value) {
         String[] parts = field.split("\\.");
+        if (parts.length == 1 && "ProcessState".equals(parts[0])) {
+            applyRequestedState(value);
+            return;
+        }
+        if (parts.length == 1 && "Status".equals(parts[0])) {
+            applyRequestedState(Boolean.FALSE.equals(value)
+                    ? ProcessState.PAUSED.name() : ProcessState.READY.name());
+            return;
+        }
         Map<String, Object> current = processData;
 
         // 沿路径深入到倒数第二段
@@ -387,37 +426,34 @@ public class ProcessRunner {
 
         // 末段设值
         String leafKey = parts[parts.length - 1];
-        current.put(leafKey, value);
+        if (value == null) current.remove(leafKey);
+        else current.put(leafKey, value);
 
-        // 副作用：仅对顶层字段做状态同步
-        if (parts.length == 1) {
-            if ("Status".equals(leafKey)) {
-                boolean isAlive = value instanceof Boolean && (Boolean) value;
-                if (isAlive) {
-                    // Status=true：从阻塞恢复
-                    if (state == ProcessState.BLOCKED) {
-                        state = ProcessState.READY;
-                    }
-                } else {
-                    // Status=false：阻塞（暂停）
-                    state = ProcessState.BLOCKED;
-                }
-            }
-        }
     }
 
     /**
      * 终止指定进程 —— 停止 ProcessRunner 并删除 .proc 文件。
      * <p>
      * kill 操作始终删除进程文件，不受 {@link Constants#DELETE_PROCESS_FILE_ON_EXIT} 影响。
-     * 与 pause 不同：pause 只设 Status=false 让进程阻塞，kill 是彻底终止。
+     * 与 pause 不同：pause 转入 PAUSED 并保留快照，kill 是彻底终止。
      */
     public static void terminateProcess(int targetPid) {
         ProcessRunner target = RUNNERS.get(targetPid);
         if (target != null) {
-            target.running = false;
-            target.state = ProcessState.TERMINATED;
-            target.stateManager.setRunning(false);
+            synchronized (target.persistenceLock) {
+                target.killed = true;
+                target.running = false;
+                target.exitReason = ExitReason.KILLED;
+                target.transitionTo(ProcessState.TERMINATED, "Killed");
+                String path = com.follarce.util.PathUtil.findProcessFilePathByPid(targetPid);
+                if (path != null && com.follarce.util.FileUtil.exists(path)) {
+                    com.follarce.util.FileUtil.removeFile(path);
+                }
+            }
+            RUNNERS.remove(targetPid, target);
+            unparkProcess(targetPid);
+            Logger.info("Terminated process PID " + targetPid + ", file removed");
+            return;
         }
         // kill 始终删除 .proc 文件
         String path = com.follarce.util.PathUtil.findProcessFilePathByPid(targetPid);
@@ -431,11 +467,14 @@ public class ProcessRunner {
      * 处理所有待处理的外部消息 —— 在 executeLine() 开头调用，
      * 确保任何外部请求在当前行执行前落地。
      */
-    private void processPendingMessages() {
+    private boolean processPendingMessages() {
+        boolean changed = false;
         ProcessMessage msg;
         while ((msg = pendingMessages.poll()) != null) {
             applyFieldUpdate(msg.field, msg.value);
+            changed = true;
         }
+        return changed;
     }
 
     // ════════════════════════════════════════════
@@ -445,17 +484,13 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private void executeLine() {
         try {
-            // 0. 处理所有待处理的外部消息（必须在任何 FCL 代码执行前处理）
-            processPendingMessages();
+            // The state snapshot and external messages were merged by step().
             if (!running) {
                 persistState();
                 return;
             }
 
-            // 1. 从文件加载最新状态
-            loadRuntimeState();
-
-            // 2. 检查是否执行完毕
+            // 1. 检查是否执行完毕
             if (currentLine >= codeLines.size()) {
                 // 如果在函数调用中，自动返回到调用者
                 if (functionManager.isInCall()) {
@@ -468,10 +503,8 @@ public class ProcessRunner {
                     settle(frame.savedCurrentLine + 1);
                     return;
                 }
-                running = false;
-                stateManager.setRunning(false);
+                terminateNormally("Program completed");
                 persistState();
-                stateManager.cleanup();
                 return;
             }
 
@@ -618,8 +651,7 @@ public class ProcessRunner {
                     settle(frame.savedCurrentLine + 1);
                 }
             } else {
-                running = false;
-                stateManager.setRunning(false);
+                terminateNormally("Top-level return");
                 settle(codeLines.size());
             }
             return;
@@ -676,7 +708,10 @@ public class ProcessRunner {
         if (exprResult instanceof String) {
             String marker = (String) exprResult;
             handleMarker(marker);
-            if (state == ProcessState.BLOCKED) return;
+            if (state == ProcessState.BLOCKED) {
+                settle(currentLine + 1);
+                return;
+            }
         }
         if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
         settle(currentLine + 1);
@@ -758,6 +793,8 @@ public class ProcessRunner {
         }
         if (marker.startsWith("KILL:")) {
             ipcHandler.handleKill(marker.substring(5));
+        } else if (marker.equals("WAIT")) {
+            ipcHandler.handleWait();
         } else if (marker.startsWith("WAITPID:")) {
             ipcHandler.handleWaitPid(marker.substring(8));
         } else if (marker.startsWith("PAUSE:")) {
@@ -776,7 +813,13 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private Object handleMarkerResult(String marker, String varName) {
         if (marker.equals("FORK")) {
-            return ipcHandler.handleFork();
+            int childPid = ipcHandler.handleFork();
+            if (childPid > 0) {
+                com.follarce.util.JsonUtil.setField(
+                        Constants.SYSTEM_PROCESS_PATH + childPid + ".proc",
+                        "Program.Data." + varName, 0);
+            }
+            return childPid;
         } else if (marker.startsWith("KILL:")) {
             ipcHandler.handleKill(marker.substring(5));
             return true;
@@ -856,7 +899,7 @@ public class ProcessRunner {
     private void loadRuntimeState() {
         stateManager.loadFromFile();
         processData = stateManager.getProcessData();
-        running = stateManager.isRunning();
+        syncLifecycleFromManager();
         loadFromProcessDataInternal();
         expressionEvaluator.setData(data);
         controlFlow.setCode(codeLines, codeLoader.getBoundaryTable());
@@ -919,17 +962,22 @@ public class ProcessRunner {
     }
 
     private void persistState() {
-        // 将 ProcessRunner 的运行时状态同步到 processData
-        StateManager.RuntimeSnapshot snap = new StateManager.RuntimeSnapshot(
-                data,
-                codeLines,
-                currentLine,
-                blockStack,
-                serializeCallStack(),
-                functionManager.getPendingFuncName(),
-                importManager.getImportedFiles()
-        );
-        stateManager.saveToFile(snap);
+        synchronized (persistenceLock) {
+            if (killed) return;
+            // 将 ProcessRunner 的运行时状态同步到 processData
+            stateManager.setLifecycle(state, blockReason, exitReason, stateMessage);
+            processData.put("ResumeState", resumeState.name());
+            StateManager.RuntimeSnapshot snap = new StateManager.RuntimeSnapshot(
+                    data,
+                    codeLines,
+                    currentLine,
+                    blockStack,
+                    serializeCallStack(),
+                    functionManager.getPendingFuncName(),
+                    importManager.getImportedFiles()
+            );
+            stateManager.saveToFile(snap);
+        }
     }
 
     /**
@@ -960,12 +1008,8 @@ public class ProcessRunner {
     private void reloadFromFile() {
         stateManager.loadFromFile();
         processData = stateManager.getProcessData();
-        running = stateManager.isRunning();
+        syncLifecycleFromManager();
         loadFromProcessDataInternal();
-    }
-
-    private void saveToFile() {
-        persistState();
     }
 
     /**
@@ -1006,14 +1050,127 @@ public class ProcessRunner {
             data.put("_warning", msg);
         } else if (e instanceof UnrecoverableException) {
             data.put("_error", msg);
-            running = false;
+            failProcess(msg);
         } else if (e instanceof RuntimeException) {
             data.put("_error", msg);
-            running = false;
+            failProcess(msg);
         } else {
             data.put("_warning", msg);
         }
         persistState();
+    }
+
+    private void blockProcess(BlockReason reason) {
+        blockReason = reason != null ? reason : BlockReason.NONE;
+        transitionTo(ProcessState.BLOCKED, blockReason.name());
+    }
+
+    private void unblockProcess() {
+        blockReason = BlockReason.NONE;
+        processData.remove("_blockingInfo");
+        processData.remove("BlockTargetPid");
+        transitionTo(ProcessState.READY, null);
+        persistState();
+    }
+
+    private void terminateNormally(String message) {
+        running = false;
+        exitReason = ExitReason.NORMAL;
+        blockReason = BlockReason.NONE;
+        transitionTo(ProcessState.TERMINATED, message);
+    }
+
+    private void failProcess(String message) {
+        running = false;
+        exitReason = ExitReason.ERROR;
+        blockReason = BlockReason.NONE;
+        transitionTo(ProcessState.FAILED, message);
+    }
+
+    private void applyRequestedState(Object value) {
+        ProcessState requested;
+        try {
+            requested = ProcessState.valueOf(String.valueOf(value));
+        } catch (IllegalArgumentException e) {
+            Logger.warn("Ignored invalid process state for PID " + pid + ": " + value);
+            return;
+        }
+        if (requested == ProcessState.PAUSED) {
+            if (state != ProcessState.PAUSED) {
+                resumeState = state == ProcessState.BLOCKED ? ProcessState.BLOCKED : ProcessState.READY;
+                transitionTo(ProcessState.PAUSED, "Paused externally");
+            }
+        } else if (requested == ProcessState.READY && state == ProcessState.PAUSED) {
+            transitionTo(resumeState, resumeState == ProcessState.BLOCKED ? blockReason.name() : null);
+        } else {
+            transitionTo(requested, null);
+        }
+    }
+
+    private void transitionTo(ProcessState next, String message) {
+        if (state == next) {
+            stateMessage = message;
+            return;
+        }
+        if (!state.canTransitionTo(next)) {
+            Logger.warn("Invalid process state transition for PID " + pid + ": " + state + " -> " + next);
+            return;
+        }
+        boolean schedulingTransition = (state == ProcessState.READY && next == ProcessState.RUNNING)
+                || (state == ProcessState.RUNNING && next == ProcessState.READY);
+        if (!schedulingTransition) {
+            Logger.info("Process " + pid + " state: " + state + " -> " + next);
+        }
+        state = next;
+        stateMessage = message;
+    }
+
+    private void syncLifecycleFromManager() {
+        state = stateManager.getState();
+        blockReason = stateManager.getBlockReason();
+        exitReason = stateManager.getExitReason();
+        stateMessage = stateManager.getStateMessage();
+        Object savedResume = processData.get("ResumeState");
+        if (savedResume != null) {
+            try {
+                resumeState = ProcessState.valueOf(savedResume.toString());
+            } catch (IllegalArgumentException ignored) {
+                resumeState = ProcessState.READY;
+            }
+        }
+        if (state.isTerminal()) running = false;
+    }
+
+    private boolean isChildFinished(int childPid) {
+        String path = com.follarce.util.PathUtil.findProcessFilePathByPid(childPid);
+        if (path == null || !com.follarce.util.FileUtil.exists(path)) return true;
+        Object childState = com.follarce.util.JsonUtil.getField(path, "ProcessState");
+        Object legacyStatus = com.follarce.util.JsonUtil.getField(path, "Status");
+        return ProcessState.restore(childState, legacyStatus).isTerminal();
+    }
+
+    private static void applyOfflineStateRequest(String processPath, Object value) {
+        Object savedState = com.follarce.util.JsonUtil.getField(processPath, "ProcessState");
+        Object legacyStatus = com.follarce.util.JsonUtil.getField(processPath, "Status");
+        ProcessState current = ProcessState.restore(savedState, legacyStatus);
+        if (current.isTerminal()) return;
+
+        ProcessState requested;
+        try {
+            requested = ProcessState.valueOf(String.valueOf(value));
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+        if (requested == ProcessState.PAUSED && current.canTransitionTo(ProcessState.PAUSED)) {
+            com.follarce.util.JsonUtil.setField(processPath, "ResumeState",
+                    current == ProcessState.BLOCKED ? ProcessState.BLOCKED.name() : ProcessState.READY.name());
+            com.follarce.util.JsonUtil.setField(processPath, "ProcessState", ProcessState.PAUSED.name());
+        } else if (requested == ProcessState.READY && current == ProcessState.PAUSED) {
+            Object resume = com.follarce.util.JsonUtil.getField(processPath, "ResumeState");
+            ProcessState next = ProcessState.READY;
+            if (ProcessState.BLOCKED.name().equals(resume)) next = ProcessState.BLOCKED;
+            com.follarce.util.JsonUtil.setField(processPath, "ProcessState", next.name());
+        }
     }
 
     // ════════════════════════════════════════════

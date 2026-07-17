@@ -30,12 +30,16 @@ public class StateManager {
     private final int pid;
     private final long processStartMs;
     private Map<String, Object> processData;
-    private boolean running = true;
+    private ProcessState state;
+    private BlockReason blockReason;
+    private ExitReason exitReason;
+    private String stateMessage;
 
     public StateManager(int pid, long processStartMs, Map<String, Object> processData) {
         this.pid = pid;
         this.processStartMs = processStartMs;
         this.processData = processData;
+        loadLifecycle();
     }
 
     // ════════════════════════════════════════════
@@ -46,9 +50,21 @@ public class StateManager {
 
     public int getPid() { return pid; }
 
-    public boolean isRunning() { return running; }
+    public ProcessState getState() { return state; }
 
-    public void setRunning(boolean running) { this.running = running; }
+    public BlockReason getBlockReason() { return blockReason; }
+
+    public ExitReason getExitReason() { return exitReason; }
+
+    public String getStateMessage() { return stateMessage; }
+
+    public void setLifecycle(ProcessState state, BlockReason blockReason,
+                             ExitReason exitReason, String stateMessage) {
+        this.state = state;
+        this.blockReason = blockReason != null ? blockReason : BlockReason.NONE;
+        this.exitReason = exitReason != null ? exitReason : ExitReason.NONE;
+        this.stateMessage = stateMessage;
+    }
 
     public int extractPriority() {
         Object priorityObj = processData.get("Priority");
@@ -71,6 +87,16 @@ public class StateManager {
         return name != null ? name.toString() : "PID-" + pid;
     }
 
+    @SuppressWarnings("unchecked")
+    public int extractParentPid() {
+        Object parent = processData.get("Parent");
+        if (parent instanceof Map) {
+            Object parentPid = ((Map<String, Object>) parent).get("PID");
+            if (parentPid instanceof Number) return ((Number) parentPid).intValue();
+        }
+        return 0;
+    }
+
     // ════════════════════════════════════════════
     // 文件 I/O
     // ════════════════════════════════════════════
@@ -87,8 +113,7 @@ public class StateManager {
             String content = FileUtil.read(path);
             if (content == null || content.trim().isEmpty()) return;
             processData = JsonUtil.parseToMap(content);
-            Object status = processData.get("Status");
-            running = !(status instanceof Boolean && !(Boolean) status);
+            loadLifecycle();
         } catch (Exception e) {
             Logger.warn("StateManager: failed to load PID " + pid + ": " + e.getMessage());
         }
@@ -153,7 +178,11 @@ public class StateManager {
     @SuppressWarnings("unchecked")
     public void saveToFile(RuntimeSnapshot snapshot) {
         try {
-            processData.put("Status", running);
+            processData.put("ProcessState", state.name());
+            processData.put("Status", !state.isTerminal());
+            processData.put("BlockReason", blockReason == BlockReason.NONE ? null : blockReason.name());
+            processData.put("ExitReason", exitReason == ExitReason.NONE ? null : exitReason.name());
+            processData.put("StateMessage", stateMessage);
             processData.put("RunningTime", (System.currentTimeMillis() - processStartMs) / 1000);
 
             Map<String, Object> program = (Map<String, Object>) processData.get("Program");
@@ -260,6 +289,23 @@ public class StateManager {
 
     public String getProcessFilePath() {
         return Constants.SYSTEM_PROCESS_PATH + pid + ".proc";
+    }
+
+    private void loadLifecycle() {
+        state = ProcessState.restore(processData.get("ProcessState"), processData.get("Status"));
+        blockReason = parseEnum(BlockReason.class, processData.get("BlockReason"), BlockReason.NONE);
+        exitReason = parseEnum(ExitReason.class, processData.get("ExitReason"), ExitReason.NONE);
+        Object message = processData.get("StateMessage");
+        stateMessage = message != null ? message.toString() : null;
+    }
+
+    private static <E extends Enum<E>> E parseEnum(Class<E> type, Object value, E fallback) {
+        if (value == null) return fallback;
+        try {
+            return Enum.valueOf(type, value.toString());
+        } catch (IllegalArgumentException e) {
+            return fallback;
+        }
     }
 
     /**

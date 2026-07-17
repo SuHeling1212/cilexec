@@ -25,36 +25,27 @@ import java.util.function.Supplier;
 public class IpcHandler {
 
     private final int pid;
-    private final Runnable saveToFile;
     private final Runnable loadFromFile;
     private final Supplier<Integer> currentLineSupplier;
     private final Supplier<Map<String, Object>> processDataSupplier;
-    private final Supplier<Map<String, Object>> dataSupplier;
-    private final Supplier<Integer> stateSupplier;
-    private final java.util.function.Consumer<Integer> stateSetter;
+    private final java.util.function.Consumer<BlockReason> blockProcess;
     private final CodeLoader codeLoader;
     private final StateManager stateManager;
 
     public IpcHandler(
             int pid,
-            Runnable saveToFile,
             Runnable loadFromFile,
             Supplier<Integer> currentLineSupplier,
             Supplier<Map<String, Object>> processDataSupplier,
-            Supplier<Map<String, Object>> dataSupplier,
-            Supplier<Integer> stateSupplier,
-            java.util.function.Consumer<Integer> stateSetter,
+            java.util.function.Consumer<BlockReason> blockProcess,
             CodeLoader codeLoader,
             StateManager stateManager
     ) {
         this.pid = pid;
-        this.saveToFile = saveToFile;
         this.loadFromFile = loadFromFile;
         this.currentLineSupplier = currentLineSupplier;
         this.processDataSupplier = processDataSupplier;
-        this.dataSupplier = dataSupplier;
-        this.stateSupplier = stateSupplier;
-        this.stateSetter = stateSetter;
+        this.blockProcess = blockProcess;
         this.codeLoader = codeLoader;
         this.stateManager = stateManager;
     }
@@ -73,10 +64,14 @@ public class IpcHandler {
         try {
             Map<String, Object> processData = processDataSupplier.get();
             int childPid = allocatePid();
-            Map<String, Object> childData = new LinkedHashMap<>(processData);
+            Map<String, Object> childData = JsonUtil.deepCopy(processData);
             childData.put("PID", childPid);
             childData.put("Name", childData.get("Name") + "-" + childPid);
             childData.put("Status", true);
+            childData.put("ProcessState", ProcessState.READY.name());
+            childData.put("BlockReason", null);
+            childData.put("ExitReason", null);
+            childData.put("StateMessage", null);
             childData.put("RunningTime", 0);
 
             Map<String, Object> parentInfo = new LinkedHashMap<>();
@@ -110,7 +105,7 @@ public class IpcHandler {
             // 写入子进程文件（PID 已在 allocatePid 中原子创建）
             String childFileName = childPid + ".proc";
             String childJson = JsonUtil.toMetaJson(childData);
-            FileUtil.write(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
+            JsonUtil.writeFile(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
 
             // 更新父进程 Child 列表
             Map<String, Object> childInfo = new LinkedHashMap<>();
@@ -126,9 +121,6 @@ public class IpcHandler {
                 processData.put("Child", children);
             }
             children.put(String.valueOf(childPid), childInfo);
-
-            // 通知调度器本次 fork 新增子进程
-            ProcessRunner.postMessage(pid, "Child." + childPid, childInfo);
 
             Logger.info("Fork: PID " + pid + " created child PID " + childPid);
             return childPid;
@@ -204,7 +196,7 @@ public class IpcHandler {
         }
         processData.put("Owner", execUser);
 
-        saveToFile.run();
+        JsonUtil.writeFile(stateManager.getProcessFilePath(), JsonUtil.toMetaJson(processData));
         loadFromFile.run();
         Logger.info("Exec: PID " + pid + " replaced with " + scriptPath);
     }
@@ -218,7 +210,7 @@ public class IpcHandler {
      * <p>
      * 子进程迁移到 INIT、从父进程移除引用通过 postMessage 发送，
      * 目标进程本身直接删除 .proc 文件并停止 ProcessRunner。
-     * 与 pause（设 Status=false 阻塞）不同，kill 是彻底终止。
+     * 与 pause（转入 PAUSED 并保留快照）不同，kill 是彻底终止。
      */
     @SuppressWarnings("unchecked")
     public void handleKill(String pidStr) {
@@ -268,8 +260,9 @@ public class IpcHandler {
      * 设置阻塞状态，返回 true。
      */
     public void handleWait() {
+        processDataSupplier.get().remove("BlockTargetPid");
         Logger.info("Process " + pid + " blocked on wait()");
-        stateSetter.accept(2); // BLOCKED
+        blockProcess.accept(BlockReason.WAIT_ANY);
     }
 
     /**
@@ -286,7 +279,8 @@ public class IpcHandler {
                 blockingInfo.put("type", "WAITPID");
                 blockingInfo.put("targetPid", targetPid);
                 processData.put("_blockingInfo", blockingInfo);
-                stateSetter.accept(2); // BLOCKED
+                processData.put("BlockTargetPid", targetPid);
+                blockProcess.accept(BlockReason.WAIT_PID);
                 Logger.info("Process " + pid + " blocked on waitPID(" + targetPid + ")");
             }
         } catch (NumberFormatException e) {
@@ -308,7 +302,7 @@ public class IpcHandler {
             }
             String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (targetPath != null && FileUtil.exists(targetPath)) {
-                ProcessRunner.postMessage(targetPid, "Status", false);
+                ProcessRunner.postMessage(targetPid, "ProcessState", ProcessState.PAUSED.name());
             }
         } catch (Exception e) {
             Logger.warn("Pause failed: " + e.getMessage());
@@ -325,7 +319,7 @@ public class IpcHandler {
             }
             String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
             if (targetPath != null && FileUtil.exists(targetPath)) {
-                ProcessRunner.postMessage(targetPid, "Status", true);
+                ProcessRunner.postMessage(targetPid, "ProcessState", ProcessState.READY.name());
             }
         } catch (Exception e) {
             Logger.warn("Continue failed: " + e.getMessage());
@@ -354,6 +348,17 @@ public class IpcHandler {
 
     private static final java.util.concurrent.locks.ReentrantLock PID_ALLOC_LOCK =
             new java.util.concurrent.locks.ReentrantLock();
+    private static final Set<Integer> RESERVED_PIDS = new HashSet<>();
+
+    static void reservePid(int pid) {
+        if (pid <= 0) return;
+        PID_ALLOC_LOCK.lock();
+        try {
+            RESERVED_PIDS.add(pid);
+        } finally {
+            PID_ALLOC_LOCK.unlock();
+        }
+    }
 
     private int allocatePid() {
         PID_ALLOC_LOCK.lock();
@@ -362,10 +367,15 @@ public class IpcHandler {
                     com.follarce.Constants.SYSTEM_PROCESS_PATH);
             int base = 2;
             while (true) {
+                if (RESERVED_PIDS.contains(base)) {
+                    base++;
+                    continue;
+                }
                 java.io.File procFile = new java.io.File(processDir, base + ".proc");
                 try {
                     if (procFile.createNewFile()) {
                         // 原子创建成功 → 这个 PID 被我独占
+                        RESERVED_PIDS.add(base);
                         return base;
                     }
                 } catch (java.io.IOException e) {

@@ -6,6 +6,7 @@ import com.follarce.util.UserUtil;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
@@ -28,6 +29,7 @@ public final class FileUtil {
      */
     public static String read(String path) {
         File realFile = resolveFile(path);
+        recoverProcessFile(path, realFile);
         validateFile(realFile, path);
         ReentrantLock lock = com.follarce.util.JsonUtil.lockFile(path);
         try {
@@ -574,45 +576,42 @@ public final class FileUtil {
         File realFile = resolveFile(path);
         ReentrantLock lock = JsonUtil.lockFile(path);
         try {
-            if (!realFile.exists()) {
-                // 文件不存在：直接创建并写入默认元数据
-                Map<String, Object> defaultMeta = createDefaultFileMeta();
-                defaultMeta.put("Size", new Object[]{content.length(), "B"});
-                String metaJson = JsonUtil.toMetaJson(defaultMeta);
-                String fullContent = PathUtil.buildMetaFile(metaJson, content);
-                realFile.getParentFile().mkdirs();
-                try {
-                    Files.writeString(realFile.toPath(), fullContent,
-                            StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                } catch (IOException e) {
-                    throw new RuntimeException("Failed to write file: " + path, e);
-                }
-                return;
-            }
-            // 写临时文件
             File parent = realFile.getParentFile();
             if (parent == null) parent = new File(".");
+            parent.mkdirs();
             File tempFile = new File(parent, realFile.getName() + ".tmp");
             try {
-                String existingContent = readFileContent(realFile);
-                String metaJson = PathUtil.extractMetaContent(existingContent);
                 String finalContent;
-                if (metaJson != null) {
-                    Map<String, Object> meta = JsonUtil.parseToMap(metaJson);
-                    updateTimeField(meta, "lastEditTime");
-                    meta.put("Size", new Object[]{content.length(), "B"});
-                    String newMetaJson = JsonUtil.toMetaJson(meta);
-                    finalContent = PathUtil.buildMetaFile(newMetaJson, content);
+                if (realFile.exists()) {
+                    String existingContent = readFileContent(realFile);
+                    String metaJson = PathUtil.extractMetaContent(existingContent);
+                    if (metaJson != null) {
+                        Map<String, Object> meta = JsonUtil.parseToMap(metaJson);
+                        updateTimeField(meta, "lastEditTime");
+                        meta.put("Size", new Object[]{content.length(), "B"});
+                        finalContent = PathUtil.buildMetaFile(JsonUtil.toMetaJson(meta), content);
+                    } else {
+                        Map<String, Object> defaultMeta = createDefaultFileMeta();
+                        defaultMeta.put("Size", new Object[]{content.length(), "B"});
+                        finalContent = PathUtil.buildMetaFile(JsonUtil.toMetaJson(defaultMeta), content);
+                    }
                 } else {
+                    // 新文件也通过临时文件提交，避免首次写入被中断后留下半文件。
                     Map<String, Object> defaultMeta = createDefaultFileMeta();
                     defaultMeta.put("Size", new Object[]{content.length(), "B"});
-                    String newMetaJson = JsonUtil.toMetaJson(defaultMeta);
-                    finalContent = PathUtil.buildMetaFile(newMetaJson, content);
+                    finalContent = PathUtil.buildMetaFile(JsonUtil.toMetaJson(defaultMeta), content);
                 }
-                Files.writeString(tempFile.toPath(), finalContent, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                Files.move(tempFile.toPath(), realFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+                Files.writeString(tempFile.toPath(), finalContent,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                try (FileChannel channel = FileChannel.open(tempFile.toPath(), StandardOpenOption.WRITE)) {
+                    channel.force(true);
+                }
+                Files.move(tempFile.toPath(), realFile.toPath(),
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                forceDirectory(parent.toPath());
             } catch (IOException e) {
-                tempFile.delete();
+                // 保留临时文件，进程文件可在下次启动时验证并恢复。
                 throw new RuntimeException("Failed to write file: " + path, e);
             }
         } finally {
@@ -802,6 +801,52 @@ public final class FileUtil {
     public static boolean exists(String path) {
         String resolvedPath = PathUtil.resolvePath(path);
         File realFile = resolveFile(resolvedPath);
+        recoverProcessFile(resolvedPath, realFile);
         return realFile.exists();
+    }
+
+    private static void recoverProcessFile(String path, File realFile) {
+        if (path == null || !path.endsWith(".proc")) return;
+        File tempFile = new File(realFile.getParentFile(), realFile.getName() + ".tmp");
+        if (!tempFile.exists()) return;
+
+        ReentrantLock lock = JsonUtil.lockFile(path);
+        try {
+            boolean realValid = isValidProcessFile(realFile);
+            boolean tempValid = isValidProcessFile(tempFile);
+            if (!realValid && tempValid) {
+                try {
+                    Files.move(tempFile.toPath(), realFile.toPath(),
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    forceDirectory(realFile.getParentFile().toPath());
+                    Logger.warn("Recovered interrupted process write: " + path);
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to recover process file: " + path, e);
+                }
+            } else if (realValid || !tempValid) {
+                tempFile.delete();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static boolean isValidProcessFile(File file) {
+        if (file == null || !file.isFile() || file.length() == 0) return false;
+        try {
+            String body = PathUtil.extractBodyContent(Files.readString(file.toPath()));
+            Map<String, Object> process = JsonUtil.parseToMap(body);
+            return process.get("PID") instanceof Number && process.get("Program") instanceof Map;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void forceDirectory(Path directory) {
+        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
+        } catch (IOException | UnsupportedOperationException ignored) {
+            // Atomic rename is still guaranteed; directory fsync is not available everywhere.
+        }
     }
 }

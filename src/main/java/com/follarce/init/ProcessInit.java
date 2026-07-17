@@ -3,6 +3,7 @@ package com.follarce.init;
 import com.follarce.Constants;
 import com.follarce.log.Logger;
 import com.follarce.process.CodeLoader;
+import com.follarce.process.ProcessState;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.UserUtil;
@@ -76,6 +77,10 @@ public final class ProcessInit {
         processData.put("PID", Constants.PID_INIT);
         processData.put("Path", initFclPath);
         processData.put("Status", true);
+        processData.put("ProcessState", ProcessState.NEW.name());
+        processData.put("BlockReason", null);
+        processData.put("ExitReason", null);
+        processData.put("StateMessage", null);
         processData.put("startTime", FileUtil.getCurrentTimeArray());
         processData.put("RunningTime", 0);
         processData.put("Priority", Constants.PRIORITY_LOW);

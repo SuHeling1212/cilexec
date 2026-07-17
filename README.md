@@ -32,7 +32,31 @@ Because **the JVM is too useful!** Users can manipulate hardware by calling CilE
 
 ### Process Architecture
 
-Every FCL process runs as an independent Java thread. The scheduler polls `/system/process/` every 100ms to discover new processes, and each ProcessRunner executes one line of FCL code every 10ms. All state is persisted to JSON between ticks, giving the system **natural power-failure recovery**.
+Every FCL process runs in an independent Java virtual thread. The scheduler polls `/system/process/` every 50ms to discover new `.proc` files. Each completed FCL instruction atomically persists its program counter, variables, call stack, and lifecycle state, giving the system **natural crash recovery**.
+
+### Process Lifecycle
+
+The persisted process state machine is:
+
+```text
+NEW -> READY -> RUNNING -> READY / BLOCKED / PAUSED / TERMINATED / FAILED
+```
+
+Each `.proc` snapshot stores `ProcessState`, `BlockReason`, `ExitReason`, and `StateMessage`. The legacy boolean `Status` field remains readable for older snapshots but is not the lifecycle source of truth.
+
+Process control semantics:
+
+| Operation | Behavior |
+|-----------|----------|
+| `fork()` | Creates a child snapshot; the parent receives the child PID and the child receives `0` |
+| `exec(path)` | Replaces the current process program while retaining its PID |
+| `wait()` | Blocks until any child exits |
+| `waitPID(pid)` | Blocks until the selected child exits |
+| `pause(pid)` | Persists `PAUSED` without terminating the process |
+| `continue(pid)` | Restores the state held before the pause |
+| `kill(pid)` | Terminates the process and removes its process file |
+
+Process files are committed through a temporary file and atomic rename. On restart, an interrupted valid `.proc.tmp` snapshot can be promoted when the primary `.proc` is missing or invalid.
 
 ## The "Benefits" of State Persistence
 
@@ -86,9 +110,10 @@ Reconstructed version with fundamental architecture improvements.
 
 ## Tech Stack
 
-- Java 17+
+- Java 26
 - Maven 3.8+
 - Gson 2.10.1 (JSON processing)
+- JUnit 5 (process integration tests)
 
 ## FCL Script Language
 
@@ -177,6 +202,9 @@ mvn compile
 # Package
 mvn package -DskipTests
 
+# Run tests
+mvn test
+
 # Run
 java -jar target/cilexec-1.0-SNAPSHOT.jar
 
@@ -192,7 +220,7 @@ cilexec_root/
   ├── system/
   │   ├── app/          ← System applications (.fcl scripts)
   │   ├── config/       ← Configuration (users.json, env.json, INIT.fcl)
-  │   ├── process/      ← Process files (1.json, 2.json, ...)
+  │   ├── process/      ← Process files (1.proc, 2.proc, ...)
   │   └── swap/         ← Swap pool (inter-process communication)
   └── user/
       ├── local/        ← local user (superuser home)
@@ -254,7 +282,7 @@ src/
 │       ├── INIT.fcl                  # INIT process startup script
 │       └── tests/                    # FCL test scripts
 └── test/
-    └── java/com/follarce/            # Unit tests (TODO)
+    └── java/com/follarce/process/    # Process integration tests
 ```
 
 ## Use Cases
