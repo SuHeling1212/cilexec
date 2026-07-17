@@ -28,33 +28,44 @@ public class UserFunctionProvider implements FunctionProvider {
                     if (!isLocal) {
                         return new String[]{Constants.ERROR_MARKER, "Permission denied: only local can create users"};
                     }
-                    return UserUtil.createUser(getStringArg(args, 0), getStringArg(args, 1), false);
+                    return UserUtil.createUser(getStringArg(args, 0), getStringArg(args, 1), false,
+                            context.getEffectId());
 
                 case "removeUser":
                     if (!isLocal) {
                         return new String[]{Constants.ERROR_MARKER, "Permission denied: only local can remove users"};
                     }
-                    return UserUtil.removeUser(getStringArg(args, 0), getStringArg(args, 1));
+                    return UserUtil.removeUser(getStringArg(args, 0), getStringArg(args, 1),
+                            context.getEffectId());
 
                 case "switchUser":
-                    return UserUtil.switchUser(getStringArg(args, 0), getStringArg(args, 1));
+                    String username = getStringArg(args, 0);
+                    if (!UserUtil.validateUser(username, getStringArg(args, 1))) {
+                        return new String[]{Constants.ERROR_MARKER, "Invalid credentials for user: " + username};
+                    }
+                    context.setEffectiveUser(username);
+                    return "Switched to user: " + username;
 
                 case "validateUser":
                     return UserUtil.validateUser(getStringArg(args, 0), getStringArg(args, 1));
 
                 case "getCurrentUser":
-                    return UserUtil.getCurrentUser();
+                    return context.getCurrentUser();
 
                 case "isLocal":
-                    return UserUtil.isLocal();
+                    return Constants.DEFAULT_USER_LOCAL.equals(context.getCurrentUser());
 
                 case "getListOfUsers":
-                    return UserUtil.getListOfUsers().toString();
+                    return UserUtil.getListOfUsers().keySet().toString();
 
                 default:
                     return null;
             }
         } catch (Exception e) {
+            if ("createUser".equals(functionName) || "removeUser".equals(functionName)) {
+                throw new UnknownEffectOutcomeException(
+                        "User transaction outcome is unknown: " + e.getMessage(), e);
+            }
             return new String[]{Constants.ERROR_MARKER, e.getMessage()};
         }
     }

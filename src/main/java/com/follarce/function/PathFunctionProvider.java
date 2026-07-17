@@ -25,19 +25,41 @@ public class PathFunctionProvider implements FunctionProvider {
         try {
             switch (functionName) {
                 case "resolve":
-                    return PathUtil.resolvePath(getStringArg(args, 0));
+                    return context.resolvePath(getStringArg(args, 0));
 
                 case "normalize":
                     return PathUtil.normalizePath(getStringArg(args, 0));
 
                 case "getFileName":
-                    return PathUtil.getFileName(getStringArg(args, 0));
+                    return PathUtil.getFileName(context.resolvePath(getStringArg(args, 0)));
 
                 case "getParentPath":
-                    return PathUtil.getParentPath(getStringArg(args, 0));
+                    return PathUtil.getParentPath(context.resolvePath(getStringArg(args, 0)));
 
                 case "getEnvVar":
-                    return getEnvVar(getStringArg(args, 0));
+                    String envName = getStringArg(args, 0);
+                    if ("HOME".equals(envName)) {
+                        return Constants.USER_HOME_PREFIX + context.getCurrentUser();
+                    }
+                    return getEnvVar(envName);
+
+                case "getAlias":
+                    return context.getPathAliases().get(getStringArg(args, 0));
+
+                case "listAliases":
+                    return context.getPathAliases();
+
+                case "setAlias": {
+                    String name = getStringArg(args, 0);
+                    String value = context.resolvePath(getStringArg(args, 1));
+                    validateAliasName(name);
+                    context.setPathAlias(name, value);
+                    return value;
+                }
+
+                case "removeAlias":
+                    context.removePathAlias(getStringArg(args, 0));
+                    return true;
 
                 default:
                     return null;
@@ -84,5 +106,11 @@ public class PathFunctionProvider implements FunctionProvider {
         }
         Object val = args.get(index);
         return val != null ? val.toString() : null;
+    }
+
+    private static void validateAliasName(String name) {
+        if (name == null || !name.matches("[A-Za-z_][A-Za-z0-9_-]*")) {
+            throw new IllegalArgumentException("Invalid alias name: " + name);
+        }
     }
 }

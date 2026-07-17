@@ -2,13 +2,13 @@ package com.follarce.script;
 
 import com.follarce.function.FunctionContext;
 import com.follarce.function.FunctionRegistry;
-import com.follarce.util.UserUtil;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 
 /**
  * Evaluates an AST (produced by Parser) against a variable map.
@@ -19,6 +19,7 @@ public class NodeEvaluator {
     private final int pid;
     private final int ppid;
     private final String currentUser;
+    private final Supplier<FunctionContext> functionContextSupplier;
 
     // 函数调用参数回调（由 ProcessRunner 设置，用于传递用户函数参数）
     private BiConsumer<String, List<Object>> functionArgCallback;
@@ -32,6 +33,16 @@ public class NodeEvaluator {
         this.pid = pid;
         this.ppid = ppid;
         this.currentUser = currentUser != null ? currentUser : "local";
+        this.functionContextSupplier = () -> new FunctionContext(pid, ppid, this.currentUser);
+    }
+
+    public NodeEvaluator(Map<String, Object> data, Supplier<FunctionContext> functionContextSupplier) {
+        this.data = data;
+        this.functionContextSupplier = functionContextSupplier;
+        FunctionContext initial = functionContextSupplier.get();
+        this.pid = initial.getPid();
+        this.ppid = initial.getPpid();
+        this.currentUser = initial.getCurrentUser();
     }
 
     public void setFunctionArgCallback(BiConsumer<String, List<Object>> callback) {
@@ -246,9 +257,7 @@ public class NodeEvaluator {
         if (functionArgCallback != null) {
             functionArgCallback.accept(functionName, argValues);
         }
-        // 从 ThreadLocal 读取当前用户（switchUser 动态切换，不能使用构造时传入的固定值）
-        String actualUser = UserUtil.getCurrentUser();
-        FunctionContext context = new FunctionContext(pid, ppid, actualUser);
+        FunctionContext context = functionContextSupplier.get();
         return FunctionRegistry.call(functionName, argValues, context);
     }
 

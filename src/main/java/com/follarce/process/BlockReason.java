@@ -6,5 +6,6 @@ public enum BlockReason {
     WAIT_ANY,
     WAIT_PID,
     IO,
-    SWAP
+    SWAP,
+    EFFECT_RECOVERY
 }

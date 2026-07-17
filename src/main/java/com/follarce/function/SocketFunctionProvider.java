@@ -42,7 +42,8 @@ public class SocketFunctionProvider implements FunctionProvider {
                     return null;
             }
         } catch (Exception e) {
-            return new String[]{Constants.ERROR_MARKER, e.getMessage()};
+            throw new UnknownEffectOutcomeException(
+                    "Socket operation outcome is unknown: " + e.getMessage(), e);
         }
     }
 

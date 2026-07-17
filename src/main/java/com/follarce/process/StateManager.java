@@ -29,16 +29,20 @@ public class StateManager {
 
     private final int pid;
     private final long processStartMs;
+    private final long previousRunningSeconds;
     private Map<String, Object> processData;
     private ProcessState state;
     private BlockReason blockReason;
     private ExitReason exitReason;
     private String stateMessage;
+    private String expectedGeneration;
 
     public StateManager(int pid, long processStartMs, Map<String, Object> processData) {
         this.pid = pid;
         this.processStartMs = processStartMs;
         this.processData = processData;
+        Object previous = processData.get("RunningTime");
+        this.previousRunningSeconds = previous instanceof Number ? ((Number) previous).longValue() : 0L;
         loadLifecycle();
     }
 
@@ -57,6 +61,16 @@ public class StateManager {
     public ExitReason getExitReason() { return exitReason; }
 
     public String getStateMessage() { return stateMessage; }
+
+    public void setExpectedGeneration(String generation) {
+        if (generation == null || generation.isBlank()) {
+            throw new IllegalArgumentException("Expected process generation is required");
+        }
+        if (expectedGeneration != null && !expectedGeneration.equals(generation)) {
+            throw new IllegalStateException("Process generation cannot change for PID " + pid);
+        }
+        expectedGeneration = generation;
+    }
 
     public void setLifecycle(ProcessState state, BlockReason blockReason,
                              ExitReason exitReason, String stateMessage) {
@@ -109,14 +123,17 @@ public class StateManager {
     public void loadFromFile() {
         String path = PathUtil.findProcessFilePathByPid(pid);
         if (path == null) return;
-        try {
-            String content = FileUtil.read(path);
-            if (content == null || content.trim().isEmpty()) return;
-            processData = JsonUtil.parseToMap(content);
-            loadLifecycle();
-        } catch (Exception e) {
-            Logger.warn("StateManager: failed to load PID " + pid + ": " + e.getMessage());
+        String content = FileUtil.read(path);
+        if (content == null || content.trim().isEmpty()) {
+            throw new IllegalStateException("Empty process snapshot for PID " + pid);
         }
+        processData = JsonUtil.parseToMapStrict(content);
+        ProcessIdentity.ensureDefaults(processData);
+        if (expectedGeneration != null
+                && !expectedGeneration.equals(processData.get("ProcessGeneration"))) {
+            throw new IllegalStateException("PID " + pid + " now belongs to another process generation");
+        }
+        loadLifecycle();
     }
 
     /**
@@ -183,7 +200,8 @@ public class StateManager {
             processData.put("BlockReason", blockReason == BlockReason.NONE ? null : blockReason.name());
             processData.put("ExitReason", exitReason == ExitReason.NONE ? null : exitReason.name());
             processData.put("StateMessage", stateMessage);
-            processData.put("RunningTime", (System.currentTimeMillis() - processStartMs) / 1000);
+            processData.put("RunningTime", previousRunningSeconds
+                    + (System.currentTimeMillis() - processStartMs) / 1000);
 
             Map<String, Object> program = (Map<String, Object>) processData.get("Program");
             if (program == null) {
@@ -201,6 +219,7 @@ public class StateManager {
             // 持久化字段
             program.put("CallStack", snapshot.callStackData);         // 函数调用栈
             program.put("pendingAssignVarName", snapshot.pendingAssignVarName); // 待赋值变量名
+            program.put("imports", snapshot.imports);
 
             // 写入 Code / runningCodeLine / BlockStack（持久化字段）
             Map<String, Object> code = new LinkedHashMap<>();
@@ -211,9 +230,24 @@ public class StateManager {
             code.put("BlockStack", snapshot.blockStack);
             program.put("Code", code);
 
-            String json = JsonUtil.toMetaJson(processData);
             String processPath = getProcessFilePath();
-            JsonUtil.writeFile(processPath, json);
+            java.util.concurrent.locks.ReentrantLock fileLock = JsonUtil.lockFile(processPath);
+            try {
+                if (!FileUtil.exists(processPath)) {
+                    throw new IllegalStateException("Process snapshot was removed for PID " + pid);
+                }
+                Map<String, Object> current = JsonUtil.parseToMapStrict(FileUtil.read(processPath));
+                Object currentGeneration = current.get("ProcessGeneration");
+                Object expectedGeneration = processData.get("ProcessGeneration");
+                Object requiredGeneration = this.expectedGeneration != null
+                        ? this.expectedGeneration : expectedGeneration;
+                if (currentGeneration != null && !Objects.equals(currentGeneration, requiredGeneration)) {
+                    throw new IllegalStateException("Refusing stale write for reused PID " + pid);
+                }
+                JsonUtil.writeFile(processPath, JsonUtil.toMetaJson(processData));
+            } finally {
+                fileLock.unlock();
+            }
         } catch (Exception e) {
             Logger.error("StateManager: failed to save PID " + pid + ": " + e.getMessage());
             throw e instanceof RuntimeException ? (RuntimeException) e
@@ -227,9 +261,7 @@ public class StateManager {
 
     /** Reparent active children, notify the parent, then delete or retain the snapshot. */
     public void cleanup() {
-        reparentChildrenToInit();
-        notifyParentOfExit();
-        handleTermination();
+        ProcessRunner.reconcileLifecycle(pid);
     }
 
     @SuppressWarnings("unchecked")

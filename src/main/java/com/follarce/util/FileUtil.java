@@ -18,7 +18,37 @@ import java.util.stream.Collectors;
  */
 public final class FileUtil {
 
+    private static final int LOCK_RECORD_VERSION = 2;
+    private static final String LEGACY_LOCK_GENERATION = "legacy";
+
     private FileUtil() {}
+
+    /** Durable lease details returned to a lock owner. */
+    public static final class LockHandle {
+        public final long fencingToken;
+        public final long leaseUntilEpochMs;
+
+        public LockHandle(long fencingToken, long leaseUntilEpochMs) {
+            this.fencingToken = fencingToken;
+            this.leaseUntilEpochMs = leaseUntilEpochMs;
+        }
+
+        public long fencingToken() {
+            return fencingToken;
+        }
+
+        public long leaseUntilEpochMs() {
+            return leaseUntilEpochMs;
+        }
+
+        public long getFencingToken() {
+            return fencingToken;
+        }
+
+        public long getLeaseUntilEpochMs() {
+            return leaseUntilEpochMs;
+        }
+    }
 
     // ════════════════════════════════════════════
     // 文件操作 API
@@ -44,44 +74,53 @@ public final class FileUtil {
      * 写入文件（保留元数据，更新正文）。
      */
     public static void write(String path, String content) {
-        File realFile = resolveFile(path);
-        if (!realFile.exists()) {
-            throw new RuntimeException("File not found: " + path);
-        }
-        // 读取旧的元数据
-        String existingContent = readFileContent(realFile);
-        String metaJson = PathUtil.extractMetaContent(existingContent);
+        updateBody(path, content, false, null, null, null, null);
+    }
 
-        if (metaJson != null) {
-            // 更新 lastEditTime 和文件大小
-            Map<String, Object> meta = JsonUtil.parseToMap(metaJson);
-            updateTimeField(meta, "lastEditTime");
-            meta.put("Size", new Object[]{content.length(), "B"});
-            String newMetaJson = JsonUtil.toMetaJson(meta);
-            String newContent = PathUtil.buildMetaFile(newMetaJson, content);
-            writeFileContent(realFile, newContent);
-        } else {
-            // 没有元数据，创建默认元数据
-            Map<String, Object> defaultMeta = createDefaultFileMeta();
-            defaultMeta.put("Size", new Object[]{content.length(), "B"});
-            String newMetaJson = JsonUtil.toMetaJson(defaultMeta);
-            String newContent = PathUtil.buildMetaFile(newMetaJson, content);
-            writeFileContent(realFile, newContent);
-        }
+    /**
+     * 写入文件，并以持有者身份通过活动锁的 fencing 校验。
+     */
+    public static void write(String path, String content, int pid, long generation, long fencingToken) {
+        updateBody(path, content, false, pid, generation, fencingToken, null);
+    }
+
+    public static void write(String path, String content, int pid, String generation, long fencingToken) {
+        updateBody(path, content, false, pid, generation, fencingToken, null);
     }
 
     /**
      * 追加内容到文件尾部。
      */
     public static void append(String path, String content) {
-        String existing = read(path);
-        write(path, existing + content);
+        updateBody(path, content, true, null, null, null, null);
+    }
+
+    /**
+     * 追加文件，并以持有者身份通过活动锁的 fencing 校验。
+     */
+    public static void append(String path, String content, int pid, long generation, long fencingToken) {
+        updateBody(path, content, true, pid, generation, fencingToken, null);
+    }
+
+    public static void append(String path, String content, int pid, String generation, long fencingToken) {
+        updateBody(path, content, true, pid, generation, fencingToken, null);
+    }
+
+    public static void writeOnce(String path, String content, String effectId,
+                                 int pid, String generation, Long fencingToken) {
+        updateBody(path, content, false, pid, generation, fencingToken, effectId);
+    }
+
+    public static void appendOnce(String path, String content, String effectId,
+                                  int pid, String generation, Long fencingToken) {
+        updateBody(path, content, true, pid, generation, fencingToken, effectId);
     }
 
     /**
      * 创建文件。
      */
     public static void createFile(String dirPath, String name) {
+        validateChildName(name);
         String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;
         File realFile = resolveFile(fullPath);
         if (realFile.exists()) {
@@ -104,6 +143,29 @@ public final class FileUtil {
         writeFileContent(realFile, content);
     }
 
+    /** Creates one file for a stable effect ID; replay returns the same resource. */
+    public static void createFileOnce(String dirPath, String name, String effectId, String owner) {
+        validateChildName(name);
+        if (EffectLedger.lookup(effectId).found()) return;
+        String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;
+        File realFile = resolveFile(fullPath);
+        ReentrantLock pathLock = JsonUtil.lockFile(fullPath);
+        try {
+            if (realFile.exists()) {
+                Map<String, Object> existing = readMetaData(fullPath);
+                if (effectId != null && effectId.equals(existing.get("CreatedByEffectId"))) return;
+                throw new RuntimeException("File already exists: " + fullPath);
+            }
+            Map<String, Object> meta = createDefaultFileMeta();
+            if (owner != null) meta.put("Owner", owner);
+            if (effectId != null) meta.put("CreatedByEffectId", effectId);
+            replaceFullFileAtomically(fullPath, realFile,
+                    PathUtil.buildMetaFile(JsonUtil.toMetaJson(meta), ""));
+        } finally {
+            pathLock.unlock();
+        }
+    }
+
     /**
      * 删除文件。
      */
@@ -115,6 +177,16 @@ public final class FileUtil {
             checkLock(path);
             if (realFile.isDirectory()) {
                 throw new RuntimeException("Is a directory: " + path);
+            }
+            Map<String, Object> metadata = readMetaData(path);
+            Object applied = metadata.get("AppliedEffects");
+            if (applied instanceof Map) {
+                for (Object effectId : ((Map<?, ?>) applied).keySet()) {
+                    EffectLedger.record(String.valueOf(effectId), "");
+                }
+            }
+            if (metadata.get("CreatedByEffectId") instanceof String createdBy) {
+                EffectLedger.record(createdBy, "");
             }
             if (!realFile.delete()) {
                 throw new RuntimeException("Failed to delete file: " + path);
@@ -139,6 +211,7 @@ public final class FileUtil {
      * 创建目录。
      */
     public static void createDirectory(String dirPath, String name) {
+        validateChildName(name);
         String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;
         File realDir = resolveFile(fullPath);
         if (realDir.exists()) {
@@ -178,6 +251,7 @@ public final class FileUtil {
      * 重命名文件或目录。
      */
     public static void rename(String path, String newName) {
+        validateChildName(newName);
         File realFile = resolveFile(path);
         validateFile(realFile, path);
         checkLock(path);
@@ -264,33 +338,115 @@ public final class FileUtil {
      * 锁定文件。
      */
     public static void lock(String path, int pid) {
-        String resolvedPath = PathUtil.resolvePath(path);
-        Map<String, Object> meta = readMetaData(resolvedPath);
-        Map<String, Object> locked = getOrCreateLocked(meta);
-        locked.put("isLocked", true);
-        locked.put("lockedBy", pid);
-        writeMetaData(resolvedPath, meta);
+        acquireLockInternal(path, pid, LEGACY_LOCK_GENERATION, Long.MAX_VALUE);
+    }
+
+    /**
+     * Atomically acquires a persistent lease and returns its fencing token.
+     */
+    public static LockHandle acquireLock(String path, int pid, long generation, long leaseMs) {
+        return acquireLockInternal(path, pid, generation, leaseMs);
+    }
+
+    public static LockHandle acquireLock(String path, int pid, String generation, long leaseMs) {
+        return acquireLockInternal(path, pid, generation, leaseMs);
+    }
+
+    /**
+     * Renews an active lease owned by the exact PID, generation, and token.
+     */
+    public static LockHandle renewLock(String path, int pid, long generation,
+                                       long fencingToken, long leaseMs) {
+        return renewLockInternal(path, pid, generation, fencingToken, leaseMs);
+    }
+
+    public static LockHandle renewLock(String path, int pid, String generation,
+                                       long fencingToken, long leaseMs) {
+        return renewLockInternal(path, pid, generation, fencingToken, leaseMs);
+    }
+
+    private static LockHandle renewLockInternal(String path, int pid, Object generation,
+                                                long fencingToken, long leaseMs) {
+        validateLeaseDuration(leaseMs);
+        String metadataPath = lockMetadataPath(path);
+        ReentrantLock pathLock = JsonUtil.lockFile(metadataPath);
+        try {
+            Map<String, Object> meta = readMetaData(metadataPath);
+            Map<String, Object> locked = getLocked(meta);
+            long now = System.currentTimeMillis();
+            if (!isLockActive(locked, now)
+                    || !isExactOwner(locked, pid, generation, fencingToken)) {
+                throw new RuntimeException("Not authorized to renew lock: " + path);
+            }
+
+            long leaseUntil = leaseDeadline(now, leaseMs);
+            locked.put("version", LOCK_RECORD_VERSION);
+            locked.put("leaseUntilEpochMs", leaseUntil);
+            writeMetaDataLocked(metadataPath, meta);
+            return new LockHandle(fencingToken, leaseUntil);
+        } finally {
+            pathLock.unlock();
+        }
     }
 
     /**
      * 解锁文件。
      */
     public static void unlock(String path, int pid, String currentUser) {
-        String resolvedPath = PathUtil.resolvePath(path);
-        Map<String, Object> meta = readMetaData(resolvedPath);
-        Map<String, Object> locked = getLocked(meta);
-        if (locked == null) return;
+        String metadataPath = lockMetadataPath(path);
+        ReentrantLock pathLock = JsonUtil.lockFile(metadataPath);
+        try {
+            Map<String, Object> meta = readMetaData(metadataPath);
+            Map<String, Object> locked = getLocked(meta);
+            if (locked == null || !Boolean.TRUE.equals(locked.get("isLocked"))) return;
 
-        Object lockedBy = locked.get("lockedBy");
-        boolean isOwner = lockedBy instanceof Number && ((Number) lockedBy).intValue() == pid;
-        boolean isLocal = "local".equals(currentUser);
+            boolean isLocal = Constants.DEFAULT_USER_LOCAL.equals(currentUser);
+            boolean isLegacyOwner = isPidOwner(locked, pid)
+                    && (locked.get("lockedByGeneration") == null
+                    || LEGACY_LOCK_GENERATION.equals(locked.get("lockedByGeneration")));
+            if (!isLocal && !isLegacyOwner) {
+                throw new RuntimeException("Not authorized to unlock: " + path);
+            }
 
-        if (isOwner || isLocal) {
-            locked.put("isLocked", false);
-            locked.put("lockedBy", null);
-            writeMetaData(resolvedPath, meta);
-        } else {
-            throw new RuntimeException("Not authorized to unlock: " + path);
+            clearLock(locked);
+            writeMetaDataLocked(metadataPath, meta);
+        } finally {
+            pathLock.unlock();
+        }
+    }
+
+    /**
+     * Releases a lease owned by the exact PID, generation, and token. The local
+     * user may force release a lock without matching those identity fields.
+     */
+    public static void unlock(String path, int pid, long generation,
+                              long fencingToken, String currentUser) {
+        unlockInternal(path, pid, generation, fencingToken, currentUser);
+    }
+
+    public static void unlock(String path, int pid, String generation,
+                              long fencingToken, String currentUser) {
+        unlockInternal(path, pid, generation, fencingToken, currentUser);
+    }
+
+    private static void unlockInternal(String path, int pid, Object generation,
+                                       long fencingToken, String currentUser) {
+        String metadataPath = lockMetadataPath(path);
+        ReentrantLock pathLock = JsonUtil.lockFile(metadataPath);
+        try {
+            Map<String, Object> meta = readMetaData(metadataPath);
+            Map<String, Object> locked = getLocked(meta);
+            if (locked == null || !Boolean.TRUE.equals(locked.get("isLocked"))) return;
+
+            boolean isLocal = Constants.DEFAULT_USER_LOCAL.equals(currentUser);
+            if (!isLocal && !isExactOwner(locked, pid, generation, fencingToken)) {
+                throw new RuntimeException("Not authorized to unlock: " + path);
+            }
+
+            clearLock(locked);
+            writeMetaDataLocked(metadataPath, meta);
+        } finally {
+            pathLock.unlock();
         }
     }
 
@@ -298,20 +454,24 @@ public final class FileUtil {
      * 检查并自动释放崩溃进程的锁。
      */
     public static void checkAndValidateLock(String path, Set<Integer> activePids) {
-        String resolvedPath = PathUtil.resolvePath(path);
-        Map<String, Object> meta = readMetaData(resolvedPath);
-        Map<String, Object> locked = getLocked(meta);
-        if (locked == null || !Boolean.TRUE.equals(locked.get("isLocked"))) return;
+        String metadataPath = lockMetadataPath(path);
+        ReentrantLock pathLock = JsonUtil.lockFile(metadataPath);
+        try {
+            Map<String, Object> meta = readMetaData(metadataPath);
+            Map<String, Object> locked = getLocked(meta);
+            if (!isLockActive(locked, System.currentTimeMillis())) return;
 
-        Object lockedBy = locked.get("lockedBy");
-        if (lockedBy instanceof Number) {
-            int pid = ((Number) lockedBy).intValue();
-            if (!activePids.contains(pid)) {
-                Logger.warn("Auto-releasing lock on " + path + " from crashed PID " + pid);
-                locked.put("isLocked", false);
-                locked.put("lockedBy", null);
-                writeMetaData(resolvedPath, meta);
+            Object lockedBy = locked.get("lockedBy");
+            if (lockedBy instanceof Number) {
+                int pid = ((Number) lockedBy).intValue();
+                if (!activePids.contains(pid)) {
+                    Logger.warn("Auto-releasing lock on " + path + " from crashed PID " + pid);
+                    clearLock(locked);
+                    writeMetaDataLocked(metadataPath, meta);
+                }
             }
+        } finally {
+            pathLock.unlock();
         }
     }
 
@@ -319,11 +479,15 @@ public final class FileUtil {
      * 检查文件是否被锁定。
      */
     public static void checkLock(String path) {
-        String resolvedPath = PathUtil.resolvePath(path);
-        Map<String, Object> meta = readMetaData(resolvedPath);
-        Map<String, Object> locked = getLocked(meta);
-        if (locked != null && Boolean.TRUE.equals(locked.get("isLocked"))) {
-            throw new RuntimeException("File is locked: " + path + " by PID " + locked.get("lockedBy"));
+        String metadataPath = lockMetadataPath(path);
+        ReentrantLock pathLock = JsonUtil.lockFile(metadataPath);
+        try {
+            Map<String, Object> locked = getLocked(readMetaData(metadataPath));
+            if (isLockActive(locked, System.currentTimeMillis())) {
+                throw new RuntimeException("File is locked: " + path + " by PID " + locked.get("lockedBy"));
+            }
+        } finally {
+            pathLock.unlock();
         }
     }
 
@@ -579,6 +743,70 @@ public final class FileUtil {
         }
     }
 
+    private static void updateBody(String path, String content, boolean append,
+                                   Integer pid, Object generation, Long fencingToken, String effectId) {
+        if (EffectLedger.lookup(effectId).found()) return;
+        String resolvedPath = PathUtil.resolvePath(path);
+        File realFile = resolveFile(resolvedPath);
+        ReentrantLock pathLock = JsonUtil.lockFile(resolvedPath);
+        try {
+            recoverProcessFile(resolvedPath, realFile);
+            if (!realFile.exists()) {
+                throw new RuntimeException("File not found: " + path);
+            }
+            if (realFile.isDirectory()) {
+                throw new RuntimeException("Is a directory: " + path);
+            }
+            validateFile(realFile, path);
+
+            String existingContent = readFileContent(realFile);
+            String metaJson = PathUtil.extractMetaContent(existingContent);
+            Map<String, Object> meta = metaJson == null
+                    ? createDefaultFileMeta()
+                    : JsonUtil.parseToMap(metaJson);
+            ensureWriteAllowed(path, meta, pid, generation, fencingToken);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> appliedEffects = (Map<String, Object>) meta.computeIfAbsent(
+                    "AppliedEffects", ignored -> new LinkedHashMap<String, Object>());
+            if (effectId != null && appliedEffects.containsKey(effectId)) return;
+
+            String newBody = append
+                    ? PathUtil.extractBodyContent(existingContent) + content
+                    : content;
+            updateTimeField(meta, "lastEditTime");
+            meta.put("Size", new Object[]{newBody.length(), "B"});
+            if (effectId != null) appliedEffects.put(effectId, System.currentTimeMillis());
+            String replacement = PathUtil.buildMetaFile(JsonUtil.toMetaJson(meta), newBody);
+            replaceFullFileAtomically(resolvedPath, realFile, replacement);
+        } finally {
+            pathLock.unlock();
+        }
+    }
+
+    /** Caller must hold the JsonUtil lock for {@code path}. */
+    private static void replaceFullFileAtomically(String path, File realFile, String content) {
+        File parent = realFile.getParentFile();
+        if (parent == null) parent = new File(".");
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw new RuntimeException("Failed to create parent directory for: " + path);
+        }
+
+        File tempFile = new File(parent, realFile.getName() + ".tmp");
+        try {
+            Files.writeString(tempFile.toPath(), content,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            try (FileChannel channel = FileChannel.open(tempFile.toPath(), StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            Files.move(tempFile.toPath(), realFile.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            forceDirectory(parent.toPath());
+        } catch (IOException e) {
+            // A process .tmp remains recoverable by the existing snapshot recovery path.
+            throw new RuntimeException("Failed to write file: " + path, e);
+        }
+    }
+
     /**
      * 原子写入：持锁 → 写 .tmp 临时文件 → 原子重命名替换原文件 → 释放锁。
      * 锁保证写入期间无读者，重命名保证文件始终存在（旧或新），不会出现「读到一半」的窗口。
@@ -654,6 +882,16 @@ public final class FileUtil {
      * 写入元数据到 VFS 路径（保留正文）。
      */
     private static void writeMetaData(String resolvedPath, Map<String, Object> meta) {
+        ReentrantLock pathLock = JsonUtil.lockFile(resolvedPath);
+        try {
+            writeMetaDataLocked(resolvedPath, meta);
+        } finally {
+            pathLock.unlock();
+        }
+    }
+
+    /** Caller must hold the JsonUtil lock for {@code resolvedPath}. */
+    private static void writeMetaDataLocked(String resolvedPath, Map<String, Object> meta) {
         File realFile = resolveFile(resolvedPath);
         String existingContent = "";
         if (realFile.exists()) {
@@ -662,19 +900,16 @@ public final class FileUtil {
         String body = PathUtil.extractBodyContent(existingContent);
         String metaJson = JsonUtil.toMetaJson(meta);
         String newContent = PathUtil.buildMetaFile(metaJson, body);
-        writeFileContent(realFile, newContent);
+        replaceFullFileAtomically(resolvedPath, realFile, newContent);
     }
 
     /**
      * 获取或创建 locked 字段。
      */
     private static Map<String, Object> getOrCreateLocked(Map<String, Object> meta) {
-        @SuppressWarnings("unchecked")
-        Map<String, Object> locked = (Map<String, Object>) meta.get("locked");
+        Map<String, Object> locked = getLocked(meta);
         if (locked == null) {
-            locked = new LinkedHashMap<>();
-            locked.put("isLocked", false);
-            locked.put("lockedBy", null);
+            locked = createUnlockedLockRecord();
             meta.put("locked", locked);
         }
         return locked;
@@ -684,8 +919,145 @@ public final class FileUtil {
      * 获取 locked 字段。
      */
     private static Map<String, Object> getLocked(Map<String, Object> meta) {
+        Object locked = meta.get("locked");
+        if (!(locked instanceof Map)) return null;
         @SuppressWarnings("unchecked")
-        Map<String, Object> locked = (Map<String, Object>) meta.get("locked");
+        Map<String, Object> result = (Map<String, Object>) locked;
+        return result;
+    }
+
+    private static LockHandle acquireLockInternal(String path, int pid, Object generation, long leaseMs) {
+        validateLeaseDuration(leaseMs);
+        String resolvedPath = PathUtil.resolvePath(path);
+        File target = resolveFile(resolvedPath);
+        if (!target.exists()) {
+            throw new RuntimeException("File not found: " + path);
+        }
+
+        String metadataPath = target.isDirectory()
+                ? appendPath(resolvedPath, Constants.META_DIR_FILE)
+                : resolvedPath;
+        ReentrantLock pathLock = JsonUtil.lockFile(metadataPath);
+        try {
+            if (!target.exists()) {
+                throw new RuntimeException("File no longer exists: " + path);
+            }
+            Map<String, Object> meta;
+            if (target.isDirectory() && !resolveFile(metadataPath).exists()) {
+                meta = createDefaultDirMeta();
+            } else {
+                meta = readMetaData(metadataPath);
+            }
+            Map<String, Object> locked = getOrCreateLocked(meta);
+            long now = System.currentTimeMillis();
+            if (isLockActive(locked, now)) {
+                throw new RuntimeException("File is locked: " + path
+                        + " by PID " + locked.get("lockedBy"));
+            }
+
+            long previousToken = numberAsLong(locked.get("fencingToken"), 0L);
+            if (previousToken < 0) previousToken = 0;
+            if (previousToken == Long.MAX_VALUE) {
+                throw new IllegalStateException("Fencing token exhausted for: " + path);
+            }
+            long fencingToken = previousToken + 1;
+            long leaseUntil = leaseDeadline(now, leaseMs);
+            locked.put("version", LOCK_RECORD_VERSION);
+            locked.put("isLocked", true);
+            locked.put("lockedBy", pid);
+            locked.put("lockedByGeneration", generation);
+            locked.put("leaseUntilEpochMs", leaseUntil);
+            locked.put("fencingToken", fencingToken);
+            writeMetaDataLocked(metadataPath, meta);
+            return new LockHandle(fencingToken, leaseUntil);
+        } finally {
+            pathLock.unlock();
+        }
+    }
+
+    private static String lockMetadataPath(String path) {
+        String resolvedPath = PathUtil.resolvePath(path);
+        File target = resolveFile(resolvedPath);
+        return target.isDirectory()
+                ? appendPath(resolvedPath, Constants.META_DIR_FILE)
+                : resolvedPath;
+    }
+
+    private static String appendPath(String parent, String child) {
+        return "/".equals(parent) ? parent + child : parent + "/" + child;
+    }
+
+    private static void validateLeaseDuration(long leaseMs) {
+        if (leaseMs <= 0) {
+            throw new IllegalArgumentException("leaseMs must be greater than zero");
+        }
+    }
+
+    private static long leaseDeadline(long now, long leaseMs) {
+        return leaseMs > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + leaseMs;
+    }
+
+    private static boolean isLockActive(Map<String, Object> locked, long now) {
+        if (locked == null || !Boolean.TRUE.equals(locked.get("isLocked"))) return false;
+        Object leaseUntil = locked.get("leaseUntilEpochMs");
+        // A v1 lock had no lease and remains active until explicitly released.
+        return !(leaseUntil instanceof Number) || ((Number) leaseUntil).longValue() > now;
+    }
+
+    private static boolean isExactOwner(Map<String, Object> locked, int pid,
+                                        Object generation, long fencingToken) {
+        if (!isPidOwner(locked, pid)) return false;
+        Object storedGeneration = locked.get("lockedByGeneration");
+        boolean generationMatches;
+        if (storedGeneration instanceof Number && generation instanceof Number) {
+            generationMatches = ((Number) storedGeneration).longValue()
+                    == ((Number) generation).longValue();
+        } else {
+            generationMatches = Objects.equals(storedGeneration, generation);
+        }
+        return generationMatches
+                && numberAsLong(locked.get("fencingToken"), Long.MIN_VALUE) == fencingToken;
+    }
+
+    private static boolean isPidOwner(Map<String, Object> locked, int pid) {
+        Object lockedBy = locked.get("lockedBy");
+        return lockedBy instanceof Number && ((Number) lockedBy).intValue() == pid;
+    }
+
+    private static void ensureWriteAllowed(String path, Map<String, Object> meta,
+                                           Integer pid, Object generation, Long fencingToken) {
+        Map<String, Object> locked = getLocked(meta);
+        if (!isLockActive(locked, System.currentTimeMillis())) return;
+        if (pid != null && generation != null && fencingToken != null
+                && isExactOwner(locked, pid, generation, fencingToken)) {
+            return;
+        }
+        throw new RuntimeException("File is locked: " + path + " by PID " + locked.get("lockedBy"));
+    }
+
+    private static void clearLock(Map<String, Object> locked) {
+        locked.put("version", LOCK_RECORD_VERSION);
+        locked.put("isLocked", false);
+        locked.put("lockedBy", null);
+        locked.put("lockedByGeneration", null);
+        locked.put("leaseUntilEpochMs", 0L);
+        if (!(locked.get("fencingToken") instanceof Number)) {
+            locked.put("fencingToken", 0L);
+        }
+    }
+
+    private static long numberAsLong(Object value, long defaultValue) {
+        return value instanceof Number ? ((Number) value).longValue() : defaultValue;
+    }
+
+    private static Map<String, Object> createUnlockedLockRecord() {
+        Map<String, Object> locked = new LinkedHashMap<>();
+        locked.put("version", LOCK_RECORD_VERSION);
+        locked.put("isLocked", false);
+        locked.put("lockedBy", null);
+        locked.put("lockedByGeneration", null);
+        locked.put("leaseUntilEpochMs", 0L);
+        locked.put("fencingToken", 0L);
         return locked;
     }
 
@@ -725,10 +1097,7 @@ public final class FileUtil {
         perm.put(Constants.PERM_OTHERS, Constants.PERM_READ);
         meta.put("Permission", perm);
 
-        Map<String, Object> locked = new LinkedHashMap<>();
-        locked.put("isLocked", false);
-        locked.put("lockedBy", null);
-        meta.put("locked", locked);
+        meta.put("locked", createUnlockedLockRecord());
 
         meta.put("Size", new Object[]{0, "B"});
 
@@ -748,10 +1117,7 @@ public final class FileUtil {
         perm.put(Constants.PERM_OTHERS, Constants.PERM_READ);
         meta.put("Permission", perm);
 
-        Map<String, Object> locked = new LinkedHashMap<>();
-        locked.put("isLocked", false);
-        locked.put("lockedBy", null);
-        meta.put("locked", locked);
+        meta.put("locked", createUnlockedLockRecord());
 
         return meta;
     }
@@ -793,6 +1159,14 @@ public final class FileUtil {
         return "link_to_" + name;
     }
 
+    private static void validateChildName(String name) {
+        if (name == null || name.isBlank() || name.equals(".") || name.equals("..")
+                || name.startsWith(".") || name.contains("/") || name.contains("\\")
+                || !PathUtil.isValidPathComponent(name)) {
+            throw new IllegalArgumentException("Invalid child name: " + name);
+        }
+    }
+
     /**
      * 递归删除目录。
      */
@@ -814,6 +1188,11 @@ public final class FileUtil {
         File realFile = resolveFile(resolvedPath);
         recoverProcessFile(resolvedPath, realFile);
         return realFile.exists();
+    }
+
+    public static boolean isDirectory(String path) {
+        String resolvedPath = PathUtil.resolvePath(path);
+        return resolveFile(resolvedPath).isDirectory();
     }
 
     private static void recoverProcessFile(String path, File realFile) {

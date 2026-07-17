@@ -36,6 +36,10 @@ public final class FileInit {
 
         // 创建配置文件
         createFiles();
+        secureUsersConfig();
+
+        // 每次初始化都从当前 VFS 重新加载全局路径别名
+        loadEnvAliases();
 
         // 复制 INIT.fcl
         copyInitFile();
@@ -127,6 +131,21 @@ public final class FileInit {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private static void secureUsersConfig() {
+        String path = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_USERS_JSON;
+        if (!FileUtil.exists(path)) return;
+        Map<String, Object> metadata = FileUtil.readFileMetaData(path);
+        Object permissionObject = metadata.get("Permission");
+        if (permissionObject instanceof Map) {
+            Map<String, Object> permissions = (Map<String, Object>) permissionObject;
+            if (!"".equals(permissions.get(Constants.PERM_OTHERS))) {
+                permissions.put(Constants.PERM_OTHERS, "");
+                FileUtil.writeFileMetaData(path, metadata);
+            }
+        }
+    }
+
     /**
      * 创建 env.json（环境变量和路径别名）。
      */
@@ -148,6 +167,29 @@ public final class FileInit {
             FileUtil.write(path, JsonUtil.toMetaJson(env));
             Logger.info("Created env.json");
         }
+    }
+
+    /**
+     * 从当前 VFS 的 env.json 加载全局路径别名。
+     */
+    private static void loadEnvAliases() {
+        Map<String, String> aliases = new LinkedHashMap<>();
+        String path = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_ENV_JSON;
+        try {
+            Map<String, Object> env = JsonUtil.parseToMap(FileUtil.read(path));
+            Object configuredAliases = env.get("aliases");
+            if (configuredAliases instanceof Map<?, ?> aliasMap) {
+                for (Map.Entry<?, ?> entry : aliasMap.entrySet()) {
+                    if (entry.getKey() instanceof String name
+                            && entry.getValue() instanceof String value) {
+                        aliases.put(name, value);
+                    }
+                }
+            }
+        } catch (RuntimeException e) {
+            Logger.warn("Failed to load path aliases from env.json: " + e.getMessage());
+        }
+        PathUtil.setEnvAliases(aliases);
     }
 
     /**

@@ -5,6 +5,8 @@ import com.follarce.log.Logger;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -102,51 +104,49 @@ public final class UserUtil {
      */
     @SuppressWarnings("unchecked")
     public static String createUser(String username, String password, boolean isLocal) {
+        return createUser(username, password, isLocal, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static String createUser(String username, String password, boolean isLocal, String effectId) {
         if (username == null || username.trim().isEmpty()) {
             return errorResult("Username cannot be empty");
+        }
+        if (!username.matches("[A-Za-z_][A-Za-z0-9_-]*")) {
+            return errorResult("Invalid username: " + username);
         }
         if (password == null || password.trim().isEmpty()) {
             return errorResult("Password cannot be empty");
         }
 
-        Map<String, Object> config = readUsersConfig();
-        Map<String, Object> users = (Map<String, Object>) config.get("users");
-        if (users == null) {
-            users = new LinkedHashMap<>();
-            config.put("users", users);
-        }
-        if (users.containsKey(username)) {
-            return errorResult("User already exists: " + username);
-        }
+        String configPath = getUsersConfigPath();
+        java.util.concurrent.locks.ReentrantLock lock = JsonUtil.lockFile(configPath);
+        try {
+            Map<String, Object> config = JsonUtil.parseToMapStrict(FileUtil.read(configPath));
+            Map<String, Object> effects = appliedEffects(config);
+            if (effectId != null && effects.containsKey(effectId)) {
+                return effects.get(effectId).toString();
+            }
+            Map<String, Object> users = (Map<String, Object>) config.computeIfAbsent(
+                    "users", ignored -> new LinkedHashMap<String, Object>());
+            if (users.containsKey(username)) return errorResult("User already exists: " + username);
 
-        Map<String, Object> newUser = new LinkedHashMap<>();
-        newUser.put("password", password);
-        newUser.put("isLocal", isLocal);
-        newUser.put("home", Constants.USER_HOME_PREFIX + username);
-        newUser.put("created", FileUtil.getCurrentTimeArray());
-
-        users.put(username, newUser);
-        saveUsersConfig(config);
-
-        // 创建 home 目录
-        String homePath = Constants.USER_HOME_PREFIX + username;
-        FileUtil.createDirectory(Constants.USER_HOME_PREFIX, username);
-        // 将 home 目录的 Owner 改为用户自己（否则 Owner 是 local，用户无法写入）
-        Map<String, Object> homeMeta = FileUtil.readDirectoryMetaData(homePath);
-        if (homeMeta != null) {
-            homeMeta.put("Owner", username);
-            FileUtil.writeDirectoryMetaData(homePath, homeMeta);
+            // Directory creation is convergent. Commit the account only after both directories exist.
+            ensureUserHome(username);
+            Map<String, Object> newUser = new LinkedHashMap<>();
+            newUser.put("password", password);
+            newUser.put("isLocal", isLocal);
+            newUser.put("home", Constants.USER_HOME_PREFIX + username);
+            newUser.put("created", FileUtil.getCurrentTimeArray());
+            if (effectId != null) newUser.put("CreatedByEffectId", effectId);
+            users.put(username, newUser);
+            String result = "User created: " + username;
+            if (effectId != null) effects.put(effectId, result);
+            FileUtil.writeAtomic(configPath, JsonUtil.toMetaJson(config));
+            return result;
+        } finally {
+            lock.unlock();
         }
-        // 创建 home 下的 app 目录（同样修改 Owner）
-        String appPath = homePath + "/app";
-        FileUtil.createDirectory(homePath, "app");
-        Map<String, Object> appMeta = FileUtil.readDirectoryMetaData(appPath);
-        if (appMeta != null) {
-            appMeta.put("Owner", username);
-            FileUtil.writeDirectoryMetaData(appPath, appMeta);
-        }
-
-        return "User created: " + username;
     }
 
     /**
@@ -154,31 +154,36 @@ public final class UserUtil {
      */
     @SuppressWarnings("unchecked")
     public static String removeUser(String username, String password) {
+        return removeUser(username, password, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static String removeUser(String username, String password, String effectId) {
         if (Constants.DEFAULT_USER_LOCAL.equals(username)) {
             return errorResult("Cannot remove local user");
         }
-        if (!validateUser(username, password)) {
-            return errorResult("Invalid credentials");
-        }
-
-        Map<String, Object> config = readUsersConfig();
-        Map<String, Object> users = (Map<String, Object>) config.get("users");
-        if (users == null || !users.containsKey(username)) {
-            return errorResult("User not found: " + username);
-        }
-
-        users.remove(username);
-        saveUsersConfig(config);
-
-        // 删除 home 目录
-        String homePath = Constants.USER_HOME_PREFIX + username;
+        String configPath = getUsersConfigPath();
+        java.util.concurrent.locks.ReentrantLock lock = JsonUtil.lockFile(configPath);
         try {
-            FileUtil.removeDirectory(homePath);
-        } catch (Exception e) {
-            Logger.warn("Failed to remove home directory for " + username + ": " + e.getMessage());
-        }
+            Map<String, Object> config = JsonUtil.parseToMapStrict(FileUtil.read(configPath));
+            Map<String, Object> effects = appliedEffects(config);
+            if (effectId != null && effects.containsKey(effectId)) return effects.get(effectId).toString();
+            Map<String, Object> users = (Map<String, Object>) config.get("users");
+            if (users == null || !(users.get(username) instanceof Map)) {
+                return errorResult("User not found: " + username);
+            }
+            Map<String, Object> user = (Map<String, Object>) users.get(username);
+            if (!password.equals(user.get("password"))) return errorResult("Invalid credentials");
 
-        return "User removed: " + username;
+            removeUserHome(username);
+            users.remove(username);
+            String result = "User removed: " + username;
+            if (effectId != null) effects.put(effectId, result);
+            FileUtil.writeAtomic(configPath, JsonUtil.toMetaJson(config));
+            return result;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -269,5 +274,42 @@ public final class UserUtil {
 
     private static String errorResult(String message) {
         return "ERROR: " + message;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> appliedEffects(Map<String, Object> config) {
+        return (Map<String, Object>) config.computeIfAbsent(
+                "AppliedEffects", ignored -> new LinkedHashMap<String, Object>());
+    }
+
+    private static void ensureUserHome(String username) {
+        String homePath = Constants.USER_HOME_PREFIX + username;
+        ensureOwnedDirectory(Constants.USER_HOME_PREFIX, username, homePath, username);
+        ensureOwnedDirectory(homePath, "app", homePath + "/app", username);
+    }
+
+    private static void ensureOwnedDirectory(String parent, String name, String path, String owner) {
+        if (!FileUtil.exists(path)) FileUtil.createDirectory(parent, name);
+        Map<String, Object> metadata = FileUtil.readDirectoryMetaData(path);
+        if (metadata != null && !owner.equals(metadata.get("Owner"))) {
+            metadata.put("Owner", owner);
+            FileUtil.writeDirectoryMetaData(path, metadata);
+        }
+    }
+
+    private static void removeUserHome(String username) {
+        Path home = Path.of(PathUtil.toRealPath(Constants.USER_HOME_PREFIX + username));
+        if (!Files.exists(home)) return;
+        try (var paths = Files.walk(home)) {
+            paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to remove home directory for " + username, e);
+        }
     }
 }

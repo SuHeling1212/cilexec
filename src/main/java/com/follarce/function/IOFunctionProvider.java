@@ -46,7 +46,7 @@ public class IOFunctionProvider implements FunctionProvider {
                     return readInput();
 
                 case "readFile": {
-                    String rfPath = getStringArg(args, 0);
+                    String rfPath = context.resolvePath(getStringArg(args, 0));
                     if (!FileUtil.checkFilePermission(rfPath, Constants.PERM_READ, context.getCurrentUser())) {
                         return new String[]{Constants.ERROR_MARKER, "Permission denied: read " + rfPath};
                     }
@@ -54,18 +54,38 @@ public class IOFunctionProvider implements FunctionProvider {
                 }
 
                 case "writeFile": {
-                    String wfPath = getStringArg(args, 0);
+                    String wfPath = context.resolvePath(getStringArg(args, 0));
                     if (!FileUtil.exists(wfPath)) {
                         String parentPath = PathUtil.getParentPath(wfPath);
                         String fileName = PathUtil.getFileName(wfPath);
+                        if (!FileUtil.checkFilePermission(parentPath, Constants.PERM_WRITE,
+                                context.getCurrentUser())) {
+                            return new String[]{Constants.ERROR_MARKER,
+                                    "Permission denied: create in " + parentPath};
+                        }
+                        if (wfPath.startsWith(Constants.SYSTEM_PROCESS_PATH)
+                                && !Constants.DEFAULT_USER_LOCAL.equals(context.getCurrentUser())) {
+                            return new String[]{Constants.ERROR_MARKER,
+                                    "Permission denied: process snapshots are system-owned"};
+                        }
                         if (parentPath != null && fileName != null) {
-                            FileUtil.createFile(parentPath, fileName);
+                            if (context.getEffectId() != null) {
+                                FileUtil.createFileOnce(parentPath, fileName,
+                                        context.getEffectId() + "-create", context.getCurrentUser());
+                            } else {
+                                FileUtil.createFile(parentPath, fileName);
+                            }
                         }
                     }
                     if (!FileUtil.checkFilePermission(wfPath, Constants.PERM_WRITE, context.getCurrentUser())) {
                         return new String[]{Constants.ERROR_MARKER, "Permission denied: write " + wfPath};
                     }
-                    FileUtil.write(wfPath, getStringArg(args, 1));
+                    if (context.getEffectId() != null) {
+                        FileUtil.writeOnce(wfPath, getStringArg(args, 1), context.getEffectId(),
+                                context.getPid(), context.getProcessGeneration(), null);
+                    } else {
+                        FileUtil.write(wfPath, getStringArg(args, 1));
+                    }
                     return "";
                 }
 
@@ -76,6 +96,9 @@ public class IOFunctionProvider implements FunctionProvider {
                     return null;
             }
         } catch (Exception e) {
+            if ("input".equals(functionName) || "readChar".equals(functionName)) {
+                throw new UnknownEffectOutcomeException("Input outcome is unknown: " + e.getMessage(), e);
+            }
             return new String[]{Constants.ERROR_MARKER, e.getMessage()};
         }
     }

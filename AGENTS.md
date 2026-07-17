@@ -32,7 +32,7 @@ bash build/run.sh
 
 ## Completion Notification
 
-After completing and verifying a task, run `./build/notify-complete.sh` immediately before sending the final response so the user hears a completion sound.
+After completing and verifying a task, run `./build/when_user_listen_this_they_will_come_like_a_dog.sh` immediately before sending the final response so the user hears a completion sound.
 
 ## High-Level Architecture
 

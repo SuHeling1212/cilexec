@@ -9,6 +9,8 @@ import java.util.*;
  * 函数注册中心 —— 管理所有内建函数 Provider 和用户自定义函数。
  */
 public class FunctionRegistry {
+    private static final Object NOT_SUPPORTED = new Object();
+    private static final Object SUPPORTED_NULL = new Object();
 
     private static final List<FunctionProvider> providers = new ArrayList<>();
     private static final java.util.concurrent.ConcurrentHashMap<Integer, Map<String, FunctionDef>> userFunctionsByPid =
@@ -96,17 +98,17 @@ public class FunctionRegistry {
             // 全名匹配：命名空间和函数名都匹配
             if (namespace != null && !namespace.isEmpty()) {
                 if (namespace.equals(providerNs) || providerNs == null || providerNs.isEmpty()) {
-                    Object result = safeCall(provider, functionName, args, context);
-                    if (result != null) {
-                        return result;
+                    Object result = invokeIfSupported(provider, functionName, args, context);
+                    if (result != NOT_SUPPORTED) {
+                        return result == SUPPORTED_NULL ? null : result;
                     }
                 }
             } else {
                 // 无命名空间：先精确匹配短名，再尝试空命名空间 provider
                 if (providerNs == null || providerNs.isEmpty()) {
-                    Object result = safeCall(provider, functionName, args, context);
-                    if (result != null) {
-                        return result;
+                    Object result = invokeIfSupported(provider, functionName, args, context);
+                    if (result != NOT_SUPPORTED) {
+                        return result == SUPPORTED_NULL ? null : result;
                     }
                 }
             }
@@ -126,10 +128,10 @@ public class FunctionRegistry {
             for (FunctionProvider provider : providers) {
                 String providerNs = provider.getNamespace();
                 if (providerNs != null && !providerNs.isEmpty()) {
-                    Object result = safeCall(provider, functionName, args, context);
+                    Object result = invokeIfSupported(provider, functionName, args, context);
                     // (debug output removed)
-                    if (result != null) {
-                        return result;
+                    if (result != NOT_SUPPORTED) {
+                        return result == SUPPORTED_NULL ? null : result;
                     }
                 }
             }
@@ -152,8 +154,20 @@ public class FunctionRegistry {
      *
      * @return 如果 provider 不识别该函数名则返回 null；否则返回执行结果。
      */
+    private static Object invokeIfSupported(FunctionProvider provider, String functionName,
+                                            List<Object> args, FunctionContext context) {
+        EffectPolicy policy = provider.getEffectPolicy(functionName);
+        if (policy == null) return NOT_SUPPORTED;
+        String namespace = provider.getNamespace();
+        String operation = (namespace == null || namespace.isEmpty())
+                ? functionName : namespace + "." + functionName;
+        Object result = context.executeEffect(operation, policy, args,
+                effectContext -> safeCall(provider, functionName, args, effectContext));
+        return result == null ? SUPPORTED_NULL : result;
+    }
+
     private static Object safeCall(FunctionProvider provider, String functionName,
-                                    List<Object> args, FunctionContext context) {
+                                   List<Object> args, FunctionContext context) {
         try {
             Object result = provider.call(functionName, args, context);
             // provider 返回 null 表示不识别此函数
@@ -169,6 +183,7 @@ public class FunctionRegistry {
             }
             return result;
         } catch (Exception e) {
+            if (e instanceof UnknownEffectOutcomeException unknown) throw unknown;
             return new String[]{Constants.ERROR_MARKER, e.getMessage()};
         }
     }

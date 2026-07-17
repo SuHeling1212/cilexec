@@ -14,6 +14,14 @@ public interface FunctionProvider {
     String getNamespace();
 
     /**
+     * Declares both support and crash-recovery semantics for a function.
+     * Unknown functions fail closed instead of being invoked speculatively.
+     */
+    default EffectPolicy getEffectPolicy(String functionName) {
+        return BuiltinFunctionCatalog.policy(getNamespace(), functionName);
+    }
+
+    /**
      * 调用函数。
      * @param functionName 函数名（不含命名空间）
      * @param args 参数列表

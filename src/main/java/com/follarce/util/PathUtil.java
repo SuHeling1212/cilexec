@@ -10,8 +10,10 @@ import java.util.*;
  */
 public final class PathUtil {
 
+    private static final int MAX_EXPANSION_DEPTH = 32;
+
     private static File vfsRoot;
-    private static Map<String, String> envAliases = new LinkedHashMap<>();
+    private static volatile Map<String, String> envAliases = Collections.emptyMap();
 
     private PathUtil() {}
 
@@ -33,16 +35,17 @@ public final class PathUtil {
      * 设置环境变量别名。
      */
     public static void setEnvAliases(Map<String, String> aliases) {
-        if (aliases != null) {
-            envAliases = new LinkedHashMap<>(aliases);
-        }
+        Map<String, String> copy = aliases == null
+                ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(aliases);
+        envAliases = Collections.unmodifiableMap(copy);
     }
 
     /**
      * 获取完整的环境变量别名映射。
      */
     public static Map<String, String> getEnvAliases() {
-        return envAliases;
+        return new LinkedHashMap<>(envAliases);
     }
 
     /**
@@ -52,34 +55,90 @@ public final class PathUtil {
      * 其他 $VAR → envAliases 中查找
      */
     public static String resolvePath(String path) {
+        return resolvePath(path, Constants.DEFAULT_USER_LOCAL, Collections.emptyMap());
+    }
+
+    /**
+     * 使用进程上下文解析路径。进程别名优先于全局别名。
+     */
+    public static String resolvePath(String path, String effectiveUser,
+                                     Map<String, String> processAliases) {
         if (path == null || path.isEmpty()) return "/";
 
+        String user = effectiveUser == null || effectiveUser.isEmpty()
+                ? Constants.DEFAULT_USER_LOCAL
+                : effectiveUser;
+        String home = Constants.USER_HOME_PREFIX + user;
+        Map<String, String> globalAliases = new LinkedHashMap<>(envAliases);
+        Map<String, String> localAliases = processAliases == null
+                ? Collections.emptyMap()
+                : new LinkedHashMap<>(processAliases);
+        Set<String> expandedAliases = new HashSet<>();
         String resolved = path;
+        int expansionDepth = 0;
 
-        // 替换 ~
-        if (resolved.startsWith("~")) {
-            resolved = "/user/local" + resolved.substring(1);
-        }
+        while (!resolved.isEmpty()) {
+            char marker = resolved.charAt(0);
+            if (marker != '~' && marker != '$' && marker != '@') break;
 
-        // 替换 $HOME
-        if (resolved.startsWith("$HOME")) {
-            resolved = "/user/local" + resolved.substring(5);
-        }
+            int tokenEnd = leadingTokenEnd(resolved);
+            String token = resolved.substring(0, tokenEnd);
+            String replacement;
+            String cycleKey = null;
 
-        // 替换 $SYSTEM
-        if (resolved.startsWith("$SYSTEM")) {
-            resolved = "/system" + resolved.substring(7);
-        }
-
-        // 替换其他 $ 环境变量
-        for (Map.Entry<String, String> entry : envAliases.entrySet()) {
-            String varRef = "$" + entry.getKey();
-            if (resolved.contains(varRef)) {
-                resolved = resolved.replace(varRef, entry.getValue());
+            if (marker == '~') {
+                if (!token.equals("~")) {
+                    throw new IllegalArgumentException("Unknown home token: " + token);
+                }
+                replacement = home;
+            } else if (marker == '$') {
+                String name = token.substring(1);
+                if (name.equals("HOME")) {
+                    replacement = home;
+                } else if (name.equals("SYSTEM")) {
+                    replacement = "/system";
+                } else if (globalAliases.containsKey(name)) {
+                    replacement = globalAliases.get(name);
+                    cycleKey = "global:$" + name;
+                } else {
+                    throw new IllegalArgumentException("Unknown environment token: " + token);
+                }
+            } else {
+                String name = token.substring(1);
+                if (localAliases.containsKey(name)) {
+                    replacement = localAliases.get(name);
+                    cycleKey = "process:@" + name;
+                } else if (globalAliases.containsKey(name)) {
+                    replacement = globalAliases.get(name);
+                    cycleKey = "global:@" + name;
+                } else {
+                    throw new IllegalArgumentException("Unknown path alias: " + token);
+                }
             }
+
+            if (replacement == null || replacement.isEmpty()) {
+                throw new IllegalArgumentException("Path token has no value: " + token);
+            }
+            if (cycleKey != null && !expandedAliases.add(cycleKey)) {
+                throw new IllegalArgumentException("Path alias cycle detected at " + token);
+            }
+            if (++expansionDepth > MAX_EXPANSION_DEPTH) {
+                throw new IllegalArgumentException(
+                        "Path expansion exceeds maximum depth of " + MAX_EXPANSION_DEPTH);
+            }
+
+            resolved = replacement + resolved.substring(tokenEnd);
         }
 
         return normalizePath(resolved);
+    }
+
+    private static int leadingTokenEnd(String path) {
+        int slash = path.indexOf('/');
+        int backslash = path.indexOf('\\');
+        if (slash < 0) return backslash < 0 ? path.length() : backslash;
+        if (backslash < 0) return slash;
+        return Math.min(slash, backslash);
     }
 
     /**

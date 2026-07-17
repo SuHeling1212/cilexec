@@ -6,6 +6,8 @@ import com.follarce.exception.ProcessException;
 import com.follarce.exception.RecoverableException;
 import com.follarce.exception.UnrecoverableException;
 import com.follarce.function.FunctionRegistry;
+import com.follarce.function.EffectPolicy;
+import com.follarce.function.FunctionContext;
 import com.follarce.log.Logger;
 import com.follarce.script.FunctionDef;
 import com.follarce.util.UserUtil;
@@ -43,14 +45,6 @@ public class ProcessRunner {
         COMPLETED, BLOCKED, TERMINATED
     }
 
-    /**
-     * 通用进程间消息 —— 字段名 + 新值。
-     * 任何 Java 层组件想修改某个进程的某字段，必须通过
-     * {@link #postMessage} 发送消息，由该进程的 ProcessRunner
-     * 在 executeLine() 开头统一处理，保证字段和行号同时落盘。
-     */
-    public record ProcessMessage(String field, Object value) {}
-
     // ════════════════════════════════════════════
     // 全局注册表 + 消息队列
     // ════════════════════════════════════════════
@@ -58,10 +52,7 @@ public class ProcessRunner {
     /** PID → ProcessRunner 映射，供 postMessage 查找目标进程 */
     private static final ConcurrentHashMap<Integer, ProcessRunner> RUNNERS = new ConcurrentHashMap<>();
     private static final ThreadLocal<ProcessRunner> CURRENT_RUNNER = new ThreadLocal<>();
-
-    /** 待处理的外部消息队列（线程安全） */
-    private final java.util.concurrent.ConcurrentLinkedQueue<ProcessMessage> pendingMessages =
-            new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private static final ConcurrentHashMap<String, Object> LIFECYCLE_CLEANUP_GATES = new ConcurrentHashMap<>();
 
     // ════════════════════════════════════════════
     // 组件
@@ -74,6 +65,7 @@ public class ProcessRunner {
     private final IpcHandler ipcHandler;
     private final FunctionManager functionManager;
     private final ImportManager importManager;
+    private final StatementAttemptManager attemptManager;
 
     // ════════════════════════════════════════════
     // ProcessRunner 级别状态
@@ -94,6 +86,7 @@ public class ProcessRunner {
 
     // 进入用户函数体后置为 true，dispatchStatement 据此跳过 currentLine++
     private volatile boolean enteredUserFunction = false;
+    private boolean controlTransferred;
 
     // 待赋值变量名：调用用户函数时的赋值目标变量，函数返回后完成赋值
     private String pendingAssignmentVar = null;
@@ -108,6 +101,12 @@ public class ProcessRunner {
     private List<String> codeLines;
     private int currentLine;
     private List<Map<String, Object>> blockStack;
+    private String processGeneration;
+    private String effectiveUser;
+    private Map<String, String> pathAliases = new LinkedHashMap<>();
+    private String ownedGeneration;
+    private volatile boolean registered;
+    private volatile boolean executorStopping;
 
     // ════════════════════════════════════════════
     // 构造
@@ -116,6 +115,7 @@ public class ProcessRunner {
     public ProcessRunner(int pid, Map<String, Object> processData) {
         this.pid = pid;
         this.processData = processData;
+        ProcessIdentity.ensureDefaults(this.processData);
         this.processStartMs = System.currentTimeMillis();
 
         // 创建组件 —— ProcessRunner 负责构造和生命周期
@@ -125,10 +125,13 @@ public class ProcessRunner {
         this.exitReason = stateManager.getExitReason();
         this.stateMessage = stateManager.getStateMessage();
         this.codeLoader = new CodeLoader();
+        this.attemptManager = new StatementAttemptManager(this.processData, this::persistState);
         this.expressionEvaluator = new ExpressionEvaluator(
-                pid, stateManager::extractParentPid, this::onFunctionArgCallback);
+                pid, stateManager::extractParentPid, this::onFunctionArgCallback,
+                this::createFunctionContext);
         this.controlFlow = new ControlFlow(expressionEvaluator);
-        this.importManager = new ImportManager();
+        this.importManager = new ImportManager(() -> effectiveUser,
+                () -> new LinkedHashMap<>(pathAliases));
         this.functionManager = new FunctionManager(pid, expressionEvaluator);
         this.ipcHandler = new IpcHandler(
                 pid,
@@ -142,9 +145,8 @@ public class ProcessRunner {
 
         // 从进程数据加载初始状态
         loadFromProcessDataInternal();
+        syncLifecycleFromManager();
 
-        // 注册到全局表，供 postMessage 查找
-        RUNNERS.put(pid, this);
     }
 
     // ════════════════════════════════════════════
@@ -152,45 +154,50 @@ public class ProcessRunner {
     // ════════════════════════════════════════════
 
     public void init() {
-        String initialOwner = stateManager.extractOwner();
-        UserUtil.setCurrentUser(initialOwner != null ? initialOwner : Constants.DEFAULT_USER_LOCAL);
-        priority = stateManager.extractPriority();
-        // 解析函数定义
-        functionManager.parseFunctions(codeLines);
-        // A crash may leave RUNNING on disk; the committed instruction snapshot is safe to resume.
-        if (state == ProcessState.NEW || state == ProcessState.RUNNING) {
-            transitionTo(ProcessState.READY, null);
+        try {
+            // Scheduler scans can become stale before construction; disk remains authoritative.
+            loadRuntimeState();
+            ownedGeneration = processGeneration;
+            stateManager.setExpectedGeneration(ownedGeneration);
+            RUNNERS.compute(pid, (ignored, existing) ->
+                    existing == null || !existing.isRunning() ? this : existing);
+            if (RUNNERS.get(pid) != this) {
+                throw new IllegalStateException("An active runner already owns PID " + pid);
+            }
+            registered = true;
+            priority = stateManager.extractPriority();
+            functionManager.parseFunctions(codeLines);
+            // A crash may leave RUNNING on disk; the committed instruction snapshot is safe to resume.
+            if (state == ProcessState.NEW || state == ProcessState.RUNNING) {
+                transitionTo(ProcessState.READY, null);
+            }
+            if (!state.isTerminal()) persistState();
+            Logger.info("Process " + pid + " (" + getProcessName() + ") initialized, priority=" + priority);
+        } catch (RuntimeException e) {
+            if (registered) RUNNERS.remove(pid, this);
+            registered = false;
+            throw e;
         }
-        if (!state.isTerminal()) persistState();
-        Logger.info("Process " + pid + " (" + getProcessName() + ") initialized, priority=" + priority);
     }
 
     public StepResult step() {
         StepResult result;
-        Map<String, Object> killedSnapshot = null;
-        boolean cleanNaturalExit = false;
+        boolean reconcileLifecycle = false;
         synchronized (persistenceLock) {
             CURRENT_RUNNER.set(this);
+            UserUtil.setCurrentUser(effectiveUser);
             try {
                 result = stepAtInstructionBoundary();
                 if (result == StepResult.TERMINATED && !lifecycleCleaned) {
                     lifecycleCleaned = true;
-                    if (killed) {
-                        killedSnapshot = com.follarce.util.JsonUtil.deepCopy(processData);
-                    } else {
-                        cleanNaturalExit = true;
-                    }
+                    reconcileLifecycle = true;
                 }
             } finally {
                 CURRENT_RUNNER.remove();
+                UserUtil.clearCurrentUser();
             }
         }
-        if (killedSnapshot != null) {
-            finalizeKilledSnapshot(killedSnapshot, pid);
-            removeProcessFile(pid);
-            RUNNERS.remove(pid, this);
-        }
-        if (cleanNaturalExit) stateManager.cleanup();
+        if (reconcileLifecycle) reconcileLifecycle(pid, processGeneration);
         return result;
     }
 
@@ -207,6 +214,9 @@ public class ProcessRunner {
                 return StepResult.BLOCKED;
             }
             transitionTo(ProcessState.RUNNING, null);
+            String statement = currentLine >= 0 && currentLine < codeLines.size()
+                    ? codeLines.get(currentLine) : "<eof>";
+            attemptManager.begin(currentLine, statement);
             executeLine();
             if (state == ProcessState.BLOCKED || state == ProcessState.PAUSED) return StepResult.BLOCKED;
             if (state == ProcessState.FAILED) {
@@ -214,6 +224,7 @@ public class ProcessRunner {
             }
             if (!running) {
                 if (!state.isTerminal()) terminateNormally("Program completed");
+                attemptManager.commit();
                 persistState();
                 return StepResult.TERMINATED;
             }
@@ -231,6 +242,7 @@ public class ProcessRunner {
 
     public boolean checkWakeup() {
         if (state != ProcessState.BLOCKED) return true;
+        if (blockReason == BlockReason.EFFECT_RECOVERY) return false;
         if (blockReason == BlockReason.NONE) {
             unblockProcess();
             return true;
@@ -263,9 +275,16 @@ public class ProcessRunner {
             try {
                 int childPid = Integer.parseInt(pidStr);
                 if (waitPid != null && childPid != waitPid) continue;
-                if (isChildFinished(childPid)) {
+                Object childInfo = children.get(pidStr);
+                String expectedChildGeneration = childInfo instanceof Map
+                        && ((Map<?, ?>) childInfo).get("Generation") instanceof String
+                        ? ((Map<?, ?>) childInfo).get("Generation").toString() : null;
+                if (isChildFinished(childPid, expectedChildGeneration)) {
                     Map<String, Object> recoveredEvent = new LinkedHashMap<>();
                     recoveredEvent.put("PID", childPid);
+                    if (childInfo instanceof Map && ((Map<?, ?>) childInfo).get("Generation") instanceof String) {
+                        recoveredEvent.put("Generation", ((Map<?, ?>) childInfo).get("Generation"));
+                    }
                     recoveredEvent.put("ExitReason", ExitReason.NONE.name());
                     recordChildExitInMemory(pidStr, recoveredEvent);
                     consumeMatchingExitEvent();
@@ -281,8 +300,12 @@ public class ProcessRunner {
     public void stopProcess() {
         // Stop the Java executor without changing the persisted FCL lifecycle.
         // A later Cilexec start can resume the last committed process snapshot.
-        running = false;
-        RUNNERS.remove(pid, this);
+        executorStopping = true;
+        unparkProcess(pid);
+        synchronized (persistenceLock) {
+            RUNNERS.remove(pid, this);
+            registered = false;
+        }
         // 清理本进程的函数定义，防止跨进程残留
         com.follarce.function.FunctionRegistry.clearUserFunctions(pid);
     }
@@ -293,7 +316,8 @@ public class ProcessRunner {
     public int getPriority() { return priority; }
     public ProcessState getState() { return state; }
     public String getProcessName() { return stateManager.extractName(); }
-    public boolean isRunning() { return running && !state.isTerminal(); }
+    public boolean isRunning() { return running && !executorStopping && !state.isTerminal(); }
+    public String getProcessGeneration() { return processGeneration; }
 
     // ════════════════════════════════════════════
     // 虚拟线程运行
@@ -316,10 +340,9 @@ public class ProcessRunner {
         Logger.info("Virtual thread started for PID " + pid + " (" + getProcessName() + ")");
 
         try {
-            String owner = stateManager.extractOwner();
-            UserUtil.setCurrentUser(owner != null ? owner : Constants.DEFAULT_USER_LOCAL);
+            UserUtil.setCurrentUser(effectiveUser);
 
-            while (running && !state.isTerminal()) {
+            while (!executorStopping && running && !state.isTerminal()) {
                 StepResult result = step();
 
                 if (result == StepResult.TERMINATED) {
@@ -334,7 +357,7 @@ public class ProcessRunner {
                 }
 
                 // 让出 CPU 给其他虚拟线程
-                if (running && !state.isTerminal()
+                if (!executorStopping && running && !state.isTerminal()
                         && state != ProcessState.BLOCKED && state != ProcessState.PAUSED) {
                     Thread.yield();
                 }
@@ -342,8 +365,10 @@ public class ProcessRunner {
         } catch (Exception e) {
             Logger.error("Virtual thread for PID " + pid + " crashed: " + e.getMessage());
         } finally {
+            UserUtil.clearCurrentUser();
             VIRTUAL_THREADS.remove(pid, Thread.currentThread());
             RUNNERS.remove(pid, this);
+            registered = false;
             Logger.info("Virtual thread for PID " + pid + " (" + getProcessName() + ") finished");
         }
     }
@@ -355,7 +380,8 @@ public class ProcessRunner {
      * 每 50ms 检查一次唤醒条件，或被 kill 处理中的 unpark 提前唤醒。
      */
     private void parkWhileBlocked() {
-        while ((state == ProcessState.BLOCKED || state == ProcessState.PAUSED) && running) {
+        while ((state == ProcessState.BLOCKED || state == ProcessState.PAUSED)
+                && running && !executorStopping) {
             boolean terminated;
             synchronized (persistenceLock) {
                 if (processPendingMessages()) persistState();
@@ -399,25 +425,45 @@ public class ProcessRunner {
      * @param value     新值
      */
     public static void postMessage(int targetPid, String field, Object value) {
-        // 主路径：目标进程在运行中 → 发消息由目标进程自行落盘
-        // 每个进程文件只有其自身的 ProcessRunner 写入，保证单一写入者原则
-        ProcessRunner target = RUNNERS.get(targetPid);
-        if (target != null) {
-            target.pendingMessages.offer(new ProcessMessage(field, value));
-            unparkProcess(targetPid);
-            return;
-        }
+        postMessage(targetPid, field, value, UUID.randomUUID().toString(), 0, null);
+    }
 
-        // 兜底：目标进程已不在运行，直接原子写入 .proc 文件
-        // 此时不可能有并发写入者，但使用 JsonUtil.setField 确保写入完整
-        String procPath = com.follarce.Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
-        if (com.follarce.util.FileUtil.exists(procPath)) {
-            if ("ProcessState".equals(field)) {
-                applyOfflineStateRequest(procPath, value);
-                return;
-            }
-            com.follarce.util.JsonUtil.setField(procPath, field, value);
+    public static void postMessage(int targetPid, String field, Object value, String messageId,
+                                   int senderPid, String senderGeneration) {
+        String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        if (!com.follarce.util.FileUtil.exists(processPath)) return;
+        Map<String, Object> targetData = com.follarce.util.JsonUtil.parseToMapStrict(
+                com.follarce.util.FileUtil.read(processPath));
+        if (ProcessIdentity.ensureDefaults(targetData)) {
+            com.follarce.util.JsonUtil.updateFile(processPath, ProcessIdentity::ensureDefaults);
+            targetData = com.follarce.util.JsonUtil.parseToMapStrict(
+                    com.follarce.util.FileUtil.read(processPath));
         }
+        String targetGeneration = ProcessIdentity.generation(targetData);
+        postMessageToGeneration(targetPid, targetGeneration, field, value, messageId,
+                senderPid, senderGeneration);
+    }
+
+    public static boolean postMessageToGeneration(int targetPid, String targetGeneration,
+                                                  String field, Object value, String messageId,
+                                                  int senderPid, String senderGeneration) {
+        String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        if (!com.follarce.util.FileUtil.exists(processPath)) return false;
+        Map<String, Object> targetData = com.follarce.util.JsonUtil.parseToMapStrict(
+                com.follarce.util.FileUtil.read(processPath));
+        if (!targetGeneration.equals(targetData.get("ProcessGeneration"))) return false;
+        if (ProcessInbox.isApplied(targetData, messageId)) return true;
+        ProcessMessage published = ProcessInbox.publish(targetPid, targetGeneration, messageId, senderPid,
+                senderGeneration, field, value);
+        if (!targetGeneration.equals(published.targetGeneration())) return false;
+
+        ProcessRunner target = RUNNERS.get(targetPid);
+        if (target != null && target.isRunning() && targetGeneration.equals(target.processGeneration)) {
+            unparkProcess(targetPid);
+        } else {
+            applyOfflineInbox(targetPid, targetGeneration);
+        }
+        return true;
     }
 
 
@@ -446,8 +492,7 @@ public class ProcessRunner {
             exitReason = ExitReason.KILLED;
             blockReason = BlockReason.NONE;
             transitionTo(ProcessState.TERMINATED, "Killed");
-            persistState();
-            killed = true;
+            prepareLifecycleCleanup(true);
             return;
         }
         if (field.startsWith("ChildExit.")) {
@@ -491,74 +536,90 @@ public class ProcessRunner {
      */
     public static void terminateProcess(int targetPid) {
         ProcessRunner target = RUNNERS.get(targetPid);
-        Map<String, Object> snapshot = null;
-        boolean wasTerminal = false;
+        String generation = null;
         if (target != null) {
             synchronized (target.persistenceLock) {
-                snapshot = com.follarce.util.JsonUtil.deepCopy(target.processData);
-                wasTerminal = target.state.isTerminal();
-                if (!wasTerminal) {
+                generation = target.processGeneration;
+                if (!target.state.isTerminal()) {
                     target.running = false;
                     target.exitReason = ExitReason.KILLED;
                     target.transitionTo(ProcessState.TERMINATED, "Killed");
-                    target.persistState();
-                    target.killed = true;
                 }
+                target.prepareLifecycleCleanup(true);
+                target.persistState();
+                target.killed = true;
                 target.lifecycleCleaned = true;
             }
         } else {
             String path = com.follarce.util.PathUtil.findProcessFilePathByPid(targetPid);
             if (path != null && com.follarce.util.FileUtil.exists(path)) {
-                snapshot = com.follarce.util.JsonUtil.parseToMapStrict(
+                Map<String, Object> snapshot = com.follarce.util.JsonUtil.parseToMapStrict(
                         com.follarce.util.FileUtil.read(path));
-                wasTerminal = ProcessState.restore(
-                        snapshot.get("ProcessState"), snapshot.get("Status")).isTerminal();
-                if (!wasTerminal) {
-                    com.follarce.util.JsonUtil.updateFile(path, data -> {
+                if (ProcessIdentity.ensureDefaults(snapshot)) {
+                    com.follarce.util.JsonUtil.updateFile(path, ProcessIdentity::ensureDefaults);
+                    snapshot = com.follarce.util.JsonUtil.parseToMapStrict(
+                            com.follarce.util.FileUtil.read(path));
+                }
+                generation = ProcessIdentity.generation(snapshot);
+                String expectedGeneration = generation;
+                com.follarce.util.JsonUtil.updateFile(path, data -> {
+                    if (!expectedGeneration.equals(data.get("ProcessGeneration"))) return;
+                    if (!ProcessState.restore(data.get("ProcessState"), data.get("Status")).isTerminal()) {
                         data.put("ProcessState", ProcessState.TERMINATED.name());
                         data.put("Status", false);
                         data.put("ExitReason", ExitReason.KILLED.name());
                         data.put("StateMessage", "Killed");
-                    });
-                }
+                    }
+                    data.put("LifecycleCleanup", lifecycleCleanupRecord(data, true));
+                });
             }
         }
-        if (snapshot != null && !wasTerminal) finalizeKilledSnapshot(snapshot, targetPid);
-        removeProcessFile(targetPid);
-        if (target != null) {
-            RUNNERS.remove(targetPid, target);
-            unparkProcess(targetPid);
-        }
+        if (generation != null) reconcileLifecycle(targetPid, generation);
         Logger.info("Terminated process PID " + targetPid + ", file removed");
     }
 
     /** Queue FCL-initiated kills so no process waits on another runner while holding its own lock. */
     public static void requestTermination(int targetPid) {
         ProcessRunner caller = CURRENT_RUNNER.get();
-        ProcessRunner target = RUNNERS.get(targetPid);
-        if (caller != null) {
-            if (target != null) {
-                target.pendingMessages.offer(new ProcessMessage("__Terminate", ExitReason.KILLED.name()));
-                unparkProcess(targetPid);
-            } else {
-                Thread.ofVirtual().start(() -> terminateProcess(targetPid));
-            }
+        if (caller == null) {
+            terminateProcess(targetPid);
             return;
         }
-        terminateProcess(targetPid);
+        requestTermination(targetPid, UUID.randomUUID().toString(), caller.pid, caller.processGeneration);
+    }
+
+    public static void requestTermination(int targetPid, String messageId,
+                                           int senderPid, String senderGeneration) {
+        postMessage(targetPid, "__Terminate", ExitReason.KILLED.name(), messageId,
+                senderPid, senderGeneration);
+    }
+
+    public static boolean requestTermination(int targetPid, String targetGeneration,
+                                             String messageId, int senderPid,
+                                             String senderGeneration) {
+        return postMessageToGeneration(targetPid, targetGeneration, "__Terminate",
+                ExitReason.KILLED.name(), messageId, senderPid, senderGeneration);
     }
 
     /** Record a durable child exit event without losing other simultaneous exits. */
     public static void recordChildExit(int parentPid, int childPid, ExitReason reason) {
+        recordChildExit(parentPid, null, childPid, null, reason);
+    }
+
+    public static void recordChildExit(int parentPid, String parentGeneration,
+                                       int childPid, String childGeneration, ExitReason reason) {
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("PID", childPid);
+        if (childGeneration != null) event.put("Generation", childGeneration);
         event.put("ExitReason", (reason != null ? reason : ExitReason.NONE).name());
 
         ProcessRunner parent = RUNNERS.get(parentPid);
-        if (parent != null && !parent.state.isTerminal()) {
+        if (parent != null && !parent.state.isTerminal()
+                && (parentGeneration == null || parentGeneration.equals(parent.processGeneration))) {
             synchronized (parent.persistenceLock) {
-                if (parent.state.isTerminal()) return;
-                recordChildExit(parent.processData, childPid, event);
+                if (parent.state.isTerminal()
+                        || (parentGeneration != null && !parentGeneration.equals(parent.processGeneration))) return;
+                recordChildExit(parent.processData, childPid, childGeneration, event);
                 parent.persistState();
             }
             unparkProcess(parentPid);
@@ -568,27 +629,31 @@ public class ProcessRunner {
         String path = Constants.SYSTEM_PROCESS_PATH + parentPid + ".proc";
         if (!com.follarce.util.FileUtil.exists(path)) return;
         com.follarce.util.JsonUtil.updateFile(path, data -> {
+            if (parentGeneration != null && !parentGeneration.equals(data.get("ProcessGeneration"))) return;
             ProcessState saved = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
-            if (!saved.isTerminal()) recordChildExit(data, childPid, event);
+            if (!saved.isTerminal()) recordChildExit(data, childPid, childGeneration, event);
         });
     }
 
     /** Change both sides of an orphan relationship to INIT. */
     public static void reparentToInit(int childPid, Object childInfo) {
         if (childPid == Constants.PID_INIT) return;
+        String childGeneration = childInfo instanceof Map
+                && ((Map<?, ?>) childInfo).get("Generation") instanceof String
+                ? ((Map<?, ?>) childInfo).get("Generation").toString() : null;
+        String initGeneration = readProcessGeneration(Constants.PID_INIT);
         Map<String, Object> initParent = new LinkedHashMap<>();
         initParent.put("PID", Constants.PID_INIT);
         initParent.put("Name", "INIT");
+        if (initGeneration != null) initParent.put("Generation", initGeneration);
 
-        updateProcessData(Constants.PID_INIT,
-                data -> setNestedField(data, "Child." + childPid, childInfo));
-        boolean updated = updateProcessData(childPid, data -> {
+        boolean updated = updateProcessData(childPid, childGeneration, data -> {
             ProcessState saved = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
             if (!saved.isTerminal()) data.put("Parent", initParent);
         }, true);
-        if (!updated) {
-            updateProcessData(Constants.PID_INIT,
-                    data -> setNestedField(data, "Child." + childPid, null));
+        if (updated) {
+            updateProcessData(Constants.PID_INIT, initGeneration,
+                    data -> setNestedField(data, "Child." + childPid, childInfo), false);
         }
     }
 
@@ -598,9 +663,22 @@ public class ProcessRunner {
      */
     private boolean processPendingMessages() {
         boolean changed = false;
-        ProcessMessage msg;
-        while ((msg = pendingMessages.poll()) != null) {
-            applyFieldUpdate(msg.field, msg.value);
+        for (ProcessMessage msg : ProcessInbox.list(pid, processGeneration)) {
+            if (msg.targetPid() != pid || !processGeneration.equals(msg.targetGeneration())) continue;
+            if (ProcessInbox.isApplied(processData, msg.messageId())) {
+                ProcessInbox.acknowledge(msg);
+                continue;
+            }
+            applyFieldUpdate(msg.field(), msg.value());
+            if ("__Terminate".equals(msg.field())) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> cleanup = (Map<String, Object>) processData.get("LifecycleCleanup");
+                if (cleanup != null) cleanup.put("RequestId", msg.messageId());
+            }
+            ProcessInbox.recordApplied(processData, msg);
+            persistState();
+            if ("__Terminate".equals(msg.field())) killed = true;
+            ProcessInbox.acknowledge(msg);
             changed = true;
         }
         return changed;
@@ -626,13 +704,14 @@ public class ProcessRunner {
                     FunctionManager.CallFrame frame = functionManager.popFrame();
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
-                    this.blockStack = new ArrayList<>();
+                    this.blockStack = new ArrayList<>(frame.savedBlockStack);
                     completePendingAssignment();
                     codeChanged();
                     settle(frame.savedCurrentLine + 1);
                     return;
                 }
                 terminateNormally("Program completed");
+                attemptManager.commit();
                 persistState();
                 return;
             }
@@ -667,6 +746,7 @@ public class ProcessRunner {
 
     @SuppressWarnings("unchecked")
     private void dispatchStatement(String line) {
+        controlTransferred = false;
         String trimmed = line.trim();
 
         // func 定义
@@ -677,7 +757,10 @@ public class ProcessRunner {
 
         // import
         if (trimmed.startsWith("import ")) {
-            List<String> imported = importManager.handleImport(trimmed, codeLines);
+            @SuppressWarnings("unchecked")
+            List<String> imported = (List<String>) invokeEngineEffect(
+                    "engine.import", EffectPolicy.RECORDED_RESULT, List.of(trimmed),
+                    ignored -> importManager.handleImport(trimmed, codeLines));
             for (String imp : imported) {
                 importManager.addImportedFile(imp);
             }
@@ -771,6 +854,7 @@ public class ProcessRunner {
                 if (frame != null) {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
+                    this.blockStack = new ArrayList<>(frame.savedBlockStack);
                     // 数据变更必须在 settle 之前完成
                     if (ret.value != null) {
                         data.put("__return_value", ret.value);
@@ -800,13 +884,15 @@ public class ProcessRunner {
 
         // fork()
         if (trimmed.matches("^\\s*fork\\s*\\(\\s*\\)\\s*$")) {
-            int childPid = ipcHandler.handleFork();
+            invokeEngineEffect("process.fork", EffectPolicy.LOCAL_TRANSACTIONAL, List.of(),
+                    invocation -> invokeFork(null, invocation));
             settle(currentLine + 1);
             return;
         }
 
         // exec(...)
         if (trimmed.startsWith("exec(") || trimmed.startsWith("exec (")) {
+            attemptManager.commit();
             ipcHandler.handleExec(trimmed);
             // exec 替换了代码，重新加载
             loadRuntimeState();
@@ -827,6 +913,7 @@ public class ProcessRunner {
         if (assignMatcher.matches()) {
             // 数据变更在 handleAssignment 内完成，然后行号+数据一起落盘
             handleAssignment(assignMatcher, line);
+            if (controlTransferred) { controlTransferred = false; return; }
             if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
             settle(currentLine + 1);
             return;
@@ -837,6 +924,7 @@ public class ProcessRunner {
         if (exprResult instanceof String) {
             String marker = (String) exprResult;
             handleMarker(marker);
+            if (controlTransferred) { controlTransferred = false; return; }
             if (state == ProcessState.BLOCKED) {
                 settle(currentLine + 1);
                 return;
@@ -877,6 +965,7 @@ public class ProcessRunner {
 
         // 若进入了用户函数体，赋值延迟到函数返回后完成
         if (enteredUserFunction) return;
+        if (controlTransferred) return;
 
         data.put(varName, value);
     }
@@ -917,19 +1006,30 @@ public class ProcessRunner {
     private void handleMarker(String marker) {
         if (marker == null) return;
         if (marker.equals("FORK")) {
-            // 这种标记不应在表达式上下文中触发
+            invokeEngineEffect("process.fork", EffectPolicy.LOCAL_TRANSACTIONAL, List.of(),
+                    invocation -> invokeFork(null, invocation));
             return;
         }
         if (marker.startsWith("KILL:")) {
-            ipcHandler.handleKill(marker.substring(5));
+            String target = marker.substring(5);
+            invokeControlEffect("process.kill", target, ipcHandler::handleKill);
         } else if (marker.equals("WAIT")) {
             ipcHandler.handleWait();
         } else if (marker.startsWith("WAITPID:")) {
             ipcHandler.handleWaitPid(marker.substring(8));
         } else if (marker.startsWith("PAUSE:")) {
-            ipcHandler.handlePause(marker.substring(6));
+            String target = marker.substring(6);
+            invokeControlEffect("process.pause", target, ipcHandler::handlePause);
         } else if (marker.startsWith("CONTINUE:")) {
-            ipcHandler.handleContinue(marker.substring(9));
+            String target = marker.substring(9);
+            invokeControlEffect("process.continue", target, ipcHandler::handleContinue);
+        } else if (marker.startsWith("EXEC:")) {
+            attemptManager.commit();
+            ipcHandler.handleExecMarker(marker);
+            loadRuntimeState();
+            controlTransferred = true;
+        } else if (marker.equals("EXIT")) {
+            terminateNormally("Exit requested");
         } else if (marker.startsWith("USER:")) {
             String funcName = marker.substring(5);
             handleUserFunctionCall(funcName);
@@ -942,9 +1042,10 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private Object handleMarkerResult(String marker, String varName) {
         if (marker.equals("FORK")) {
-            return ipcHandler.handleFork(varName);
+            return invokeEngineEffect("process.fork", EffectPolicy.LOCAL_TRANSACTIONAL,
+                    List.of(varName), invocation -> this.invokeFork(varName, invocation));
         } else if (marker.startsWith("KILL:")) {
-            ipcHandler.handleKill(marker.substring(5));
+            handleMarker(marker);
             return true;
         } else if (marker.equals("WAIT")) {
             ipcHandler.handleWait();
@@ -953,10 +1054,13 @@ public class ProcessRunner {
             ipcHandler.handleWaitPid(marker.substring(8));
             return true;
         } else if (marker.startsWith("PAUSE:")) {
-            ipcHandler.handlePause(marker.substring(6));
+            handleMarker(marker);
             return true;
         } else if (marker.startsWith("CONTINUE:")) {
-            ipcHandler.handleContinue(marker.substring(9));
+            handleMarker(marker);
+            return true;
+        } else if (marker.startsWith("EXEC:") || marker.equals("EXIT")) {
+            handleMarker(marker);
             return true;
         } else if (marker.startsWith("USER:")) {
             String funcName = marker.substring(5);
@@ -982,7 +1086,8 @@ public class ProcessRunner {
             return;
         }
         FunctionManager.CallFrame frame = functionManager.saveFrame(
-                new LinkedHashMap<>(data), new ArrayList<>(codeLines), currentLine);
+                new LinkedHashMap<>(data), new ArrayList<>(codeLines), currentLine,
+                new ArrayList<>(blockStack));
         this.data = new LinkedHashMap<>();
         this.codeLines = new ArrayList<>(def.bodyLines);
         this.currentLine = 0;
@@ -998,6 +1103,7 @@ public class ProcessRunner {
         }
         codeChanged();
         enteredUserFunction = true;  // 告知 dispatchStatement 跳过 currentLine++
+        attemptManager.commit();
         persistState();
     }
 
@@ -1031,6 +1137,16 @@ public class ProcessRunner {
 
     @SuppressWarnings("unchecked")
     private void loadFromProcessDataInternal() {
+        ProcessIdentity.ensureDefaults(processData);
+        String loadedGeneration = ProcessIdentity.generation(processData);
+        if (ownedGeneration != null && !ownedGeneration.equals(loadedGeneration)) {
+            throw new IllegalStateException("PID " + pid + " was replaced by another process generation");
+        }
+        this.processGeneration = loadedGeneration;
+        Object user = processData.get("EffectiveUser");
+        this.effectiveUser = user instanceof String ? user.toString() : stateManager.extractOwner();
+        this.pathAliases = extractPathAliases(processData.get("PathAliases"));
+        attemptManager.load(processData);
         StateManager.RuntimeSnapshot snap = stateManager.loadFromProcessData();
         this.data = snap.data;
         this.codeLines = snap.codeLines;
@@ -1051,16 +1167,25 @@ public class ProcessRunner {
 
         // 恢复调用栈
         functionManager.getCallStack().clear();
-        for (Map<String, Object> frameData : snap.callStackData) {
+        List<Map<String, Object>> restoredFrames = new ArrayList<>(snap.callStackData);
+        Collections.reverse(restoredFrames);
+        for (Map<String, Object> frameData : restoredFrames) {
             @SuppressWarnings("unchecked")
             Map<String, Object> savedData = (Map<String, Object>) frameData.get("Data");
             @SuppressWarnings("unchecked")
             List<String> savedCode = (List<String>) frameData.get("Code");
             Object lineObj = frameData.get("CodeLine");
             int savedLine = lineObj instanceof Number ? ((Number) lineObj).intValue() : 0;
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> savedBlocks = frameData.get("BlockStack") instanceof List
+                    ? (List<Map<String, Object>>) frameData.get("BlockStack") : new ArrayList<>();
             if (savedData != null && savedCode != null) {
-                functionManager.saveFrame(savedData, savedCode, savedLine);
+                functionManager.saveFrame(savedData, savedCode, savedLine, savedBlocks);
             }
+        }
+        if (!functionManager.getCallStack().isEmpty()) {
+            FunctionManager.CallFrame rootFrame = functionManager.getCallStack().peekLast();
+            if (rootFrame != null) functionManager.parseFunctions(rootFrame.savedCodeLines);
         }
 
         if (snap.pendingAssignVarName != null) {
@@ -1113,6 +1238,7 @@ public class ProcessRunner {
      */
     private void settle(int newLine) {
         this.currentLine = newLine;
+        attemptManager.commit();
         persistState();
     }
 
@@ -1123,6 +1249,7 @@ public class ProcessRunner {
             frameData.put("Data", new LinkedHashMap<>(frame.savedData));
             frameData.put("Code", new ArrayList<>(frame.savedCodeLines));
             frameData.put("CodeLine", frame.savedCurrentLine);
+            frameData.put("BlockStack", new ArrayList<>(frame.savedBlockStack));
             result.add(frameData);
         }
         return result;
@@ -1169,16 +1296,30 @@ public class ProcessRunner {
         Logger.error("Process " + pid + " error at line " + currentLine + " (" + operation + "): " + msg
                 + " | context=" + ctx.toDetailedString());
 
-        if (e instanceof RecoverableException) {
+        if (e instanceof EffectRecoveryRequiredException recovery) {
+            Map<String, Object> recoveryInfo = new LinkedHashMap<>();
+            recoveryInfo.put("EffectId", recovery.getEffectId());
+            recoveryInfo.put("Message", msg);
+            processData.put("_effectRecovery", recoveryInfo);
+            blockReason = BlockReason.EFFECT_RECOVERY;
+            transitionTo(ProcessState.BLOCKED, msg);
+        } else if (e instanceof RetryableEffectException) {
             data.put("_warning", msg);
+            transitionTo(ProcessState.READY, msg);
+        } else if (e instanceof RecoverableException) {
+            data.put("_warning", msg);
+            attemptManager.abandon();
         } else if (e instanceof UnrecoverableException) {
             data.put("_error", msg);
+            attemptManager.abandon();
             failProcess(msg);
         } else if (e instanceof RuntimeException) {
             data.put("_error", msg);
+            attemptManager.abandon();
             failProcess(msg);
         } else {
             data.put("_warning", msg);
+            attemptManager.abandon();
         }
         persistState();
     }
@@ -1201,6 +1342,7 @@ public class ProcessRunner {
         exitReason = ExitReason.NORMAL;
         blockReason = BlockReason.NONE;
         transitionTo(ProcessState.TERMINATED, message);
+        prepareLifecycleCleanup(Constants.DELETE_PROCESS_FILE_ON_EXIT);
     }
 
     private void failProcess(String message) {
@@ -1208,6 +1350,21 @@ public class ProcessRunner {
         exitReason = ExitReason.ERROR;
         blockReason = BlockReason.NONE;
         transitionTo(ProcessState.FAILED, message);
+        prepareLifecycleCleanup(Constants.DELETE_PROCESS_FILE_ON_EXIT);
+    }
+
+    private void prepareLifecycleCleanup(boolean deleteAfterCleanup) {
+        processData.put("LifecycleCleanup", lifecycleCleanupRecord(processData, deleteAfterCleanup));
+        processData.remove("TerminationCleanup");
+    }
+
+    private static Map<String, Object> lifecycleCleanupRecord(Map<String, Object> process,
+                                                               boolean deleteAfterCleanup) {
+        Map<String, Object> cleanup = new LinkedHashMap<>();
+        cleanup.put("Phase", "PENDING");
+        cleanup.put("DeleteAfterCleanup", deleteAfterCleanup);
+        cleanup.put("ProcessGeneration", process.get("ProcessGeneration"));
+        return cleanup;
     }
 
     private void applyRequestedState(Object value) {
@@ -1264,44 +1421,55 @@ public class ProcessRunner {
         if (state.isTerminal()) running = false;
     }
 
-    private boolean isChildFinished(int childPid) {
+    private boolean isChildFinished(int childPid, String expectedGeneration) {
         String path = com.follarce.util.PathUtil.findProcessFilePathByPid(childPid);
         if (path == null || !com.follarce.util.FileUtil.exists(path)) return true;
+        if (expectedGeneration != null) {
+            Object actualGeneration = com.follarce.util.JsonUtil.getField(path, "ProcessGeneration");
+            if (!expectedGeneration.equals(actualGeneration)) return true;
+        }
         Object childState = com.follarce.util.JsonUtil.getField(path, "ProcessState");
         Object legacyStatus = com.follarce.util.JsonUtil.getField(path, "Status");
         return ProcessState.restore(childState, legacyStatus).isTerminal();
     }
 
-    private static void applyOfflineStateRequest(String processPath, Object value) {
+    private static void applyOfflineStateRequest(Map<String, Object> data, Object value) {
         ProcessState requested;
         try {
             requested = ProcessState.valueOf(String.valueOf(value));
         } catch (IllegalArgumentException e) {
             return;
         }
-        com.follarce.util.JsonUtil.updateFile(processPath, data -> {
-            ProcessState current = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
-            if (current.isTerminal()) return;
-            if (requested == ProcessState.PAUSED && current.canTransitionTo(ProcessState.PAUSED)) {
-                data.put("ResumeState", current == ProcessState.BLOCKED
-                        ? ProcessState.BLOCKED.name() : ProcessState.READY.name());
-                data.put("ProcessState", ProcessState.PAUSED.name());
-            } else if (requested == ProcessState.READY && current == ProcessState.PAUSED) {
-                ProcessState next = ProcessState.BLOCKED.name().equals(data.get("ResumeState"))
-                        ? ProcessState.BLOCKED : ProcessState.READY;
-                data.put("ProcessState", next.name());
-            }
-        });
+        ProcessState current = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
+        if (current.isTerminal()) return;
+        if (requested == ProcessState.PAUSED && current.canTransitionTo(ProcessState.PAUSED)) {
+            data.put("ResumeState", current == ProcessState.BLOCKED
+                    ? ProcessState.BLOCKED.name() : ProcessState.READY.name());
+            data.put("ProcessState", ProcessState.PAUSED.name());
+            data.put("StateMessage", "Paused externally");
+        } else if (requested == ProcessState.READY && current == ProcessState.PAUSED) {
+            ProcessState next = ProcessState.BLOCKED.name().equals(data.get("ResumeState"))
+                    ? ProcessState.BLOCKED : ProcessState.READY;
+            data.put("ProcessState", next.name());
+            data.put("StateMessage", next == ProcessState.BLOCKED ? data.get("BlockReason") : null);
+        }
     }
 
     @SuppressWarnings("unchecked")
     private void recordChildExitInMemory(String childPid, Object event) {
+        String generation = event instanceof Map && ((Map<?, ?>) event).get("Generation") instanceof String
+                ? ((Map<?, ?>) event).get("Generation").toString() : null;
         Object childrenObj = processData.get("Child");
         if (childrenObj instanceof Map) {
+            Object currentChild = ((Map<?, ?>) childrenObj).get(childPid);
+            if (generation != null && currentChild instanceof Map
+                    && ((Map<?, ?>) currentChild).get("Generation") instanceof String
+                    && !generation.equals(((Map<?, ?>) currentChild).get("Generation"))) return;
             ((Map<String, Object>) childrenObj).remove(childPid);
         }
         Map<String, Object> exited = (Map<String, Object>) processData.computeIfAbsent(
                 "ExitedChildren", ignored -> new LinkedHashMap<>());
+        if (isReaped(processData, childPid, generation)) return;
         exited.put(childPid, event);
     }
 
@@ -1318,19 +1486,49 @@ public class ProcessRunner {
             childPid = exited.keySet().iterator().next();
         }
         if (childPid == null || !exited.containsKey(childPid)) return false;
-        exited.remove(childPid);
+        Object event = exited.remove(childPid);
+        String generation = event instanceof Map && ((Map<?, ?>) event).get("Generation") instanceof String
+                ? ((Map<?, ?>) event).get("Generation").toString() : null;
+        markReaped(processData, childPid, generation);
         return true;
     }
 
     @SuppressWarnings("unchecked")
-    private static void recordChildExit(Map<String, Object> parentData, int childPid, Object event) {
+    private static void recordChildExit(Map<String, Object> parentData, int childPid,
+                                        String childGeneration, Object event) {
         Object childrenObj = parentData.get("Child");
         if (childrenObj instanceof Map) {
+            Object childInfo = ((Map<String, Object>) childrenObj).get(String.valueOf(childPid));
+            if (childGeneration != null && childInfo instanceof Map
+                    && ((Map<?, ?>) childInfo).get("Generation") instanceof String
+                    && !childGeneration.equals(((Map<?, ?>) childInfo).get("Generation"))) {
+                return;
+            }
             ((Map<String, Object>) childrenObj).remove(String.valueOf(childPid));
         }
         Map<String, Object> exited = (Map<String, Object>) parentData.computeIfAbsent(
                 "ExitedChildren", ignored -> new LinkedHashMap<>());
+        if (isReaped(parentData, String.valueOf(childPid), childGeneration)) return;
         exited.put(String.valueOf(childPid), event);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean isReaped(Map<String, Object> process, String childPid, String generation) {
+        Object reaped = process.get("ReapedChildren");
+        return reaped instanceof Map
+                && (((Map<String, Object>) reaped).containsKey(incarnationKey(childPid, generation))
+                || (generation != null && ((Map<String, Object>) reaped).containsKey(childPid)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void markReaped(Map<String, Object> process, String childPid, String generation) {
+        Map<String, Object> reaped = (Map<String, Object>) process.computeIfAbsent(
+                "ReapedChildren", ignored -> new LinkedHashMap<String, Object>());
+        reaped.put(incarnationKey(childPid, generation), true);
+    }
+
+    private static String incarnationKey(String pid, String generation) {
+        return generation == null ? pid : pid + "@" + generation;
     }
 
     @SuppressWarnings("unchecked")
@@ -1354,28 +1552,186 @@ public class ProcessRunner {
         return parentPid instanceof Number ? ((Number) parentPid).intValue() : 0;
     }
 
-    private static void finalizeKilledSnapshot(Map<String, Object> snapshot, int targetPid) {
-        reparentSnapshotChildren(snapshot);
-        int parentPid = extractParentPid(snapshot);
-        if (parentPid > 0) recordChildExit(parentPid, targetPid, ExitReason.KILLED);
+    @SuppressWarnings("unchecked")
+    private static String extractParentGeneration(Map<String, Object> snapshot) {
+        Object parentObj = snapshot.get("Parent");
+        if (!(parentObj instanceof Map)) return null;
+        Object generation = ((Map<String, Object>) parentObj).get("Generation");
+        return generation instanceof String ? generation.toString() : null;
     }
 
-    private static void removeProcessFile(int targetPid) {
+    private static void finalizeTerminalSnapshot(Map<String, Object> snapshot, int targetPid) {
+        reparentSnapshotChildren(snapshot);
+        int parentPid = extractParentPid(snapshot);
+        ExitReason reason = ExitReason.NONE;
+        Object savedReason = snapshot.get("ExitReason");
+        if (savedReason != null) {
+            try {
+                reason = ExitReason.valueOf(savedReason.toString());
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        String childGeneration = snapshot.get("ProcessGeneration") instanceof String
+                ? snapshot.get("ProcessGeneration").toString() : null;
+        if (parentPid > 0) recordChildExit(parentPid, extractParentGeneration(snapshot),
+                targetPid, childGeneration, reason);
+    }
+
+    private static boolean removeProcessFile(int targetPid, String expectedGeneration) {
         String path = com.follarce.util.PathUtil.findProcessFilePathByPid(targetPid);
-        if (path != null && com.follarce.util.FileUtil.exists(path)) {
+        if (path == null || !com.follarce.util.FileUtil.exists(path)) return false;
+        java.util.concurrent.locks.ReentrantLock lock = com.follarce.util.JsonUtil.lockFile(path);
+        try {
+            if (!com.follarce.util.FileUtil.exists(path)) return false;
+            Map<String, Object> current = com.follarce.util.JsonUtil.parseToMapStrict(
+                    com.follarce.util.FileUtil.read(path));
+            if (!expectedGeneration.equals(current.get("ProcessGeneration"))) return false;
             com.follarce.util.FileUtil.removeFile(path);
+        } finally {
+            lock.unlock();
+        }
+        ProcessInbox.removeIncarnation(targetPid, expectedGeneration);
+        return true;
+    }
+
+    private static void applyOfflineInbox(int targetPid, String generation) {
+        String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        for (ProcessMessage message : ProcessInbox.list(targetPid, generation)) {
+            final boolean[] terminate = {false};
+            com.follarce.util.JsonUtil.updateFile(processPath, data -> {
+                if (!generation.equals(data.get("ProcessGeneration"))) return;
+                if (ProcessInbox.isApplied(data, message.messageId())) return;
+                if ("ProcessState".equals(message.field())) {
+                    applyOfflineStateRequest(data, message.value());
+                } else if ("Status".equals(message.field())) {
+                    applyOfflineStateRequest(data, Boolean.FALSE.equals(message.value())
+                            ? ProcessState.PAUSED.name() : ProcessState.READY.name());
+                } else if ("__Terminate".equals(message.field())) {
+                    ProcessState current = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
+                    if (!current.isTerminal()) {
+                        data.put("ProcessState", ProcessState.TERMINATED.name());
+                        data.put("Status", false);
+                        data.put("ExitReason", ExitReason.KILLED.name());
+                        data.put("BlockReason", null);
+                        data.put("StateMessage", "Killed");
+                    }
+                    Map<String, Object> cleanup = lifecycleCleanupRecord(data, true);
+                    cleanup.put("RequestId", message.messageId());
+                    data.put("LifecycleCleanup", cleanup);
+                    terminate[0] = true;
+                } else {
+                    setNestedField(data, message.field(), message.value());
+                }
+                ProcessInbox.recordApplied(data, message);
+            });
+            ProcessInbox.acknowledge(message);
+            if (terminate[0]) reconcileLifecycle(targetPid, generation);
         }
     }
 
+    public static void recoverInbox(int targetPid, String generation) {
+        applyOfflineInbox(targetPid, generation);
+    }
+
+    public static void reconcileTermination(int targetPid) {
+        reconcileLifecycle(targetPid);
+    }
+
+    public static void reconcileLifecycle(int targetPid) {
+        String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        if (!com.follarce.util.FileUtil.exists(path)) return;
+        Map<String, Object> snapshot = com.follarce.util.JsonUtil.parseToMapStrict(
+                com.follarce.util.FileUtil.read(path));
+        ProcessIdentity.ensureDefaults(snapshot);
+        reconcileLifecycle(targetPid, ProcessIdentity.generation(snapshot));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void reconcileLifecycle(int targetPid, String expectedGeneration) {
+        String gateKey = targetPid + "@" + expectedGeneration;
+        Object gate = LIFECYCLE_CLEANUP_GATES.computeIfAbsent(gateKey, ignored -> new Object());
+        try {
+            synchronized (gate) {
+                String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+                if (!com.follarce.util.FileUtil.exists(path)) return;
+                Map<String, Object> snapshot = com.follarce.util.JsonUtil.parseToMapStrict(
+                        com.follarce.util.FileUtil.read(path));
+                if (!expectedGeneration.equals(snapshot.get("ProcessGeneration"))) return;
+                Object cleanupObject = snapshot.get("LifecycleCleanup");
+                if (!(cleanupObject instanceof Map)) cleanupObject = snapshot.get("TerminationCleanup");
+                if (!(cleanupObject instanceof Map)
+                        || !ProcessState.restore(snapshot.get("ProcessState"), snapshot.get("Status")).isTerminal()) {
+                    return;
+                }
+                Map<String, Object> cleanup = (Map<String, Object>) cleanupObject;
+                boolean delete = Boolean.TRUE.equals(cleanup.get("DeleteAfterCleanup"))
+                        || snapshot.get("TerminationCleanup") instanceof Map;
+                finalizeTerminalSnapshot(snapshot, targetPid);
+                if (delete) {
+                    if (removeProcessFile(targetPid, expectedGeneration)) {
+                        ProcessRunner runner = RUNNERS.get(targetPid);
+                        if (runner != null && expectedGeneration.equals(runner.processGeneration)) {
+                            runner.running = false;
+                            RUNNERS.remove(targetPid, runner);
+                            runner.registered = false;
+                        }
+                    }
+                } else {
+                    com.follarce.util.JsonUtil.updateFile(path, data -> {
+                        if (!expectedGeneration.equals(data.get("ProcessGeneration"))) return;
+                        data.remove("LifecycleCleanup");
+                        data.remove("TerminationCleanup");
+                    });
+                }
+                unparkProcess(targetPid);
+            }
+        } finally {
+            LIFECYCLE_CLEANUP_GATES.remove(gateKey, gate);
+        }
+    }
+
+    /** Applies an explicit operator decision to the newest in-doubt effect. */
+    public static boolean resolveEffect(int targetPid, String decision, Object suppliedResult) {
+        return resolveEffect(targetPid, null, decision, suppliedResult);
+    }
+
+    public static boolean resolveEffect(int targetPid, String expectedEffectId,
+                                        String decision, Object suppliedResult) {
+        String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        if (!com.follarce.util.FileUtil.exists(path)) return false;
+        final boolean[] resolved = {false};
+        com.follarce.util.JsonUtil.updateFile(path,
+                data -> resolved[0] = StatementAttemptManager.resolve(
+                        data, expectedEffectId, decision, suppliedResult));
+        if (!resolved[0]) return false;
+
+        ProcessRunner target = RUNNERS.get(targetPid);
+        if (target != null) {
+            synchronized (target.persistenceLock) {
+                target.reloadFromFile();
+            }
+        }
+        unparkProcess(targetPid);
+        if ("fail".equalsIgnoreCase(decision)) reconcileLifecycle(targetPid);
+        return true;
+    }
+
     private static void updateProcessData(int targetPid, Consumer<Map<String, Object>> updater) {
-        updateProcessData(targetPid, updater, false);
+        updateProcessData(targetPid, null, updater, false);
     }
 
     private static boolean updateProcessData(int targetPid, Consumer<Map<String, Object>> updater,
                                              boolean requireActive) {
+        return updateProcessData(targetPid, null, updater, requireActive);
+    }
+
+    private static boolean updateProcessData(int targetPid, String expectedGeneration,
+                                             Consumer<Map<String, Object>> updater,
+                                             boolean requireActive) {
         ProcessRunner target = RUNNERS.get(targetPid);
         if (target != null) {
             synchronized (target.persistenceLock) {
+                if (expectedGeneration != null && !expectedGeneration.equals(target.processGeneration)) return false;
                 if (requireActive && target.state.isTerminal()) return false;
                 updater.accept(target.processData);
                 target.persistState();
@@ -1387,12 +1743,24 @@ public class ProcessRunner {
         if (!com.follarce.util.FileUtil.exists(path)) return false;
         boolean[] updated = {false};
         com.follarce.util.JsonUtil.updateFile(path, data -> {
+            if (expectedGeneration != null && !expectedGeneration.equals(data.get("ProcessGeneration"))) return;
             ProcessState saved = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
             if (requireActive && saved.isTerminal()) return;
             updater.accept(data);
             updated[0] = true;
         });
         return updated[0];
+    }
+
+    private static String readProcessGeneration(int targetPid) {
+        String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        if (!com.follarce.util.FileUtil.exists(path)) return null;
+        try {
+            Object generation = com.follarce.util.JsonUtil.getField(path, "ProcessGeneration");
+            return generation instanceof String ? generation.toString() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -1448,5 +1816,74 @@ public class ProcessRunner {
             result = 0;
         }
         return result >= 0 ? result : 0;
+    }
+
+    private FunctionContext createFunctionContext() {
+        return new FunctionContext(pid, stateManager.extractParentPid(), effectiveUser,
+                processGeneration, pathAliases, this::setEffectiveUser,
+                this::setPathAliases, this::executeFunctionEffect);
+    }
+
+    private Object executeFunctionEffect(String operation, EffectPolicy policy, List<Object> arguments,
+                                         java.util.function.Function<FunctionContext, Object> invocation) {
+        return attemptManager.invoke(operation, policy, arguments, effect ->
+                invocation.apply(createFunctionContext().forEffect(effect.effectId(), effect.replay())));
+    }
+
+    private Object invokeEngineEffect(String operation, EffectPolicy policy, List<Object> arguments,
+                                      java.util.function.Function<StatementAttemptManager.Invocation, Object> action) {
+        return attemptManager.invoke(operation, policy, arguments, action);
+    }
+
+    private Object invokeControlEffect(
+            String operation,
+            String targetText,
+            java.util.function.BiFunction<IpcHandler.ControlTarget, String, Boolean> action) {
+        IpcHandler.ControlTarget target = ipcHandler.resolveControlTarget(targetText);
+        if (target == null) return false;
+        return invokeEngineEffect(operation, EffectPolicy.LOCAL_TRANSACTIONAL,
+                List.of(target.pid(), target.generation()),
+                invocation -> {
+                    try {
+                        return action.apply(target, invocation.effectId());
+                    } catch (RuntimeException e) {
+                        throw new RetryableEffectException(
+                                "Durable control publication failed: " + operation, e);
+                    }
+                });
+    }
+
+    private Object invokeFork(String resultVariable, StatementAttemptManager.Invocation invocation) {
+        try {
+            return ipcHandler.handleFork(resultVariable, invocation.effectId());
+        } catch (com.follarce.function.UnknownEffectOutcomeException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new RetryableEffectException("Fork publication failed", e);
+        }
+    }
+
+    private void setEffectiveUser(String username) {
+        if (username == null || username.isBlank()) throw new IllegalArgumentException("Effective user is required");
+        effectiveUser = username;
+        processData.put("EffectiveUser", username);
+        UserUtil.setCurrentUser(username);
+    }
+
+    private void setPathAliases(Map<String, String> aliases) {
+        pathAliases = aliases == null ? new LinkedHashMap<>() : new LinkedHashMap<>(aliases);
+        processData.put("PathAliases", new LinkedHashMap<>(pathAliases));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> extractPathAliases(Object value) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (!(value instanceof Map)) return result;
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+            if (entry.getKey() instanceof String && entry.getValue() instanceof String) {
+                result.put(entry.getKey().toString(), entry.getValue().toString());
+            }
+        }
+        return result;
     }
 }

@@ -32,6 +32,10 @@ public final class Constants {
 
     // ── 路径 ──
     public static final String SYSTEM_PROCESS_PATH = "/system/process/";
+    public static final String SYSTEM_PROCESS_INBOX_PATH = "/system/process-inbox/";
+    public static final String SYSTEM_EFFECT_PATH = "/system/effects/";
+    public static final String SYSTEM_APPLIED_EFFECT_PATH = "/system/effects/applied/";
+    public static final String SYSTEM_FORK_EFFECT_PATH = "/system/effects/forks/";
     public static final String SYSTEM_CONFIG_PATH = "/system/config/";
     public static final String SYSTEM_SWAP_PATH = "/system/swap/";
     public static final String SYSTEM_APP_PATH = "/system/app/";
@@ -70,6 +74,7 @@ public final class Constants {
     public static final String PERM_WRITE = "write";
     public static final String PERM_OWNER = "Owner";
     public static final String PERM_OTHERS = "Others";
+    public static final long DEFAULT_FILE_LOCK_LEASE_MS = 30_000L;
 
     // ── 交换池类型 ──
     public static final String SWAP_TYPE_ALWAYS = "always";
@@ -82,7 +87,8 @@ public final class Constants {
     // ── 路径别名 ──
     public static final List<String> VFS_ROOT_DIRS = List.of(
             "/system/", "/system/app/", "/system/config/",
-            "/system/process/", "/system/swap/",
+            "/system/process/", "/system/process-inbox/", "/system/effects/",
+            "/system/effects/applied/", "/system/effects/forks/", "/system/swap/",
             "/user/", "/user/local/", "/user/local/app/"
     );
 }

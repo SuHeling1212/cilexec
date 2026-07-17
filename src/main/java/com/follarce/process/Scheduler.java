@@ -21,11 +21,11 @@ import java.util.*;
 public class Scheduler extends Thread {
 
     // 所有已知进程（用于快速查找）
-    private final Map<Integer, ProcessRunner> allProcesses = new LinkedHashMap<>();
+    private final Map<Integer, ProcessRunner> allProcesses = new java.util.concurrent.ConcurrentHashMap<>();
 
     // 进程文件连续缺失计数（PID → 连续未扫描到的次数）
     // 用于容忍 writeAtomic 原子重命名期间的瞬时读取失败
-    private final Map<Integer, Integer> missingCounts = new LinkedHashMap<>();
+    private final Map<Integer, Integer> missingCounts = new java.util.concurrent.ConcurrentHashMap<>();
 
     private volatile boolean running = true;
 
@@ -138,20 +138,33 @@ public class Scheduler extends Thread {
 
             // 终态文件用于诊断，不应重新创建执行线程。
             if (isTerminal(entry.getValue())) {
+                if (entry.getValue().get("LifecycleCleanup") instanceof Map
+                        || entry.getValue().get("TerminationCleanup") instanceof Map) {
+                    ProcessRunner.reconcileLifecycle(pid);
+                }
                 continue;
             }
 
             ProcessRunner known = allProcesses.get(pid);
+            if (known != null && !sameGeneration(known, entry.getValue())) {
+                known.stopProcess();
+                allProcesses.remove(pid);
+                known = null;
+            }
             if (known != null && !known.isRunning()) {
                 allProcesses.remove(pid);
                 missingCounts.remove(pid);
                 known = null;
             }
             if (known == null) {
-                ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
-                runner.init();
-                addProcess(runner);
-                Logger.info("Restored existing process: PID=" + pid + " (" + runner.getProcessName() + ")");
+                try {
+                    ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
+                    runner.init();
+                    addProcess(runner);
+                    Logger.info("Restored existing process: PID=" + pid + " (" + runner.getProcessName() + ")");
+                } catch (RuntimeException e) {
+                    Logger.warn("Failed to restore PID " + pid + ": " + e.getMessage());
+                }
             }
         }
     }
@@ -169,20 +182,34 @@ public class Scheduler extends Thread {
             if (pid == Constants.PID_INIT) continue;
 
             if (isTerminal(entry.getValue())) {
+                if (entry.getValue().get("LifecycleCleanup") instanceof Map
+                        || entry.getValue().get("TerminationCleanup") instanceof Map) {
+                    ProcessRunner.reconcileLifecycle(pid);
+                }
                 continue;
             }
 
             ProcessRunner known = allProcesses.get(pid);
+            if (known != null && !sameGeneration(known, entry.getValue())) {
+                known.stopProcess();
+                allProcesses.remove(pid);
+                missingCounts.remove(pid);
+                known = null;
+            }
             if (known != null && !known.isRunning()) {
                 allProcesses.remove(pid);
                 missingCounts.remove(pid);
                 known = null;
             }
             if (known == null) {
-                ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
-                runner.init();
-                addProcess(runner);
-                Logger.info("New process detected: PID=" + pid + " (" + runner.getProcessName() + ")");
+                try {
+                    ProcessRunner runner = new ProcessRunner(pid, entry.getValue());
+                    runner.init();
+                    addProcess(runner);
+                    Logger.info("New process detected: PID=" + pid + " (" + runner.getProcessName() + ")");
+                } catch (RuntimeException e) {
+                    Logger.warn("Failed to initialize PID " + pid + ": " + e.getMessage());
+                }
             }
         }
 
@@ -274,7 +301,14 @@ public class Scheduler extends Thread {
                 String content = FileUtil.read(vfsPath);
                 if (content == null || content.trim().isEmpty()) continue;
 
+                Object fileOwner = FileUtil.readFileMetaData(vfsPath).get("Owner");
+                if (!Constants.DEFAULT_USER_LOCAL.equals(fileOwner)) {
+                    Logger.warn("Rejected non-system process snapshot: " + name);
+                    continue;
+                }
+
                 Map<String, Object> processData = JsonUtil.parseToMapStrict(content);
+                if (Boolean.TRUE.equals(processData.get("Reservation"))) continue;
                 Object pidObj = processData.get("PID");
                 if (!(pidObj instanceof Number)) continue;
                 int pid = ((Number) pidObj).intValue();
@@ -295,5 +329,10 @@ public class Scheduler extends Thread {
 
     private boolean isTerminal(Map<String, Object> processData) {
         return ProcessState.restore(processData.get("ProcessState"), processData.get("Status")).isTerminal();
+    }
+
+    private boolean sameGeneration(ProcessRunner runner, Map<String, Object> processData) {
+        Object generation = processData.get("ProcessGeneration");
+        return generation instanceof String && generation.equals(runner.getProcessGeneration());
     }
 }

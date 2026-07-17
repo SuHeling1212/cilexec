@@ -73,6 +73,9 @@ public final class ProcessInit {
         Map<String, Object> processData = new LinkedHashMap<>();
         processData.put("Name", "INIT");
         processData.put("Owner", currentUser);
+        processData.put("EffectiveUser", currentUser);
+        processData.put("ProcessGeneration", com.follarce.process.ProcessIdentity.newGeneration());
+        processData.put("PathAliases", new LinkedHashMap<String, String>());
         processData.put("isLocal", true);
         processData.put("PID", Constants.PID_INIT);
         processData.put("Path", initFclPath);
@@ -87,6 +90,11 @@ public final class ProcessInit {
         processData.put("Parent", new LinkedHashMap<>());
         processData.put("Child", new LinkedHashMap<>());
         processData.put("ExitedChildren", new LinkedHashMap<>());
+        processData.put("ReapedChildren", new LinkedHashMap<>());
+        Map<String, Object> execution = new LinkedHashMap<>();
+        execution.put("SchemaVersion", com.follarce.process.ProcessIdentity.EXECUTION_SCHEMA_VERSION);
+        execution.put("NextAttemptOrdinal", 0L);
+        processData.put("Execution", execution);
 
         // Program 部分
         Map<String, Object> program = new LinkedHashMap<>();

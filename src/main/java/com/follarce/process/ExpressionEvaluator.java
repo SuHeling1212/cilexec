@@ -6,12 +6,12 @@ import com.follarce.exception.ProcessException;
 import com.follarce.exception.UnrecoverableException;
 import com.follarce.log.Logger;
 import com.follarce.script.*;
-import com.follarce.util.UserUtil;
 
 
 import java.util.*;
 import java.util.function.BiConsumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -58,14 +58,23 @@ public class ExpressionEvaluator {
     private final int pid;
     private final IntSupplier ppidSupplier;
     private final BiConsumer<String, List<Object>> functionArgCallback;
+    private final Supplier<FunctionContext> functionContextSupplier;
     private NodeEvaluator nodeEvaluator;
     private Map<String, Object> data;
 
     public ExpressionEvaluator(int pid, IntSupplier ppidSupplier,
                                BiConsumer<String, List<Object>> functionArgCallback) {
+        this(pid, ppidSupplier, functionArgCallback,
+                () -> new FunctionContext(pid, ppidSupplier.getAsInt(), "local"));
+    }
+
+    public ExpressionEvaluator(int pid, IntSupplier ppidSupplier,
+                               BiConsumer<String, List<Object>> functionArgCallback,
+                               Supplier<FunctionContext> functionContextSupplier) {
         this.pid = pid;
         this.ppidSupplier = ppidSupplier;
         this.functionArgCallback = functionArgCallback;
+        this.functionContextSupplier = functionContextSupplier;
     }
 
     /**
@@ -79,8 +88,7 @@ public class ExpressionEvaluator {
     public Map<String, Object> getData() { return data; }
 
     private void rebuildNodeEvaluator() {
-        String user = UserUtil.getCurrentUser();
-        this.nodeEvaluator = new NodeEvaluator(data, pid, ppidSupplier.getAsInt(), user);
+        this.nodeEvaluator = new NodeEvaluator(data, functionContextSupplier);
         if (functionArgCallback != null) {
             this.nodeEvaluator.setFunctionArgCallback(functionArgCallback);
         }

@@ -1,6 +1,7 @@
 package com.follarce.util;
 
 import com.follarce.Constants;
+import com.follarce.function.UnknownEffectOutcomeException;
 
 import java.io.*;
 import java.net.HttpURLConnection;
@@ -47,7 +48,12 @@ public final class NetworkUtil {
      * HTTP POST 请求。
      */
     public static String httpPost(String url, String data) {
+        return httpPost(url, data, null);
+    }
+
+    public static String httpPost(String url, String data, String idempotencyKey) {
         HttpURLConnection conn = null;
+        boolean dispatchStarted = false;
         try {
             URL obj = new URL(url);
             conn = (HttpURLConnection) obj.openConnection();
@@ -56,8 +62,12 @@ public final class NetworkUtil {
             conn.setReadTimeout(Constants.DEFAULT_TIMEOUT);
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
+            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                conn.setRequestProperty("Idempotency-Key", idempotencyKey);
+            }
 
             try (OutputStream os = conn.getOutputStream()) {
+                dispatchStarted = true;
                 byte[] input = data.getBytes(StandardCharsets.UTF_8);
                 os.write(input, 0, input.length);
             }
@@ -72,6 +82,9 @@ public final class NetworkUtil {
 
             return "Response Code: " + responseCode + "\n" + responseBody;
         } catch (Exception e) {
+            if (dispatchStarted) {
+                throw new UnknownEffectOutcomeException("HTTP POST outcome is unknown: " + e.getMessage(), e);
+            }
             return "ERROR: HTTP POST failed: " + e.getMessage();
         } finally {
             if (conn != null) conn.disconnect();

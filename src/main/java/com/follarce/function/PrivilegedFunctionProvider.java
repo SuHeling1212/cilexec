@@ -2,11 +2,16 @@ package com.follarce.function;
 
 import com.follarce.Constants;
 import com.follarce.log.Logger;
+import com.follarce.process.ProcessRunner;
+import com.follarce.process.ProcessIdentity;
+import com.follarce.util.FileUtil;
+import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;
 
 import java.io.File;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 特权函数提供者 —— 仅供 local 用户使用。
@@ -88,14 +93,25 @@ public class PrivilegedFunctionProvider implements FunctionProvider {
                 case "kill": {
                     int pid = getIntArg(args, 0);
                     String processPath = PathUtil.findProcessFilePathByPid(pid);
-                    if (processPath == null) return "ERROR: Process not found: " + pid;
-                    String realPath = PathUtil.toRealPath(processPath);
-                    File file = new File(realPath);
-                    if (file.delete()) {
-                        Logger.info("system.kill: PID " + pid);
-                        return "Killed PID " + pid;
+                    if (processPath == null || !FileUtil.exists(processPath)) {
+                        return "ERROR: Process not found: " + pid;
                     }
-                    return "ERROR: Process not found: " + pid;
+                    String targetGeneration = ProcessIdentity.generation(
+                            JsonUtil.parseToMapStrict(FileUtil.read(processPath)));
+                    String messageId = context.getEffectId() != null
+                            ? context.getEffectId() : java.util.UUID.randomUUID().toString();
+                    ProcessRunner.requestTermination(pid, targetGeneration, messageId,
+                            context.getPid(), context.getProcessGeneration());
+                    Logger.info("system.kill: requested PID " + pid);
+                    return "Killed PID " + pid;
+                }
+
+                case "resolveEffect": {
+                    int targetPid = getIntArg(args, 0);
+                    String effectId = getStringArg(args, 1);
+                    String decision = getStringArg(args, 2);
+                    Object result = args != null && args.size() > 3 ? args.get(3) : null;
+                    return ProcessRunner.resolveEffect(targetPid, effectId, decision, result);
                 }
 
                 // ────────────────────────────────────────
@@ -150,6 +166,10 @@ public class PrivilegedFunctionProvider implements FunctionProvider {
             }
         } catch (Exception e) {
             Logger.error("system." + functionName + " error: " + e.getMessage());
+            if (Set.of("invoke", "forceRemove", "reset", "exec").contains(functionName)) {
+                throw new UnknownEffectOutcomeException(
+                        "Privileged operation outcome is unknown: " + e.getMessage(), e);
+            }
             return new String[]{Constants.ERROR_MARKER, e.getMessage()};
         }
     }

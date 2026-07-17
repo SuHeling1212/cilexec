@@ -132,8 +132,14 @@ public class FunctionManager {
      * 保存当前数据到调用帧（准备进入函数体）。
      */
     public CallFrame saveFrame(Map<String, Object> currentData, List<String> currentCodeLines, int currentLine) {
+        return saveFrame(currentData, currentCodeLines, currentLine, List.of());
+    }
+
+    public CallFrame saveFrame(Map<String, Object> currentData, List<String> currentCodeLines,
+                               int currentLine, List<Map<String, Object>> blockStack) {
         CallFrame frame = new CallFrame(new LinkedHashMap<>(currentData),
-                new ArrayList<>(currentCodeLines), currentLine);
+                new ArrayList<>(currentCodeLines), currentLine,
+                blockStack != null ? new ArrayList<>(blockStack) : new ArrayList<>());
         callStack.push(frame);
         return frame;
     }
@@ -200,11 +206,19 @@ public class FunctionManager {
         public final Map<String, Object> savedData;
         public final List<String> savedCodeLines;
         public final int savedCurrentLine;
+        public final List<Map<String, Object>> savedBlockStack;
 
         public CallFrame(Map<String, Object> savedData, List<String> savedCodeLines, int savedCurrentLine) {
+            this(savedData, savedCodeLines, savedCurrentLine, List.of());
+        }
+
+        public CallFrame(Map<String, Object> savedData, List<String> savedCodeLines,
+                         int savedCurrentLine, List<Map<String, Object>> savedBlockStack) {
             this.savedData = savedData;
             this.savedCodeLines = savedCodeLines;
             this.savedCurrentLine = savedCurrentLine;
+            this.savedBlockStack = savedBlockStack != null
+                    ? new ArrayList<>(savedBlockStack) : new ArrayList<>();
         }
     }
 }

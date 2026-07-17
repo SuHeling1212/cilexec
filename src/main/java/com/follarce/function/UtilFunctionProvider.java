@@ -108,6 +108,9 @@ public class UtilFunctionProvider implements FunctionProvider {
                     return null;
             }
         } catch (Exception e) {
+            if ("input".equals(functionName)) {
+                throw new UnknownEffectOutcomeException("Input outcome is unknown: " + e.getMessage(), e);
+            }
             return new String[]{Constants.ERROR_MARKER, e.getMessage()};
         }
     }

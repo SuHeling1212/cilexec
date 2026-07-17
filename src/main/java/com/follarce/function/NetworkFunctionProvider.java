@@ -26,12 +26,14 @@ public class NetworkFunctionProvider implements FunctionProvider {
 
                 case "httpPost":
                 case "webpost":
-                    return NetworkUtil.httpPost(getStringArg(args, 0), getStringArg(args, 1));
+                    return NetworkUtil.httpPost(getStringArg(args, 0), getStringArg(args, 1),
+                            context.getEffectId());
 
                 default:
                     return null;
             }
         } catch (Exception e) {
+            if (e instanceof UnknownEffectOutcomeException unknown) throw unknown;
             return new String[]{Constants.ERROR_MARKER, e.getMessage()};
         }
     }

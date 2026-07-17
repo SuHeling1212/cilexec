@@ -1,5 +1,6 @@
 package com.follarce.process;
 
+import com.follarce.Constants;
 import com.follarce.log.Logger;
 import com.follarce.util.FileUtil;
 import com.follarce.util.PathUtil;
@@ -8,6 +9,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Map;
+import java.util.Collections;
+import java.util.function.Supplier;
 
 /**
  * 模块导入管理器 —— 处理 import/include 语句。
@@ -23,6 +27,18 @@ public class ImportManager {
             Pattern.compile("^include\\s+\"([^\"]+)\"\\s*$");
 
     private final List<String> importedFiles = new ArrayList<>();
+    private final Supplier<String> effectiveUserSupplier;
+    private final Supplier<Map<String, String>> aliasesSupplier;
+
+    public ImportManager() {
+        this(() -> Constants.DEFAULT_USER_LOCAL, Collections::emptyMap);
+    }
+
+    public ImportManager(Supplier<String> effectiveUserSupplier,
+                         Supplier<Map<String, String>> aliasesSupplier) {
+        this.effectiveUserSupplier = effectiveUserSupplier;
+        this.aliasesSupplier = aliasesSupplier;
+    }
 
     /**
      * 处理 import 语句。
@@ -36,11 +52,15 @@ public class ImportManager {
         if (!matcher.matches()) return new ArrayList<>();
 
         String importPath = matcher.group(1);
-        String resolvedPath = PathUtil.resolvePath(importPath);
+        String resolvedPath = PathUtil.resolvePath(importPath,
+                effectiveUserSupplier.get(), aliasesSupplier.get());
 
         if (!FileUtil.exists(resolvedPath)) {
             Logger.warn("Import file not found: " + importPath);
             return new ArrayList<>();
+        }
+        if (!FileUtil.checkFilePermission(resolvedPath, Constants.PERM_READ, effectiveUserSupplier.get())) {
+            throw new SecurityException("Permission denied: read " + resolvedPath);
         }
 
         String content = FileUtil.read(resolvedPath);
@@ -81,11 +101,15 @@ public class ImportManager {
         if (!matcher.matches()) return currentLine;
 
         String includePath = matcher.group(1);
-        String resolvedPath = PathUtil.resolvePath(includePath);
+        String resolvedPath = PathUtil.resolvePath(includePath,
+                effectiveUserSupplier.get(), aliasesSupplier.get());
 
         if (!FileUtil.exists(resolvedPath)) {
             Logger.warn("Include file not found: " + includePath);
             return currentLine + 1;
+        }
+        if (!FileUtil.checkFilePermission(resolvedPath, Constants.PERM_READ, effectiveUserSupplier.get())) {
+            throw new SecurityException("Permission denied: read " + resolvedPath);
         }
 
         String content = FileUtil.read(resolvedPath);

@@ -271,15 +271,20 @@ public final class JsonUtil {
         if (element.isJsonPrimitive()) {
             JsonPrimitive prim = element.getAsJsonPrimitive();
             if (prim.isNumber()) {
-                double d = prim.getAsDouble();
-                if (d == Math.floor(d) && !Double.isInfinite(d)) {
-                    long l = (long) d;
+                String literal = prim.getAsString();
+                if (!literal.contains(".") && !literal.contains("e") && !literal.contains("E")) {
+                    long l;
+                    try {
+                        l = Long.parseLong(literal);
+                    } catch (NumberFormatException e) {
+                        return prim.getAsBigDecimal();
+                    }
                     if (l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE) {
                         return (int) l;
                     }
                     return l;
                 }
-                return d;
+                return prim.getAsBigDecimal();
             }
             if (prim.isBoolean()) return prim.getAsBoolean();
             return prim.getAsString();

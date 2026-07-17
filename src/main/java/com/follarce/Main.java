@@ -5,11 +5,15 @@ import com.follarce.init.FileInit;
 import com.follarce.init.ProcessInit;
 import com.follarce.log.Logger;
 import com.follarce.process.ProcessRunner;
+import com.follarce.process.RecoveryManager;
 import com.follarce.process.Scheduler;
 import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 
 import java.io.File;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.StandardOpenOption;
 
 /**
  * Cilexec 模拟操作系统入口。
@@ -25,6 +29,8 @@ import java.io.File;
 public class Main {
 
     private static Scheduler scheduler;
+    private static FileChannel instanceLockChannel;
+    private static FileLock instanceLock;
 
     public static void main(String[] args) {
         // 1. 初始化日志
@@ -34,6 +40,7 @@ public class Main {
         try {
             // 2. 确定 VFS 根目录
             File vfsRoot = determineVfsRoot();
+            acquireInstanceLock(vfsRoot);
             Logger.info("VFS root: " + vfsRoot.getAbsolutePath());
 
             // 3. 初始化 VFS 文件系统
@@ -46,6 +53,7 @@ public class Main {
 
             // 5. 初始化进程系统
             ProcessInit.init();
+            RecoveryManager.recoverAll();
             Logger.info("Process system initialized");
 
             // 6. 创建调度器
@@ -68,6 +76,7 @@ public class Main {
                 if (scheduler != null) {
                     scheduler.shutdownScheduler();
                 }
+                releaseInstanceLock();
                 Logger.close();
             }));
 
@@ -81,7 +90,28 @@ public class Main {
             e.printStackTrace();
             System.exit(1);
         }
-        System.out.println("=== Cilexec system closed ===");
+    }
+
+    private static void acquireInstanceLock(File root) throws Exception {
+        var lockPath = root.toPath().resolve(".cilexec.instance.lock");
+        instanceLockChannel = FileChannel.open(lockPath,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        instanceLock = instanceLockChannel.tryLock();
+        if (instanceLock == null) {
+            instanceLockChannel.close();
+            throw new IllegalStateException("Another Cilexec instance owns this VFS root");
+        }
+    }
+
+    private static void releaseInstanceLock() {
+        try {
+            if (instanceLock != null && instanceLock.isValid()) instanceLock.release();
+        } catch (Exception ignored) {
+        }
+        try {
+            if (instanceLockChannel != null) instanceLockChannel.close();
+        } catch (Exception ignored) {
+        }
     }
 
     /**

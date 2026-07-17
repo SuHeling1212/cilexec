@@ -6,6 +6,7 @@ import com.follarce.util.FileUtil;
 import com.follarce.util.JsonUtil;
 import com.follarce.util.PathUtil;
 import com.follarce.util.UserUtil;
+import com.follarce.function.UnknownEffectOutcomeException;
 
 import java.util.*;
 import java.util.function.Supplier;
@@ -23,6 +24,7 @@ import java.util.function.Supplier;
  * </ul>
  */
 public class IpcHandler {
+    public record ControlTarget(int pid, String generation) {}
 
     private final int pid;
     private final Runnable loadFromFile;
@@ -61,14 +63,65 @@ public class IpcHandler {
      */
     @SuppressWarnings("unchecked")
     public int handleFork() {
-        return handleFork(null);
+        return handleFork(null, "legacy-fork-" + UUID.randomUUID());
     }
 
     @SuppressWarnings("unchecked")
     public int handleFork(String childResultVariable) {
+        return handleFork(childResultVariable, "legacy-fork-" + UUID.randomUUID());
+    }
+
+    @SuppressWarnings("unchecked")
+    public int handleFork(String childResultVariable, String effectId) {
         try {
             Map<String, Object> processData = processDataSupplier.get();
-            int childPid = allocatePid();
+            String parentGeneration = ProcessIdentity.generation(processData);
+            ForkLedger.Entry ledger = ForkLedger.read(effectId);
+            if (ledger != null && (ledger.parentPid() != pid
+                    || !ledger.parentGeneration().equals(parentGeneration))) {
+                throw new IllegalStateException("Fork ledger belongs to another parent");
+            }
+            if (ledger != null && "CREATED".equals(ledger.state())) {
+                String childPath = Constants.SYSTEM_PROCESS_PATH + ledger.childPid() + ".proc";
+                if (FileUtil.exists(childPath)) {
+                    Map<String, Object> savedChild = JsonUtil.parseToMapStrict(FileUtil.read(childPath));
+                    if (effectId.equals(savedChild.get("CreatedByEffectId"))
+                            && ledger.childGeneration().equals(savedChild.get("ProcessGeneration"))) {
+                        restoreParentChildRelation(processData, ledger.childPid());
+                    }
+                } else {
+                    recordMissingForkResult(processData, ledger.childPid(), ledger.childGeneration());
+                }
+                return ledger.childPid();
+            }
+            Integer recoveredPid = findChildCreatedBy(effectId);
+            if (recoveredPid != null) {
+                Map<String, Object> recoveredChild = JsonUtil.parseToMapStrict(
+                        FileUtil.read(Constants.SYSTEM_PROCESS_PATH + recoveredPid + ".proc"));
+                if (ledger == null) {
+                    ForkLedger.reserve(effectId, pid, parentGeneration, recoveredPid,
+                            ProcessIdentity.generation(recoveredChild));
+                    ledger = ForkLedger.read(effectId);
+                }
+                ForkLedger.markCreated(ledger);
+                restoreParentChildRelation(processData, recoveredPid);
+                return recoveredPid;
+            }
+            int childPid;
+            String childGeneration;
+            if (ledger != null) {
+                childPid = ledger.childPid();
+                childGeneration = ledger.childGeneration();
+                ensureForkReservation(ledger);
+            } else {
+                Integer reservedPid = findReservationCreatedBy(effectId);
+                childPid = reservedPid != null ? reservedPid : allocatePid(effectId);
+                Map<String, Object> reservation = JsonUtil.parseToMapStrict(
+                        FileUtil.read(Constants.SYSTEM_PROCESS_PATH + childPid + ".proc"));
+                childGeneration = ProcessIdentity.generation(reservation);
+                ForkLedger.reserve(effectId, pid, parentGeneration, childPid, childGeneration);
+                ledger = ForkLedger.read(effectId);
+            }
             Map<String, Object> childData = JsonUtil.deepCopy(processData);
             childData.put("PID", childPid);
             childData.put("Name", childData.get("Name") + "-" + childPid);
@@ -78,10 +131,25 @@ public class IpcHandler {
             childData.put("ExitReason", null);
             childData.put("StateMessage", null);
             childData.put("RunningTime", 0);
+            childData.put("ProcessGeneration", childGeneration);
+            childData.put("CreatedByEffectId", effectId);
+            Map<String, Object> childExecution = new LinkedHashMap<>();
+            childExecution.put("SchemaVersion", ProcessIdentity.EXECUTION_SCHEMA_VERSION);
+            childExecution.put("NextAttemptOrdinal", 0L);
+            childData.put("Execution", childExecution);
+            childData.remove("Reservation");
+            childData.remove("ReservedByPid");
+            childData.remove("ReservedByGeneration");
+            childData.put("ExitedChildren", new LinkedHashMap<>());
+            childData.put("ReapedChildren", new LinkedHashMap<>());
+            childData.remove("InboxState");
+            childData.remove("LifecycleCleanup");
+            childData.remove("TerminationCleanup");
 
             Map<String, Object> parentInfo = new LinkedHashMap<>();
             parentInfo.put("PID", pid);
             parentInfo.put("Name", processData.get("Name"));
+            parentInfo.put("Generation", ProcessIdentity.generation(processData));
             childData.put("Parent", parentInfo);
 
             childData.remove("Child");
@@ -115,12 +183,14 @@ public class IpcHandler {
             String childFileName = childPid + ".proc";
             String childJson = JsonUtil.toMetaJson(childData);
             JsonUtil.writeFile(Constants.SYSTEM_PROCESS_PATH + childFileName, childJson);
+            ForkLedger.markCreated(ledger);
 
             // 更新父进程 Child 列表
             Map<String, Object> childInfo = new LinkedHashMap<>();
             childInfo.put("Name", childData.get("Name"));
             childInfo.put("PID", childPid);
             childInfo.put("Path", childData.get("Path"));
+            childInfo.put("Generation", ProcessIdentity.generation(childData));
 
             // 同步更新内存中的 processData，供后续 commitAndPersist 落盘
             @SuppressWarnings("unchecked")
@@ -130,12 +200,19 @@ public class IpcHandler {
                 processData.put("Child", children);
             }
             children.put(String.valueOf(childPid), childInfo);
+            Object reapedObject = processData.get("ReapedChildren");
+            if (reapedObject instanceof Map) {
+                String prefix = childPid + "@";
+                ((Map<String, Object>) reapedObject).keySet().removeIf(
+                        key -> key.equals(String.valueOf(childPid)) || key.startsWith(prefix));
+            }
 
             Logger.info("Fork: PID " + pid + " created child PID " + childPid);
             return childPid;
         } catch (Exception e) {
             Logger.error("Fork failed for PID " + pid + ": " + e.getMessage());
-            return -1;
+            throw e instanceof RuntimeException ? (RuntimeException) e
+                    : new RuntimeException("Fork failed", e);
         }
     }
 
@@ -149,13 +226,15 @@ public class IpcHandler {
         if (parts.length == 0) return;
 
         String path = parts[0];
-        String scriptPath = PathUtil.resolvePath(path);
+        Map<String, Object> processData = processDataSupplier.get();
+        String currentUser = String.valueOf(processData.getOrDefault("EffectiveUser",
+                processData.getOrDefault("Owner", Constants.DEFAULT_USER_LOCAL)));
+        String scriptPath = PathUtil.resolvePath(path, currentUser, extractAliases(processData));
         if (!FileUtil.exists(scriptPath)) {
             Logger.error("Exec: script not found: " + scriptPath);
             return;
         }
 
-        String currentUser = UserUtil.getCurrentUser();
         if (!FileUtil.checkFilePermission(scriptPath, Constants.PERM_READ, currentUser)) {
             Logger.warn("Exec denied: " + currentUser + " cannot read " + scriptPath);
             return;
@@ -168,7 +247,6 @@ public class IpcHandler {
         }
 
         // 替换进程数据
-        Map<String, Object> processData = processDataSupplier.get();
         processData.put("Path", scriptPath);
         processData.put("startTime", FileUtil.getCurrentTimeArray());
 
@@ -198,16 +276,43 @@ public class IpcHandler {
         String detectedUser = detectExecUser(parts);
         String execUser = "";
         if (detectedUser != null) {
+            boolean canAssume = Constants.DEFAULT_USER_LOCAL.equals(currentUser)
+                    || detectedUser.equals(currentUser);
+            if (!canAssume || !UserUtil.getListOfUsers().containsKey(detectedUser)) {
+                Logger.warn("Exec denied: " + currentUser + " cannot assume " + detectedUser);
+                return;
+            }
             execUser = detectedUser;
-            UserUtil.setCurrentUser(detectedUser);
         } else {
-            execUser = UserUtil.getCurrentUser();
+            execUser = currentUser;
         }
-        processData.put("Owner", execUser);
+        processData.put("EffectiveUser", execUser);
+        processData.put("ProcessState", ProcessState.READY.name());
+        processData.put("Status", true);
+        processData.put("BlockReason", null);
+        processData.put("StateMessage", null);
+        Object execution = processData.get("Execution");
+        if (execution instanceof Map) ((Map<String, Object>) execution).remove("ActiveAttempt");
 
-        JsonUtil.writeFile(stateManager.getProcessFilePath(), JsonUtil.toMetaJson(processData));
+        String expectedGeneration = ProcessIdentity.generation(processData);
+        JsonUtil.updateFile(stateManager.getProcessFilePath(), current -> {
+            if (!expectedGeneration.equals(current.get("ProcessGeneration"))) {
+                throw new IllegalStateException("Exec target generation changed for PID " + pid);
+            }
+            current.clear();
+            current.putAll(JsonUtil.deepCopy(processData));
+        });
         loadFromFile.run();
         Logger.info("Exec: PID " + pid + " replaced with " + scriptPath);
+    }
+
+    public void handleExecMarker(String marker) {
+        String[] fields = marker.substring("EXEC:".length()).split(":", -1);
+        if (fields.length == 0) return;
+        StringBuilder line = new StringBuilder("exec(\"").append(fields[0]).append("\"");
+        for (int i = 1; i < fields.length; i++) line.append(" ").append(fields[i]);
+        line.append(")");
+        handleExec(line.toString());
     }
 
     // ════════════════════════════════════════════
@@ -222,22 +327,20 @@ public class IpcHandler {
      * 与 pause（转入 PAUSED 并保留快照）不同，kill 是彻底终止。
      */
     @SuppressWarnings("unchecked")
-    public void handleKill(String pidStr) {
-        try {
-            int targetPid = Integer.parseInt(pidStr.trim());
-            if (!checkProcessOwner(targetPid)) {
-                Logger.warn("Kill denied: PID " + pid + " cannot kill PID " + targetPid);
-                return;
-            }
-            String processPath = PathUtil.findProcessFilePathByPid(targetPid);
-            if (processPath == null || !FileUtil.exists(processPath)) return;
+    public boolean handleKill(String pidStr) {
+        return handleKill(pidStr, UUID.randomUUID().toString());
+    }
 
-            // FCL kills are applied at the target's next instruction boundary.
-            ProcessRunner.requestTermination(targetPid);
-            Logger.info("Kill: PID " + targetPid + " killed by PID " + pid);
-        } catch (Exception e) {
-            Logger.error("Kill failed: " + e.getMessage());
-        }
+    public boolean handleKill(String pidStr, String messageId) {
+        ControlTarget target = resolveControlTarget(pidStr);
+        return target != null && handleKill(target, messageId);
+    }
+
+    public boolean handleKill(ControlTarget target, String messageId) {
+        boolean published = ProcessRunner.requestTermination(target.pid(), target.generation(),
+                messageId, pid, ProcessIdentity.generation(processDataSupplier.get()));
+        if (published) Logger.info("Kill: PID " + target.pid() + " killed by PID " + pid);
+        return published;
     }
 
     // ════════════════════════════════════════════
@@ -285,37 +388,35 @@ public class IpcHandler {
     // ════════════════════════════════════════════
 
     @SuppressWarnings("unchecked")
-    public void handlePause(String pidStr) {
-        try {
-            int targetPid = Integer.parseInt(pidStr.trim());
-            if (!checkProcessOwner(targetPid)) {
-                Logger.warn("Pause denied: PID " + pid + " cannot pause PID " + targetPid);
-                return;
-            }
-            String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
-            if (targetPath != null && FileUtil.exists(targetPath)) {
-                ProcessRunner.postMessage(targetPid, "ProcessState", ProcessState.PAUSED.name());
-            }
-        } catch (Exception e) {
-            Logger.warn("Pause failed: " + e.getMessage());
-        }
+    public boolean handlePause(String pidStr) {
+        return handlePause(pidStr, UUID.randomUUID().toString());
+    }
+
+    public boolean handlePause(String pidStr, String messageId) {
+        ControlTarget target = resolveControlTarget(pidStr);
+        return target != null && handlePause(target, messageId);
+    }
+
+    public boolean handlePause(ControlTarget target, String messageId) {
+        return ProcessRunner.postMessageToGeneration(target.pid(), target.generation(),
+                "ProcessState", ProcessState.PAUSED.name(), messageId, pid,
+                ProcessIdentity.generation(processDataSupplier.get()));
     }
 
     @SuppressWarnings("unchecked")
-    public void handleContinue(String pidStr) {
-        try {
-            int targetPid = Integer.parseInt(pidStr.trim());
-            if (!checkProcessOwner(targetPid)) {
-                Logger.warn("Continue denied: PID " + pid + " cannot continue PID " + targetPid);
-                return;
-            }
-            String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
-            if (targetPath != null && FileUtil.exists(targetPath)) {
-                ProcessRunner.postMessage(targetPid, "ProcessState", ProcessState.READY.name());
-            }
-        } catch (Exception e) {
-            Logger.warn("Continue failed: " + e.getMessage());
-        }
+    public boolean handleContinue(String pidStr) {
+        return handleContinue(pidStr, UUID.randomUUID().toString());
+    }
+
+    public boolean handleContinue(String pidStr, String messageId) {
+        ControlTarget target = resolveControlTarget(pidStr);
+        return target != null && handleContinue(target, messageId);
+    }
+
+    public boolean handleContinue(ControlTarget target, String messageId) {
+        return ProcessRunner.postMessageToGeneration(target.pid(), target.generation(),
+                "ProcessState", ProcessState.READY.name(), messageId, pid,
+                ProcessIdentity.generation(processDataSupplier.get()));
     }
 
     // ════════════════════════════════════════════
@@ -324,14 +425,38 @@ public class IpcHandler {
 
     @SuppressWarnings("unchecked")
     public boolean checkProcessOwner(int targetPid) {
-        if (UserUtil.isLocal()) return true;
-        String currentUser = UserUtil.getCurrentUser();
+        return resolveControlTarget(Integer.toString(targetPid)) != null;
+    }
+
+    public ControlTarget resolveControlTarget(String pidText) {
+        final int targetPid;
+        try {
+            targetPid = Integer.parseInt(pidText.trim());
+        } catch (RuntimeException e) {
+            Logger.warn("Invalid process target: " + pidText);
+            return null;
+        }
+        String currentUser = String.valueOf(processDataSupplier.get().getOrDefault("EffectiveUser",
+                processDataSupplier.get().getOrDefault("Owner", Constants.DEFAULT_USER_LOCAL)));
         String targetPath = PathUtil.findProcessFilePathByPid(targetPid);
-        if (targetPath == null || !FileUtil.exists(targetPath)) return false;
-        String content = FileUtil.read(targetPath);
-        Map<String, Object> targetData = JsonUtil.parseToMap(content);
-        Object owner = targetData.get("Owner");
-        return owner != null && owner.toString().equals(currentUser);
+        if (targetPath == null || !FileUtil.exists(targetPath)) return null;
+        java.util.concurrent.locks.ReentrantLock lock = JsonUtil.lockFile(targetPath);
+        try {
+            if (!FileUtil.exists(targetPath)) return null;
+            Map<String, Object> targetData = JsonUtil.parseToMapStrict(FileUtil.read(targetPath));
+            if (ProcessIdentity.ensureDefaults(targetData)) {
+                FileUtil.writeAtomic(targetPath, JsonUtil.toMetaJson(targetData));
+            }
+            Object owner = targetData.get("Owner");
+            if (!Constants.DEFAULT_USER_LOCAL.equals(currentUser)
+                    && (owner == null || !owner.toString().equals(currentUser))) {
+                Logger.warn("Control denied: PID " + pid + " cannot control PID " + targetPid);
+                return null;
+            }
+            return new ControlTarget(targetPid, ProcessIdentity.generation(targetData));
+        } finally {
+            lock.unlock();
+        }
     }
 
     // ════════════════════════════════════════════
@@ -341,7 +466,7 @@ public class IpcHandler {
     private static final java.util.concurrent.locks.ReentrantLock PID_ALLOC_LOCK =
             new java.util.concurrent.locks.ReentrantLock();
 
-    private int allocatePid() {
+    private int allocatePid(String effectId) {
         PID_ALLOC_LOCK.lock();
         try {
             String processDir = com.follarce.util.PathUtil.toRealPath(
@@ -355,12 +480,38 @@ public class IpcHandler {
                 }
                 java.io.File procFile = new java.io.File(processDir, base + ".proc");
                 try {
-                    if (procFile.createNewFile()) {
-                        // 原子创建成功 → 这个 PID 被我独占
+                    Map<String, Object> reservation = new LinkedHashMap<>();
+                    reservation.put("Name", "RESERVED-" + base);
+                    reservation.put("Owner", Constants.DEFAULT_USER_LOCAL);
+                    reservation.put("PID", base);
+                    reservation.put("Status", true);
+                    reservation.put("ProcessState", ProcessState.PAUSED.name());
+                    reservation.put("ProcessGeneration", ProcessIdentity.newGeneration());
+                    reservation.put("CreatedByEffectId", effectId);
+                    reservation.put("Reservation", true);
+                    reservation.put("ReservedByPid", pid);
+                    reservation.put("ReservedByGeneration",
+                            ProcessIdentity.generation(processDataSupplier.get()));
+                    Map<String, Object> reservationCode = new LinkedHashMap<>();
+                    reservationCode.put("Code", new ArrayList<String>());
+                    reservationCode.put("runningCodeLine", 0);
+                    reservationCode.put("BlockStack", new ArrayList<>());
+                    reservation.put("Program", new LinkedHashMap<>(Map.of(
+                            "Data", new LinkedHashMap<String, Object>(), "Code", reservationCode)));
+                    java.nio.file.Files.writeString(procFile.toPath(), JsonUtil.toJson(reservation),
+                            java.nio.file.StandardOpenOption.CREATE_NEW,
+                            java.nio.file.StandardOpenOption.WRITE);
+                    try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(
+                            procFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
+                        channel.force(true);
+                    }
+                    if (procFile.exists()) {
                         return base;
                     }
+                } catch (java.nio.file.FileAlreadyExistsException e) {
+                    // Another allocator claimed this PID.
                 } catch (java.io.IOException e) {
-                    // 创建失败（权限等），尝试下一个
+                    throw new RuntimeException("Failed to reserve PID " + base, e);
                 }
                 base++;
             }
@@ -405,7 +556,12 @@ public class IpcHandler {
         String key = targetPid != null ? String.valueOf(targetPid)
                 : exited.keySet().stream().findFirst().orElse(null);
         if (key == null || !exited.containsKey(key)) return false;
-        exited.remove(key);
+        Object event = exited.remove(key);
+        String generation = event instanceof Map && ((Map<?, ?>) event).get("Generation") instanceof String
+                ? ((Map<?, ?>) event).get("Generation").toString() : null;
+        Map<String, Object> reaped = (Map<String, Object>) processData.computeIfAbsent(
+                "ReapedChildren", ignored -> new LinkedHashMap<String, Object>());
+        reaped.put(generation == null ? key : key + "@" + generation, true);
         return true;
     }
 
@@ -440,5 +596,120 @@ public class IpcHandler {
             }
         }
         return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, String> extractAliases(Map<String, Object> processData) {
+        Map<String, String> result = new LinkedHashMap<>();
+        Object aliases = processData.get("PathAliases");
+        if (aliases instanceof Map) {
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) aliases).entrySet()) {
+                if (entry.getKey() instanceof String && entry.getValue() instanceof String) {
+                    result.put(entry.getKey().toString(), entry.getValue().toString());
+                }
+            }
+        }
+        return result;
+    }
+
+    private Integer findChildCreatedBy(String effectId) {
+        if (effectId == null) return null;
+        for (Map.Entry<Integer, String> entry : PathUtil.scanProcessFileNames().entrySet()) {
+            if (entry.getKey() == pid) continue;
+            try {
+                Map<String, Object> candidate = JsonUtil.parseToMapStrict(
+                        FileUtil.read(Constants.SYSTEM_PROCESS_PATH + entry.getValue()));
+                if (effectId.equals(candidate.get("CreatedByEffectId"))
+                        && !Boolean.TRUE.equals(candidate.get("Reservation"))) return entry.getKey();
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    private Integer findReservationCreatedBy(String effectId) {
+        if (effectId == null) return null;
+        for (Map.Entry<Integer, String> entry : PathUtil.scanProcessFileNames().entrySet()) {
+            try {
+                Map<String, Object> candidate = JsonUtil.parseToMapStrict(
+                        FileUtil.read(Constants.SYSTEM_PROCESS_PATH + entry.getValue()));
+                if (Boolean.TRUE.equals(candidate.get("Reservation"))
+                        && effectId.equals(candidate.get("CreatedByEffectId"))
+                        && ((Number) candidate.getOrDefault("ReservedByPid", -1)).intValue() == pid
+                        && Objects.equals(candidate.get("ReservedByGeneration"),
+                        ProcessIdentity.generation(processDataSupplier.get()))) {
+                    return entry.getKey();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    private void ensureForkReservation(ForkLedger.Entry entry) {
+        String vfsPath = Constants.SYSTEM_PROCESS_PATH + entry.childPid() + ".proc";
+        if (FileUtil.exists(vfsPath)) {
+            Map<String, Object> reservation = JsonUtil.parseToMapStrict(FileUtil.read(vfsPath));
+            if (Boolean.TRUE.equals(reservation.get("Reservation"))
+                    && entry.effectId().equals(reservation.get("CreatedByEffectId"))
+                    && entry.childGeneration().equals(reservation.get("ProcessGeneration"))) return;
+            throw new UnknownEffectOutcomeException(
+                    "Reserved fork PID was reused: " + entry.childPid(), null);
+        }
+        Map<String, Object> reservation = new LinkedHashMap<>();
+        reservation.put("Name", "RESERVED-" + entry.childPid());
+        reservation.put("Owner", Constants.DEFAULT_USER_LOCAL);
+        reservation.put("PID", entry.childPid());
+        reservation.put("Status", true);
+        reservation.put("ProcessState", ProcessState.PAUSED.name());
+        reservation.put("ProcessGeneration", entry.childGeneration());
+        reservation.put("CreatedByEffectId", entry.effectId());
+        reservation.put("Reservation", true);
+        reservation.put("ReservedByPid", entry.parentPid());
+        reservation.put("ReservedByGeneration", entry.parentGeneration());
+        Map<String, Object> code = new LinkedHashMap<>();
+        code.put("Code", new ArrayList<String>());
+        code.put("runningCodeLine", 0);
+        code.put("BlockStack", new ArrayList<>());
+        reservation.put("Program", new LinkedHashMap<>(Map.of(
+                "Data", new LinkedHashMap<String, Object>(), "Code", code)));
+        try {
+            java.nio.file.Files.writeString(java.nio.file.Path.of(PathUtil.toRealPath(vfsPath)),
+                    JsonUtil.toJson(reservation), java.nio.file.StandardOpenOption.CREATE_NEW,
+                    java.nio.file.StandardOpenOption.WRITE);
+        } catch (java.nio.file.FileAlreadyExistsException e) {
+            ensureForkReservation(entry);
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("Failed to restore fork reservation", e);
+        }
+    }
+
+    private void restoreParentChildRelation(Map<String, Object> parent, int childPid) {
+        String path = Constants.SYSTEM_PROCESS_PATH + childPid + ".proc";
+        if (!FileUtil.exists(path)) return;
+        Map<String, Object> child = JsonUtil.parseToMapStrict(FileUtil.read(path));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> children = (Map<String, Object>) parent.computeIfAbsent(
+                "Child", ignored -> new LinkedHashMap<String, Object>());
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("Name", child.get("Name"));
+        info.put("PID", childPid);
+        info.put("Path", child.get("Path"));
+        info.put("Generation", child.get("ProcessGeneration"));
+        children.put(String.valueOf(childPid), info);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void recordMissingForkResult(Map<String, Object> parent, int childPid,
+                                         String childGeneration) {
+        Object children = parent.get("Child");
+        if (children instanceof Map) ((Map<String, Object>) children).remove(String.valueOf(childPid));
+        Map<String, Object> exited = (Map<String, Object>) parent.computeIfAbsent(
+                "ExitedChildren", ignored -> new LinkedHashMap<String, Object>());
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("PID", childPid);
+        event.put("Generation", childGeneration);
+        event.put("ExitReason", ExitReason.NONE.name());
+        exited.putIfAbsent(String.valueOf(childPid), event);
     }
 }
