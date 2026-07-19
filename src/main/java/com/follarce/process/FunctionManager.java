@@ -25,7 +25,8 @@ import java.util.regex.Pattern;
 public class FunctionManager {
 
     private static final Pattern FUNC_DEF_PATTERN =
-            Pattern.compile("^func\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{?.*$");
+            Pattern.compile("^func\\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)*)"
+                    + "\\s*\\(([^)]*)\\)\\s*\\{?.*$");
 
     private final int pid;
     private final ExpressionEvaluator evaluator;
@@ -92,13 +93,14 @@ public class FunctionManager {
                         bodyStartLine = i;
                     } else {
                         // 多行函数体（{ 后无内容，或 { 在后续行）
-                        int bodyEnd = findFunctionBodyEnd(codeLines, i + 1);
+                        int bodyEnd = findFunctionBodyEnd(codeLines, i + 1,
+                                remainder.startsWith("{"));
                         bodyLines = codeLines.subList(i + 1, bodyEnd);
                         bodyStartLine = i + 1;
                     }
                 } else {
                     // 多行函数体（{ 在后续行）
-                    int bodyEnd = findFunctionBodyEnd(codeLines, i + 1);
+                    int bodyEnd = findFunctionBodyEnd(codeLines, i + 1, false);
                     bodyLines = codeLines.subList(i + 1, bodyEnd);
                     bodyStartLine = i + 1;
                 }
@@ -179,16 +181,18 @@ public class FunctionManager {
     /**
      * 找到函数体的结束行号（匹配的 }）。
      */
-    private int findFunctionBodyEnd(List<String> codeLines, int startLine) {
-        int depth = 0;
+    private int findFunctionBodyEnd(List<String> codeLines, int startLine,
+                                    boolean openingBraceOnHeader) {
+        int depth = openingBraceOnHeader ? 1 : 0;
         for (int i = startLine; i < codeLines.size(); i++) {
             String line = codeLines.get(i).trim();
             for (int j = 0; j < line.length(); j++) {
                 char c = line.charAt(j);
                 if (c == '{') depth++;
                 else if (c == '}') {
-                    if (depth == 0) return i; // 函数体结束
+                    if (depth == 0) return i;
                     depth--;
+                    if (openingBraceOnHeader && depth == 0) return i;
                 }
             }
             // 如果 } 是这一行最后一个字符且 depth 为 0

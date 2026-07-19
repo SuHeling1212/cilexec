@@ -25,6 +25,7 @@ cilexec.log
 
 # VFS runtime state (auto-generated)
 cilexec_root/
+packageTEST/.runtime/
 
 # AI
 .deepseek/
@@ -38,4 +39,3 @@ dependency-reduced-pom.xml
 # extension
 fcl-vscode/.codewhale/
 fcl-vscode/
-

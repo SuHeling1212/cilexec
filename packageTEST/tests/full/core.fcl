@@ -1,0 +1,144 @@
+// Core language and local built-in functions. Executed as the real INIT process.
+file.createDir("/user/local/app/data", "fcl-tests")
+base = "/user/local/app/data/fcl-tests"
+
+// Language: literals, operators, indexing, assignment, control flow and functions.
+numbers = [1, 2, 3]
+numbers[1] = 20
+record = {"name": "cil", "nested": {"value": 9}}
+record["name"] = "cilexec"
+record["nested"]["value"] = 11
+sum = 0
+i = 0
+while i < 10 {
+    i = i + 1
+    if i == 5 {
+        break
+    }
+    sum = sum + i
+}
+branch = "bad"
+if sum == 10 {
+    branch = "if"
+} else {
+    branch = "else"
+}
+continueSum = 0
+j = 0
+while j < 5 {
+    j = j + 1
+    if j == 3 {
+        continue
+    }
+    continueSum = continueSum + j
+}
+switchValue = "bad"
+switch 2 {
+    case 1 {
+        switchValue = "one"
+    }
+    case 2 {
+        switchValue = "two"
+    }
+    default {
+        switchValue = "default"
+    }
+}
+func factorial(n) {
+    if n <= 1 {
+        return 1
+    }
+    smaller = factorial(n - 1)
+    return n * smaller
+}
+factorialValue = factorial(5)
+languageOk = numbers[1] == 20 and #numbers == 3 and record["name"] == "cilexec" and record["nested"]["value"] == 11 and sum == 10 and branch == "if" and continueSum == 12 and switchValue == "two" and factorialValue == 120 and 7 % 4 == 3 and !false
+
+// include, single-file import, relative package import and absolute package import.
+io.writeFile("/system/config/core-include.fcl", "func includedValue() { return 31 }")
+io.writeFile("/system/config/core-import.fcl", "func importedValue() { return 32 }")
+file.createDir("/system/config", "relative-modules")
+io.writeFile("/system/config/relative-modules/a.fcl", "func relativeA() { return 33 }")
+io.writeFile("/system/config/relative-modules/b.fcl", "func relativeB() { return 34 }")
+file.createDir(base, "absolute-modules")
+io.writeFile(base + "/absolute-modules/a.fcl", "func absoluteA() { return 35 }")
+io.writeFile(base + "/absolute-modules/b.fcl", "func absoluteB() { return 36 }")
+include "/system/config/core-include.fcl"
+import "/system/config/core-import.fcl"
+import ./relative-modules.* as relativeModules
+import /user/local/app/data/fcl-tests/absolute-modules.* as absoluteModules
+includedResult = includedValue()
+importedResult = importedValue()
+relativeAResult = relativeModules.relativeA()
+relativeBResult = relativeModules.relativeB()
+absoluteAResult = absoluteModules.absoluteA()
+absoluteBResult = absoluteModules.absoluteB()
+importOk = includedResult == 31 and importedResult == 32 and relativeAResult == 33 and relativeBResult == 34 and absoluteAResult == 35 and absoluteBResult == 36
+
+// math namespace, including its recorded random result.
+randomValue = math.random()
+mathOk = math.sin(0) == 0 and math.cos(0) == 1 and math.sqrt(16) == 4 and math.abs(-3) == 3 and math.round(2.6) == 3 and math.floor(2.9) == 2 and math.ceil(2.1) == 3 and math.pow(2, 3) == 8 and math.max(3, 7) == 7 and math.min(3, 7) == 3 and math.pi() > 3.14 and math.e() > 2.71 and randomValue >= 0 and randomValue < 1
+
+// util namespace.
+jsonText = util.toJson({"value": 42, "items": [1, 2]})
+jsonValue = util.fromJson(jsonText)
+nullJson = util.toJson(null)
+timeValue = util.getTime()
+util.print("FCL_CORE_PRINT")
+util.println("FCL_CORE_PRINTLN")
+util.sleep(5)
+utilOk = jsonValue["value"] == 42 and util.isArray(jsonValue["items"]) and util.isMap(jsonValue) and nullJson == "null" and util.isNumber(42) and util.isString("42") and util.isBool(true) and util.toString(42) == "42" and util.typeOf("x") == "java.lang.String" and util.isArray(timeValue)
+
+// term namespace. Exact ANSI bytes are implementation details; every API must return a string.
+termOk = util.isString(term.color("red")) and util.isString(term.paint("green", "ok")) and util.isString(term.bold()) and util.isString(term.dim()) and util.isString(term.reset()) and util.isString(term.clear()) and util.isString(term.eraseLine()) and util.isString(term.cursorUp()) and util.isString(term.cursorDown()) and util.isString(term.cursorForward()) and util.isString(term.cursorBack()) and util.isString(term.red()) and util.isString(term.green()) and util.isString(term.blue()) and util.isString(term.yellow()) and util.isString(term.cyan()) and util.isString(term.magenta()) and util.isString(term.white())
+
+// path namespace and process-local aliases.
+aliasValue = path.setAlias("work", base + "/work")
+resolvedAlias = path.resolve("@work/../work/file.txt")
+aliases = path.listAliases()
+pathOk = aliasValue == base + "/work" and path.getAlias("work") == base + "/work" and aliases["work"] == base + "/work" and resolvedAlias == base + "/work/file.txt" and path.normalize("a/./b/../c") == "/a/c" and path.getFileName(resolvedAlias) == "file.txt" and path.getParentPath(resolvedAlias) == base + "/work" and path.getEnvVar("HOME") == "/user/local" and util.isString(path.getEnvVar("PATH")) and path.removeAlias("work") == true
+
+// file and io namespaces: CRUD, metadata, links, locks and fencing tokens.
+file.createDir(base, "work")
+file.createDir(base, "links")
+file.createDir(base, "empty")
+file.createFile(base + "/work", "sample.txt")
+file.write(base + "/work/sample.txt", "alpha")
+file.append(base + "/work/sample.txt", "-beta")
+beforeLock = file.read(base + "/work/sample.txt")
+lockHandle = file.lock(base + "/work/sample.txt", 5000)
+renewedLock = file.renewLock(base + "/work/sample.txt", lockHandle["fencingToken"], 5000)
+file.write(base + "/work/sample.txt", "locked", lockHandle["fencingToken"])
+file.unlock(base + "/work/sample.txt", lockHandle["fencingToken"])
+file.rename(base + "/work/sample.txt", "renamed.txt")
+file.link(base + "/links", base + "/work/renamed.txt")
+linkedBody = file.read(base + "/links/renamed.txt")
+metadata = file.readMetaData(base + "/work/renamed.txt")
+listing = file.listdir(base + "/work")
+io.writeFile(base + "/io.txt", "io-body")
+ioBody = io.readFile(base + "/io.txt")
+io.print("FCL_IO_PRINT")
+io.println("FCL_IO_PRINTLN")
+file.createFile(base, "delete-me.txt")
+file.removeFile(base + "/delete-me.txt")
+file.removeDir(base + "/empty")
+fileOk = beforeLock == "alpha-beta" and renewedLock["fencingToken"] == lockHandle["fencingToken"] and file.read(base + "/work/renamed.txt") == "locked" and linkedBody == "locked" and metadata["Owner"] == "local" and listing != "(empty)" and ioBody == "io-body" and file.exists(base + "/delete-me.txt") == false and file.exists(base + "/empty") == false
+
+// user namespace and effective-user ownership.
+createdUser = user.createUser("fcltest", "fcltest-password")
+validUser = user.validateUser("fcltest", "fcltest-password")
+usersBeforeRemoval = user.getListOfUsers()
+switchedUser = user.switchUser("fcltest", "fcltest-password")
+userHome = path.getEnvVar("HOME")
+file.createDir("/user/fcltest/app/data", "owned")
+io.writeFile("/user/fcltest/app/data/owned/value.txt", "owned-by-user")
+ownedMetadata = file.readMetaData("/user/fcltest/app/data/owned/value.txt")
+nonLocal = user.isLocal() == false and user.getCurrentUser() == "fcltest"
+user.switchUser("local", "local")
+removedUser = user.removeUser("fcltest", "fcltest-password")
+userOk = validUser == true and util.isString(usersBeforeRemoval) and userHome == "/user/fcltest" and ownedMetadata["Owner"] == "fcltest" and nonLocal and user.isLocal() == true and user.getCurrentUser() == "local" and file.exists("/user/fcltest") == false
+
+passed = languageOk and importOk and mathOk and utilOk and termOk and pathOk and fileOk and userOk
+result = {"case": "core", "passed": passed, "language": languageOk, "imports": importOk, "math": mathOk, "util": utilOk, "term": termOk, "path": pathOk, "file": fileOk, "user": userOk}
+io.writeFile(base + "/core-result.json", util.toJson(result))
+io.println("FCL_FULL_CORE:" + util.toJson(result))

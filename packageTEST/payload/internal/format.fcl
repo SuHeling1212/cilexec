@@ -1,0 +1,11 @@
+func buildGreeting(name) {
+    return greetingPrefix() + name + greetingSuffix()
+}
+
+func greetingPrefix() {
+    return "Hello, "
+}
+
+func greetingSuffix() {
+    return "!"
+}

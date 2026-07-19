@@ -131,7 +131,7 @@ public class ProcessRunner {
                 this::createFunctionContext);
         this.controlFlow = new ControlFlow(expressionEvaluator);
         this.importManager = new ImportManager(() -> effectiveUser,
-                () -> new LinkedHashMap<>(pathAliases));
+                () -> new LinkedHashMap<>(pathAliases), this::currentScriptPath);
         this.functionManager = new FunctionManager(pid, expressionEvaluator);
         this.ipcHandler = new IpcHandler(
                 pid,
@@ -976,13 +976,29 @@ public class ProcessRunner {
     @SuppressWarnings("unchecked")
     private void handleIndexAssignment(java.util.regex.Matcher matcher, String rawLine) {
         String varName = matcher.group(1).trim();
-        String indexExpr = matcher.group(2).trim();
+        String indexChain = matcher.group(2).trim();
         String valueExpr = matcher.group(3).trim();
 
-        Object index = expressionEvaluator.evaluateExpression(indexExpr);
         Object value = expressionEvaluator.evaluateExpression(valueExpr);
-
         Object target = data.get(varName);
+        java.util.regex.Matcher indexMatcher = java.util.regex.Pattern
+                .compile("\\[([^\\]]+)\\]").matcher(indexChain);
+        List<Object> indices = new ArrayList<>();
+        while (indexMatcher.find()) {
+            indices.add(expressionEvaluator.evaluateExpression(indexMatcher.group(1).trim()));
+        }
+        if (indices.isEmpty()) {
+            throw new IllegalArgumentException("Index assignment requires at least one index: " + rawLine);
+        }
+
+        for (int i = 0; i < indices.size() - 1; i++) {
+            target = indexedValue(target, indices.get(i), data);
+            if (target == null) {
+                throw new IllegalArgumentException("Cannot traverse index " + indices.get(i)
+                        + " in assignment: " + rawLine);
+            }
+        }
+        Object index = indices.getLast();
         if (target instanceof List) {
             int idx = toIntIndex(index, data);
             if (idx >= 0 && idx < ((List<Object>) target).size()) {
@@ -995,7 +1011,23 @@ public class ProcessRunner {
             if (idx >= 0 && idx < ((Object[]) target).length) {
                 ((Object[]) target)[idx] = value;
             }
+        } else {
+            throw new IllegalArgumentException("Index assignment target is not a list, map, or array: "
+                    + rawLine);
         }
+    }
+
+    private static Object indexedValue(Object target, Object index, Map<String, Object> variables) {
+        if (target instanceof List<?>) {
+            int idx = toIntIndex(index, variables);
+            return idx >= 0 && idx < ((List<?>) target).size() ? ((List<?>) target).get(idx) : null;
+        }
+        if (target instanceof Map<?, ?>) return ((Map<?, ?>) target).get(index);
+        if (target instanceof Object[]) {
+            int idx = toIntIndex(index, variables);
+            return idx >= 0 && idx < ((Object[]) target).length ? ((Object[]) target)[idx] : null;
+        }
+        return null;
     }
 
     // ════════════════════════════════════════════
@@ -1263,6 +1295,15 @@ public class ProcessRunner {
         processData = stateManager.getProcessData();
         syncLifecycleFromManager();
         loadFromProcessDataInternal();
+    }
+
+    private String currentScriptPath() {
+        Object path = processData != null ? processData.get("Path") : null;
+        if (path instanceof String scriptPath && !scriptPath.isBlank()) {
+            return scriptPath;
+        }
+        Object dataPath = data != null ? data.get("__current_script") : null;
+        return dataPath instanceof String scriptPath && !scriptPath.isBlank() ? scriptPath : "/";
     }
 
     /**

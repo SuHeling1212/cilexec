@@ -1,0 +1,8 @@
+file.createDir("/user/local/app/data", "fcl-tests")
+i = 0
+while i < 300 {
+    i = i + 1
+}
+result = {"case": "recovery", "passed": i == 300, "iterations": i}
+io.writeFile("/user/local/app/data/fcl-tests/recovery-result.json", util.toJson(result))
+io.println("FCL_FULL_RECOVERY:" + util.toJson(result))

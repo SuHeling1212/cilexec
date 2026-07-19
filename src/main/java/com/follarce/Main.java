@@ -1,7 +1,8 @@
 package com.follarce;
 
-import com.follarce.function.*;
+import com.follarce.function.FunctionRegistry;
 import com.follarce.init.FileInit;
+import com.follarce.init.PackageInit;
 import com.follarce.init.ProcessInit;
 import com.follarce.log.Logger;
 import com.follarce.process.ProcessRunner;
@@ -47,30 +48,34 @@ public class Main {
             FileInit.init(vfsRoot);
             Logger.info("File system initialized");
 
-            // 4. 注册所有插件函数
-            registerFunctionProviders();
-            Logger.info("Function providers registered");
+            // 4. 从 classpath 自动发现函数提供者
+            int providerCount = FunctionRegistry.loadProviders();
+            Logger.info("Function providers discovered: " + providerCount);
 
-            // 5. 初始化进程系统
+            // 5. 初始化包系统（hook 恢复需要函数提供者已注册）
+            PackageInit.init();
+            Logger.info("Package system initialized");
+
+            // 6. 初始化进程系统
             ProcessInit.init();
             RecoveryManager.recoverAll();
             Logger.info("Process system initialized");
 
-            // 6. 创建调度器
+            // 7. 创建调度器
             scheduler = new Scheduler();
 
-            // 7. 手动启动 INIT 进程并注册到调度器
+            // 8. 手动启动 INIT 进程并注册到调度器
             ProcessRunner initRunner = startInitProcess();
             if (initRunner != null) {
                 initRunner.init();
                 scheduler.addProcess(initRunner);
             }
 
-            // 8. 启动调度器
+            // 9. 启动调度器
             scheduler.start();
             Logger.info("Scheduler started");
 
-            // 9. 注册 shutdown hook
+            // 10. 注册 shutdown hook
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 Logger.logShutdown();
                 if (scheduler != null) {
@@ -129,24 +134,6 @@ public class Main {
         }
 
         return vfsRoot;
-    }
-
-    /**
-     * 注册所有 10 个函数提供者。
-     */
-    private static void registerFunctionProviders() {
-        FunctionRegistry.registerProvider(new FileFunctionProvider());
-        FunctionRegistry.registerProvider(new ProcessFunctionProvider());
-        FunctionRegistry.registerProvider(new SwapFunctionProvider());
-        FunctionRegistry.registerProvider(new UserFunctionProvider());
-        FunctionRegistry.registerProvider(new UtilFunctionProvider());
-        FunctionRegistry.registerProvider(new NetworkFunctionProvider());
-        FunctionRegistry.registerProvider(new SocketFunctionProvider());
-        FunctionRegistry.registerProvider(new MathFunctionProvider());
-        FunctionRegistry.registerProvider(new PathFunctionProvider());
-        FunctionRegistry.registerProvider(new IOFunctionProvider());
-        FunctionRegistry.registerProvider(new TermFunctionProvider());
-        FunctionRegistry.registerProvider(new PrivilegedFunctionProvider());
     }
 
     /**

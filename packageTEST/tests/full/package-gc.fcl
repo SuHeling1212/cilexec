@@ -1,0 +1,8 @@
+// Runs after the package E2E process has terminated, so its imports are no longer GC roots.
+file.createDir("/user/local/app/data", "fcl-tests")
+collected = package.gc()
+removed = collected["removed"]
+passed = collected["status"] == "collected" and collected["roots"] == 0 and collected["retained"] == 0 and removed[0] != null and removed[1] != null and removed[2] != null and removed[3] != null
+result = {"case": "package-gc", "passed": passed, "collected": collected}
+io.writeFile("/user/local/app/data/fcl-tests/package-gc-result.json", util.toJson(result))
+io.println("FCL_PACKAGE_GC:" + util.toJson(result))

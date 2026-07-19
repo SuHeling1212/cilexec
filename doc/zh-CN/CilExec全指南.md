@@ -644,15 +644,25 @@ num = util.fromJson("42")   // 42
 
 ## 15 import 与 include
 
-### import ─ 导入外部系统
+### import ─ 导入文件或包
 
 ```fcl
-// 导入系统库（预定义的导入系统）
+// 导入单个文件
 import "lib/math"
 import "lib/utils"
+
+// 导入包内全部 FCL 文件
+import json.*
+
+// 使用命名空间导入，可在同一进程隔离不同包版本
+import json-v1.* as json1
+import json-v2.* as json2
+value = json1.parse("{}")
 ```
 
-`import` 根据配置分发的导入系统加载外部代码，映射到预定义的 FCL 文件路径。
+单文件路径必须使用引号；包导入以 `.*` 结尾，支持相对路径和绝对路径。可选的
+`as <identifier>` 只适用于包导入，它把包函数注册为 `identifier.function`，并隔离
+该包的精确依赖图。
 
 ### include ─ 包含另一个脚本文件
 

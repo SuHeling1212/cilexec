@@ -216,6 +216,10 @@ public class ControlFlow {
         for (int i = blockStack.size() - 1; i >= 0; i--) {
             Map<String, Object> block = blockStack.get(i);
             if ("WHILE".equals(block.get("type"))) {
+                // The loop remains active, but nested IF/SWITCH frames no longer do.
+                while (blockStack.size() > i + 1) {
+                    blockStack.remove(blockStack.size() - 1);
+                }
                 return ((Number) block.get("startLine")).intValue();
             }
         }

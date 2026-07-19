@@ -39,9 +39,19 @@ public final class Constants {
     public static final String SYSTEM_CONFIG_PATH = "/system/config/";
     public static final String SYSTEM_SWAP_PATH = "/system/swap/";
     public static final String SYSTEM_APP_PATH = "/system/app/";
+    public static final String SYSTEM_APP_PACKAGE_PATH = "/system/app/package/";
+    public static final String SYSTEM_APP_DATA_PATH = "/system/app/data/";
+    public static final String SYSTEM_PACKAGE_OBJECTS_PATH = "/system/app/package/objects/";
+    public static final String SYSTEM_PACKAGE_MANAGER_DATA_PATH = "/system/app/data/package/";
+    public static final String SYSTEM_PACKAGE_REFS_PATH = "/system/app/data/package/refs/";
+    public static final String SYSTEM_PACKAGE_STAGING_PATH = "/system/app/data/package/staging/";
+    public static final String SYSTEM_PACKAGE_REPOSITORY_PATH = "/system/app/data/package/repository/";
     public static final String USER_HOME_PREFIX = "/user/";
     public static final String USER_LOCAL_PATH = "/user/local/";
     public static final String USER_LOCAL_APP_PATH = "/user/local/app/";
+    public static final String USER_LOCAL_APP_PACKAGE_PATH = "/user/local/app/package/";
+    public static final String USER_LOCAL_APP_DATA_PATH = "/user/local/app/data/";
+    public static final String USER_LOCAL_PACKAGE_DATA_PATH = "/user/local/app/data/package/";
 
     // ── 配置文件 ──
     public static final String CONFIG_INIT_JSON = "init.json";
@@ -86,9 +96,13 @@ public final class Constants {
 
     // ── 路径别名 ──
     public static final List<String> VFS_ROOT_DIRS = List.of(
-            "/system/", "/system/app/", "/system/config/",
+            "/system/", SYSTEM_APP_PATH, SYSTEM_APP_PACKAGE_PATH, SYSTEM_APP_DATA_PATH,
+            SYSTEM_PACKAGE_OBJECTS_PATH, SYSTEM_PACKAGE_MANAGER_DATA_PATH,
+            SYSTEM_PACKAGE_REFS_PATH, SYSTEM_PACKAGE_STAGING_PATH, SYSTEM_PACKAGE_REPOSITORY_PATH,
+            "/system/config/",
             "/system/process/", "/system/process-inbox/", "/system/effects/",
             "/system/effects/applied/", "/system/effects/forks/", "/system/swap/",
-            "/user/", "/user/local/", "/user/local/app/"
+            "/user/", "/user/local/", USER_LOCAL_APP_PATH,
+            USER_LOCAL_APP_PACKAGE_PATH, USER_LOCAL_APP_DATA_PATH, USER_LOCAL_PACKAGE_DATA_PATH
     );
 }

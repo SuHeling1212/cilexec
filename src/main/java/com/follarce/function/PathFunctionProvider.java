@@ -20,52 +20,82 @@ public class PathFunctionProvider implements FunctionProvider {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public Object call(String functionName, List<Object> args, FunctionContext context) {
+    public Object call(
+            String functionName,
+            List<Object> args,
+            FunctionContext context
+    ) {
         try {
             switch (functionName) {
                 case "resolve":
-                    return context.resolvePath(getStringArg(args, 0));
+                    return context.resolvePath(
+                            getStringArg(args, 0)
+                    );
 
                 case "normalize":
-                    return PathUtil.normalizePath(getStringArg(args, 0));
+                    return PathUtil.normalizePath(
+                            getStringArg(args, 0)
+                    );
 
                 case "getFileName":
-                    return PathUtil.getFileName(context.resolvePath(getStringArg(args, 0)));
+                    return PathUtil.getFileName(
+                            context.resolvePath(
+                                    getStringArg(args, 0)
+                            )
+                    );
 
                 case "getParentPath":
-                    return PathUtil.getParentPath(context.resolvePath(getStringArg(args, 0)));
+                    return PathUtil.getParentPath(
+                            context.resolvePath(
+                                    getStringArg(args, 0)
+                            )
+                    );
 
-                case "getEnvVar":
+                case "getEnvVar": {
                     String envName = getStringArg(args, 0);
+
                     if ("HOME".equals(envName)) {
-                        return Constants.USER_HOME_PREFIX + context.getCurrentUser();
+                        return Constants.USER_HOME_PREFIX
+                                + context.getCurrentUser();
                     }
+
                     return getEnvVar(envName);
+                }
 
                 case "getAlias":
-                    return context.getPathAliases().get(getStringArg(args, 0));
+                    return context.getPathAliases().get(
+                            getStringArg(args, 0)
+                    );
 
                 case "listAliases":
                     return context.getPathAliases();
 
                 case "setAlias": {
                     String name = getStringArg(args, 0);
-                    String value = context.resolvePath(getStringArg(args, 1));
+                    String value = context.resolvePath(
+                            getStringArg(args, 1)
+                    );
+
                     validateAliasName(name);
                     context.setPathAlias(name, value);
+
                     return value;
                 }
 
                 case "removeAlias":
-                    context.removePathAlias(getStringArg(args, 0));
+                    context.removePathAlias(
+                            getStringArg(args, 0)
+                    );
                     return true;
 
                 default:
                     return null;
             }
         } catch (Exception e) {
-            return new String[]{Constants.ERROR_MARKER, e.getMessage()};
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    getErrorMessage(e)
+            };
         }
     }
 
@@ -73,44 +103,99 @@ public class PathFunctionProvider implements FunctionProvider {
      * 从 env.json 读取环境变量。
      */
     private static Object getEnvVar(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            return new String[]{Constants.ERROR_MARKER, "Environment variable name cannot be empty"};
+        if (name == null || name.isBlank()) {
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    "Environment variable name cannot be empty"
+            };
         }
 
-        String envPath = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_ENV_JSON;
+        String envPath = Constants.SYSTEM_CONFIG_PATH
+                + Constants.CONFIG_ENV_JSON;
+
         if (!FileUtil.exists(envPath)) {
-            return new String[]{Constants.ERROR_MARKER, "Environment config not found"};
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    "Environment config not found"
+            };
         }
 
         String content = FileUtil.read(envPath);
-        if (content == null || content.trim().isEmpty()) {
-            return new String[]{Constants.ERROR_MARKER, "Environment config is empty"};
+
+        if (content == null || content.isBlank()) {
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    "Environment config is empty"
+            };
         }
 
         Object parsed = JsonUtil.parseJson(content);
-        if (parsed instanceof Map) {
-            Map<String, Object> env = (Map<String, Object>) parsed;
-            Object value = env.get(name);
-            if (value == null) {
-                return new String[]{Constants.ERROR_MARKER, "Environment variable not found: " + name};
-            }
-            return value.toString();
+
+        /*
+         * Map<?, ?> 不要求进行未经检查的泛型强制转换，
+         * 因此不再需要 @SuppressWarnings("unchecked")。
+         */
+        if (!(parsed instanceof Map<?, ?> env)) {
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    "Invalid environment config format"
+            };
         }
 
-        return new String[]{Constants.ERROR_MARKER, "Invalid environment config format"};
+        if (!env.containsKey(name)) {
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    "Environment variable not found: " + name
+            };
+        }
+
+        Object value = env.get(name);
+
+        if (value == null) {
+            return new String[]{
+                    Constants.ERROR_MARKER,
+                    "Environment variable is null: " + name
+            };
+        }
+
+        return value.toString();
     }
 
-    private static String getStringArg(List<Object> args, int index) {
-        if (args == null || index >= args.size()) {
+    /**
+     * 获取字符串参数。
+     */
+    private static String getStringArg(
+            List<Object> args,
+            int index
+    ) {
+        if (args == null || index < 0 || index >= args.size()) {
             return null;
         }
-        Object val = args.get(index);
-        return val != null ? val.toString() : null;
+
+        Object value = args.get(index);
+        return value != null ? value.toString() : null;
     }
 
+    /**
+     * 验证路径别名名称。
+     */
     private static void validateAliasName(String name) {
-        if (name == null || !name.matches("[A-Za-z_][A-Za-z0-9_-]*")) {
-            throw new IllegalArgumentException("Invalid alias name: " + name);
+        if (name == null
+                || !name.matches("[A-Za-z_][A-Za-z0-9_-]*")) {
+            throw new IllegalArgumentException(
+                    "Invalid alias name: " + name
+            );
         }
+    }
+
+    /**
+     * 避免异常消息本身为 null。
+     */
+    private static String getErrorMessage(Exception exception) {
+        String message = exception.getMessage();
+
+        return message != null
+                ? message
+                : exception.getClass().getSimpleName();
     }
 }

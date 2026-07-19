@@ -1,0 +1,40 @@
+file.createDir("/user/local/app/data", "fcl-tests")
+base = "/user/local/app/data/fcl-tests"
+pool = "fcl_full_swap"
+
+created = swapPool.create(pool)
+existsAfterCreate = swapPool.exists(pool)
+added = swapPool.add("message:one", pool)
+first = swapPool.get("message", pool)
+updated = swapPool.update("message", pool, "two")
+second = swapPool.get("message", pool)
+
+swapPool.add("limited:value", pool, "type:times(2)")
+limitedOne = swapPool.get("limited", pool)
+limitedTwo = swapPool.get("limited", pool)
+
+swapPool.add("event:initial", pool, "type:sync")
+eventInitial = swapPool.get("event", pool)
+swapPool.update("event", pool, "changed")
+waited = swapPool.waitFor("event", pool)
+signaled = swapPool.signal("event", pool)
+waitedAfterSignal = swapPool.waitFor("event", pool)
+
+lockHandle = swapPool.lock("message", pool, 5000)
+renewed = swapPool.renewLock("message", pool, lockHandle["fencingToken"], 5000)
+lockedUpdate = swapPool.update("message", pool, "locked-update", lockHandle["fencingToken"])
+unlocked = swapPool.unlock("message", pool, lockHandle["fencingToken"])
+afterUnlock = swapPool.get("message", pool)
+removedVariable = swapPool.removeVar("message", pool)
+
+variablesBeforeClear = swapPool.ls(pool)
+pools = swapPool.list()
+cleared = swapPool.clear(pool)
+variablesAfterClear = swapPool.ls(pool)
+removed = swapPool.remove(pool)
+existsAfterRemove = swapPool.exists(pool)
+
+passed = existsAfterCreate == true and first == "one" and second == "two" and limitedOne == "value" and limitedTwo == "value" and eventInitial == "initial" and waited == "changed" and waitedAfterSignal == "changed" and renewed["fencingToken"] == lockHandle["fencingToken"] and afterUnlock == "locked-update" and util.isString(variablesBeforeClear) and util.isString(pools) and variablesAfterClear == "(empty)" and existsAfterRemove == false
+result = {"case": "swap", "passed": passed, "created": created, "lockToken": lockHandle["fencingToken"], "waited": waited, "afterUnlock": afterUnlock, "removed": removed}
+io.writeFile(base + "/swap-result.json", util.toJson(result))
+io.println("FCL_FULL_SWAP:" + util.toJson(result))

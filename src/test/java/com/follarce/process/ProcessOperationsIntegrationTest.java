@@ -310,6 +310,70 @@ class ProcessOperationsIntegrationTest {
         ProcessRunner.terminateProcess(130);
     }
 
+    @Test
+    @Order(14)
+    void nestedIndexAssignmentUpdatesTheFinalContainer() {
+        ProcessRunner runner = createRunner(95, List.of(
+                "record = {\"nested\": {\"value\": 9}}",
+                "record[\"nested\"][\"value\"] = 11",
+                "numbers = [1, 2]",
+                "numbers[0] = 7"));
+
+        runner.step();
+        runner.step();
+        runner.step();
+        runner.step();
+
+        assertEquals(11, ((Number) field(95, "Program.Data.record.nested.value")).intValue());
+        assertEquals(7, ((Number) field(95, "Program.Data.numbers.0")).intValue());
+        ProcessRunner.terminateProcess(95);
+    }
+
+    @Test
+    @Order(15)
+    void nestedFunctionBodyAndRecursiveAssignmentComplete() {
+        ProcessRunner runner = createRunner(96, List.of(
+                "func factorial(n) {",
+                "if n <= 1",
+                "{",
+                "return 1",
+                "}",
+                "smaller = factorial(n - 1)",
+                "return n * smaller",
+                "}",
+                "result = factorial(5)"));
+
+        for (int i = 0; i < 100 && !runner.getState().isTerminal(); i++) runner.step();
+
+        assertEquals(120, ((Number) field(96, "Program.Data.result")).intValue());
+        assertEquals(ProcessState.TERMINATED, runner.getState());
+        ProcessRunner.terminateProcess(96);
+    }
+
+    @Test
+    @Order(16)
+    void continueDiscardsNestedControlFramesAndResumesLoop() {
+        ProcessRunner runner = createRunner(97, List.of(
+                "sum = 0",
+                "i = 0",
+                "while i < 5",
+                "{",
+                "i = i + 1",
+                "if i == 3",
+                "{",
+                "continue",
+                "}",
+                "sum = sum + i",
+                "}"));
+
+        for (int i = 0; i < 100 && !runner.getState().isTerminal(); i++) runner.step();
+
+        assertEquals(12, ((Number) field(97, "Program.Data.sum")).intValue());
+        assertEquals(5, ((Number) field(97, "Program.Data.i")).intValue());
+        assertEquals(ProcessState.TERMINATED, runner.getState());
+        ProcessRunner.terminateProcess(97);
+    }
+
     private ProcessRunner createRunner(int pid, List<String> code) {
         return createRunner(pid, code, Map.of(), Map.of(), Map.of());
     }

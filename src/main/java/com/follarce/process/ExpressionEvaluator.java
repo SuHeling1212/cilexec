@@ -43,7 +43,7 @@ public class ExpressionEvaluator {
     public static final Pattern ASSIGN_PATTERN =
             Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)$");
     public static final Pattern INDEX_ASSIGN_PATTERN =
-            Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\[([^\\]]+)\\]\\s*=\\s*(.+)$");
+            Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*((?:\\[[^\\]]+\\]\\s*)+)\\s*=\\s*(.+)$");
     public static final Pattern FORK_PATTERN =
             Pattern.compile("^\\s*fork\\s*\\(\\s*\\)\\s*$");
     public static final Pattern RETURN_PATTERN =

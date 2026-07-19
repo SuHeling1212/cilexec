@@ -71,6 +71,7 @@ public class NodeEvaluator {
         // ---- Identifier (including length operator #name) ----
         if (node.type == NodeType.IDENTIFIER) {
             String name = node.name;
+            if ("null".equals(name)) return null;
             if (name.startsWith("#")) {
                 // Length operator: #varName → size of the value
                 String varName = name.substring(1);

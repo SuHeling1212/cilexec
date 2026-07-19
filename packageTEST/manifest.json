@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "namespace": "follarce.examples",
+  "name": "demo-greeter",
+  "version": "1.0.0",
+  "entry": "payload/main.fcl",
+  "exports": {
+    "greet": {
+      "module": "payload/main.fcl",
+      "symbol": "greet"
+    },
+    "greetDefault": {
+      "module": "payload/main.fcl",
+      "symbol": "greetDefault"
+    },
+    "greeterVersion": {
+      "module": "payload/main.fcl",
+      "symbol": "greeterVersion"
+    }
+  },
+  "dependencies": [],
+  "lifecycle": {
+    "preInstall": {
+      "script": "hooks/pre-install.fcl",
+      "timeoutMs": 5000
+    },
+    "postInstall": {
+      "script": "hooks/post-install.fcl",
+      "timeoutMs": 5000
+    },
+    "preUninstall": {
+      "script": "hooks/pre-uninstall.fcl",
+      "timeoutMs": 5000
+    },
+    "postUninstall": {
+      "script": "hooks/post-uninstall.fcl",
+      "timeoutMs": 5000
+    }
+  },
+  "resources": [
+    "resources/defaults.json",
+    "resources/messages/zh-CN.json"
+  ],
+  "author": {
+    "name": "Cilexec Contributors"
+  },
+  "license": "MIT",
+  "description": "A complete example package for developing the Cilexec package manager."
+}

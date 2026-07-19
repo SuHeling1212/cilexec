@@ -140,9 +140,25 @@ Reconstructed version with fundamental architecture improvements.
 | Arrays | `[1, 2, 3]` / `arr[0]` |
 | Maps | `{"key": "value"}` |
 | Functions | `func add(a, b) { return a + b }` |
-| Import | `import "lib.fcl"` |
+| Import file | `import "lib.fcl"` |
+| Import installed package or package directory | `import json.*` |
 | Include | `include "util.fcl"` |
 | Process | `fork()` / `exec("script.fcl")` |
+
+Bare package imports first resolve the effective user's installed package root. If no installed
+binding exists, package-directory imports remain compatible and recursively load every `.fcl`
+file in deterministic path order. Relative directories are resolved from the running script's
+directory; absolute VFS paths start at `/`:
+
+```fcl
+import json.*
+import /user/alice/app/package/json.*
+import ./vendor/json.*
+import /system/app/package/json.*
+```
+
+An installed `.pack` is loaded directly from the verified immutable object store. Its exact
+dependencies are loaded dependency-first from that package's private reference table.
 
 ### Built-in Functions
 
@@ -167,6 +183,8 @@ All functions can be called with or without namespace prefix:
 | `swapPool` | `list`, `clear`, `waitFor`, `signal` | Swap pool sync |
 | `network` | `fetch`, `download` | HTTP requests |
 | `socket` | Socket functions | TCP/UDP communication |
+| `package` | `build`, `install`, `remove`, `list`, `info`, `verify` | User-scoped package management |
+| `package` | `resource`, `pin`, `unpin`, `gc`, `recover` | Resources, retention, and recovery |
 | `math` | `abs`, `ceil`, `floor`, `round`, `max`, `min` | Math functions |
 | `math` | `sin`, `cos`, `tan`, `sqrt`, `pow`, `log` | Math functions |
 | `math` | `random`, `randInt` | Random numbers |
@@ -227,14 +245,70 @@ java -cp "target/classes:target/dependency/*" com.follarce.Main
 cilexec_root/
   ├── system/
   │   ├── app/          ← System applications (.fcl scripts)
+  │   │   ├── package/objects/ ← Immutable SHA-256 objects shared by users
+  │   │   └── data/package/    ← Global index, refs, staging, and local repository
   │   ├── config/       ← Configuration (users.json, env.json, INIT.fcl)
   │   ├── process/      ← Process files (1.proc, 2.proc, ...)
   │   └── swap/         ← Swap pool (inter-process communication)
   └── user/
-      ├── local/        ← local user (superuser home)
-      ├── alice/        ← Regular user
-      └── bob/          ← Regular user
+      ├── local/app/package/   ← local user's installed package root
+      ├── alice/app/package/   ← Alice's independent installed package root
+      ├── alice/app/data/package/ ← Alice's transactions and pins
+      └── bob/app/package/     ← Bob's independent installed package root
 ```
+
+## Package Manager
+
+Build and inspect a deterministic package without starting the engine:
+
+```bash
+mvn package
+java -cp target/cilexec-1.0-SNAPSHOT.jar com.follarce.pack.PackageCli \
+  build packageTEST /tmp/demo-greeter-1.0.0.pack
+java -cp target/cilexec-1.0-SNAPSHOT.jar com.follarce.pack.PackageCli \
+  inspect /tmp/demo-greeter-1.0.0.pack
+```
+
+From FCL, package paths are VFS paths. A regular user may only build from, install from, or
+write packages inside that user's home:
+
+```fcl
+built = package.build(
+    "/user/alice/app/demo-greeter-source",
+    "/user/alice/app/demo-greeter-1.0.0.pack"
+)
+installed = package.install("/user/alice/app/demo-greeter-1.0.0.pack")
+packages = package.list()
+
+import demo-greeter.*
+message = greet("FCL")
+```
+
+Two versions can be installed under different bindings and safely used in the same process by
+giving each import an FCL namespace:
+
+```fcl
+package.install("/user/alice/app/demo-greeter-1.0.0.pack", "greeter-v1")
+package.install("/user/alice/app/demo-greeter-2.0.0.pack", "greeter-v2")
+
+import greeter-v1.* as greeter1
+import greeter-v2.* as greeter2
+
+oldMessage = greeter1.greet("FCL")
+newMessage = greeter2.greet("FCL")
+```
+
+Aliases must be ordinary FCL identifiers, cannot use a built-in provider namespace, and cannot
+be rebound to another package in the same process. Each aliased import also isolates its exact
+dependency graph. The unaliased form remains available for backward compatibility.
+
+Dependencies use exact SemVer coordinates and `sha256:` integrity values. Missing dependency
+archives are discovered beside the package being installed, in an optional repository directory
+passed as the third `package.install` argument, or in `/system/app/data/package/repository/`.
+Version ranges and network repositories are intentionally not part of package format v1.
+
+See [the Chinese package-manager guide](doc/zh-CN/包管理器.md) and the
+[`packageTEST` fixture](packageTEST/README.md) for the complete format.
 
 ## Project Structure
 

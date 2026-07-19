@@ -58,10 +58,11 @@ public final class FileUtil {
      * 读取文件正文内容。
      */
     public static String read(String path) {
-        File realFile = resolveFile(path);
-        recoverProcessFile(path, realFile);
+        String resolvedPath = resolveLink(path);
+        File realFile = resolveFile(resolvedPath);
+        recoverProcessFile(resolvedPath, realFile);
         validateFile(realFile, path);
-        ReentrantLock lock = com.follarce.util.JsonUtil.lockFile(path);
+        ReentrantLock lock = com.follarce.util.JsonUtil.lockFile(resolvedPath);
         try {
             String content = readFileContent(realFile);
             return PathUtil.extractBodyContent(content);
@@ -222,6 +223,14 @@ public final class FileUtil {
         }
         // 创建 .META 文件
         createDirectoryMetaData(fullPath);
+        String currentUser = UserUtil.getCurrentUser();
+        if (currentUser != null) {
+            Map<String, Object> metadata = readDirectoryMetaData(fullPath);
+            if (metadata != null && !currentUser.equals(metadata.get("Owner"))) {
+                metadata.put("Owner", currentUser);
+                writeDirectoryMetaData(fullPath, metadata);
+            }
+        }
     }
 
     /**
@@ -1156,7 +1165,7 @@ public final class FileUtil {
     private static String getLinkNameFromTarget(String targetPath) {
         String name = PathUtil.getFileName(targetPath);
         if (name.isEmpty()) name = "link";
-        return "link_to_" + name;
+        return name;
     }
 
     private static void validateChildName(String name) {

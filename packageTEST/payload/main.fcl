@@ -1,0 +1,11 @@
+func greet(name) {
+    return buildGreeting(name)
+}
+
+func greetDefault() {
+    return buildGreeting("Cilexec")
+}
+
+func greeterVersion() {
+    return "1.0.0"
+}

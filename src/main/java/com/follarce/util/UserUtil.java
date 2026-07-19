@@ -286,6 +286,22 @@ public final class UserUtil {
         String homePath = Constants.USER_HOME_PREFIX + username;
         ensureOwnedDirectory(Constants.USER_HOME_PREFIX, username, homePath, username);
         ensureOwnedDirectory(homePath, "app", homePath + "/app", username);
+        ensurePrivateOwnedDirectory(homePath + "/app", "package", homePath + "/app/package", username);
+        ensurePrivateOwnedDirectory(homePath + "/app", "data", homePath + "/app/data", username);
+        ensurePrivateOwnedDirectory(homePath + "/app/data", "package",
+                homePath + "/app/data/package", username);
+        ensurePrivateOwnedDirectory(homePath + "/app/data/package", "transactions",
+                homePath + "/app/data/package/transactions", username);
+        ensurePrivateOwnedDirectory(homePath + "/app/data/package", "packages",
+                homePath + "/app/data/package/packages", username);
+    }
+
+    /** Ensures the package-manager directories for an existing user. */
+    public static void ensureUserAppStructure(String username) {
+        if (username == null || !username.matches("[A-Za-z_][A-Za-z0-9_-]*")) {
+            throw new IllegalArgumentException("Invalid username: " + username);
+        }
+        ensureUserHome(username);
     }
 
     private static void ensureOwnedDirectory(String parent, String name, String path, String owner) {
@@ -293,6 +309,19 @@ public final class UserUtil {
         Map<String, Object> metadata = FileUtil.readDirectoryMetaData(path);
         if (metadata != null && !owner.equals(metadata.get("Owner"))) {
             metadata.put("Owner", owner);
+            FileUtil.writeDirectoryMetaData(path, metadata);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void ensurePrivateOwnedDirectory(String parent, String name,
+                                                    String path, String owner) {
+        ensureOwnedDirectory(parent, name, path, owner);
+        Map<String, Object> metadata = FileUtil.readDirectoryMetaData(path);
+        Object rawPermissions = metadata.get("Permission");
+        if (rawPermissions instanceof Map<?, ?> permissions
+                && !"".equals(permissions.get(Constants.PERM_OTHERS))) {
+            ((Map<String, Object>) permissions).put(Constants.PERM_OTHERS, "");
             FileUtil.writeDirectoryMetaData(path, metadata);
         }
     }

@@ -21,11 +21,58 @@ public class FunctionRegistry {
     /**
      * 注册一个函数提供者。
      */
-    public static void registerProvider(FunctionProvider provider) {
+    public static synchronized void registerProvider(FunctionProvider provider) {
         if (provider == null) {
             throw new IllegalArgumentException("Provider must not be null");
         }
+        for (FunctionProvider existing : providers) {
+            if (existing.getClass().equals(provider.getClass())) return;
+            if (Objects.equals(existing.getNamespace(), provider.getNamespace())) {
+                throw new IllegalStateException("Function provider namespace conflict: "
+                        + provider.getNamespace() + " is provided by "
+                        + existing.getClass().getName() + " and " + provider.getClass().getName());
+            }
+        }
         providers.add(provider);
+    }
+
+    /** Discovers providers declared through Java SPI and registers them deterministically. */
+    public static int loadProviders() {
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        if (classLoader == null) classLoader = FunctionRegistry.class.getClassLoader();
+        return loadProviders(classLoader);
+    }
+
+    static int loadProviders(ClassLoader classLoader) {
+        try {
+            List<FunctionProvider> discovered = ServiceLoader.load(FunctionProvider.class, classLoader)
+                    .stream()
+                    .map(ServiceLoader.Provider::get)
+                    .sorted(Comparator.comparing(provider -> provider.getClass().getName()))
+                    .toList();
+            if (discovered.isEmpty()) {
+                throw new IllegalStateException("No FunctionProvider implementations found via Java SPI");
+            }
+            discovered.forEach(FunctionRegistry::registerProvider);
+            return discovered.size();
+        } catch (ServiceConfigurationError error) {
+            throw new IllegalStateException("Failed to load FunctionProvider implementations", error);
+        }
+    }
+
+    static synchronized Set<String> providerNamespaces() {
+        LinkedHashSet<String> namespaces = new LinkedHashSet<>();
+        for (FunctionProvider provider : providers) namespaces.add(provider.getNamespace());
+        return Collections.unmodifiableSet(namespaces);
+    }
+
+    /** Returns whether a built-in provider already owns this namespace. */
+    public static synchronized boolean hasProviderNamespace(String namespace) {
+        if (namespace == null || namespace.isBlank()) return false;
+        for (FunctionProvider provider : providers) {
+            if (namespace.equals(provider.getNamespace())) return true;
+        }
+        return false;
     }
 
     /**

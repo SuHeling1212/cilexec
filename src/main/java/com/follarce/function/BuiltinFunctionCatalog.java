@@ -53,6 +53,7 @@ public final class BuiltinFunctionCatalog {
                     ? EffectPolicy.MANUAL_RECOVERY : null;
             case "socket" -> Set.of("connect", "send", "receive", "close", "bind", "accept").contains(name)
                     ? EffectPolicy.MANUAL_RECOVERY : null;
+            case "package" -> packagePolicy(name);
             case "system" -> systemPolicy(name);
             default -> null;
         };
@@ -101,6 +102,17 @@ public final class BuiltinFunctionCatalog {
         if (Set.of("invoke", "forceRemove", "reset", "exec").contains(name)) {
             return EffectPolicy.MANUAL_RECOVERY;
         }
+        return null;
+    }
+
+    private static EffectPolicy packagePolicy(String name) {
+        if (Set.of("list", "info", "verify", "resource").contains(name)) {
+            return EffectPolicy.RECORDED_RESULT;
+        }
+        if (Set.of("install", "remove", "gc", "pin", "unpin", "recover").contains(name)) {
+            return EffectPolicy.LOCAL_TRANSACTIONAL;
+        }
+        if ("build".equals(name)) return EffectPolicy.MANUAL_RECOVERY;
         return null;
     }
 }
