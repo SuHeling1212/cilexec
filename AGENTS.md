@@ -49,11 +49,14 @@ The system has **no in-memory runtime state that survives crashes**. Everything 
 
 | Package | Purpose |
 |---|---|
-| `com.follarce.Main` | Entry point: init VFS → register 11 function providers → create PID 1 → start scheduler |
+| `com.follarce.Main` | Entry point: init VFS → install compile-time built-ins → create PID 1 → start scheduler |
 | `com.follarce.Constants` | All system constants (tick rates, priorities, VFS paths, permissions, defaults) |
 | `com.follarce.process` | **Scheduler** (priority round-robin), **ProcessRunner** (FCL interpreter), **StateManager** (`.proc` persistence), **CodeLoader** + **BoundaryTable** + **ControlFlow** (code parsing & execution flow), **ExpressionEvaluator** (lexer→parser→evaluator pipeline), **IpcHandler** (fork/exec/kill), **FunctionManager** (user function call stack), **ImportManager** (import/include) |
 | `com.follarce.script` | **Lexer/Parser/AstNode/NodeEvaluator** (expression evaluation), **StatementParser** (statement splitting), **Token/TokenType/NodeType** (types), **FunctionDef/Instruction/InstructionType** (compilation units), **StringEscape** |
-| `com.follarce.function` | **FunctionProvider** interface (namespace + call), **FunctionRegistry** (providers + user functions), 11 provider implementations across `file`, `io`, `util`, `user`, `process`, `swapPool`, `network`, `socket`, `math`, `path`, `system` namespaces |
+| `com.follarce.kernel.api.function` | Stable in-binary function extension contracts: **FunctionProvider**, **FunctionContext**, and effect policy types |
+| `com.follarce.kernel.function` | Kernel-side **FunctionRegistry** for built-in providers and process-local user functions |
+| `com.follarce.extension.builtin` | Compile-time built-in providers across `file`, `io`, `util`, `user`, `process`, `swapPool`, `network`, `socket`, `math`, `path`, `package`, `system` namespaces |
+| `com.follarce.bootstrap` | Explicit compile-time assembly index; no classpath plugin discovery |
 | `com.follarce.util` | **FileUtil** (VFS — metadata+body format, permissions, locks, symlinks, 787 lines), **UserUtil** (user CRUD, ThreadLocal auth), **PathUtil** (path resolution, `.proc` path conversion), **JsonUtil** (Gson wrapper), **NetworkUtil** / **SocketUtil** |
 | `com.follarce.init` | **FileInit** (create VFS tree + config files from classpath resources), **ProcessInit** (create PID 1 `.proc` file) |
 | `com.follarce.exception` | **ProcessException** (base), **RecoverableException** (sets `data._warning`, continues), **UnrecoverableException** (sets `data._error`, kills process — factory methods for syntaxError, undefinedVariable, divisionByZero, etc.) |
@@ -84,10 +87,10 @@ Two modes controlled by `Constants.USE_VIRTUAL_THREADS` (default: `true`):
 
 ### Adding New Functionality
 
-To add a new namespace of FCL functions:
-1. Implement `FunctionProvider` (interface with `getNamespace()` + `call(name, args, context)`)
-2. Register in `Main.main()` via `FunctionRegistry.registerProvider()`
-3. Follow the pattern of existing providers — validate permissions first, throw `RecoverableException` / `UnrecoverableException` for errors
+To add a new built-in namespace of FCL functions:
+1. Add a provider under `com.follarce.extension.builtin`
+2. Add it to `BuiltinProviderIndex`; providers are fixed at compile time and shipped in the single JAR
+3. Follow the existing provider patterns for permissions and recoverable effects
 
 ## Important Design Details
 

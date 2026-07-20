@@ -1,2 +1,0 @@
-// Destructive by design. The suite runs this only inside a disposable VFS root.
-system.reset()

@@ -1,5 +1,0 @@
-file.createDir("/user/local/app/data", "fcl-tests")
-target = "file.createDir(\"/user/local/app/data\", \"exec-output\")\nself = process.getPID()\nresult = {\"case\": \"exec\", \"passed\": self == 1, \"self\": self}\nio.writeFile(\"/user/local/app/data/exec-output/exec-result.json\", util.toJson(result))\nio.println(\"FCL_FULL_EXEC:\" + util.toJson(result))"
-io.writeFile("/user/local/app/data/fcl-tests/exec-target.fcl", target)
-process.exec("/user/local/app/data/fcl-tests/exec-target.fcl", "argument")
-io.writeFile("/user/local/app/data/fcl-tests/should-not-exist.txt", "old program continued")

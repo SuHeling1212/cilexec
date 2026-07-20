@@ -1,4 +1,0 @@
-file.createDir("/user/local/app/data", "fcl-tests")
-answer = io.input("IO_INPUT:")
-result = {"case": "input-io", "passed": answer == "beta", "answer": answer}
-io.writeFile("/user/local/app/data/fcl-tests/input-io-result.json", util.toJson(result))

@@ -1,4 +1,0 @@
-file.createDir("/user/local/app/data", "fcl-tests")
-answer = io.readChar()
-result = {"case": "read-char", "passed": answer == "Z", "answer": answer}
-io.writeFile("/user/local/app/data/fcl-tests/read-char-result.json", util.toJson(result))

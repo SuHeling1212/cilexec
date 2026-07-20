@@ -1,0 +1,247 @@
+package com.follarce.kernel.function;
+
+import com.follarce.kernel.Constants;
+import com.follarce.kernel.api.function.EffectPolicy;
+import com.follarce.kernel.api.function.FunctionContext;
+import com.follarce.kernel.api.function.FunctionProvider;
+import com.follarce.kernel.api.function.UnknownEffectOutcomeException;
+import com.follarce.kernel.script.FunctionDef;
+
+import java.util.*;
+
+/**
+ * 函数注册中心 —— 管理所有内建函数 Provider 和用户自定义函数。
+ */
+public class FunctionRegistry {
+    private static final Object NOT_SUPPORTED = new Object();
+    private static final Object SUPPORTED_NULL = new Object();
+
+    private static final List<FunctionProvider> providers = new ArrayList<>();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Map<String, FunctionDef>> userFunctionsByPid =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private FunctionRegistry() {}
+
+    /**
+     * 注册一个函数提供者。
+     */
+    public static synchronized void registerProvider(FunctionProvider provider) {
+        if (provider == null) {
+            throw new IllegalArgumentException("Provider must not be null");
+        }
+        for (FunctionProvider existing : providers) {
+            if (existing.getClass().equals(provider.getClass())) return;
+            if (Objects.equals(existing.getNamespace(), provider.getNamespace())) {
+                throw new IllegalStateException("Function provider namespace conflict: "
+                        + provider.getNamespace() + " is provided by "
+                        + existing.getClass().getName() + " and " + provider.getClass().getName());
+            }
+        }
+        providers.add(provider);
+    }
+
+    /** Registers the providers selected by the compile-time bootstrap index. */
+    public static int registerProviders(Collection<? extends FunctionProvider> builtins) {
+        if (builtins == null || builtins.isEmpty()) {
+            throw new IllegalStateException("The built-in provider index must not be empty");
+        }
+        List<? extends FunctionProvider> ordered = builtins.stream()
+                .sorted(Comparator.comparing(provider -> provider.getClass().getName()))
+                .toList();
+        ordered.forEach(FunctionRegistry::registerProvider);
+        return ordered.size();
+    }
+
+    static synchronized Set<String> providerNamespaces() {
+        LinkedHashSet<String> namespaces = new LinkedHashSet<>();
+        for (FunctionProvider provider : providers) namespaces.add(provider.getNamespace());
+        return Collections.unmodifiableSet(namespaces);
+    }
+
+    /** Returns whether a built-in provider already owns this namespace. */
+    public static synchronized boolean hasProviderNamespace(String namespace) {
+        if (namespace == null || namespace.isBlank()) return false;
+        for (FunctionProvider provider : providers) {
+            if (namespace.equals(provider.getNamespace())) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 注册一个用户自定义函数。
+     */
+    public static void registerUserFunction(int pid, String name, FunctionDef def) {
+        if (name == null || name.isEmpty()) {
+            throw new IllegalArgumentException("Function name must not be empty");
+        }
+        userFunctionsByPid.computeIfAbsent(pid, k -> new LinkedHashMap<>()).put(name, def);
+    }
+
+    /**
+     * 获取用户自定义函数。
+     */
+    public static FunctionDef getUserFunction(int pid, String name) {
+        Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+        return pidFunctions != null ? pidFunctions.get(name) : null;
+    }
+
+    /**
+     * 检查用户自定义函数是否已存在。
+     */
+    public static boolean hasUserFunction(int pid, String name) {
+        Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+        return pidFunctions != null && pidFunctions.containsKey(name);
+    }
+
+    /**
+     * 清除所有用户自定义函数。
+     */
+    public static void clearUserFunctions(int pid) {
+        if (pid > 0) {
+            userFunctionsByPid.remove(pid);
+        }
+    }
+
+    /**
+     * 调用函数。
+     * <ol>
+     *   <li>先检查是否有命名空间（含点号），如有则解析为 namespace + funcName</li>
+     *   <li>遍历所有 providers，先用全名匹配，再用短名匹配</li>
+     *   <li>如果是用户函数，返回特殊标记让 ProcessRunner 处理</li>
+     * </ol>
+     *
+     * @param name    函数名称（可含命名空间前缀，如 "file.read"）
+     * @param args    参数列表
+     * @param context 调用上下文
+     * @return 函数执行结果
+     */
+    public static Object call(String name, List<Object> args, FunctionContext context) {
+        if (name == null || name.isEmpty()) {
+            return new String[]{Constants.ERROR_MARKER, "Function name cannot be empty"};
+        }
+
+        String namespace = null;
+        String functionName = name;
+
+        // 1. 解析命名空间
+        int dotIndex = name.indexOf('.');
+        if (dotIndex > 0) {
+            namespace = name.substring(0, dotIndex);
+            functionName = name.substring(dotIndex + 1);
+        }
+
+        // 2. 遍历所有 providers 匹配（全名 / 空命名空间精确匹配）
+        for (FunctionProvider provider : providers) {
+            String providerNs = provider.getNamespace();
+
+            // 全名匹配：命名空间和函数名都匹配
+            if (namespace != null && !namespace.isEmpty()) {
+                if (namespace.equals(providerNs) || providerNs == null || providerNs.isEmpty()) {
+                    Object result = invokeIfSupported(provider, functionName, args, context);
+                    if (result != NOT_SUPPORTED) {
+                        return result == SUPPORTED_NULL ? null : result;
+                    }
+                }
+            } else {
+                // 无命名空间：先精确匹配短名，再尝试空命名空间 provider
+                if (providerNs == null || providerNs.isEmpty()) {
+                    Object result = invokeIfSupported(provider, functionName, args, context);
+                    if (result != NOT_SUPPORTED) {
+                        return result == SUPPORTED_NULL ? null : result;
+                    }
+                }
+            }
+        }
+
+        // 3. 无命名空间时：优先检查用户函数（按 PID 隔离）
+        if (namespace == null || namespace.isEmpty()) {
+            int pid = context.getPid();
+            Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+            if (pidFunctions != null && pidFunctions.containsKey(name)) {
+                return "USER:" + name;
+            }
+        }
+
+        // 4. 无命名空间时：短名回退 —— 匹配非空命名空间 provider
+        if (namespace == null || namespace.isEmpty()) {
+            for (FunctionProvider provider : providers) {
+                String providerNs = provider.getNamespace();
+                if (providerNs != null && !providerNs.isEmpty()) {
+                    Object result = invokeIfSupported(provider, functionName, args, context);
+                    // (debug output removed)
+                    if (result != NOT_SUPPORTED) {
+                        return result == SUPPORTED_NULL ? null : result;
+                    }
+                }
+            }
+        }
+
+        // 5. 有命名空间时：检查用户函数（按 PID 隔离）
+        if (namespace != null && !namespace.isEmpty()) {
+            int pid = context.getPid();
+            Map<String, FunctionDef> pidFunctions = userFunctionsByPid.get(pid);
+            if (pidFunctions != null && pidFunctions.containsKey(name)) {
+                return "USER:" + name;
+            }
+        }
+
+        return new String[]{Constants.ERROR_MARKER, "Function not found: " + name};
+    }
+
+    /**
+     * 安全调用 provider，捕获异常并转换为错误结果。
+     *
+     * @return 如果 provider 不识别该函数名则返回 null；否则返回执行结果。
+     */
+    private static Object invokeIfSupported(FunctionProvider provider, String functionName,
+                                            List<Object> args, FunctionContext context) {
+        EffectPolicy policy = provider.getEffectPolicy(functionName);
+        if (policy == null) return NOT_SUPPORTED;
+        String namespace = provider.getNamespace();
+        String operation = (namespace == null || namespace.isEmpty())
+                ? functionName : namespace + "." + functionName;
+        Object result = context.executeEffect(operation, policy, args,
+                effectContext -> safeCall(provider, functionName, args, effectContext));
+        return result == null ? SUPPORTED_NULL : result;
+    }
+
+    private static Object safeCall(FunctionProvider provider, String functionName,
+                                   List<Object> args, FunctionContext context) {
+        try {
+            Object result = provider.call(functionName, args, context);
+            // provider 返回 null 表示不识别此函数
+            if (result == null) {
+                return null;
+            }
+            // provider 返回错误标记
+            if (result instanceof Object[] || result instanceof String[]) {
+                Object[] arr = (Object[]) result;
+                if (arr.length > 0 && Constants.ERROR_MARKER.equals(arr[0])) {
+                    return result;
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            if (e instanceof UnknownEffectOutcomeException unknown) throw unknown;
+            return new String[]{Constants.ERROR_MARKER, e.getMessage()};
+        }
+    }
+
+    /**
+     * 检查返回结果是否为错误。
+     * 约定：返回 Object[] 或 String[] 且第一个元素为 "ERROR" 即为错误。
+     *
+     * @param result 待检查的结果
+     * @return 如果是错误结果则返回 true
+     */
+    public static boolean isErrorResult(Object result) {
+        if (result == null) {
+            return true;
+        }
+        if (result instanceof Object[]) {
+            Object[] arr = (Object[]) result;
+            return arr.length > 0 && Constants.ERROR_MARKER.equals(arr[0]);
+        }
+        return false;
+    }
+}
