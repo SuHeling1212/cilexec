@@ -239,6 +239,42 @@ mvn dependency:copy-dependencies -q
 java -cp "target/classes:target/dependency/*" com.follarce.Main
 ```
 
+## Host Shell
+
+Starting the JAR opens the Java host shell. The shell runs in the same JVM as the scheduler,
+but it is not an FCL process: it has no PID, creates no `.proc` snapshot, and is never restored
+after a restart. Process queries read the current snapshots from disk, while process controls are
+delivered through the durable process inbox. The runtime log is stored at
+`cilexec_root/cilexec.log`, inside the VFS host boundary.
+
+```text
+help
+ps
+inspect <pid>
+run <vfs-script> [--user <user>] [--name <name>] [--priority <low|normal|high>]
+pause <pid>
+continue <pid>
+kill <pid>
+
+package list [--user <user>]
+package build <source> <output> [--user <user>]
+package install <source> [--binding <name>] [--repository <path>] [--user <user>]
+package remove|info|verify|pin|unpin <value> [--user <user>]
+package gc
+package recover
+
+clear
+exit
+```
+
+`exit` shuts down the scheduler and releases the VFS instance lock without marking active FCL
+processes as terminated, so their last committed snapshots can resume on the next start. PID 1 is
+protected from `pause`, `continue`, and `kill`; use `exit` to stop CilExec itself.
+
+The host shell exclusively owns standard input. FCL `io.input`, `io.readChar`, and `util.input`
+cannot consume shell commands. Interactive process input will require a future `attach <pid>`
+terminal channel.
+
 ## Virtual File System (VFS)
 
 ```

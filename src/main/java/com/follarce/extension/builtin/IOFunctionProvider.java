@@ -3,6 +3,7 @@ package com.follarce.extension.builtin;
 import com.follarce.kernel.Constants;
 import com.follarce.kernel.api.function.FunctionContext;
 import com.follarce.kernel.api.function.UnknownEffectOutcomeException;
+import com.follarce.kernel.terminal.HostTerminal;
 import com.follarce.kernel.vfs.FileUtil;
 import com.follarce.kernel.vfs.PathUtil;
 
@@ -107,6 +108,7 @@ public class IOFunctionProvider extends BuiltinFunctionProvider {
 
     private static String readInput() {
         try {
+            HostTerminal.requireProcessInputAvailable();
             Scanner scanner = new Scanner(System.in);
             if (scanner.hasNextLine()) {
                 return scanner.nextLine();
@@ -119,6 +121,7 @@ public class IOFunctionProvider extends BuiltinFunctionProvider {
 
     private static String readChar() {
         try {
+            HostTerminal.requireProcessInputAvailable();
             int c = System.in.read();
             if (c < 0) return "";
             return String.valueOf((char) c);

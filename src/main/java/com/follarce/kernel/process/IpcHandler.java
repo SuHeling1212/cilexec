@@ -461,82 +461,9 @@ public class IpcHandler {
     // 辅助
     // ════════════════════════════════════════════
 
-    private static final java.util.concurrent.locks.ReentrantLock PID_ALLOC_LOCK =
-            new java.util.concurrent.locks.ReentrantLock();
-
     private int allocatePid(String effectId) {
-        PID_ALLOC_LOCK.lock();
-        try {
-            String processDir = com.follarce.kernel.vfs.PathUtil.toRealPath(
-                    com.follarce.kernel.Constants.SYSTEM_PROCESS_PATH);
-            Set<Integer> unavailable = unavailablePids(processDir);
-            int base = 2;
-            while (true) {
-                if (unavailable.contains(base)) {
-                    base++;
-                    continue;
-                }
-                java.io.File procFile = new java.io.File(processDir, base + ".proc");
-                try {
-                    Map<String, Object> reservation = new LinkedHashMap<>();
-                    reservation.put("Name", "RESERVED-" + base);
-                    reservation.put("Owner", Constants.DEFAULT_USER_LOCAL);
-                    reservation.put("PID", base);
-                    reservation.put("ProcessState", ProcessState.PAUSED.name());
-                    reservation.put("ProcessGeneration", ProcessIdentity.newGeneration());
-                    reservation.put("CreatedByEffectId", effectId);
-                    reservation.put("Reservation", true);
-                    reservation.put("ReservedByPid", pid);
-                    reservation.put("ReservedByGeneration",
-                            ProcessIdentity.generation(processDataSupplier.get()));
-                    Map<String, Object> reservationCode = new LinkedHashMap<>();
-                    reservationCode.put("Code", new ArrayList<String>());
-                    reservationCode.put("runningCodeLine", 0);
-                    reservationCode.put("BlockStack", new ArrayList<>());
-                    reservation.put("Program", new LinkedHashMap<>(Map.of(
-                            "Data", new LinkedHashMap<String, Object>(), "Code", reservationCode)));
-                    writeNewProcessReservation(procFile.toPath(), reservation);
-                    if (procFile.exists()) {
-                        return base;
-                    }
-                } catch (java.nio.file.FileAlreadyExistsException e) {
-                    // Another allocator claimed this PID.
-                } catch (java.io.IOException e) {
-                    throw new RuntimeException("Failed to reserve PID " + base, e);
-                }
-                base++;
-            }
-        } finally {
-            PID_ALLOC_LOCK.unlock();
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private Set<Integer> unavailablePids(String processDir) {
-        Set<Integer> result = new HashSet<>();
-        java.io.File dir = new java.io.File(processDir);
-        java.io.File[] files = dir.listFiles((d, name) -> name.matches("\\d+\\.proc(?:\\.tmp)?"));
-        if (files == null) return result;
-        for (java.io.File file : files) {
-            String name = file.getName();
-            try {
-                int filePid = Integer.parseInt(name.substring(0, name.indexOf('.')));
-                result.add(filePid);
-                String canonicalName = filePid + ".proc";
-                if (!FileUtil.exists(Constants.SYSTEM_PROCESS_PATH + canonicalName)) continue;
-                Map<String, Object> data = JsonUtil.parseToMapStrict(
-                        FileUtil.read(Constants.SYSTEM_PROCESS_PATH + canonicalName));
-                Object exitedObj = data.get("ExitedChildren");
-                if (exitedObj instanceof Map) {
-                    for (String exitedPid : ((Map<String, Object>) exitedObj).keySet()) {
-                        result.add(Integer.parseInt(exitedPid));
-                    }
-                }
-            } catch (Exception ignored) {
-                // A malformed or temporary snapshot still reserves its filename PID.
-            }
-        }
-        return result;
+        return ProcessFileAllocator.reserve(effectId, pid,
+                ProcessIdentity.generation(processDataSupplier.get())).pid();
     }
 
     @SuppressWarnings("unchecked")
@@ -664,35 +591,12 @@ public class IpcHandler {
         reservation.put("Program", new LinkedHashMap<>(Map.of(
                 "Data", new LinkedHashMap<String, Object>(), "Code", code)));
         try {
-            writeNewProcessReservation(java.nio.file.Path.of(PathUtil.toRealPath(vfsPath)), reservation);
+            ProcessFileAllocator.writeNewReservation(
+                    java.nio.file.Path.of(PathUtil.toRealPath(vfsPath)), reservation);
         } catch (java.nio.file.FileAlreadyExistsException e) {
             ensureForkReservation(entry);
         } catch (java.io.IOException e) {
             throw new RuntimeException("Failed to restore fork reservation", e);
-        }
-    }
-
-    private static void writeNewProcessReservation(java.nio.file.Path target,
-                                                   Map<String, Object> reservation)
-            throws java.io.IOException {
-        java.nio.file.Path temp = target.resolveSibling(
-                target.getFileName() + ".reservation-" + UUID.randomUUID() + ".tmp");
-        try {
-            java.nio.file.Files.writeString(temp, JsonUtil.toJson(reservation),
-                    java.nio.file.StandardOpenOption.CREATE_NEW,
-                    java.nio.file.StandardOpenOption.WRITE);
-            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(
-                    temp, java.nio.file.StandardOpenOption.WRITE)) {
-                channel.force(true);
-            }
-            java.nio.file.Files.move(temp, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-            try (java.nio.channels.FileChannel directory = java.nio.channels.FileChannel.open(
-                    target.getParent(), java.nio.file.StandardOpenOption.READ)) {
-                directory.force(true);
-            } catch (Exception ignored) {
-            }
-        } finally {
-            java.nio.file.Files.deleteIfExists(temp);
         }
     }
 

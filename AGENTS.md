@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Build & Run Commands
 
-```bash   
+```bash
 # Compile
 mvn compile
 
@@ -49,14 +49,16 @@ The system has **no in-memory runtime state that survives crashes**. Everything 
 
 | Package | Purpose |
 |---|---|
-| `com.follarce.Main` | Entry point: init VFS → install compile-time built-ins → create PID 1 → start scheduler |
+| `com.follarce.Main` | Entry point: init VFS → install compile-time built-ins → create PID 1 → start scheduler → enter host Shell |
 | `com.follarce.Constants` | All system constants (tick rates, priorities, VFS paths, permissions, defaults) |
-| `com.follarce.process` | **Scheduler** (priority round-robin), **ProcessRunner** (FCL interpreter), **StateManager** (`.proc` persistence), **CodeLoader** + **BoundaryTable** + **ControlFlow** (code parsing & execution flow), **ExpressionEvaluator** (lexer→parser→evaluator pipeline), **IpcHandler** (fork/exec/kill), **FunctionManager** (user function call stack), **ImportManager** (import/include) |
+| `com.follarce.process` | **Scheduler**, **ProcessRunner**, **StateManager**, **ProcessLauncher**, **ProcessFileAllocator**, **IpcHandler**, and FCL execution helpers |
 | `com.follarce.script` | **Lexer/Parser/AstNode/NodeEvaluator** (expression evaluation), **StatementParser** (statement splitting), **Token/TokenType/NodeType** (types), **FunctionDef/Instruction/InstructionType** (compilation units), **StringEscape** |
 | `com.follarce.kernel.api.function` | Stable in-binary function extension contracts: **FunctionProvider**, **FunctionContext**, and effect policy types |
 | `com.follarce.kernel.function` | Kernel-side **FunctionRegistry** for built-in providers and process-local user functions |
 | `com.follarce.extension.builtin` | Compile-time built-in providers across `file`, `io`, `util`, `user`, `process`, `swapPool`, `network`, `socket`, `math`, `path`, `package`, `system` namespaces |
 | `com.follarce.bootstrap` | Explicit compile-time assembly index; no classpath plugin discovery |
+| `com.follarce.shell` | Host-only Java control plane: command parser, disk-backed control service, and interactive console; never an FCL process |
+| `com.follarce.kernel.terminal` | Owns host standard-input routing so FCL input cannot consume Shell commands |
 | `com.follarce.util` | **FileUtil** (VFS — metadata+body format, permissions, locks, symlinks, 787 lines), **UserUtil** (user CRUD, ThreadLocal auth), **PathUtil** (path resolution, `.proc` path conversion), **JsonUtil** (Gson wrapper), **NetworkUtil** / **SocketUtil** |
 | `com.follarce.init` | **FileInit** (create VFS tree + config files from classpath resources), **ProcessInit** (create PID 1 `.proc` file) |
 | `com.follarce.exception` | **ProcessException** (base), **RecoverableException** (sets `data._warning`, continues), **UnrecoverableException** (sets `data._error`, kills process — factory methods for syntaxError, undefinedVariable, divisionByZero, etc.) |

@@ -3,6 +3,7 @@ package com.follarce.extension.builtin;
 import com.follarce.kernel.Constants;
 import com.follarce.kernel.api.function.FunctionContext;
 import com.follarce.kernel.api.function.UnknownEffectOutcomeException;
+import com.follarce.kernel.terminal.HostTerminal;
 import com.follarce.kernel.util.JsonUtil;
 
 import java.time.LocalDateTime;
@@ -119,6 +120,7 @@ public class UtilFunctionProvider extends BuiltinFunctionProvider {
 
     private static String readInput() {
         try {
+            HostTerminal.requireProcessInputAvailable();
             Scanner scanner = new Scanner(System.in);
             if (scanner.hasNextLine()) {
                 return scanner.nextLine();
