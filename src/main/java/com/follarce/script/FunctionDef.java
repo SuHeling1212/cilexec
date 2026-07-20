@@ -10,12 +10,19 @@ public class FunctionDef {
     public final List<String> params;
     public final List<String> bodyLines;
     public final int bodyStartLine;
+    public final String packageDataPath;
 
     public FunctionDef(String name, List<String> params, List<String> bodyLines, int bodyStartLine) {
+        this(name, params, bodyLines, bodyStartLine, null);
+    }
+
+    public FunctionDef(String name, List<String> params, List<String> bodyLines, int bodyStartLine,
+                       String packageDataPath) {
         this.name = name;
         this.params = params;
         this.bodyLines = bodyLines;
         this.bodyStartLine = bodyStartLine;
+        this.packageDataPath = packageDataPath;
     }
 
     public int getParamCount() {

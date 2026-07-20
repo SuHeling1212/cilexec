@@ -19,9 +19,9 @@ file.createDir("/user/fclreal/app/e2e/root-v2", "payload")
 dependencyManifestV1 = "{\"schemaVersion\":1,\"namespace\":\"e2e.real\",\"name\":\"dependency\",\"version\":\"1.0.0\",\"entry\":\"payload/main.fcl\",\"exports\":{\"depValue\":{\"module\":\"payload/main.fcl\",\"symbol\":\"depValue\"}},\"dependencies\":[]}"
 dependencyManifestV2 = "{\"schemaVersion\":1,\"namespace\":\"e2e.real\",\"name\":\"dependency\",\"version\":\"2.0.0\",\"entry\":\"payload/main.fcl\",\"exports\":{\"depValue\":{\"module\":\"payload/main.fcl\",\"symbol\":\"depValue\"}},\"dependencies\":[]}"
 io.writeFile("/user/fclreal/app/e2e/dependency-v1/manifest.json", dependencyManifestV1)
-io.writeFile("/user/fclreal/app/e2e/dependency-v1/payload/main.fcl", "func depValue() { return 101 }")
+io.writeFile("/user/fclreal/app/e2e/dependency-v1/payload/main.fcl", "func depValue() { return 101 }\nfunc depData() { return path.getEnvVar(\"PACKAGE_DATA\") }\nfunc depReadShared() { dataDir = path.getEnvVar(\"PACKAGE_DATA\"); return file.read(dataDir + \"/shared.txt\") }")
 io.writeFile("/user/fclreal/app/e2e/dependency-v2/manifest.json", dependencyManifestV2)
-io.writeFile("/user/fclreal/app/e2e/dependency-v2/payload/main.fcl", "func depValue() { return 202 }")
+io.writeFile("/user/fclreal/app/e2e/dependency-v2/payload/main.fcl", "func depValue() { return 202 }\nfunc depData() { return path.getEnvVar(\"PACKAGE_DATA\") }\nfunc depReadShared() { dataDir = path.getEnvVar(\"PACKAGE_DATA\"); return file.read(dataDir + \"/shared.txt\") }")
 
 dependencyBuildV1 = package.build("/user/fclreal/app/e2e/dependency-v1", "/user/fclreal/app/e2e/repo/dependency-v1.pack")
 dependencyBuildV2 = package.build("/user/fclreal/app/e2e/dependency-v2", "/user/fclreal/app/e2e/repo/dependency-v2.pack")
@@ -29,14 +29,14 @@ dependencyBuildV2 = package.build("/user/fclreal/app/e2e/dependency-v2", "/user/
 rootManifestV1 = "{\"schemaVersion\":1,\"namespace\":\"e2e.real\",\"name\":\"root\",\"version\":\"1.0.0\",\"entry\":\"payload/main.fcl\",\"exports\":{\"rootValue\":{\"module\":\"payload/main.fcl\",\"symbol\":\"rootValue\"}},\"dependencies\":[{\"binding\":\"dep\",\"namespace\":\"e2e.real\",\"name\":\"dependency\",\"version\":\"1.0.0\",\"integrity\":\"" + dependencyBuildV1["integrity"] + "\"}],\"lifecycle\":{\"preInstall\":{\"script\":\"hooks/pre-install.fcl\",\"timeoutMs\":5000},\"postInstall\":{\"script\":\"hooks/post-install.fcl\",\"timeoutMs\":5000},\"preUninstall\":{\"script\":\"hooks/pre-uninstall.fcl\",\"timeoutMs\":5000},\"postUninstall\":{\"script\":\"hooks/post-uninstall.fcl\",\"timeoutMs\":5000}},\"resources\":[\"resources/config.json\"]}"
 rootManifestV2 = "{\"schemaVersion\":1,\"namespace\":\"e2e.real\",\"name\":\"root\",\"version\":\"2.0.0\",\"entry\":\"payload/main.fcl\",\"exports\":{\"rootValue\":{\"module\":\"payload/main.fcl\",\"symbol\":\"rootValue\"}},\"dependencies\":[{\"binding\":\"dep\",\"namespace\":\"e2e.real\",\"name\":\"dependency\",\"version\":\"2.0.0\",\"integrity\":\"" + dependencyBuildV2["integrity"] + "\"}]}"
 io.writeFile("/user/fclreal/app/e2e/root-v1/manifest.json", rootManifestV1)
-io.writeFile("/user/fclreal/app/e2e/root-v1/payload/main.fcl", "import dep.*\nfunc rootValue() { value = depValue(); return value }")
+io.writeFile("/user/fclreal/app/e2e/root-v1/payload/main.fcl", "import dep.*\nfunc rootValue() { value = depValue(); return value }\nfunc rootData() { return path.getEnvVar(\"PACKAGE_DATA\") }\nfunc dependencyData() { value = depData(); return value }\nfunc writeDependencyData() { target = depData(); file.createFile(target, \"shared.txt\"); file.write(target + \"/shared.txt\", \"shared-by-root\"); shared = depReadShared(); return shared }")
 io.writeFile("/user/fclreal/app/e2e/root-v1/resources/config.json", "{\"mode\":\"v1\"}")
 io.writeFile("/user/fclreal/app/e2e/root-v1/hooks/pre-install.fcl", "hookResult = {\"status\":\"ok\",\"allow\":true}")
 io.writeFile("/user/fclreal/app/e2e/root-v1/hooks/post-install.fcl", "hookResult = {\"status\":\"ok\"}")
 io.writeFile("/user/fclreal/app/e2e/root-v1/hooks/pre-uninstall.fcl", "hookResult = {\"status\":\"ok\",\"allow\":true}")
 io.writeFile("/user/fclreal/app/e2e/root-v1/hooks/post-uninstall.fcl", "hookResult = {\"status\":\"ok\"}")
 io.writeFile("/user/fclreal/app/e2e/root-v2/manifest.json", rootManifestV2)
-io.writeFile("/user/fclreal/app/e2e/root-v2/payload/main.fcl", "import dep.*\nfunc rootValue() { value = depValue(); return value }")
+io.writeFile("/user/fclreal/app/e2e/root-v2/payload/main.fcl", "import dep.*\nfunc rootValue() { value = depValue(); return value }\nfunc rootData() { return path.getEnvVar(\"PACKAGE_DATA\") }\nfunc dependencyData() { value = depData(); return value }")
 
 rootBuildV1 = package.build("/user/fclreal/app/e2e/root-v1", "/user/fclreal/app/e2e/repo/root-v1.pack")
 rootBuildV2 = package.build("/user/fclreal/app/e2e/root-v2", "/user/fclreal/app/e2e/repo/root-v2.pack")
@@ -48,6 +48,9 @@ import root-v2.* as versionTwo
 
 one = versionOne.rootValue()
 two = versionTwo.rootValue()
+rootData = versionOne.rootData()
+dependencyData = versionOne.dependencyData()
+crossPackageData = versionOne.writeDependencyData()
 verifiedV1 = package.verify("root-v1")
 verifiedV2 = package.verify("root-v2")
 listed = package.list()
@@ -61,7 +64,7 @@ packageUser = user.getCurrentUser()
 user.switchUser("local", "local")
 recovered = package.recover()
 garbageCollected = package.gc()
-passed = one == 101 and two == 202 and verifiedV1["ok"] == true and verifiedV2["ok"] == true and util.isArray(listed) and infoV1["manifest"]["version"] == "1.0.0" and resourceV1 == "{\"mode\":\"v1\"}" and util.isMap(pinnedV1) and unpinnedV1 == true and removedV1["status"] == "removed" and removedV2["status"] == "removed" and recovered == "Package recovery completed" and garbageCollected["status"] == "collected"
-result = {"case": "package", "passed": passed, "one": one, "two": two, "packageUser": packageUser, "installedV1": installedV1, "installedV2": installedV2, "verifiedV1": verifiedV1, "verifiedV2": verifiedV2, "listed": listed, "infoV1": infoV1, "resourceV1": resourceV1, "pinnedV1": pinnedV1, "removedV1": removedV1, "removedV2": removedV2, "recovered": recovered, "garbageCollected": garbageCollected}
+passed = one == 101 and two == 202 and rootData == "/user/fclreal/app/data/package/packages/e2e.real/root/" and dependencyData == "/user/fclreal/app/data/package/packages/e2e.real/dependency/" and crossPackageData == "shared-by-root" and verifiedV1["ok"] == true and verifiedV2["ok"] == true and util.isArray(listed) and infoV1["manifest"]["version"] == "1.0.0" and resourceV1 == "{\"mode\":\"v1\"}" and util.isMap(pinnedV1) and unpinnedV1 == true and removedV1["status"] == "removed" and removedV2["status"] == "removed" and recovered == "Package recovery completed" and garbageCollected["status"] == "collected"
+result = {"case": "package", "passed": passed, "one": one, "two": two, "rootData": rootData, "dependencyData": dependencyData, "crossPackageData": crossPackageData, "packageUser": packageUser, "installedV1": installedV1, "installedV2": installedV2, "verifiedV1": verifiedV1, "verifiedV2": verifiedV2, "listed": listed, "infoV1": infoV1, "resourceV1": resourceV1, "pinnedV1": pinnedV1, "removedV1": removedV1, "removedV2": removedV2, "recovered": recovered, "garbageCollected": garbageCollected}
 io.writeFile("/user/fclreal/app/e2e/result.json", util.toJson(result))
 io.println("FCL_REAL_E2E:" + util.toJson(result))

@@ -149,6 +149,8 @@ public class StateManager {
         List<Map<String, Object>> callStackData = new ArrayList<>();
         String pendingAssignVar = null;
         List<String> imports = new ArrayList<>();
+        Map<String, String> packageDataByFunction = new LinkedHashMap<>();
+        String activePackageDataPath = null;
 
         Map<String, Object> program = (Map<String, Object>) processData.get("Program");
         if (program != null) {
@@ -179,11 +181,25 @@ public class StateManager {
             if (savedImports instanceof List) {
                 imports = new ArrayList<>((List<String>) savedImports);
             }
+            Object savedPackageMappings = program.get("PackageDataByFunction");
+            if (savedPackageMappings instanceof Map<?, ?> mappings) {
+                for (Map.Entry<?, ?> entry : mappings.entrySet()) {
+                    if (entry.getKey() instanceof String name
+                            && entry.getValue() instanceof String path) {
+                        packageDataByFunction.put(name, path);
+                    }
+                }
+            }
+            Object activePackageData = program.get("ActivePackageData");
+            if (activePackageData instanceof String path && !path.isBlank()) {
+                activePackageDataPath = path;
+            }
         }
 
         return new RuntimeSnapshot(
                 data, codeLines, currentLine, blockStack,
-                callStackData, pendingAssignVar, imports
+                callStackData, pendingAssignVar, imports,
+                packageDataByFunction, activePackageDataPath
         );
     }
 
@@ -220,6 +236,12 @@ public class StateManager {
             program.put("CallStack", snapshot.callStackData);         // 函数调用栈
             program.put("pendingAssignVarName", snapshot.pendingAssignVarName); // 待赋值变量名
             program.put("imports", snapshot.imports);
+            program.put("PackageDataByFunction", snapshot.packageDataByFunction);
+            if (snapshot.activePackageDataPath == null) {
+                program.remove("ActivePackageData");
+            } else {
+                program.put("ActivePackageData", snapshot.activePackageDataPath);
+            }
 
             // 写入 Code / runningCodeLine / BlockStack（持久化字段）
             Map<String, Object> code = new LinkedHashMap<>();
@@ -366,6 +388,8 @@ public class StateManager {
         public final List<Map<String, Object>> callStackData;
         public final String pendingAssignVarName;
         public final List<String> imports;
+        public final Map<String, String> packageDataByFunction;
+        public final String activePackageDataPath;
 
         public RuntimeSnapshot(
                 Map<String, Object> data,
@@ -374,7 +398,9 @@ public class StateManager {
                 List<Map<String, Object>> blockStack,
                 List<Map<String, Object>> callStackData,
                 String pendingAssignVarName,
-                List<String> imports
+                List<String> imports,
+                Map<String, String> packageDataByFunction,
+                String activePackageDataPath
         ) {
             this.data = data != null ? data : new LinkedHashMap<>();
             this.codeLines = codeLines != null ? codeLines : new ArrayList<>();
@@ -383,6 +409,9 @@ public class StateManager {
             this.callStackData = callStackData != null ? callStackData : new ArrayList<>();
             this.pendingAssignVarName = pendingAssignVarName;
             this.imports = imports != null ? imports : new ArrayList<>();
+            this.packageDataByFunction = packageDataByFunction != null
+                    ? new LinkedHashMap<>(packageDataByFunction) : new LinkedHashMap<>();
+            this.activePackageDataPath = activePackageDataPath;
         }
     }
 }

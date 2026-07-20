@@ -23,6 +23,7 @@ public class FunctionContext {
     private final int ppid;
     private final String currentUser;
     private final String processGeneration;
+    private final String packageDataPath;
     private final Map<String, String> pathAliases;
     private final Consumer<String> effectiveUserUpdater;
     private final Consumer<Map<String, String>> aliasUpdater;
@@ -31,7 +32,8 @@ public class FunctionContext {
     private final boolean replay;
 
     public FunctionContext(int pid, int ppid, String currentUser) {
-        this(pid, ppid, currentUser, null, Collections.emptyMap(), null, null, null, null, false);
+        this(pid, ppid, currentUser, null, Collections.emptyMap(), null, null, null,
+                null, null, false);
     }
 
     public FunctionContext(int pid, int ppid, String currentUser, String processGeneration,
@@ -40,18 +42,30 @@ public class FunctionContext {
                            Consumer<Map<String, String>> aliasUpdater,
                            EffectExecutor effectExecutor) {
         this(pid, ppid, currentUser, processGeneration, pathAliases, effectiveUserUpdater,
-                aliasUpdater, effectExecutor, null, false);
+                aliasUpdater, effectExecutor, null, null, false);
+    }
+
+    public FunctionContext(int pid, int ppid, String currentUser, String processGeneration,
+                           Map<String, String> pathAliases,
+                           Consumer<String> effectiveUserUpdater,
+                           Consumer<Map<String, String>> aliasUpdater,
+                           EffectExecutor effectExecutor,
+                           String packageDataPath) {
+        this(pid, ppid, currentUser, processGeneration, pathAliases, effectiveUserUpdater,
+                aliasUpdater, effectExecutor, packageDataPath, null, false);
     }
 
     private FunctionContext(int pid, int ppid, String currentUser, String processGeneration,
                             Map<String, String> pathAliases,
                             Consumer<String> effectiveUserUpdater,
                             Consumer<Map<String, String>> aliasUpdater,
-                            EffectExecutor effectExecutor, String effectId, boolean replay) {
+                            EffectExecutor effectExecutor, String packageDataPath,
+                            String effectId, boolean replay) {
         this.pid = pid;
         this.ppid = ppid;
         this.currentUser = currentUser;
         this.processGeneration = processGeneration;
+        this.packageDataPath = packageDataPath;
         this.pathAliases = Collections.unmodifiableMap(pathAliases == null
                 ? new LinkedHashMap<>() : new LinkedHashMap<>(pathAliases));
         this.effectiveUserUpdater = effectiveUserUpdater;
@@ -65,6 +79,7 @@ public class FunctionContext {
     public int getPpid() { return ppid; }
     public String getCurrentUser() { return currentUser; }
     public String getProcessGeneration() { return processGeneration; }
+    public String getPackageDataPath() { return packageDataPath; }
     public Map<String, String> getPathAliases() { return new LinkedHashMap<>(pathAliases); }
     public String getEffectId() { return effectId; }
     public boolean isReplay() { return replay; }
@@ -104,6 +119,6 @@ public class FunctionContext {
 
     public FunctionContext forEffect(String id, boolean replaying) {
         return new FunctionContext(pid, ppid, currentUser, processGeneration, pathAliases,
-                effectiveUserUpdater, aliasUpdater, effectExecutor, id, replaying);
+                effectiveUserUpdater, aliasUpdater, effectExecutor, packageDataPath, id, replaying);
     }
 }

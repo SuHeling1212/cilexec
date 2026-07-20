@@ -95,6 +95,15 @@ hookResult = {"status": "ok", "allow": true, "message": "ready"}
 
 普通 `import 包.*` 不会执行 `hooks/`；只有包管理器可以根据 manifest 调用它们。
 
+已安装包的函数在执行时可以读取自己的数据目录：
+
+```fcl
+dataDir = path.getEnvVar("PACKAGE_DATA")
+```
+
+该变量只在包函数调用期间有效。数据目录仍采用用户级权限，同一用户安装的包
+可以读取和修改其他包的数据；不同用户之间仍由 VFS 权限隔离。
+
 ## 打包规则
 
 当前 `PackageBuilder` 会把本目录打成确定性归档：

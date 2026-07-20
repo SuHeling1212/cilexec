@@ -38,6 +38,7 @@ public class ImportManager {
     private static final String PACKAGE_WILDCARD = ".*";
 
     private final List<String> importedFiles = new ArrayList<>();
+    private final Map<String, String> packageDataByFunction = new LinkedHashMap<>();
     private final Supplier<String> effectiveUserSupplier;
     private final Supplier<Map<String, String>> aliasesSupplier;
     private final Supplier<String> currentScriptPathSupplier;
@@ -155,6 +156,7 @@ public class ImportManager {
         for (PackageManager.ImportModule module : installed.modules()) {
             if (importedFiles.contains(module.id())) continue;
             if (appendContent(module.source(), module.id(), codeLines)) {
+                registerPackageFunctions(module.source(), null, module.packageDataPath());
                 imported.add(module.id());
             }
         }
@@ -211,6 +213,13 @@ public class ImportManager {
         List<String> imported = new ArrayList<>();
         for (Map.Entry<String, String> module : rewrittenModules.entrySet()) {
             if (appendContent(module.getValue(), module.getKey(), codeLines)) {
+                PackageManager.ImportModule owner = installed.modules().stream()
+                        .filter(candidate -> aliasedImportId(candidate.id(), namespace, rootIdentity)
+                                .equals(module.getKey()))
+                        .findFirst()
+                        .orElseThrow();
+                registerPackageFunctions(owner.source(), namespacesByHash.get(owner.packageHash()),
+                        owner.packageDataPath());
                 imported.add(module.getKey());
             }
         }
@@ -358,6 +367,22 @@ public class ImportManager {
         }
         Logger.info("Import: " + displayPath + " (" + importedLineCount + " lines)");
         return true;
+    }
+
+    private void registerPackageFunctions(String source, String namespace, String dataPath) {
+        for (String function : FclNamespaceRewriter.declaredFunctions(source)) {
+            String runtimeName = namespace == null ? function : namespace + "." + function;
+            packageDataByFunction.put(runtimeName, dataPath);
+        }
+    }
+
+    public Map<String, String> getPackageDataByFunction() {
+        return new LinkedHashMap<>(packageDataByFunction);
+    }
+
+    public void setPackageDataByFunction(Map<String, String> mappings) {
+        packageDataByFunction.clear();
+        if (mappings != null) packageDataByFunction.putAll(mappings);
     }
 
     private void checkReadPermission(String path) {

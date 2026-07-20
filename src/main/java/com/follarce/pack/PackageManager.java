@@ -47,6 +47,7 @@ public final class PackageManager {
             String packageHash,
             String path,
             String source,
+            String packageDataPath,
             boolean rootPackage,
             Map<String, String> dependencies
     ) {
@@ -591,8 +592,10 @@ public final class PackageManager {
                     String source = normalizePackageImports(archive.readUtf8(module),
                             dependencyBindings, archive.manifest().coordinate());
                     String id = "pack:" + hash + "!/" + module;
+                    String dataPath = PackagePaths.userPackageInstanceDataPath(
+                            user, archive.manifest().coordinate());
                     modules.add(new ImportModule(id, hash, module, source,
-                            hash.equals(rootHash), dependencyHashes));
+                            dataPath, hash.equals(rootHash), dependencyHashes));
                 }
             }
             return new PackageImport(binding, rootHash, modules);

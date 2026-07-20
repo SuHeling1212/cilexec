@@ -104,6 +104,7 @@ public class ProcessRunner {
     private String processGeneration;
     private String effectiveUser;
     private Map<String, String> pathAliases = new LinkedHashMap<>();
+    private String activePackageDataPath;
     private String ownedGeneration;
     private volatile boolean registered;
     private volatile boolean executorStopping;
@@ -708,6 +709,7 @@ public class ProcessRunner {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
                     this.blockStack = new ArrayList<>(frame.savedBlockStack);
+                    this.activePackageDataPath = frame.savedPackageDataPath;
                     completePendingAssignment();
                     codeChanged();
                     settle(frame.savedCurrentLine + 1);
@@ -768,6 +770,7 @@ public class ProcessRunner {
                 importManager.addImportedFile(imp);
             }
             codeChanged();
+            functionManager.setPackageDataByFunction(importManager.getPackageDataByFunction());
             functionManager.parseFunctions(codeLines);
             settle(currentLine + 1);
             return;
@@ -858,6 +861,7 @@ public class ProcessRunner {
                     this.data = frame.savedData;
                     this.codeLines = frame.savedCodeLines;
                     this.blockStack = new ArrayList<>(frame.savedBlockStack);
+                    this.activePackageDataPath = frame.savedPackageDataPath;
                     // 数据变更必须在 settle 之前完成
                     if (ret.value != null) {
                         data.put("__return_value", ret.value);
@@ -1122,11 +1126,12 @@ public class ProcessRunner {
         }
         FunctionManager.CallFrame frame = functionManager.saveFrame(
                 new LinkedHashMap<>(data), new ArrayList<>(codeLines), currentLine,
-                new ArrayList<>(blockStack));
+                new ArrayList<>(blockStack), activePackageDataPath);
         this.data = new LinkedHashMap<>();
         this.codeLines = new ArrayList<>(def.bodyLines);
         this.currentLine = 0;
         this.blockStack = new ArrayList<>();
+        this.activePackageDataPath = def.packageDataPath;
 
         List<Object> args = functionManager.getPendingFuncArgs();
         functionManager.clearPending();
@@ -1198,6 +1203,9 @@ public class ProcessRunner {
         if (snap.imports != null && !snap.imports.isEmpty()) {
             importManager.setImportedFiles(snap.imports);
         }
+        importManager.setPackageDataByFunction(snap.packageDataByFunction);
+        functionManager.setPackageDataByFunction(snap.packageDataByFunction);
+        this.activePackageDataPath = snap.activePackageDataPath;
         functionManager.parseFunctions(codeLines);
 
         // 恢复调用栈
@@ -1214,8 +1222,11 @@ public class ProcessRunner {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> savedBlocks = frameData.get("BlockStack") instanceof List
                     ? (List<Map<String, Object>>) frameData.get("BlockStack") : new ArrayList<>();
+            String savedPackageData = frameData.get("PackageData") instanceof String path
+                    ? path : null;
             if (savedData != null && savedCode != null) {
-                functionManager.saveFrame(savedData, savedCode, savedLine, savedBlocks);
+                functionManager.saveFrame(savedData, savedCode, savedLine, savedBlocks,
+                        savedPackageData);
             }
         }
         if (!functionManager.getCallStack().isEmpty()) {
@@ -1257,7 +1268,9 @@ public class ProcessRunner {
                     blockStack,
                     serializeCallStack(),
                     functionManager.getPendingFuncName(),
-                    importManager.getImportedFiles()
+                    importManager.getImportedFiles(),
+                    importManager.getPackageDataByFunction(),
+                    activePackageDataPath
             );
             stateManager.saveToFile(snap);
         }
@@ -1285,6 +1298,9 @@ public class ProcessRunner {
             frameData.put("Code", new ArrayList<>(frame.savedCodeLines));
             frameData.put("CodeLine", frame.savedCurrentLine);
             frameData.put("BlockStack", new ArrayList<>(frame.savedBlockStack));
+            if (frame.savedPackageDataPath != null) {
+                frameData.put("PackageData", frame.savedPackageDataPath);
+            }
             result.add(frameData);
         }
         return result;
@@ -1865,7 +1881,7 @@ public class ProcessRunner {
     private FunctionContext createFunctionContext() {
         return new FunctionContext(pid, stateManager.extractParentPid(), effectiveUser,
                 processGeneration, pathAliases, this::setEffectiveUser,
-                this::setPathAliases, this::executeFunctionEffect);
+                this::setPathAliases, this::executeFunctionEffect, activePackageDataPath);
     }
 
     private Object executeFunctionEffect(String operation, EffectPolicy policy, List<Object> arguments,

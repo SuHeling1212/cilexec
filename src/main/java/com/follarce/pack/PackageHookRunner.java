@@ -93,8 +93,10 @@ public final class PackageHookRunner {
             String childEffect = effectId + "-hook-" + effectOrdinal.getAndIncrement();
             return invocation.apply(base[0].forEffect(childEffect, false));
         };
+        Object packageData = initialData.get("__package_data");
         base[0] = new FunctionContext(pid, 0, user, processGeneration,
-                Map.of(), null, null, effectExecutor);
+                Map.of(), null, null, effectExecutor,
+                packageData instanceof String path ? path : null);
 
         ExpressionEvaluator evaluator = new ExpressionEvaluator(pid, () -> 0, null, () -> base[0]);
         evaluator.setData(data);

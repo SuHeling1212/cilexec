@@ -54,6 +54,17 @@ public class PathFunctionProvider implements FunctionProvider {
                 case "getEnvVar": {
                     String envName = getStringArg(args, 0);
 
+                    if ("PACKAGE_DATA".equals(envName)) {
+                        String packageDataPath = context.getPackageDataPath();
+                        if (packageDataPath == null || packageDataPath.isBlank()) {
+                            return new String[]{
+                                    Constants.ERROR_MARKER,
+                                    "PACKAGE_DATA is only available while package code is running"
+                            };
+                        }
+                        return packageDataPath;
+                    }
+
                     if ("HOME".equals(envName)) {
                         return Constants.USER_HOME_PREFIX
                                 + context.getCurrentUser();

@@ -33,6 +33,7 @@ public class FunctionManager {
 
     // 用户函数定义缓存
     private final Map<String, FunctionDef> functions = new LinkedHashMap<>();
+    private Map<String, String> packageDataByFunction = new LinkedHashMap<>();
 
     // 调用栈
     private final Deque<CallFrame> callStack = new ArrayDeque<>();
@@ -52,6 +53,11 @@ public class FunctionManager {
     public void setPendingFuncName(String name) { this.pendingFuncName = name; }
     public List<Object> getPendingFuncArgs() { return pendingFuncArgs; }
     public void setPendingFuncArgs(List<Object> args) { this.pendingFuncArgs = args; }
+
+    public void setPackageDataByFunction(Map<String, String> packageDataByFunction) {
+        this.packageDataByFunction = packageDataByFunction == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(packageDataByFunction);
+    }
 
     /**
      * 从代码行中解析所有函数定义。
@@ -105,7 +111,8 @@ public class FunctionManager {
                     bodyStartLine = i + 1;
                 }
 
-                FunctionDef def = new FunctionDef(funcName, params, new ArrayList<>(bodyLines), bodyStartLine);
+                FunctionDef def = new FunctionDef(funcName, params, new ArrayList<>(bodyLines),
+                        bodyStartLine, packageDataByFunction.get(funcName));
                 functions.put(funcName, def);
                 // 同步注册到全局 FunctionRegistry，使函数调用能被正常分发
                 FunctionRegistry.registerUserFunction(pid, funcName, def);
@@ -139,9 +146,16 @@ public class FunctionManager {
 
     public CallFrame saveFrame(Map<String, Object> currentData, List<String> currentCodeLines,
                                int currentLine, List<Map<String, Object>> blockStack) {
+        return saveFrame(currentData, currentCodeLines, currentLine, blockStack, null);
+    }
+
+    public CallFrame saveFrame(Map<String, Object> currentData, List<String> currentCodeLines,
+                               int currentLine, List<Map<String, Object>> blockStack,
+                               String packageDataPath) {
         CallFrame frame = new CallFrame(new LinkedHashMap<>(currentData),
                 new ArrayList<>(currentCodeLines), currentLine,
-                blockStack != null ? new ArrayList<>(blockStack) : new ArrayList<>());
+                blockStack != null ? new ArrayList<>(blockStack) : new ArrayList<>(),
+                packageDataPath);
         callStack.push(frame);
         return frame;
     }
@@ -211,6 +225,7 @@ public class FunctionManager {
         public final List<String> savedCodeLines;
         public final int savedCurrentLine;
         public final List<Map<String, Object>> savedBlockStack;
+        public final String savedPackageDataPath;
 
         public CallFrame(Map<String, Object> savedData, List<String> savedCodeLines, int savedCurrentLine) {
             this(savedData, savedCodeLines, savedCurrentLine, List.of());
@@ -218,11 +233,18 @@ public class FunctionManager {
 
         public CallFrame(Map<String, Object> savedData, List<String> savedCodeLines,
                          int savedCurrentLine, List<Map<String, Object>> savedBlockStack) {
+            this(savedData, savedCodeLines, savedCurrentLine, savedBlockStack, null);
+        }
+
+        public CallFrame(Map<String, Object> savedData, List<String> savedCodeLines,
+                         int savedCurrentLine, List<Map<String, Object>> savedBlockStack,
+                         String savedPackageDataPath) {
             this.savedData = savedData;
             this.savedCodeLines = savedCodeLines;
             this.savedCurrentLine = savedCurrentLine;
             this.savedBlockStack = savedBlockStack != null
                     ? new ArrayList<>(savedBlockStack) : new ArrayList<>();
+            this.savedPackageDataPath = savedPackageDataPath;
         }
     }
 }

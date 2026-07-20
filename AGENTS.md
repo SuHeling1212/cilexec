@@ -30,10 +30,10 @@ windows ./build/run.bat
 
 After completing a task, run the appropriate script before sending the final response so the user hears a sound:
 
-- **Sub-agent (completing its own delegated task):** uses Glass sound
+- **Sub-agent (completing its own delegated task):** uses Blow sound
   - macOS / Linux: `./build/when_users_listen_to_this_they_will_not_come_like_a_cat.sh`
   - Windows: `build\when_users_listen_to_this_they_will_not_come_like_a_cat.bat`
-- **Main agent (completing all tasks in the current conversation):** uses Blow sound
+- **Main agent (completing all tasks in the current conversation):** uses Glass sound
   - macOS / Linux: `./build/when_users_listen_to_this_they_will_come_like_a_dog.sh`
   - Windows: `build\when_users_listen_to_this_they_will_come_like_a_dog.bat`
 
