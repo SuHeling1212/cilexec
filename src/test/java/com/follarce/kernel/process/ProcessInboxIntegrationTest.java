@@ -179,13 +179,12 @@ class ProcessInboxIntegrationTest {
         process.put("ProcessGeneration", generation);
         process.put("PathAliases", new LinkedHashMap<>());
         process.put("PID", pid);
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.READY.name());
         process.put("Priority", Constants.PRIORITY_NORMAL);
         process.put("Parent", new LinkedHashMap<>());
         process.put("Child", new LinkedHashMap<>());
         process.put("ExitedChildren", new LinkedHashMap<>());
-        process.put("Execution", new LinkedHashMap<>(Map.of("SchemaVersion", 1, "NextAttemptOrdinal", 0L)));
+        process.put("Execution", new LinkedHashMap<>(Map.of("NextAttemptOrdinal", 0L)));
         Map<String, Object> code = new LinkedHashMap<>();
         code.put("Code", lines);
         code.put("runningCodeLine", 0);

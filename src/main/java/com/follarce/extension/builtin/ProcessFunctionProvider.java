@@ -112,7 +112,7 @@ public class ProcessFunctionProvider extends BuiltinFunctionProvider {
                         Map<String, Object> entry = new LinkedHashMap<>();
                         entry.put("pid", procData.get("PID"));
                         entry.put("name", procData.get("Name"));
-                        entry.put("status", procData.get("Status"));
+                        entry.put("state", procData.get("ProcessState"));
                         children.add(entry);
                     }
                 }
@@ -126,7 +126,7 @@ public class ProcessFunctionProvider extends BuiltinFunctionProvider {
         }
 
         return children.stream()
-                .map(e -> "PID=" + e.get("pid") + " name=" + e.get("name") + " status=" + e.get("status"))
+                .map(e -> "PID=" + e.get("pid") + " name=" + e.get("name") + " state=" + e.get("state"))
                 .collect(Collectors.joining("\n"));
     }
 

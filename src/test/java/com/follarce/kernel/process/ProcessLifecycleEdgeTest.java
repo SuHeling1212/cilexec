@@ -304,7 +304,6 @@ class ProcessLifecycleEdgeTest {
         process.put("PID", pid);
         process.put("ProcessGeneration", "generation-" + pid);
         process.put("Path", "/system/app/test-" + pid + ".fcl");
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
         Map<String, Object> parentInfo = new LinkedHashMap<>(parent);
         Object parentPid = parentInfo.get("PID");

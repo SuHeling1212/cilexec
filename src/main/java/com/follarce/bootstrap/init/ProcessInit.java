@@ -76,10 +76,8 @@ public final class ProcessInit {
         processData.put("EffectiveUser", currentUser);
         processData.put("ProcessGeneration", com.follarce.kernel.process.ProcessIdentity.newGeneration());
         processData.put("PathAliases", new LinkedHashMap<String, String>());
-        processData.put("isLocal", true);
         processData.put("PID", Constants.PID_INIT);
         processData.put("Path", initFclPath);
-        processData.put("Status", true);
         processData.put("ProcessState", ProcessState.NEW.name());
         processData.put("BlockReason", null);
         processData.put("ExitReason", null);
@@ -92,7 +90,6 @@ public final class ProcessInit {
         processData.put("ExitedChildren", new LinkedHashMap<>());
         processData.put("ReapedChildren", new LinkedHashMap<>());
         Map<String, Object> execution = new LinkedHashMap<>();
-        execution.put("SchemaVersion", com.follarce.kernel.process.ProcessIdentity.EXECUTION_SCHEMA_VERSION);
         execution.put("NextAttemptOrdinal", 0L);
         processData.put("Execution", execution);
 

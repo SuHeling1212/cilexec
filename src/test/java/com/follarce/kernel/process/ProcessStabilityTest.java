@@ -241,7 +241,6 @@ class ProcessStabilityTest {
         process.put("Owner", "local");
         process.put("PID", pid);
         process.put("Path", "/system/app/stress-" + pid + ".fcl");
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
         process.put("Parent", new LinkedHashMap<>());
         process.put("Child", new LinkedHashMap<>());

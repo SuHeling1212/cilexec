@@ -5,7 +5,6 @@ import java.util.Map;
 
 /** A durable process-control message addressed to one process incarnation. */
 public record ProcessMessage(
-        int schemaVersion,
         String messageId,
         long sequence,
         int targetPid,
@@ -16,11 +15,8 @@ public record ProcessMessage(
         Object value,
         long createdAtEpochMs
 ) {
-    public static final int SCHEMA_VERSION = 1;
-
     public Map<String, Object> toMap() {
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("SchemaVersion", schemaVersion);
         map.put("MessageId", messageId);
         map.put("Sequence", sequence);
         map.put("TargetPid", targetPid);
@@ -35,7 +31,6 @@ public record ProcessMessage(
 
     public static ProcessMessage fromMap(Map<String, Object> map) {
         return new ProcessMessage(
-                number(map.get("SchemaVersion"), 0).intValue(),
                 requiredString(map, "MessageId"),
                 number(map.get("Sequence"), -1).longValue(),
                 number(map.get("TargetPid"), -1).intValue(),

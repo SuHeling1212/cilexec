@@ -180,7 +180,6 @@ public final class StatementAttemptManager {
                 }
                 case "fail" -> {
                     process.put("ProcessState", ProcessState.FAILED.name());
-                    process.put("Status", false);
                     process.put("ExitReason", ExitReason.ERROR.name());
                     process.put("StateMessage", "Effect recovery rejected: " + effect.get("Id"));
                     Map<String, Object> cleanup = new LinkedHashMap<>();
@@ -193,7 +192,6 @@ public final class StatementAttemptManager {
             }
             if (!"fail".equalsIgnoreCase(decision)) {
                 process.put("ProcessState", ProcessState.READY.name());
-                process.put("Status", true);
                 process.put("BlockReason", null);
                 process.remove("_effectRecovery");
             }

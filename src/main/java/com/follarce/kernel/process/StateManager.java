@@ -36,6 +36,7 @@ public class StateManager {
     private ExitReason exitReason;
     private String stateMessage;
     private String expectedGeneration;
+    private Map<String, Object> persistedBaseline;
 
     public StateManager(int pid, long processStartMs, Map<String, Object> processData) {
         this.pid = pid;
@@ -128,6 +129,7 @@ public class StateManager {
             throw new IllegalStateException("Empty process snapshot for PID " + pid);
         }
         processData = JsonUtil.parseToMapStrict(content);
+        persistedBaseline = JsonUtil.deepCopy(processData);
         ProcessIdentity.ensureDefaults(processData);
         if (expectedGeneration != null
                 && !expectedGeneration.equals(processData.get("ProcessGeneration"))) {
@@ -212,7 +214,6 @@ public class StateManager {
     public void saveToFile(RuntimeSnapshot snapshot) {
         try {
             processData.put("ProcessState", state.name());
-            processData.put("Status", !state.isTerminal());
             processData.put("BlockReason", blockReason == BlockReason.NONE ? null : blockReason.name());
             processData.put("ExitReason", exitReason == ExitReason.NONE ? null : exitReason.name());
             processData.put("StateMessage", stateMessage);
@@ -266,7 +267,12 @@ public class StateManager {
                 if (currentGeneration != null && !Objects.equals(currentGeneration, requiredGeneration)) {
                     throw new IllegalStateException("Refusing stale write for reused PID " + pid);
                 }
+                if (persistedBaseline == null || !Objects.equals(current, persistedBaseline)) {
+                    throw new IllegalStateException(
+                            "Refusing stale process snapshot because disk changed for PID " + pid);
+                }
                 JsonUtil.writeFile(processPath, JsonUtil.toMetaJson(processData));
+                persistedBaseline = JsonUtil.deepCopy(processData);
             } finally {
                 fileLock.unlock();
             }
@@ -361,7 +367,7 @@ public class StateManager {
     }
 
     private void loadLifecycle() {
-        state = ProcessState.restore(processData.get("ProcessState"), processData.get("Status"));
+        state = ProcessState.restore(processData.get("ProcessState"));
         blockReason = parseEnum(BlockReason.class, processData.get("BlockReason"), BlockReason.NONE);
         exitReason = parseEnum(ExitReason.class, processData.get("ExitReason"), ExitReason.NONE);
         Object message = processData.get("StateMessage");

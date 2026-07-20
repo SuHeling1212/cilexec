@@ -6,10 +6,8 @@ import java.util.UUID;
 
 import com.follarce.kernel.Constants;
 
-/** Persistent identity and execution-schema helpers for process snapshots. */
+/** Persistent identity and execution defaults for process snapshots. */
 public final class ProcessIdentity {
-    public static final int EXECUTION_SCHEMA_VERSION = 1;
-
     private ProcessIdentity() {}
 
     @SuppressWarnings("unchecked")
@@ -37,10 +35,6 @@ public final class ProcessIdentity {
         } else {
             execution = new LinkedHashMap<>();
             process.put("Execution", execution);
-            changed = true;
-        }
-        if (!(execution.get("SchemaVersion") instanceof Number)) {
-            execution.put("SchemaVersion", EXECUTION_SCHEMA_VERSION);
             changed = true;
         }
         if (!(execution.get("NextAttemptOrdinal") instanceof Number)) {

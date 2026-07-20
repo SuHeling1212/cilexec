@@ -55,8 +55,7 @@ public final class ProcessInbox {
                     Path directory = inboxDirectory(targetPid, targetGeneration);
                     Files.createDirectories(directory);
                     long sequence = allocateSequence(directory);
-                    message = new ProcessMessage(ProcessMessage.SCHEMA_VERSION,
-                            messageId, sequence, targetPid, targetGeneration, senderPid,
+                    message = new ProcessMessage(messageId, sequence, targetPid, targetGeneration, senderPid,
                             senderGeneration, field, JsonUtil.deepCopy(value), System.currentTimeMillis());
                     Path deliveryTemp = deliveries.resolve(messageHash + ".delivery.tmp");
                     writeAndForce(deliveryTemp, JsonUtil.toJson(message.toMap()));
@@ -152,11 +151,7 @@ public final class ProcessInbox {
     private static ProcessMessage read(Path path) {
         try {
             Map<String, Object> map = JsonUtil.parseToMapStrict(Files.readString(path));
-            ProcessMessage message = ProcessMessage.fromMap(map);
-            if (message.schemaVersion() != ProcessMessage.SCHEMA_VERSION) {
-                throw new IllegalArgumentException("Unsupported process message schema");
-            }
-            return message;
+            return ProcessMessage.fromMap(map);
         } catch (IOException e) {
             throw new RuntimeException("Failed to read process message: " + path, e);
         }

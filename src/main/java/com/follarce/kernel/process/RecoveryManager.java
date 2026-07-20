@@ -46,7 +46,7 @@ public final class RecoveryManager {
                     });
                     process = JsonUtil.parseToMapStrict(FileUtil.read(path));
                 }
-                ProcessState state = ProcessState.restore(process.get("ProcessState"), process.get("Status"));
+                ProcessState state = ProcessState.restore(process.get("ProcessState"));
                 if (state.isTerminal() && (process.get("LifecycleCleanup") instanceof Map
                         || process.get("TerminationCleanup") instanceof Map)) {
                     ProcessRunner.reconcileLifecycle(pid);

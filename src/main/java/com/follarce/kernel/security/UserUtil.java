@@ -81,7 +81,7 @@ public final class UserUtil {
     /**
      * 保存用户配置到 users.json。
      */
-    public static void saveUsersConfig(Map<String, Object> config) {
+    private static void saveUsersConfig(Map<String, Object> config) {
         String json = JsonUtil.toMetaJson(config);
         FileUtil.write(getUsersConfigPath(), json);
     }
@@ -309,24 +309,19 @@ public final class UserUtil {
 
     private static void ensureOwnedDirectory(String parent, String name, String path, String owner) {
         if (!FileUtil.exists(path)) FileUtil.createDirectory(parent, name);
-        Map<String, Object> metadata = FileUtil.readDirectoryMetaData(path);
-        if (metadata != null && !owner.equals(metadata.get("Owner"))) {
-            metadata.put("Owner", owner);
-            FileUtil.writeDirectoryMetaData(path, metadata);
-        }
+        FileUtil.updateDirectoryMetaData(path, metadata -> metadata.put("Owner", owner));
     }
 
     @SuppressWarnings("unchecked")
     private static void ensurePrivateOwnedDirectory(String parent, String name,
                                                     String path, String owner) {
         ensureOwnedDirectory(parent, name, path, owner);
-        Map<String, Object> metadata = FileUtil.readDirectoryMetaData(path);
-        Object rawPermissions = metadata.get("Permission");
-        if (rawPermissions instanceof Map<?, ?> permissions
-                && !"".equals(permissions.get(Constants.PERM_OTHERS))) {
-            ((Map<String, Object>) permissions).put(Constants.PERM_OTHERS, "");
-            FileUtil.writeDirectoryMetaData(path, metadata);
-        }
+        FileUtil.updateDirectoryMetaData(path, metadata -> {
+            Object rawPermissions = metadata.get("Permission");
+            if (rawPermissions instanceof Map<?, ?> permissions) {
+                ((Map<String, Object>) permissions).put(Constants.PERM_OTHERS, "");
+            }
+        });
     }
 
     private static void removeUserHome(String username) {

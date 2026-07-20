@@ -135,15 +135,13 @@ public final class FileInit {
     private static void secureUsersConfig() {
         String path = Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_USERS_JSON;
         if (!FileUtil.exists(path)) return;
-        Map<String, Object> metadata = FileUtil.readFileMetaData(path);
-        Object permissionObject = metadata.get("Permission");
-        if (permissionObject instanceof Map) {
-            Map<String, Object> permissions = (Map<String, Object>) permissionObject;
-            if (!"".equals(permissions.get(Constants.PERM_OTHERS))) {
+        FileUtil.updateFileMetaData(path, metadata -> {
+            Object permissionObject = metadata.get("Permission");
+            if (permissionObject instanceof Map) {
+                Map<String, Object> permissions = (Map<String, Object>) permissionObject;
                 permissions.put(Constants.PERM_OTHERS, "");
-                FileUtil.writeFileMetaData(path, metadata);
             }
-        }
+        });
     }
 
     /**

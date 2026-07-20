@@ -328,7 +328,7 @@ public class Scheduler extends Thread {
     }
 
     private boolean isTerminal(Map<String, Object> processData) {
-        return ProcessState.restore(processData.get("ProcessState"), processData.get("Status")).isTerminal();
+        return ProcessState.restore(processData.get("ProcessState")).isTerminal();
     }
 
     private boolean sameGeneration(ProcessRunner runner, Map<String, Object> processData) {

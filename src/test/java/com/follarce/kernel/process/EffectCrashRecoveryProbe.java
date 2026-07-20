@@ -53,7 +53,6 @@ public final class EffectCrashRecoveryProbe {
         process.put("Name", "effect-crash-probe");
         process.put("Owner", "local");
         process.put("PID", PID);
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
         process.put("Parent", new LinkedHashMap<>());
         process.put("Child", new LinkedHashMap<>());

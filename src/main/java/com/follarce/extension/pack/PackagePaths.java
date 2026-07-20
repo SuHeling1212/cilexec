@@ -92,20 +92,12 @@ public final class PackagePaths {
             }
             FileUtil.createDirectoryMetaData(currentPath);
             if (!currentPath.equals(normalized)) continue;
-            Map<String, Object> metadata = FileUtil.readDirectoryMetaData(currentPath);
-            boolean changed = false;
-            if (owner != null && !owner.equals(metadata.get("Owner"))) {
-                metadata.put("Owner", owner);
-                changed = true;
-            }
-            if (privateDirectory) {
-                Map<String, Object> permission = permissions(metadata);
-                if (!"".equals(permission.get(Constants.PERM_OTHERS))) {
-                    permission.put(Constants.PERM_OTHERS, "");
-                    changed = true;
+            FileUtil.updateDirectoryMetaData(currentPath, metadata -> {
+                if (owner != null) metadata.put("Owner", owner);
+                if (privateDirectory) {
+                    permissions(metadata).put(Constants.PERM_OTHERS, "");
                 }
-            }
-            if (changed) FileUtil.writeDirectoryMetaData(currentPath, metadata);
+            });
         }
     }
 

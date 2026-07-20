@@ -53,6 +53,7 @@ public class ProcessRunner {
 
     /** PID → ProcessRunner 映射，供 postMessage 查找目标进程 */
     private static final ConcurrentHashMap<Integer, ProcessRunner> RUNNERS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Integer, Object> PROCESS_CONTROL_GATES = new ConcurrentHashMap<>();
     private static final ThreadLocal<ProcessRunner> CURRENT_RUNNER = new ThreadLocal<>();
     private static final ConcurrentHashMap<String, Object> LIFECYCLE_CLEANUP_GATES = new ConcurrentHashMap<>();
 
@@ -157,29 +158,33 @@ public class ProcessRunner {
     // ════════════════════════════════════════════
 
     public void init() {
-        try {
-            // Scheduler scans can become stale before construction; disk remains authoritative.
-            loadRuntimeState();
-            ownedGeneration = processGeneration;
-            stateManager.setExpectedGeneration(ownedGeneration);
-            RUNNERS.compute(pid, (ignored, existing) ->
-                    existing == null || !existing.isRunning() ? this : existing);
-            if (RUNNERS.get(pid) != this) {
-                throw new IllegalStateException("An active runner already owns PID " + pid);
+        synchronized (persistenceLock) {
+            synchronized (processControlGate(pid)) {
+                try {
+                    // Registration and the initial disk load are one control transaction.
+                    loadRuntimeState();
+                    ownedGeneration = processGeneration;
+                    stateManager.setExpectedGeneration(ownedGeneration);
+                    RUNNERS.compute(pid, (ignored, existing) ->
+                            existing == null || !existing.isRunning() ? this : existing);
+                    if (RUNNERS.get(pid) != this) {
+                        throw new IllegalStateException("An active runner already owns PID " + pid);
+                    }
+                    registered = true;
+                    priority = stateManager.extractPriority();
+                    functionManager.parseFunctions(codeLines);
+                    // A crash may leave RUNNING on disk; the committed instruction snapshot is safe to resume.
+                    if (state == ProcessState.NEW || state == ProcessState.RUNNING) {
+                        transitionTo(ProcessState.READY, null);
+                    }
+                    if (!state.isTerminal()) persistState();
+                    Logger.info("Process " + pid + " (" + getProcessName() + ") initialized, priority=" + priority);
+                } catch (RuntimeException e) {
+                    if (registered) RUNNERS.remove(pid, this);
+                    registered = false;
+                    throw e;
+                }
             }
-            registered = true;
-            priority = stateManager.extractPriority();
-            functionManager.parseFunctions(codeLines);
-            // A crash may leave RUNNING on disk; the committed instruction snapshot is safe to resume.
-            if (state == ProcessState.NEW || state == ProcessState.RUNNING) {
-                transitionTo(ProcessState.READY, null);
-            }
-            if (!state.isTerminal()) persistState();
-            Logger.info("Process " + pid + " (" + getProcessName() + ") initialized, priority=" + priority);
-        } catch (RuntimeException e) {
-            if (registered) RUNNERS.remove(pid, this);
-            registered = false;
-            throw e;
         }
     }
 
@@ -306,8 +311,10 @@ public class ProcessRunner {
         executorStopping = true;
         unparkProcess(pid);
         synchronized (persistenceLock) {
-            RUNNERS.remove(pid, this);
-            registered = false;
+            synchronized (processControlGate(pid)) {
+                RUNNERS.remove(pid, this);
+                registered = false;
+            }
         }
         // 清理本进程的函数定义，防止跨进程残留
         FunctionRegistry.clearUserFunctions(pid);
@@ -370,8 +377,10 @@ public class ProcessRunner {
         } finally {
             UserUtil.clearCurrentUser();
             VIRTUAL_THREADS.remove(pid, Thread.currentThread());
-            RUNNERS.remove(pid, this);
-            registered = false;
+            synchronized (processControlGate(pid)) {
+                RUNNERS.remove(pid, this);
+                registered = false;
+            }
             Logger.info("Virtual thread for PID " + pid + " (" + getProcessName() + ") finished");
         }
     }
@@ -433,16 +442,19 @@ public class ProcessRunner {
 
     public static void postMessage(int targetPid, String field, Object value, String messageId,
                                    int senderPid, String senderGeneration) {
-        String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
-        if (!com.follarce.kernel.vfs.FileUtil.exists(processPath)) return;
-        Map<String, Object> targetData = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
-                com.follarce.kernel.vfs.FileUtil.read(processPath));
-        if (ProcessIdentity.ensureDefaults(targetData)) {
-            com.follarce.kernel.util.JsonUtil.updateFile(processPath, ProcessIdentity::ensureDefaults);
-            targetData = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
+        String targetGeneration;
+        synchronized (processControlGate(targetPid)) {
+            String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+            if (!com.follarce.kernel.vfs.FileUtil.exists(processPath)) return;
+            Map<String, Object> targetData = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
                     com.follarce.kernel.vfs.FileUtil.read(processPath));
+            if (ProcessIdentity.ensureDefaults(targetData)) {
+                com.follarce.kernel.util.JsonUtil.updateFile(processPath, ProcessIdentity::ensureDefaults);
+                targetData = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
+                        com.follarce.kernel.vfs.FileUtil.read(processPath));
+            }
+            targetGeneration = ProcessIdentity.generation(targetData);
         }
-        String targetGeneration = ProcessIdentity.generation(targetData);
         postMessageToGeneration(targetPid, targetGeneration, field, value, messageId,
                 senderPid, senderGeneration);
     }
@@ -450,22 +462,26 @@ public class ProcessRunner {
     public static boolean postMessageToGeneration(int targetPid, String targetGeneration,
                                                   String field, Object value, String messageId,
                                                   int senderPid, String senderGeneration) {
-        String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
-        if (!com.follarce.kernel.vfs.FileUtil.exists(processPath)) return false;
-        Map<String, Object> targetData = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
-                com.follarce.kernel.vfs.FileUtil.read(processPath));
-        if (!targetGeneration.equals(targetData.get("ProcessGeneration"))) return false;
-        if (ProcessInbox.isApplied(targetData, messageId)) return true;
-        ProcessMessage published = ProcessInbox.publish(targetPid, targetGeneration, messageId, senderPid,
-                senderGeneration, field, value);
-        if (!targetGeneration.equals(published.targetGeneration())) return false;
+        boolean reconcile = false;
+        synchronized (processControlGate(targetPid)) {
+            String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+            if (!com.follarce.kernel.vfs.FileUtil.exists(processPath)) return false;
+            Map<String, Object> targetData = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
+                    com.follarce.kernel.vfs.FileUtil.read(processPath));
+            if (!targetGeneration.equals(targetData.get("ProcessGeneration"))) return false;
+            if (ProcessInbox.isApplied(targetData, messageId)) return true;
+            ProcessMessage published = ProcessInbox.publish(targetPid, targetGeneration, messageId, senderPid,
+                    senderGeneration, field, value);
+            if (!targetGeneration.equals(published.targetGeneration())) return false;
 
-        ProcessRunner target = RUNNERS.get(targetPid);
-        if (target != null && target.isRunning() && targetGeneration.equals(target.processGeneration)) {
-            unparkProcess(targetPid);
-        } else {
-            applyOfflineInbox(targetPid, targetGeneration);
+            ProcessRunner target = RUNNERS.get(targetPid);
+            if (target != null && targetGeneration.equals(target.processGeneration)) {
+                unparkProcess(targetPid);
+            } else {
+                reconcile = applyOfflineInbox(targetPid, targetGeneration);
+            }
         }
+        if (reconcile) reconcileLifecycle(targetPid, targetGeneration);
         return true;
     }
 
@@ -476,14 +492,13 @@ public class ProcessRunner {
      * <p>
      * 支持点号分隔的嵌套路径，例如：
      * <ul>
-     *   <li>{@code "Status"} — 顶层字段</li>
      *   <li>{@code "Program.Data.x"} — 等价于 {@code processData.Program.Data.x = value}</li>
-     *   <li>{@code "Child.2.Status"} — 等价于 {@code processData.Child["2"].Status = value}</li>
+     *   <li>{@code "Child.2.ProcessState"} — 更新子进程关系中的状态字段</li>
      * </ul>
      * 路径中的每一段都是 Map 的 key，末段为最终设置值的 key。
      * 中间路径若不存在则自动创建 LinkedHashMap。
      * <p>
-     * {@code ProcessState} 是生命周期控制入口；布尔 {@code Status} 仅兼容旧调用方。
+     * {@code ProcessState} 是生命周期控制入口。
      *
      * @param field 字段路径，点号分隔
      * @param value 新值
@@ -505,11 +520,6 @@ public class ProcessRunner {
         String[] parts = field.split("\\.");
         if (parts.length == 1 && "ProcessState".equals(parts[0])) {
             applyRequestedState(value);
-            return;
-        }
-        if (parts.length == 1 && "Status".equals(parts[0])) {
-            applyRequestedState(Boolean.FALSE.equals(value)
-                    ? ProcessState.PAUSED.name() : ProcessState.READY.name());
             return;
         }
         Map<String, Object> current = processData;
@@ -538,43 +548,53 @@ public class ProcessRunner {
      * 与 pause 不同：pause 转入 PAUSED 并保留快照，kill 是彻底终止。
      */
     public static void terminateProcess(int targetPid) {
-        ProcessRunner target = RUNNERS.get(targetPid);
         String generation = null;
-        if (target != null) {
-            synchronized (target.persistenceLock) {
-                generation = target.processGeneration;
-                if (!target.state.isTerminal()) {
-                    target.running = false;
-                    target.exitReason = ExitReason.KILLED;
-                    target.transitionTo(ProcessState.TERMINATED, "Killed");
-                }
-                target.prepareLifecycleCleanup(true);
-                target.persistState();
-                target.killed = true;
-                target.lifecycleCleaned = true;
-            }
-        } else {
-            String path = com.follarce.kernel.vfs.PathUtil.findProcessFilePathByPid(targetPid);
-            if (path != null && com.follarce.kernel.vfs.FileUtil.exists(path)) {
-                Map<String, Object> snapshot = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
-                        com.follarce.kernel.vfs.FileUtil.read(path));
-                if (ProcessIdentity.ensureDefaults(snapshot)) {
-                    com.follarce.kernel.util.JsonUtil.updateFile(path, ProcessIdentity::ensureDefaults);
-                    snapshot = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
-                            com.follarce.kernel.vfs.FileUtil.read(path));
-                }
-                generation = ProcessIdentity.generation(snapshot);
-                String expectedGeneration = generation;
-                com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
-                    if (!expectedGeneration.equals(data.get("ProcessGeneration"))) return;
-                    if (!ProcessState.restore(data.get("ProcessState"), data.get("Status")).isTerminal()) {
-                        data.put("ProcessState", ProcessState.TERMINATED.name());
-                        data.put("Status", false);
-                        data.put("ExitReason", ExitReason.KILLED.name());
-                        data.put("StateMessage", "Killed");
+        while (true) {
+            ProcessRunner target = RUNNERS.get(targetPid);
+            if (target != null) {
+                synchronized (target.persistenceLock) {
+                    synchronized (processControlGate(targetPid)) {
+                        if (RUNNERS.get(targetPid) != target) continue;
+                        target.reloadFromFile();
+                        generation = target.processGeneration;
+                        if (!target.state.isTerminal()) {
+                            target.running = false;
+                            target.exitReason = ExitReason.KILLED;
+                            target.transitionTo(ProcessState.TERMINATED, "Killed");
+                        }
+                        target.prepareLifecycleCleanup(true);
+                        target.persistState();
+                        target.killed = true;
+                        target.lifecycleCleaned = true;
                     }
-                    data.put("LifecycleCleanup", lifecycleCleanupRecord(data, true));
-                });
+                }
+                break;
+            } else {
+                synchronized (processControlGate(targetPid)) {
+                    if (RUNNERS.get(targetPid) != null) continue;
+                    String path = com.follarce.kernel.vfs.PathUtil.findProcessFilePathByPid(targetPid);
+                    if (path != null && com.follarce.kernel.vfs.FileUtil.exists(path)) {
+                        Map<String, Object> snapshot = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
+                                com.follarce.kernel.vfs.FileUtil.read(path));
+                        if (ProcessIdentity.ensureDefaults(snapshot)) {
+                            com.follarce.kernel.util.JsonUtil.updateFile(path, ProcessIdentity::ensureDefaults);
+                            snapshot = com.follarce.kernel.util.JsonUtil.parseToMapStrict(
+                                    com.follarce.kernel.vfs.FileUtil.read(path));
+                        }
+                        generation = ProcessIdentity.generation(snapshot);
+                        String expectedGeneration = generation;
+                        com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
+                            if (!expectedGeneration.equals(data.get("ProcessGeneration"))) return;
+                            if (!ProcessState.restore(data.get("ProcessState")).isTerminal()) {
+                                data.put("ProcessState", ProcessState.TERMINATED.name());
+                                data.put("ExitReason", ExitReason.KILLED.name());
+                                data.put("StateMessage", "Killed");
+                            }
+                            data.put("LifecycleCleanup", lifecycleCleanupRecord(data, true));
+                        });
+                    }
+                }
+                break;
             }
         }
         if (generation != null) reconcileLifecycle(targetPid, generation);
@@ -618,26 +638,35 @@ public class ProcessRunner {
         if (childGeneration != null) event.put("Generation", childGeneration);
         event.put("ExitReason", (reason != null ? reason : ExitReason.NONE).name());
 
-        ProcessRunner parent = RUNNERS.get(parentPid);
-        if (parent != null && !parent.state.isTerminal()
-                && (parentGeneration == null || parentGeneration.equals(parent.processGeneration))) {
-            synchronized (parent.persistenceLock) {
-                if (parent.state.isTerminal()
-                        || (parentGeneration != null && !parentGeneration.equals(parent.processGeneration))) return;
-                recordChildExit(parent.processData, childPid, childGeneration, event);
-                parent.persistState();
+        while (true) {
+            ProcessRunner parent = RUNNERS.get(parentPid);
+            if (parent != null) {
+                synchronized (parent.persistenceLock) {
+                    synchronized (processControlGate(parentPid)) {
+                        if (RUNNERS.get(parentPid) != parent) continue;
+                        parent.reloadFromFile();
+                        if (parent.state.isTerminal()
+                                || !parentGeneration.equals(parent.processGeneration)) return;
+                        recordChildExit(parent.processData, childPid, childGeneration, event);
+                        parent.persistState();
+                    }
+                }
+                unparkProcess(parentPid);
+                return;
             }
-            unparkProcess(parentPid);
-            return;
-        }
 
-        String path = Constants.SYSTEM_PROCESS_PATH + parentPid + ".proc";
-        if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return;
-        com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
-            if (parentGeneration != null && !parentGeneration.equals(data.get("ProcessGeneration"))) return;
-            ProcessState saved = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
-            if (!saved.isTerminal()) recordChildExit(data, childPid, childGeneration, event);
-        });
+            synchronized (processControlGate(parentPid)) {
+                if (RUNNERS.get(parentPid) != null) continue;
+                String path = Constants.SYSTEM_PROCESS_PATH + parentPid + ".proc";
+                if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return;
+                com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
+                    if (!parentGeneration.equals(data.get("ProcessGeneration"))) return;
+                    ProcessState saved = ProcessState.restore(data.get("ProcessState"));
+                    if (!saved.isTerminal()) recordChildExit(data, childPid, childGeneration, event);
+                });
+                return;
+            }
+        }
     }
 
     /** Change both sides of an orphan relationship to INIT. */
@@ -654,7 +683,7 @@ public class ProcessRunner {
         if (initGeneration != null) initParent.put("Generation", initGeneration);
 
         boolean updated = updateProcessData(childPid, childGeneration, data -> {
-            ProcessState saved = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
+            ProcessState saved = ProcessState.restore(data.get("ProcessState"));
             if (!saved.isTerminal()) data.put("Parent", initParent);
         }, true);
         if (updated) {
@@ -1491,8 +1520,7 @@ public class ProcessRunner {
             if (!expectedGeneration.equals(actualGeneration)) return true;
         }
         Object childState = com.follarce.kernel.util.JsonUtil.getField(path, "ProcessState");
-        Object legacyStatus = com.follarce.kernel.util.JsonUtil.getField(path, "Status");
-        return ProcessState.restore(childState, legacyStatus).isTerminal();
+        return ProcessState.restore(childState).isTerminal();
     }
 
     private static void applyOfflineStateRequest(Map<String, Object> data, Object value) {
@@ -1502,7 +1530,7 @@ public class ProcessRunner {
         } catch (IllegalArgumentException e) {
             return;
         }
-        ProcessState current = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
+        ProcessState current = ProcessState.restore(data.get("ProcessState"));
         if (current.isTerminal()) return;
         if (requested == ProcessState.PAUSED && current.canTransitionTo(ProcessState.PAUSED)) {
             data.put("ResumeState", current == ProcessState.BLOCKED
@@ -1656,8 +1684,9 @@ public class ProcessRunner {
         return true;
     }
 
-    private static void applyOfflineInbox(int targetPid, String generation) {
+    private static boolean applyOfflineInbox(int targetPid, String generation) {
         String processPath = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+        boolean reconcile = false;
         for (ProcessMessage message : ProcessInbox.list(targetPid, generation)) {
             final boolean[] terminate = {false};
             com.follarce.kernel.util.JsonUtil.updateFile(processPath, data -> {
@@ -1665,14 +1694,10 @@ public class ProcessRunner {
                 if (ProcessInbox.isApplied(data, message.messageId())) return;
                 if ("ProcessState".equals(message.field())) {
                     applyOfflineStateRequest(data, message.value());
-                } else if ("Status".equals(message.field())) {
-                    applyOfflineStateRequest(data, Boolean.FALSE.equals(message.value())
-                            ? ProcessState.PAUSED.name() : ProcessState.READY.name());
                 } else if ("__Terminate".equals(message.field())) {
-                    ProcessState current = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
+                    ProcessState current = ProcessState.restore(data.get("ProcessState"));
                     if (!current.isTerminal()) {
                         data.put("ProcessState", ProcessState.TERMINATED.name());
-                        data.put("Status", false);
                         data.put("ExitReason", ExitReason.KILLED.name());
                         data.put("BlockReason", null);
                         data.put("StateMessage", "Killed");
@@ -1687,12 +1712,17 @@ public class ProcessRunner {
                 ProcessInbox.recordApplied(data, message);
             });
             ProcessInbox.acknowledge(message);
-            if (terminate[0]) reconcileLifecycle(targetPid, generation);
+            if (terminate[0]) reconcile = true;
         }
+        return reconcile;
     }
 
     public static void recoverInbox(int targetPid, String generation) {
-        applyOfflineInbox(targetPid, generation);
+        boolean reconcile = false;
+        synchronized (processControlGate(targetPid)) {
+            if (!RUNNERS.containsKey(targetPid)) reconcile = applyOfflineInbox(targetPid, generation);
+        }
+        if (reconcile) reconcileLifecycle(targetPid, generation);
     }
 
     public static void reconcileTermination(int targetPid) {
@@ -1722,30 +1752,32 @@ public class ProcessRunner {
                 Object cleanupObject = snapshot.get("LifecycleCleanup");
                 if (!(cleanupObject instanceof Map)) cleanupObject = snapshot.get("TerminationCleanup");
                 if (!(cleanupObject instanceof Map)
-                        || !ProcessState.restore(snapshot.get("ProcessState"), snapshot.get("Status")).isTerminal()) {
+                        || !ProcessState.restore(snapshot.get("ProcessState")).isTerminal()) {
                     return;
                 }
                 Map<String, Object> cleanup = (Map<String, Object>) cleanupObject;
                 boolean delete = Boolean.TRUE.equals(cleanup.get("DeleteAfterCleanup"))
                         || snapshot.get("TerminationCleanup") instanceof Map;
                 finalizeTerminalSnapshot(snapshot, targetPid);
-                if (delete) {
-                    if (removeProcessFile(targetPid, expectedGeneration)) {
-                        ProcessRunner runner = RUNNERS.get(targetPid);
-                        if (runner != null && expectedGeneration.equals(runner.processGeneration)) {
-                            runner.running = false;
-                            RUNNERS.remove(targetPid, runner);
-                            runner.registered = false;
+                synchronized (processControlGate(targetPid)) {
+                    if (delete) {
+                        if (removeProcessFile(targetPid, expectedGeneration)) {
+                            ProcessRunner runner = RUNNERS.get(targetPid);
+                            if (runner != null && expectedGeneration.equals(runner.processGeneration)) {
+                                runner.running = false;
+                                RUNNERS.remove(targetPid, runner);
+                                runner.registered = false;
+                            }
                         }
+                    } else {
+                        com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
+                            if (!expectedGeneration.equals(data.get("ProcessGeneration"))) return;
+                            data.remove("LifecycleCleanup");
+                            data.remove("TerminationCleanup");
+                        });
                     }
-                } else {
-                    com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
-                        if (!expectedGeneration.equals(data.get("ProcessGeneration"))) return;
-                        data.remove("LifecycleCleanup");
-                        data.remove("TerminationCleanup");
-                    });
+                    unparkProcess(targetPid);
                 }
-                unparkProcess(targetPid);
             }
         } finally {
             LIFECYCLE_CLEANUP_GATES.remove(gateKey, gate);
@@ -1760,19 +1792,33 @@ public class ProcessRunner {
     public static boolean resolveEffect(int targetPid, String expectedEffectId,
                                         String decision, Object suppliedResult) {
         String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
-        if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return false;
         final boolean[] resolved = {false};
-        com.follarce.kernel.util.JsonUtil.updateFile(path,
-                data -> resolved[0] = StatementAttemptManager.resolve(
-                        data, expectedEffectId, decision, suppliedResult));
-        if (!resolved[0]) return false;
-
-        ProcessRunner target = RUNNERS.get(targetPid);
-        if (target != null) {
-            synchronized (target.persistenceLock) {
-                target.reloadFromFile();
+        while (true) {
+            ProcessRunner target = RUNNERS.get(targetPid);
+            if (target != null) {
+                synchronized (target.persistenceLock) {
+                    synchronized (processControlGate(targetPid)) {
+                        if (RUNNERS.get(targetPid) != target) continue;
+                        if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return false;
+                        com.follarce.kernel.util.JsonUtil.updateFile(path,
+                                data -> resolved[0] = StatementAttemptManager.resolve(
+                                        data, expectedEffectId, decision, suppliedResult));
+                        if (resolved[0]) target.reloadFromFile();
+                    }
+                }
+                break;
+            } else {
+                synchronized (processControlGate(targetPid)) {
+                    if (RUNNERS.get(targetPid) != null) continue;
+                    if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return false;
+                    com.follarce.kernel.util.JsonUtil.updateFile(path,
+                            data -> resolved[0] = StatementAttemptManager.resolve(
+                                    data, expectedEffectId, decision, suppliedResult));
+                }
+                break;
             }
         }
+        if (!resolved[0]) return false;
         unparkProcess(targetPid);
         if ("fail".equalsIgnoreCase(decision)) reconcileLifecycle(targetPid);
         return true;
@@ -1790,28 +1836,38 @@ public class ProcessRunner {
     private static boolean updateProcessData(int targetPid, String expectedGeneration,
                                              Consumer<Map<String, Object>> updater,
                                              boolean requireActive) {
-        ProcessRunner target = RUNNERS.get(targetPid);
-        if (target != null) {
-            synchronized (target.persistenceLock) {
-                if (expectedGeneration != null && !expectedGeneration.equals(target.processGeneration)) return false;
-                if (requireActive && target.state.isTerminal()) return false;
-                updater.accept(target.processData);
-                target.persistState();
-                return true;
+        while (true) {
+            ProcessRunner target = RUNNERS.get(targetPid);
+            if (target != null) {
+                synchronized (target.persistenceLock) {
+                    synchronized (processControlGate(targetPid)) {
+                        if (RUNNERS.get(targetPid) != target) continue;
+                        if (expectedGeneration != null && !expectedGeneration.equals(target.processGeneration)) return false;
+                        target.reloadFromFile();
+                        if (expectedGeneration != null && !expectedGeneration.equals(target.processGeneration)) return false;
+                        if (requireActive && target.state.isTerminal()) return false;
+                        updater.accept(target.processData);
+                        target.persistState();
+                        return true;
+                    }
+                }
+            }
+
+            synchronized (processControlGate(targetPid)) {
+                if (RUNNERS.get(targetPid) != null) continue;
+                String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
+                if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return false;
+                boolean[] updated = {false};
+                com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
+                    if (expectedGeneration != null && !expectedGeneration.equals(data.get("ProcessGeneration"))) return;
+                    ProcessState saved = ProcessState.restore(data.get("ProcessState"));
+                    if (requireActive && saved.isTerminal()) return;
+                    updater.accept(data);
+                    updated[0] = true;
+                });
+                return updated[0];
             }
         }
-
-        String path = Constants.SYSTEM_PROCESS_PATH + targetPid + ".proc";
-        if (!com.follarce.kernel.vfs.FileUtil.exists(path)) return false;
-        boolean[] updated = {false};
-        com.follarce.kernel.util.JsonUtil.updateFile(path, data -> {
-            if (expectedGeneration != null && !expectedGeneration.equals(data.get("ProcessGeneration"))) return;
-            ProcessState saved = ProcessState.restore(data.get("ProcessState"), data.get("Status"));
-            if (requireActive && saved.isTerminal()) return;
-            updater.accept(data);
-            updated[0] = true;
-        });
-        return updated[0];
     }
 
     private static String readProcessGeneration(int targetPid) {
@@ -1823,6 +1879,10 @@ public class ProcessRunner {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static Object processControlGate(int pid) {
+        return PROCESS_CONTROL_GATES.computeIfAbsent(pid, ignored -> new Object());
     }
 
     @SuppressWarnings("unchecked")

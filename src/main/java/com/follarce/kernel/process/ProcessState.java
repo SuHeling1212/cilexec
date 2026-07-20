@@ -27,13 +27,13 @@ public enum ProcessState {
         };
     }
 
-    public static ProcessState restore(Object value, Object legacyStatus) {
+    public static ProcessState restore(Object value) {
         if (value != null) {
             try {
                 return valueOf(value.toString());
             } catch (IllegalArgumentException ignored) {
             }
         }
-        return Boolean.FALSE.equals(legacyStatus) ? TERMINATED : NEW;
+        return NEW;
     }
 }

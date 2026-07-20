@@ -1,6 +1,7 @@
 package com.follarce.kernel.script;
 
 import com.follarce.kernel.api.function.FunctionContext;
+import com.follarce.kernel.exception.UnrecoverableException;
 import com.follarce.kernel.function.FunctionRegistry;
 
 import java.util.ArrayList;
@@ -77,6 +78,9 @@ public class NodeEvaluator {
                 String varName = name.substring(1);
                 Object val = data.get(varName);
                 if (val == null) {
+                    if (!data.containsKey(varName)) {
+                        throw UnrecoverableException.undefinedVariable(varName);
+                    }
                     return 0L;
                 }
                 if (val instanceof List) {
@@ -101,7 +105,7 @@ public class NodeEvaluator {
                 if (data.containsKey(name)) {
                     return null;
                 }
-                throw new RuntimeException("Undefined variable '" + name + "'");
+                throw UnrecoverableException.undefinedVariable(name);
             }
             return result;
         }

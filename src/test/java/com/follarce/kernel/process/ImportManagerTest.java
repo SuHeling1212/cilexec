@@ -164,7 +164,6 @@ class ImportManagerTest {
         process.put("Owner", "local");
         process.put("PID", pid);
         process.put("Path", Constants.SYSTEM_APP_PACKAGE_PATH + "main.fcl");
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
         process.put("Parent", new LinkedHashMap<>());
         process.put("Child", new LinkedHashMap<>());

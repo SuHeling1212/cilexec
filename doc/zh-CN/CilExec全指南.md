@@ -1172,7 +1172,6 @@ system.resolveEffect(42, "stmt-3-effect-0", "reject", "timeout")
   "ExitReason": "NONE",
   "StateMessage": null,
   "Priority": 0,
-  "Status": true,
   "RunningTime": 15000,
   "CreatedByEffectId": "stmt-3-effect-0",
   "Parent": {
@@ -1196,7 +1195,6 @@ system.resolveEffect(42, "stmt-3-effect-0", "reject", "timeout")
   },
   "ReapedChildren": { "3@exited-uuid": true },
   "Execution": {
-    "SchemaVersion": 1,
     "NextAttemptOrdinal": 3,
     "ActiveAttempt": { ... },
     "AttemptLedger": { "stmt-1": "COMPLETED", "stmt-2": null }
@@ -1230,7 +1228,6 @@ system.resolveEffect(42, "stmt-3-effect-0", "reject", "timeout")
 | ProcessState | NEW / READY / RUNNING / BLOCKED / PAUSED / TERMINATED / FAILED | 当前状态 |
 | BlockReason | NONE / WAIT_CHILD / EFFECT_RECOVERY | 阻塞原因 |
 | ExitReason | NONE / KILLED / FAILED | 退出原因 |
-| Status | Boolean (true=运行中) | 兼容旧格式的布尔运行标志 |
 
 ---
 
@@ -1410,7 +1407,7 @@ CilExec 的持久化设计遵循**零内存状态**原则：
 
 ```
 1. begin()       → .proc ← ActiveAttempt { Ordinal: N, Statement: "x = y + 1" }
-2. invoke()      → .proc ← ActiveAttempt { Effects: [{Id:..., Operation:..., Status:COMPLETED}] }
+2. invoke()      → .proc ← ActiveAttempt { Effects: [{Id:..., Operation:..., State:COMPLETED}] }
 3. data["x"]=val  (内存操作)
 4. commit()      → .proc ← AttemptLedger{"stmt-N": "COMPLETED"}, ActiveAttempt=null
 5. settle()      → .proc ← runningCodeLine+1, Program.Data with updated "x"
@@ -1458,7 +1455,6 @@ retry / confirm / reject
 ```json
 {
   "Execution": {
-    "SchemaVersion": 1,
     "NextAttemptOrdinal": 3,
     "ActiveAttempt": {
       "Ordinal": 2,
@@ -1469,7 +1465,7 @@ retry / confirm / reject
           "Id": "stmt-2-effect-0",
           "Operation": "network.fetch",
           "Policy": "MANUAL_RECOVERY",
-          "Status": "IN_DOUBT",
+          "State": "IN_DOUBT",
           "Timestamp": 1720000000000,
           "ArgumentSummary": "https://api.example",
           "Result": null
@@ -1574,7 +1570,6 @@ stmt-{ordinal}-effect-{index}
 
 ```json
 {
-  "schemaVersion": 1,
   "messageId": "uuid-or-custom",
   "sequence": 5,
   "targetPid": 42,
@@ -2191,14 +2186,15 @@ removeUser(name, password, effectId)
 ### 示例
 
 ```fcl
-// 在进程快照中设置别名
-alias = {"work": "/user/bob/projects", "data": "/user/bob/data"}
+path.setAlias("work", "/user/bob/projects")
+path.setAlias("data", "/user/bob/data")
 
 // 之后路径解析 @work/tool.fcl → /user/bob/projects/tool.fcl
 content = io.readFile("@work/tool.fcl")
 ```
 
-注意：FCL 中没有直接的 `setAlias()` 函数（别名通过进程快照的 `PathAliases` 字段持久化），但系统内部在解析路径时会查询此字段。
+`path.getAlias()`、`path.listAliases()` 和 `path.removeAlias()` 分别用于读取、列出和删除
+当前进程的别名。别名保存在该进程自己的 `PathAliases` 中，不会修改其他进程。
 
 ---
 
@@ -2341,7 +2337,7 @@ src/main/java/com/follarce/
 │   ├── StatementAttemptManager.java  ← 指令 attempt / effect receipt
 │   ├── ProcessInbox.java             ← 持久化消息收件箱
 │   ├── ProcessMessage.java           ← 消息数据记录
-│   ├── ProcessIdentity.java          ← generation + execution schema
+│   ├── ProcessIdentity.java          ← generation + execution identity
 │   ├── ProcessState.java             ← 状态枚举
 │   ├── BlockReason.java              ← 阻塞原因枚举
 │   ├── IpcHandler.java               ← fork/exec/kill/wait/waitPid/pause/continue
@@ -2402,7 +2398,6 @@ src/main/java/com/follarce/
 | 字段名 | 说明 | 值示例 |
 |---|---|---|
 | `ProcessState` | 设置进程状态 | `"PAUSED"`, `"READY"` |
-| `Status` | 兼容旧格式 | `true`, `false` |
 | `__Terminate` | 终止信号 | `"KILLED"` |
 | `ChildExit.{pid}` | 记录子进程退出 | exit event Map |
 | `Program.Data.{var}` | 设置变量 | 任意值 |

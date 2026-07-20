@@ -79,7 +79,6 @@ class PackageFunctionIntegrationTest {
         process.put("EffectiveUser", "alice");
         process.put("PID", pid);
         process.put("Path", "/user/alice/app/install.fcl");
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
         process.put("Parent", new LinkedHashMap<>());
         process.put("Child", new LinkedHashMap<>());

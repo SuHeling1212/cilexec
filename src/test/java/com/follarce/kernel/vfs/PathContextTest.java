@@ -7,6 +7,7 @@ import com.follarce.kernel.vfs.FileUtil;
 import com.follarce.kernel.vfs.PathUtil;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -19,6 +20,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class PathContextTest {
     @TempDir Path root;
+
+    @BeforeEach
+    void useAliasFallbackWithoutAnEnvFile() {
+        PathUtil.setVfsRoot(root.resolve("alias-fallback").toFile());
+    }
 
     @AfterEach
     void clearAliases() {
@@ -75,7 +81,7 @@ class PathContextTest {
     }
 
     @Test
-    void fileInitReloadsAliasesAndDoesNotLeakThemAcrossVfsRoots() {
+    void pathAliasesFollowTheCurrentEnvFileImmediately() {
         Path firstRoot = root.resolve("first");
         FileInit.init(firstRoot.toFile());
 
@@ -85,7 +91,8 @@ class PathContextTest {
         FileUtil.write(Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_ENV_JSON,
                 JsonUtil.toMetaJson(env));
 
-        assertThrows(IllegalArgumentException.class, () -> PathUtil.resolvePath("@project"));
+        assertEquals("/user/local/project", PathUtil.resolvePath("@project"));
+
         FileInit.init(firstRoot.toFile());
         assertEquals("/user/local/project", PathUtil.resolvePath("@project"));
 

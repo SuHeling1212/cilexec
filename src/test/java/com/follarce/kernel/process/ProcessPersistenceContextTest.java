@@ -143,6 +143,23 @@ class ProcessPersistenceContextTest {
         ProcessRunner.terminateProcess(603);
     }
 
+    @Test
+    void staleInMemorySnapshotCannotOverwriteANewerDiskUpdate() {
+        int pid = 605;
+        writeProcess(process(pid, List.of("while true", "{", "}"), "local", Map.of()));
+        StateManager manager = new StateManager(pid, System.currentTimeMillis(), readProcess(pid));
+        manager.loadFromFile();
+        manager.setExpectedGeneration("generation-" + pid);
+        StateManager.RuntimeSnapshot snapshot = manager.loadFromProcessData();
+
+        JsonUtil.updateFile(processPath(pid), disk -> disk.put("ExternalMarker", "keep-me"));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> manager.saveToFile(snapshot));
+        assertTrue(error.getMessage().contains("disk changed"));
+        assertEquals("keep-me", readProcess(pid).get("ExternalMarker"));
+    }
+
     private static ProcessRunner runner(int pid) {
         ProcessRunner runner = new ProcessRunner(pid, readProcess(pid));
         runner.init();
@@ -158,13 +175,12 @@ class ProcessPersistenceContextTest {
         process.put("ProcessGeneration", "generation-" + pid);
         process.put("PathAliases", new LinkedHashMap<>(aliases));
         process.put("PID", pid);
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.READY.name());
         process.put("Priority", Constants.PRIORITY_NORMAL);
         process.put("Parent", new LinkedHashMap<>());
         process.put("Child", new LinkedHashMap<>());
         process.put("ExitedChildren", new LinkedHashMap<>());
-        process.put("Execution", new LinkedHashMap<>(Map.of("SchemaVersion", 1, "NextAttemptOrdinal", 0L)));
+        process.put("Execution", new LinkedHashMap<>(Map.of("NextAttemptOrdinal", 0L)));
         Map<String, Object> code = new LinkedHashMap<>();
         code.put("Code", lines);
         code.put("runningCodeLine", 0);

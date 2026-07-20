@@ -150,7 +150,7 @@ class ProcessOperationsIntegrationTest {
         controller.step();
         await(() -> target.getState() == ProcessState.PAUSED, "target did not pause");
         assertEquals(ProcessState.PAUSED.name(), field(40, "ProcessState"));
-        assertEquals(Boolean.TRUE, field(40, "Status"));
+        assertNull(field(40, "Status"));
 
         controller.step();
         await(() -> target.getState() != ProcessState.PAUSED, "target did not continue");
@@ -169,7 +169,8 @@ class ProcessOperationsIntegrationTest {
                 Map.of("51", Map.of("PID", 51)));
         Thread parentThread = Thread.ofVirtual().start(parent::virtualThreadRun);
 
-        await(() -> parent.getState() == ProcessState.BLOCKED, "parent did not block");
+        await(() -> BlockReason.WAIT_ANY.name().equals(field(50, "BlockReason")),
+                "parent wait state was not persisted");
         assertEquals(BlockReason.WAIT_ANY.name(), field(50, "BlockReason"));
         ProcessRunner.terminateProcess(51);
         await(() -> parent.getState().isTerminal(), "parent did not wake");
@@ -187,7 +188,8 @@ class ProcessOperationsIntegrationTest {
                 Map.of("61", Map.of("PID", 61), "62", Map.of("PID", 62)));
         Thread parentThread = Thread.ofVirtual().start(parent::virtualThreadRun);
 
-        await(() -> parent.getState() == ProcessState.BLOCKED, "parent did not block for PID");
+        await(() -> BlockReason.WAIT_PID.name().equals(field(60, "BlockReason")),
+                "parent waitPID state was not persisted");
         assertEquals(BlockReason.WAIT_PID.name(), field(60, "BlockReason"));
         assertEquals(61, ((Number) field(60, "BlockTargetPid")).intValue());
         ProcessRunner.terminateProcess(62);
@@ -379,6 +381,30 @@ class ProcessOperationsIntegrationTest {
         ProcessRunner.terminateProcess(97);
     }
 
+    @Test
+    @Order(17)
+    void bareUnknownIdentifierFailsTheProcess() {
+        ProcessRunner runner = createRunner(98, List.of("fork"));
+
+        assertEquals(ProcessRunner.StepResult.TERMINATED, runner.step());
+        assertEquals(ProcessState.FAILED, runner.getState());
+        assertEquals(ProcessState.FAILED.name(), field(98, "ProcessState"));
+        assertEquals(ExitReason.ERROR.name(), field(98, "ExitReason"));
+        assertEquals("Undefined variable: fork", field(98, "Program.Data._error"));
+        ProcessRunner.terminateProcess(98);
+    }
+
+    @Test
+    @Order(18)
+    void unknownVariableInsideExpressionFailsTheProcess() {
+        ProcessRunner runner = createRunner(99, List.of("value = missing + 1"));
+
+        assertEquals(ProcessRunner.StepResult.TERMINATED, runner.step());
+        assertEquals(ProcessState.FAILED, runner.getState());
+        assertEquals("Undefined variable: missing", field(99, "Program.Data._error"));
+        ProcessRunner.terminateProcess(99);
+    }
+
     private ProcessRunner createRunner(int pid, List<String> code) {
         return createRunner(pid, code, Map.of(), Map.of(), Map.of());
     }
@@ -399,7 +425,6 @@ class ProcessOperationsIntegrationTest {
         process.put("Owner", "local");
         process.put("PID", pid);
         process.put("Path", "/system/app/test-" + pid + ".fcl");
-        process.put("Status", true);
         process.put("ProcessState", ProcessState.NEW.name());
         process.put("BlockReason", null);
         process.put("ExitReason", null);

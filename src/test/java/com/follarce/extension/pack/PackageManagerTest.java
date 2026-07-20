@@ -270,6 +270,23 @@ class PackageManagerTest {
                         .map(PackageManager.ImportModule::packageHash).toList());
     }
 
+    @Test
+    void stalePackageRootReplacementPreservesTheNewerDiskState() {
+        PackageStore store = new PackageStore();
+        Map<String, Object> expected = store.readRoot("alice");
+        Map<String, Object> replacement = JsonUtil.deepCopy(expected);
+        PackageStore.objectMap(replacement, "packages").put("planned", Map.of("integrity", "sha256:" + "a".repeat(64)));
+
+        JsonUtil.updateFile(PackagePaths.userRootFile("alice"),
+                current -> current.put("ExternalMarker", "keep-me"));
+
+        PackageException error = assertThrows(PackageException.class,
+                () -> store.replaceRoot("alice", expected, replacement));
+        assertTrue(error.getMessage().contains("changed during transaction"));
+        assertEquals("keep-me", store.readRoot("alice").get("ExternalMarker"));
+        assertFalse(PackageStore.objectMap(store.readRoot("alice"), "packages").containsKey("planned"));
+    }
+
     private BuiltGraph buildDependencyGraph(String greeting) throws Exception {
         Path dependencySource = PackageTestFixtures.source(root, "dependency-source", "tests.pack", "dependency", "1.0.0",
                 "depValue", "func depValue() { return \"" + greeting + "\" }", List.of(), Map.of(

@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /** Durable package object, reference, index, user-root, pin, and transaction storage. */
 public final class PackageStore {
@@ -106,8 +107,8 @@ public final class PackageStore {
         return readJson(PackagePaths.INDEX_FILE);
     }
 
-    public void writeIndex(Map<String, Object> index) {
-        writeJson(PackagePaths.INDEX_FILE, index);
+    public void updateIndex(Consumer<Map<String, Object>> updater) {
+        updateJson(PackagePaths.INDEX_FILE, updater);
     }
 
     public Map<String, Object> readRoot(String user) {
@@ -115,8 +116,10 @@ public final class PackageStore {
         return readJson(PackagePaths.userRootFile(user));
     }
 
-    public void writeRoot(String user, Map<String, Object> root) {
-        writeJson(PackagePaths.userRootFile(user), root);
+    public void replaceRoot(String user, Map<String, Object> expected,
+                            Map<String, Object> replacement) {
+        replaceJson(PackagePaths.userRootFile(user), expected, replacement,
+                "Installed package root changed during transaction for user " + user);
     }
 
     public Map<String, Object> readPins(String user) {
@@ -124,8 +127,10 @@ public final class PackageStore {
         return readJson(PackagePaths.userPinsFile(user));
     }
 
-    public void writePins(String user, Map<String, Object> pins) {
-        writeJson(PackagePaths.userPinsFile(user), pins);
+    public void replacePins(String user, Map<String, Object> expected,
+                            Map<String, Object> replacement) {
+        replaceJson(PackagePaths.userPinsFile(user), expected, replacement,
+                "Package pins changed during transaction for user " + user);
     }
 
     public Map<String, Object> readReferences(String hash) {
@@ -254,24 +259,41 @@ public final class PackageStore {
             FileUtil.createFile(parent, name);
             FileUtil.write(path, JsonUtil.toJson(initial));
         }
-        Map<String, Object> metadata = FileUtil.readFileMetaData(path);
-        boolean changed = false;
-        if (!owner.equals(metadata.get("Owner"))) {
+        FileUtil.updateFileMetaData(path, metadata -> {
             metadata.put("Owner", owner);
-            changed = true;
-        }
-        if (privateFile) {
-            Map<String, Object> permissions = objectMap(metadata, "Permission");
-            if (!"".equals(permissions.get(Constants.PERM_OTHERS))) {
-                permissions.put(Constants.PERM_OTHERS, "");
-                changed = true;
+            if (privateFile) {
+                objectMap(metadata, "Permission").put(Constants.PERM_OTHERS, "");
             }
-        }
-        if (changed) FileUtil.writeFileMetaData(path, metadata);
+        });
     }
 
     private static void writeJson(String path, Map<String, Object> value) {
-        FileUtil.writeAtomic(path, JsonUtil.toJson(value));
+        Map<String, Object> replacement = JsonUtil.deepCopy(value);
+        updateJson(path, current -> {
+            current.clear();
+            current.putAll(replacement);
+        });
+    }
+
+    private static void updateJson(String path, Consumer<Map<String, Object>> updater) {
+        try {
+            JsonUtil.updateFile(path, updater);
+        } catch (PackageException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PackageException("Failed to update package state file: " + path, e);
+        }
+    }
+
+    private static void replaceJson(String path, Map<String, Object> expected,
+                                    Map<String, Object> replacement, String conflictMessage) {
+        Map<String, Object> expectedCopy = JsonUtil.deepCopy(expected);
+        Map<String, Object> replacementCopy = JsonUtil.deepCopy(replacement);
+        updateJson(path, current -> {
+            if (!current.equals(expectedCopy)) throw new PackageException(conflictMessage);
+            current.clear();
+            current.putAll(replacementCopy);
+        });
     }
 
     private static void forceDirectory(Path directory) {

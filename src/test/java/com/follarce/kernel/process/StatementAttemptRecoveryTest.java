@@ -97,9 +97,7 @@ class StatementAttemptRecoveryTest {
         process.put("Owner", "local");
         process.put("EffectiveUser", "local");
         process.put("PathAliases", new LinkedHashMap<>());
-        process.put("Execution", new LinkedHashMap<>(Map.of(
-                "SchemaVersion", 1,
-                "NextAttemptOrdinal", 0L)));
+        process.put("Execution", new LinkedHashMap<>(Map.of("NextAttemptOrdinal", 0L)));
         return process;
     }
 

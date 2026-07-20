@@ -1,6 +1,7 @@
 package com.follarce.kernel.vfs;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.util.*;
 
 import com.follarce.kernel.Constants;
@@ -46,7 +47,27 @@ public final class PathUtil {
      * 获取完整的环境变量别名映射。
      */
     public static Map<String, String> getEnvAliases() {
-        return new LinkedHashMap<>(envAliases);
+        File root = vfsRoot;
+        if (root == null) return new LinkedHashMap<>(envAliases);
+        java.nio.file.Path envPath = root.toPath()
+                .resolve((Constants.SYSTEM_CONFIG_PATH + Constants.CONFIG_ENV_JSON).substring(1));
+        if (!Files.isRegularFile(envPath)) return new LinkedHashMap<>(envAliases);
+        try {
+            String body = extractBodyContent(Files.readString(envPath));
+            Map<String, Object> env = JsonUtil.parseToMapStrict(body);
+            Object configuredAliases = env.get("aliases");
+            if (!(configuredAliases instanceof Map<?, ?> aliasMap)) return new LinkedHashMap<>();
+            Map<String, String> aliases = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : aliasMap.entrySet()) {
+                if (entry.getKey() instanceof String name
+                        && entry.getValue() instanceof String value) {
+                    aliases.put(name, value);
+                }
+            }
+            return aliases;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to read path aliases from disk", e);
+        }
     }
 
     /**
@@ -70,7 +91,9 @@ public final class PathUtil {
                 ? Constants.DEFAULT_USER_LOCAL
                 : effectiveUser;
         String home = Constants.USER_HOME_PREFIX + user;
-        Map<String, String> globalAliases = new LinkedHashMap<>(envAliases);
+        char initialMarker = path.charAt(0);
+        Map<String, String> globalAliases = initialMarker == '$' || initialMarker == '@'
+                ? getEnvAliases() : Collections.emptyMap();
         Map<String, String> localAliases = processAliases == null
                 ? Collections.emptyMap()
                 : new LinkedHashMap<>(processAliases);

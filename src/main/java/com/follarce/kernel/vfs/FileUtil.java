@@ -13,6 +13,7 @@ import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -127,24 +128,19 @@ public final class FileUtil {
         validateChildName(name);
         String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;
         File realFile = resolveFile(fullPath);
-        if (realFile.exists()) {
-            throw new RuntimeException("File already exists: " + fullPath);
-        }
+        ReentrantLock pathLock = JsonUtil.lockFile(fullPath);
         try {
-            realFile.createNewFile();
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to create file: " + fullPath, e);
+            if (realFile.exists()) {
+                throw new RuntimeException("File already exists: " + fullPath);
+            }
+            Map<String, Object> defaultMeta = createDefaultFileMeta();
+            String currentUser = UserUtil.getCurrentUser();
+            if (currentUser != null) defaultMeta.put("Owner", currentUser);
+            replaceFullFileAtomically(fullPath, realFile,
+                    PathUtil.buildMetaFile(JsonUtil.toMetaJson(defaultMeta), ""));
+        } finally {
+            pathLock.unlock();
         }
-        // 写入默认元数据
-        Map<String, Object> defaultMeta = createDefaultFileMeta();
-        // 将文件 Owner 设为当前用户（而非固定为 local），使创建者有权写入
-        String currentUser = UserUtil.getCurrentUser();
-        if (currentUser != null) {
-            defaultMeta.put("Owner", currentUser);
-        }
-        String metaJson = JsonUtil.toMetaJson(defaultMeta);
-        String content = PathUtil.buildMetaFile(metaJson, "");
-        writeFileContent(realFile, content);
     }
 
     /** Creates one file for a stable effect ID; replay returns the same resource. */
@@ -218,21 +214,21 @@ public final class FileUtil {
         validateChildName(name);
         String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;
         File realDir = resolveFile(fullPath);
-        if (realDir.exists()) {
-            throw new RuntimeException("Directory already exists: " + fullPath);
-        }
-        if (!realDir.mkdirs()) {
-            throw new RuntimeException("Failed to create directory: " + fullPath);
-        }
-        // 创建 .META 文件
-        createDirectoryMetaData(fullPath);
-        String currentUser = UserUtil.getCurrentUser();
-        if (currentUser != null) {
-            Map<String, Object> metadata = readDirectoryMetaData(fullPath);
-            if (metadata != null && !currentUser.equals(metadata.get("Owner"))) {
-                metadata.put("Owner", currentUser);
-                writeDirectoryMetaData(fullPath, metadata);
+        ReentrantLock pathLock = JsonUtil.lockFile(fullPath);
+        try {
+            if (realDir.exists()) {
+                throw new RuntimeException("Directory already exists: " + fullPath);
             }
+            if (!realDir.mkdirs()) {
+                throw new RuntimeException("Failed to create directory: " + fullPath);
+            }
+            createDirectoryMetaData(fullPath);
+            String currentUser = UserUtil.getCurrentUser();
+            if (currentUser != null) {
+                updateDirectoryMetaData(fullPath, metadata -> metadata.put("Owner", currentUser));
+            }
+        } finally {
+            pathLock.unlock();
         }
     }
 
@@ -293,22 +289,19 @@ public final class FileUtil {
         String fullPath = PathUtil.resolvePath(dirPath) + "/" + name;
 
         File realFile = resolveFile(fullPath);
-        if (realFile.exists()) {
-            throw new RuntimeException("Link target already exists: " + fullPath);
-        }
-
+        ReentrantLock pathLock = JsonUtil.lockFile(fullPath);
         try {
-            realFile.createNewFile();
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to create link: " + fullPath, e);
+            if (realFile.exists()) {
+                throw new RuntimeException("Link target already exists: " + fullPath);
+            }
+            Map<String, Object> meta = createDefaultFileMeta();
+            meta.put("Owner", UserUtil.getCurrentUser());
+            meta.put("Link", resolvedTarget);
+            replaceFullFileAtomically(fullPath, realFile,
+                    PathUtil.buildMetaFile(JsonUtil.toMetaJson(meta), ""));
+        } finally {
+            pathLock.unlock();
         }
-
-        // 创建带 Link 字段的元数据
-        Map<String, Object> meta = createDefaultFileMeta();
-        meta.put("Link", resolvedTarget);
-        String metaJson = JsonUtil.toMetaJson(meta);
-        String content = PathUtil.buildMetaFile(metaJson, "");
-        writeFileContent(realFile, content);
     }
 
     /**
@@ -515,12 +508,20 @@ public final class FileUtil {
         return readMetaData(resolvedPath);
     }
 
-    /**
-     * 写入文件的元数据（保留正文）。
-     */
-    public static void writeFileMetaData(String path, Map<String, Object> metaContent) {
+    /** Atomically reloads, mutates, and replaces file metadata while preserving the body. */
+    public static void updateFileMetaData(String path, Consumer<Map<String, Object>> updater) {
+        Objects.requireNonNull(updater, "updater");
         String resolvedPath = PathUtil.resolvePath(path);
-        writeMetaData(resolvedPath, metaContent);
+        ReentrantLock pathLock = JsonUtil.lockFile(resolvedPath);
+        try {
+            File realFile = resolveFile(resolvedPath);
+            validateFile(realFile, path);
+            Map<String, Object> metadata = readMetaData(resolvedPath);
+            updater.accept(metadata);
+            writeMetaDataLocked(resolvedPath, metadata);
+        } finally {
+            pathLock.unlock();
+        }
     }
 
     /**
@@ -531,12 +532,10 @@ public final class FileUtil {
         return readFileMetaData(dirMetaPath);
     }
 
-    /**
-     * 写入目录元数据。
-     */
-    public static void writeDirectoryMetaData(String path, Map<String, Object> metaContent) {
+    /** Atomically reloads, mutates, and replaces directory metadata. */
+    public static void updateDirectoryMetaData(String path, Consumer<Map<String, Object>> updater) {
         String dirMetaPath = PathUtil.resolvePath(path) + "/" + Constants.META_DIR_FILE;
-        writeFileMetaData(dirMetaPath, metaContent);
+        updateFileMetaData(dirMetaPath, updater);
     }
 
     /**
@@ -546,18 +545,16 @@ public final class FileUtil {
         String resolvedPath = PathUtil.resolvePath(dirPath);
         File dirFile = resolveFile(resolvedPath);
         File metaFile = new File(dirFile, Constants.META_DIR_FILE);
-        if (metaFile.exists()) return;
-
+        String metaPath = resolvedPath + "/" + Constants.META_DIR_FILE;
+        ReentrantLock pathLock = JsonUtil.lockFile(metaPath);
         try {
-            metaFile.createNewFile();
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to create .META for " + dirPath, e);
+            if (metaFile.exists()) return;
+            Map<String, Object> meta = createDefaultDirMeta();
+            replaceFullFileAtomically(metaPath, metaFile,
+                    PathUtil.buildMetaFile(JsonUtil.toMetaJson(meta), ""));
+        } finally {
+            pathLock.unlock();
         }
-
-        Map<String, Object> meta = createDefaultDirMeta();
-        String metaJson = JsonUtil.toMetaJson(meta);
-        String content = PathUtil.buildMetaFile(metaJson, "");
-        writeFileContent(metaFile, content);
     }
 
     // ════════════════════════════════════════════
@@ -744,17 +741,6 @@ public final class FileUtil {
         }
     }
 
-    /**
-     * 将字符串写入文件。
-     */
-    static void writeFileContent(File file, String content) {
-        try {
-            Files.writeString(file.toPath(), content, StandardOpenOption.TRUNCATE_EXISTING);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to write file: " + file.getAbsolutePath(), e);
-        }
-    }
-
     private static void updateBody(String path, String content, boolean append,
                                    Integer pid, Object generation, Long fencingToken, String effectId) {
         if (EffectLedger.lookup(effectId).found()) return;
@@ -888,18 +874,6 @@ public final class FileUtil {
             return result;
         }
         return new LinkedHashMap<>();
-    }
-
-    /**
-     * 写入元数据到 VFS 路径（保留正文）。
-     */
-    private static void writeMetaData(String resolvedPath, Map<String, Object> meta) {
-        ReentrantLock pathLock = JsonUtil.lockFile(resolvedPath);
-        try {
-            writeMetaDataLocked(resolvedPath, meta);
-        } finally {
-            pathLock.unlock();
-        }
     }
 
     /** Caller must hold the JsonUtil lock for {@code resolvedPath}. */

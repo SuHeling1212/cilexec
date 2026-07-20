@@ -80,6 +80,69 @@ class FileLockTest {
     }
 
     @Test
+    void concurrentFileCreationCommitsExactlyOneCompleteFile() throws Exception {
+        int workerCount = 24;
+        CountDownLatch ready = new CountDownLatch(workerCount);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger successes = new AtomicInteger();
+        List<Thread> workers = new ArrayList<>();
+
+        for (int index = 0; index < workerCount; index++) {
+            workers.add(Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    FileUtil.createFile(DIRECTORY, "created-once.txt");
+                    successes.incrementAndGet();
+                } catch (RuntimeException expectedForLosers) {
+                    // Only the creator that holds the path lock first may commit the file.
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+        }
+
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        for (Thread worker : workers) worker.join();
+
+        assertEquals(1, successes.get());
+        assertEquals("", FileUtil.read(DIRECTORY + "/created-once.txt"));
+        assertFalse(FileUtil.readFileMetaData(DIRECTORY + "/created-once.txt").isEmpty());
+    }
+
+    @Test
+    void concurrentMetadataUpdatesKeepEveryCommittedField() throws Exception {
+        int workerCount = 24;
+        CountDownLatch ready = new CountDownLatch(workerCount);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Thread> workers = new ArrayList<>();
+
+        for (int index = 0; index < workerCount; index++) {
+            int field = index;
+            workers.add(Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    start.await();
+                    FileUtil.updateFileMetaData(FILE,
+                            metadata -> metadata.put("concurrent-" + field, field));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+        }
+
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        for (Thread worker : workers) worker.join();
+
+        Map<String, Object> metadata = FileUtil.readFileMetaData(FILE);
+        for (int index = 0; index < workerCount; index++) {
+            assertEquals(index, ((Number) metadata.get("concurrent-" + index)).intValue());
+        }
+    }
+
+    @Test
     void expiredLeaseCanBeTakenOverAndAdvancesToken() throws Exception {
         FileUtil.LockHandle first = FileUtil.acquireLock(FILE, 10, 100L, 25L);
         awaitExpiration(first);

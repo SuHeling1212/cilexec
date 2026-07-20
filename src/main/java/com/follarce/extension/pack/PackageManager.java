@@ -216,6 +216,7 @@ public final class PackageManager {
             writeTransaction(user, transactionId, transaction, "VERIFIED");
 
             Map<String, Object> root = store.readRoot(user);
+            Map<String, Object> expectedRoot = JsonUtil.deepCopy(root);
             Map<String, Object> roots = PackageStore.objectMap(root, "packages");
             Map<String, Object> priorEntry = mapValue(roots.get(binding));
             String priorHash = entryHash(priorEntry);
@@ -264,7 +265,7 @@ public final class PackageManager {
 
             roots.put(binding, rootEntry(rootArchive, binding));
             incrementGeneration(root);
-            store.writeRoot(user, root);
+            store.replaceRoot(user, expectedRoot, root);
             writeTransaction(user, transactionId, transaction, "ROOT_COMMITTED");
 
             completePostHooks(user, transactionId, transaction);
@@ -328,6 +329,7 @@ public final class PackageManager {
             }
 
             Map<String, Object> root = store.readRoot(user);
+            Map<String, Object> expectedRoot = JsonUtil.deepCopy(root);
             Map<String, Object> roots = PackageStore.objectMap(root, "packages");
             Map<String, Object> entry = mapValue(roots.get(binding));
             if (entry == null) throw new PackageException("Package is not installed for " + user + ": " + binding);
@@ -368,7 +370,7 @@ public final class PackageManager {
 
             roots.remove(binding);
             incrementGeneration(root);
-            store.writeRoot(user, root);
+            store.replaceRoot(user, expectedRoot, root);
             writeTransaction(user, transactionId, transaction, "ROOT_COMMITTED");
 
             completePostHooks(user, transactionId, transaction);
@@ -474,6 +476,7 @@ public final class PackageManager {
                 hash = entryHash(entry);
             }
             Map<String, Object> pins = store.readPins(user);
+            Map<String, Object> expectedPins = JsonUtil.deepCopy(pins);
             Map<String, Object> packages = PackageStore.objectMap(pins, "packages");
             Map<String, Object> existing = mapValue(packages.get(hash));
             if (existing != null) return new LinkedHashMap<>(existing);
@@ -482,7 +485,7 @@ public final class PackageManager {
             pin.put("binding", binding);
             pin.put("pinnedAt", Instant.now().toString());
             packages.put(hash, pin);
-            store.writePins(user, pins);
+            store.replacePins(user, expectedPins, pins);
             return pin;
         } finally {
             PACKAGE_LOCK.unlock();
@@ -494,6 +497,7 @@ public final class PackageManager {
         try {
             initializeForUser(user);
             Map<String, Object> pins = store.readPins(user);
+            Map<String, Object> expectedPins = JsonUtil.deepCopy(pins);
             Map<String, Object> packages = PackageStore.objectMap(pins, "packages");
             String hash = bindingOrIntegrity != null && bindingOrIntegrity.startsWith("sha256:")
                     ? hashFromIntegrity(bindingOrIntegrity) : null;
@@ -508,7 +512,7 @@ public final class PackageManager {
             }
             if (hash == null) return true;
             boolean removed = packages.remove(hash) != null;
-            if (removed) store.writePins(user, pins);
+            if (removed) store.replacePins(user, expectedPins, pins);
             return true;
         } finally {
             PACKAGE_LOCK.unlock();
@@ -526,16 +530,16 @@ public final class PackageManager {
             for (String hash : removed) store.deleteObject(hash);
 
             if (!removed.isEmpty()) {
-                Map<String, Object> index = store.readIndex();
-                Map<String, Object> packages = PackageStore.objectMap(index, "packages");
-                packages.entrySet().removeIf(item -> {
-                    try {
-                        return removed.contains(hashFromIntegrity(text(item.getValue())));
-                    } catch (PackageException ignored) {
-                        return true;
-                    }
+                store.updateIndex(index -> {
+                    Map<String, Object> packages = PackageStore.objectMap(index, "packages");
+                    packages.entrySet().removeIf(item -> {
+                        try {
+                            return removed.contains(hashFromIntegrity(text(item.getValue())));
+                        } catch (PackageException ignored) {
+                            return true;
+                        }
+                    });
                 });
-                store.writeIndex(index);
             }
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", "collected");
@@ -719,20 +723,25 @@ public final class PackageManager {
 
     private void commitGraph(ResolvedGraph graph) {
         validateGraphIndex(graph);
-        Map<String, Object> index = store.readIndex();
-        Map<String, Object> packages = PackageStore.objectMap(index, "packages");
         for (PackageArchive archive : graph.archives.values()) store.putObject(archive);
         for (Map.Entry<String, Map<String, Object>> item : graph.references.entrySet()) {
             store.writeReferences(item.getKey(), item.getValue());
         }
-        for (PackageArchive archive : graph.archives.values()) {
-            packages.put(archive.manifest().coordinate().key(), archive.integrity());
-        }
-        store.writeIndex(index);
+        store.updateIndex(index -> {
+            Map<String, Object> packages = PackageStore.objectMap(index, "packages");
+            validateGraphIndex(packages, graph);
+            for (PackageArchive archive : graph.archives.values()) {
+                packages.put(archive.manifest().coordinate().key(), archive.integrity());
+            }
+        });
     }
 
     private void validateGraphIndex(ResolvedGraph graph) {
         Map<String, Object> packages = PackageStore.objectMap(store.readIndex(), "packages");
+        validateGraphIndex(packages, graph);
+    }
+
+    private static void validateGraphIndex(Map<String, Object> packages, ResolvedGraph graph) {
         for (PackageArchive archive : graph.archives.values()) {
             String key = archive.manifest().coordinate().key();
             Object existing = packages.get(key);
@@ -909,7 +918,7 @@ public final class PackageManager {
                 try {
                     String vfsPath = Constants.SYSTEM_PROCESS_PATH + file.getFileName();
                     Map<String, Object> process = JsonUtil.parseToMapStrict(FileUtil.read(vfsPath));
-                    if (ProcessState.restore(process.get("ProcessState"), process.get("Status")).isTerminal()) continue;
+                    if (ProcessState.restore(process.get("ProcessState")).isTerminal()) continue;
                     Map<String, Object> program = mapValue(process.get("Program"));
                     if (program == null || !(program.get("imports") instanceof List<?> imports)) continue;
                     for (Object value : imports) {

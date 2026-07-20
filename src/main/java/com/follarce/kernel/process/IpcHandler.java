@@ -128,7 +128,6 @@ public class IpcHandler {
             Map<String, Object> childData = JsonUtil.deepCopy(processData);
             childData.put("PID", childPid);
             childData.put("Name", childData.get("Name") + "-" + childPid);
-            childData.put("Status", true);
             childData.put("ProcessState", ProcessState.READY.name());
             childData.put("BlockReason", null);
             childData.put("ExitReason", null);
@@ -137,7 +136,6 @@ public class IpcHandler {
             childData.put("ProcessGeneration", childGeneration);
             childData.put("CreatedByEffectId", effectId);
             Map<String, Object> childExecution = new LinkedHashMap<>();
-            childExecution.put("SchemaVersion", ProcessIdentity.EXECUTION_SCHEMA_VERSION);
             childExecution.put("NextAttemptOrdinal", 0L);
             childData.put("Execution", childExecution);
             childData.remove("Reservation");
@@ -291,7 +289,6 @@ public class IpcHandler {
         }
         processData.put("EffectiveUser", execUser);
         processData.put("ProcessState", ProcessState.READY.name());
-        processData.put("Status", true);
         processData.put("BlockReason", null);
         processData.put("StateMessage", null);
         Object execution = processData.get("Execution");
@@ -447,9 +444,7 @@ public class IpcHandler {
         try {
             if (!FileUtil.exists(targetPath)) return null;
             Map<String, Object> targetData = JsonUtil.parseToMapStrict(FileUtil.read(targetPath));
-            if (ProcessIdentity.ensureDefaults(targetData)) {
-                FileUtil.writeAtomic(targetPath, JsonUtil.toMetaJson(targetData));
-            }
+            ProcessIdentity.ensureDefaults(targetData);
             Object owner = targetData.get("Owner");
             if (!Constants.DEFAULT_USER_LOCAL.equals(currentUser)
                     && (owner == null || !owner.toString().equals(currentUser))) {
@@ -487,7 +482,6 @@ public class IpcHandler {
                     reservation.put("Name", "RESERVED-" + base);
                     reservation.put("Owner", Constants.DEFAULT_USER_LOCAL);
                     reservation.put("PID", base);
-                    reservation.put("Status", true);
                     reservation.put("ProcessState", ProcessState.PAUSED.name());
                     reservation.put("ProcessGeneration", ProcessIdentity.newGeneration());
                     reservation.put("CreatedByEffectId", effectId);
@@ -501,13 +495,7 @@ public class IpcHandler {
                     reservationCode.put("BlockStack", new ArrayList<>());
                     reservation.put("Program", new LinkedHashMap<>(Map.of(
                             "Data", new LinkedHashMap<String, Object>(), "Code", reservationCode)));
-                    java.nio.file.Files.writeString(procFile.toPath(), JsonUtil.toJson(reservation),
-                            java.nio.file.StandardOpenOption.CREATE_NEW,
-                            java.nio.file.StandardOpenOption.WRITE);
-                    try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(
-                            procFile.toPath(), java.nio.file.StandardOpenOption.WRITE)) {
-                        channel.force(true);
-                    }
+                    writeNewProcessReservation(procFile.toPath(), reservation);
                     if (procFile.exists()) {
                         return base;
                     }
@@ -663,7 +651,6 @@ public class IpcHandler {
         reservation.put("Name", "RESERVED-" + entry.childPid());
         reservation.put("Owner", Constants.DEFAULT_USER_LOCAL);
         reservation.put("PID", entry.childPid());
-        reservation.put("Status", true);
         reservation.put("ProcessState", ProcessState.PAUSED.name());
         reservation.put("ProcessGeneration", entry.childGeneration());
         reservation.put("CreatedByEffectId", entry.effectId());
@@ -677,13 +664,35 @@ public class IpcHandler {
         reservation.put("Program", new LinkedHashMap<>(Map.of(
                 "Data", new LinkedHashMap<String, Object>(), "Code", code)));
         try {
-            java.nio.file.Files.writeString(java.nio.file.Path.of(PathUtil.toRealPath(vfsPath)),
-                    JsonUtil.toJson(reservation), java.nio.file.StandardOpenOption.CREATE_NEW,
-                    java.nio.file.StandardOpenOption.WRITE);
+            writeNewProcessReservation(java.nio.file.Path.of(PathUtil.toRealPath(vfsPath)), reservation);
         } catch (java.nio.file.FileAlreadyExistsException e) {
             ensureForkReservation(entry);
         } catch (java.io.IOException e) {
             throw new RuntimeException("Failed to restore fork reservation", e);
+        }
+    }
+
+    private static void writeNewProcessReservation(java.nio.file.Path target,
+                                                   Map<String, Object> reservation)
+            throws java.io.IOException {
+        java.nio.file.Path temp = target.resolveSibling(
+                target.getFileName() + ".reservation-" + UUID.randomUUID() + ".tmp");
+        try {
+            java.nio.file.Files.writeString(temp, JsonUtil.toJson(reservation),
+                    java.nio.file.StandardOpenOption.CREATE_NEW,
+                    java.nio.file.StandardOpenOption.WRITE);
+            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(
+                    temp, java.nio.file.StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            java.nio.file.Files.move(temp, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            try (java.nio.channels.FileChannel directory = java.nio.channels.FileChannel.open(
+                    target.getParent(), java.nio.file.StandardOpenOption.READ)) {
+                directory.force(true);
+            } catch (Exception ignored) {
+            }
+        } finally {
+            java.nio.file.Files.deleteIfExists(temp);
         }
     }
 

@@ -132,8 +132,7 @@ public class ExpressionEvaluator {
                 if (data.containsKey(expression)) {
                     return data.get(expression);
                 }
-                // 特殊：FORK / KILL: / WAIT 等标记字面量
-                return detectSpecialMarkerValue(expression);
+                throw UnrecoverableException.undefinedVariable(expression);
             }
 
             // 复杂表达式 → 走 Lexer + Parser + NodeEvaluator
@@ -143,10 +142,6 @@ public class ExpressionEvaluator {
             Logger.warn("Expression evaluation error in PID " + pid + ": " + e.getMessage()
                     + " | expr=" + expression);
             if (e instanceof ProcessException processException) throw processException;
-            // Preserve FCL's existing implicit-null behavior for first-use variables.
-            if (e.getMessage() != null && e.getMessage().startsWith("Undefined variable '")) {
-                return null;
-            }
             if ("Division by zero".equals(e.getMessage())) {
                 throw UnrecoverableException.divisionByZero();
             }
@@ -173,22 +168,6 @@ public class ExpressionEvaluator {
     // ════════════════════════════════════════════
     // 特殊标记处理
     // ════════════════════════════════════════════
-
-    /**
-     * 检测标识符是否是特殊标记字面量。
-     * 用于赋值语境中：{@code x = fork()} 返回 "FORK" 标记。
-     */
-    private Object detectSpecialMarkerValue(String name) {
-        if (name == null) return null;
-        if (name.equals("FORK")) return "FORK";
-        if (name.startsWith("KILL:")) return name;
-        if (name.equals("WAIT")) return "WAIT";
-        if (name.startsWith("WAITPID:")) return name;
-        if (name.startsWith("PAUSE:")) return name;
-        if (name.startsWith("CONTINUE:")) return name;
-        if (name.startsWith("USER:")) return name;
-        return null;
-    }
 
     /**
      * 处理特殊标记（赋值语境中求值返回的标记字符串）。
