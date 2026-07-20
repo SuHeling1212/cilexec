@@ -1,6 +1,6 @@
 # CilExec
 
-> **Disclaimer: This project is developed by AI (TREA, DeepSeek), including documentations. I take no responsibility for code quality or any issues that may arise.**
+> **Disclaimer: This project is developed by AI (Codex, DeepSeek), including documentations. I take no responsibility for code quality or any issues that may arise.**
 
 A single-binary, disk-based teaching simulated operating system implemented in Java. This is the **reconstructed version** (`Cilexec`) with comprehensive architecture improvements over the original.
 

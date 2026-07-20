@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Build & Run Commands
 
-```bash
+```bash   
 # Compile
 mvn compile
 

@@ -21,11 +21,6 @@ public final class Constants {
     public static final int PRIORITY_LOW = 1;
     public static final int DEFAULT_PRIORITY = PRIORITY_NORMAL;
 
-    // ── 执行引擎模式 ──
-    // true  = 每进程一个虚拟线程（需 Java 21+）
-    // false = 单线程调度器（当前模式，兼容 Java 11+）
-
-
     // ── 网络 ──
     public static final int DEFAULT_TIMEOUT = 10000;
     public static final int BUFFER_SIZE = 8192;
