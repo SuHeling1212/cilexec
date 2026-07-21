@@ -86,6 +86,21 @@ public final class Constants {
     public static final String SWAP_TYPE_SYNC = "sync";
     public static final String SWAP_TYPE_TIMES_PREFIX = "times";
 
+    // ── 终端 ──
+    public static final String TERMINAL_DEFAULT_PROCESS = "process1";
+    public static final int TERMINAL_DEFAULT_PID = 1;
+    public static final String TERMINAL_LOCK_FILE = ".terminal.lock";
+    public static final long TERMINAL_POLL_INTERVAL_MS = 50L;
+    public static final long TERMINAL_EXEC_TIMEOUT_MS = 300_000L;
+    public static final String TERMINAL_OUTPUT_FIELD = "_terminalOutput";
+    public static final String TERMINAL_WORKING_DIR_FIELD = "_workingDirectory";
+    public static final String TERMINAL_INTERRUPT_FIELD = "_terminalInterrupt";
+    public static final String TERMINAL_SUBMISSION_START = "_submissionStartLine";
+    public static final String TERMINAL_SUBMISSION_END = "_submissionEndLine";
+    public static final String TERMINAL_ATTACHED_FIELD = "_terminalAttached";
+    public static final String TERMINAL_APPEND_CODE = "__TerminalAppendCode";
+    public static final String TERMINAL_RESUME = "__TerminalResume";
+
     // ── 默认名称 ──
     public static final String DEFAULT_DIR_OWNER = "local";
 

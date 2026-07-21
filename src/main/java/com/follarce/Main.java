@@ -12,8 +12,7 @@ import com.follarce.kernel.process.Scheduler;
 import com.follarce.kernel.terminal.HostTerminal;
 import com.follarce.kernel.util.JsonUtil;
 import com.follarce.kernel.vfs.FileUtil;
-import com.follarce.shell.ConsoleShell;
-import com.follarce.shell.SystemControlService;
+import com.follarce.extension.terminal.FclTerminal;
 
 import java.io.File;
 import java.io.InputStreamReader;
@@ -72,7 +71,7 @@ public class Main {
             // 6. 创建调度器
             scheduler = new Scheduler();
 
-            // 7. 手动启动 INIT 进程并注册到调度器
+            // 7. 启动 PID 1（INIT 进程），终端将在其执行完毕后接管
             ProcessRunner initRunner = startInitProcess();
             if (initRunner != null) {
                 initRunner.init();
@@ -87,10 +86,10 @@ public class Main {
             Runtime.getRuntime().addShutdownHook(new Thread(Main::shutdownSystem, "CilexecShutdown"));
 
             Logger.info("=== Cilexec system ready ===");
-            new ConsoleShell(
+            new FclTerminal(
                     new InputStreamReader(System.in),
                     new PrintWriter(System.out, true),
-                    new SystemControlService(),
+                    scheduler,
                     Main::shutdownSystem
             ).run();
 

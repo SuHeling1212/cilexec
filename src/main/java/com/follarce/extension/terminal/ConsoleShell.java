@@ -1,4 +1,4 @@
-package com.follarce.shell;
+package com.follarce.extension.terminal;
 
 import com.follarce.kernel.Constants;
 import com.follarce.kernel.util.JsonUtil;

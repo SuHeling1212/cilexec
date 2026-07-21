@@ -1,4 +1,4 @@
-package com.follarce.shell;
+package com.follarce.extension.terminal;
 
 import com.follarce.extension.pack.PackageManager;
 import com.follarce.kernel.Constants;

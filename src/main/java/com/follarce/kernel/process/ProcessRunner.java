@@ -94,6 +94,12 @@ public class ProcessRunner {
     // 待赋值变量名：调用用户函数时的赋值目标变量，函数返回后完成赋值
     private String pendingAssignmentVar = null;
 
+    // ── 终端交互模式 ──
+    private boolean terminalBound;
+    private int submissionStartLine = -1;
+    private int submissionEndLine = -1;
+    private volatile boolean terminalInterruptRequested;
+
     // ── 虚拟线程管理（全局） ──
     // PID → 虚拟线程映射，用于跨进程 unpark（kill 唤醒 wait）
     private static final ConcurrentHashMap<Integer, Thread> VIRTUAL_THREADS = new ConcurrentHashMap<>();
@@ -221,6 +227,13 @@ public class ProcessRunner {
                 if (externallyChanged) persistState();
                 return StepResult.BLOCKED;
             }
+
+            // 终端交互模式：检查中断请求
+            if (terminalBound && terminalInterruptRequested) {
+                handleTerminalInterrupt();
+                return StepResult.BLOCKED;
+            }
+
             transitionTo(ProcessState.RUNNING, null);
             String statement = currentLine >= 0 && currentLine < codeLines.size()
                     ? codeLines.get(currentLine) : "<eof>";
@@ -396,6 +409,7 @@ public class ProcessRunner {
                 && running && !executorStopping) {
             boolean terminated;
             synchronized (persistenceLock) {
+                loadRuntimeState();
                 if (processPendingMessages()) persistState();
                 terminated = state.isTerminal();
                 if (!terminated && state != ProcessState.PAUSED && checkWakeup()) {
@@ -511,6 +525,23 @@ public class ProcessRunner {
             blockReason = BlockReason.NONE;
             transitionTo(ProcessState.TERMINATED, "Killed");
             prepareLifecycleCleanup(true);
+            return;
+        }
+        if (Constants.TERMINAL_APPEND_CODE.equals(field)) {
+            handleTerminalAppendCode(value);
+            return;
+        }
+        if (Constants.TERMINAL_RESUME.equals(field)) {
+            if (state == ProcessState.PAUSED) {
+                resumeState = ProcessState.READY;
+                transitionTo(ProcessState.READY, null);
+            }
+            return;
+        }
+        if (Constants.TERMINAL_INTERRUPT_FIELD.equals(field)) {
+            if (terminalBound && Boolean.TRUE.equals(value)) {
+                terminalInterruptRequested = true;
+            }
             return;
         }
         if (field.startsWith("ChildExit.")) {
@@ -734,7 +765,6 @@ public class ProcessRunner {
 
             // 1. 检查是否执行完毕
             if (currentLine >= codeLines.size()) {
-                // 如果在函数调用中，自动返回到调用者
                 if (functionManager.isInCall()) {
                     FunctionManager.CallFrame frame = functionManager.popFrame();
                     this.data = frame.savedData;
@@ -746,9 +776,20 @@ public class ProcessRunner {
                     settle(frame.savedCurrentLine + 1);
                     return;
                 }
+                // 终端交互模式：代码结束时挂起而非终止
+                if (terminalBound) {
+                    terminalPause();
+                    return;
+                }
                 terminateNormally("Program completed");
                 attemptManager.commit();
                 persistState();
+                return;
+            }
+
+            // 终端交互模式：检查是否到达本次提交末尾
+            if (terminalBound && submissionEndLine > 0 && currentLine >= submissionEndLine) {
+                terminalPause();
                 return;
             }
 
@@ -966,6 +1007,19 @@ public class ProcessRunner {
             if (state == ProcessState.BLOCKED) {
                 settle(currentLine + 1);
                 return;
+            }
+            // 终端交互模式：标记处理后，如果是 USER: 函数且有返回值，自动打印
+            if (terminalBound && marker.startsWith("USER:")) {
+                Object retVal = data.get("__return_value");
+                if (retVal != null) {
+                    appendTerminalOutput(retVal);
+                    data.remove("__return_value");
+                }
+            }
+        } else {
+            // 终端交互模式：非标记表达式结果自动打印
+            if (terminalBound && exprResult != null) {
+                appendTerminalOutput(exprResult);
             }
         }
         if (enteredUserFunction) { enteredUserFunction = false; persistState(); return; }
@@ -1223,6 +1277,17 @@ public class ProcessRunner {
         this.codeLines = snap.codeLines;
         this.currentLine = snap.currentLine;
         this.blockStack = snap.blockStack;
+
+        this.terminalBound = Boolean.TRUE.equals(data.get(Constants.TERMINAL_ATTACHED_FIELD));
+        if (terminalBound) {
+            Object startObj = data.get(Constants.TERMINAL_SUBMISSION_START);
+            Object endObj = data.get(Constants.TERMINAL_SUBMISSION_END);
+            this.submissionStartLine = startObj instanceof Number ? ((Number) startObj).intValue() : -1;
+            this.submissionEndLine = endObj instanceof Number ? ((Number) endObj).intValue() : -1;
+            Object interruptObj = data.get(Constants.TERMINAL_INTERRUPT_FIELD);
+            this.terminalInterruptRequested = interruptObj instanceof Boolean
+                    && (Boolean) interruptObj;
+        }
         // returnValue 已不再作为字段维护（直接通过 data.__return_value 传递）
 
         // 用 codeLoader 重新加载并扫描边界表，结果覆盖运行时副本
@@ -1434,6 +1499,38 @@ public class ProcessRunner {
         blockReason = BlockReason.NONE;
         transitionTo(ProcessState.TERMINATED, message);
         prepareLifecycleCleanup(Constants.DELETE_PROCESS_FILE_ON_EXIT);
+    }
+
+    private void terminalPause() {
+        attemptManager.commit();
+        blockReason = BlockReason.NONE;
+        resumeState = ProcessState.READY;
+        data.remove(Constants.TERMINAL_SUBMISSION_START);
+        data.remove(Constants.TERMINAL_SUBMISSION_END);
+        data.remove(Constants.TERMINAL_INTERRUPT_FIELD);
+        submissionStartLine = -1;
+        submissionEndLine = -1;
+        terminalInterruptRequested = false;
+        transitionTo(ProcessState.PAUSED, "Waiting for terminal input");
+        persistState();
+    }
+
+    private void handleTerminalInterrupt() {
+        if (submissionEndLine > 0 && currentLine < submissionEndLine) {
+            currentLine = submissionEndLine;
+            if (currentLine > codeLines.size()) currentLine = codeLines.size();
+        }
+        data.remove(Constants.TERMINAL_SUBMISSION_START);
+        data.remove(Constants.TERMINAL_SUBMISSION_END);
+        data.remove(Constants.TERMINAL_INTERRUPT_FIELD);
+        submissionStartLine = -1;
+        submissionEndLine = -1;
+        terminalInterruptRequested = false;
+        blockReason = BlockReason.NONE;
+        resumeState = ProcessState.READY;
+        transitionTo(ProcessState.PAUSED, "Waiting for terminal input");
+        attemptManager.abandon();
+        persistState();
     }
 
     private void failProcess(String message) {
@@ -2008,5 +2105,62 @@ public class ProcessRunner {
             }
         }
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void appendTerminalOutput(Object value) {
+        Object outputObj = data.get(Constants.TERMINAL_OUTPUT_FIELD);
+        List<String> output;
+        if (outputObj instanceof List) {
+            output = (List<String>) outputObj;
+        } else {
+            output = new ArrayList<>();
+            data.put(Constants.TERMINAL_OUTPUT_FIELD, output);
+        }
+        output.add(value == null ? "null" : value.toString());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleTerminalAppendCode(Object value) {
+        String code = value instanceof String ? value.toString() : String.valueOf(value);
+        if (code == null || code.isEmpty()) return;
+
+        String[] lines = code.split("\n");
+        List<String> newLines = new ArrayList<>();
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty()) newLines.add(trimmed);
+        }
+        if (newLines.isEmpty()) return;
+
+        int oldSize = codeLines.size();
+        codeLines.addAll(newLines);
+        int newSize = codeLines.size();
+
+        data.putIfAbsent(Constants.TERMINAL_ATTACHED_FIELD, true);
+        data.putIfAbsent(Constants.TERMINAL_WORKING_DIR_FIELD, "/");
+        data.put(Constants.TERMINAL_SUBMISSION_START, oldSize);
+        data.put(Constants.TERMINAL_SUBMISSION_END, newSize);
+        data.put(Constants.TERMINAL_INTERRUPT_FIELD, false);
+        data.putIfAbsent(Constants.TERMINAL_OUTPUT_FIELD, new ArrayList<String>());
+
+        terminalBound = true;
+        submissionStartLine = oldSize;
+        submissionEndLine = newSize;
+        terminalInterruptRequested = false;
+
+        processData.remove("Execution");
+        Map<String, Object> execution = new LinkedHashMap<>();
+        execution.put("NextAttemptOrdinal", 0L);
+        processData.put("Execution", execution);
+        attemptManager.load(processData);
+
+        if (currentLine == oldSize) {
+            currentLine = oldSize;
+        }
+
+        codeChanged();
+        resumeState = ProcessState.READY;
+        transitionTo(ProcessState.READY, null);
     }
 }

@@ -1,4 +1,4 @@
-package com.follarce.shell;
+package com.follarce.extension.terminal;
 
 import java.util.ArrayList;
 import java.util.List;

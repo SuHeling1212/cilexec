@@ -1,4 +1,4 @@
-package com.follarce.shell;
+package com.follarce.extension.terminal;
 
 import org.junit.jupiter.api.Test;
 
