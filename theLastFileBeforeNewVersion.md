@@ -1,6 +1,6 @@
 # CilExec 数据库驱动重构总方案
 
-状态：设计草案 v0.1
+状态：设计草案 v0.2
 目标：将 CilExec 从文件驱动运行时，重构为 PostgreSQL 持久化、Java 驱动的事务化进程系统。
 
 ---
@@ -471,7 +471,7 @@ TEMPORARY
 SYSTEM
 ```
 
-软件包安装后可以通过只读挂载出现在 VFS 中。
+软件包数据库中的 `package_file` 可以通过只读视图出现在 VFS 中。
 
 ---
 
@@ -613,165 +613,343 @@ write("/home/user/a.txt", "hello")
 
 ---
 
-# 7. 软件包发布格式
+# 7. 软件包系统的核心定义
 
-## 7.1 明确区分两种数据库
+## 7.1 一个软件包就是一个不可变数据库文件
 
-运行实例：
+CilExec 软件包的发布实体不是目录、ZIP 归档或若干松散文件，而是一个独立的数据库文件：
+
+```text
+<package-name>-<version>.db
+```
+
+首版采用 SQLite 作为软件包数据库文件格式，原因只有一个：它能够将完整的关系数据和二进制内容封装为单个跨平台文件。
+
+运行实例仍然使用 PostgreSQL。
+
+二者职责不同：
 
 ```text
 PostgreSQL
+    保存正在运行的 CilExec 实例状态
+
+软件包 .db
+    携带一个已经发布、不可修改的软件包
 ```
 
-发布包文件：
+软件包数据库不是 CilExec 运行实例的子数据库，也不会长期作为可写数据库使用。
 
-```text
-SQLite application file
-```
-
-这不是让 SQLite 重新成为运行时数据库。
-
-SQLite 在这里仅作为一种**单文件软件包格式**。
-
-SQLite 数据库是单个、跨平台文件，并且官方明确将“用 SQLite 作为应用文件格式”作为推荐用途之一。SQLite 还提供 `application_id` 和 `user_version` 字段，用于识别应用文件类型及其格式版本。
-
-软件包扩展名：
-
-```text
-.cilpkg
-```
-
-例如：
-
-```text
-compiler-2.1.0.cilpkg
-```
-
-物理上它是 SQLite 数据库。
-
-逻辑上它是一个不可变 CilExec 软件包。
+它是一个可验证、可复制、可签名、可发布的只读发布物。
 
 ---
 
-# 8. `.cilpkg` 文件必须包含的部分
+## 7.2 软件包必须满足的设计原则
 
-## 8.1 SQLite 文件头标识
+### 原则一：不可变
 
-创建包时设置：
+软件包完成发布后，其数据库文件中的任何内容都不得修改。
 
-```sql
-PRAGMA application_id = <CilExec 分配的固定整数>;
-PRAGMA user_version = 1;
+需要改变代码、资源、依赖、权限声明或入口点时，必须产生新的软件包数据库，并获得新的 `package_hash`。
+
+不得对已发布软件包执行：
+
+```text
+UPDATE
+INSERT
+DELETE
+ALTER TABLE
+VACUUM 后覆盖原发布物
 ```
 
-`application_id` 表示这是 CilExec 软件包。
+软件包可以被读取、验证和复制，但不能被原地升级。
 
-`user_version` 表示 `.cilpkg` 格式版本。
+### 原则二：内容身份优先
+
+软件包的最终身份是：
+
+```text
+package_hash
+```
+
+而不是：
+
+```text
+文件路径
+安装位置
+数据库行号
+namespace/name/version
+```
+
+`namespace`、`name` 和 `version` 是供人理解和选择的坐标。
+
+`package_hash` 才是运行时、依赖、进程和安装记录最终引用的身份。
+
+### 原则三：允许同一软件包存在多个版本
+
+下面这些发布物可以同时存在：
+
+```text
+std/network 1.0.0 hash-A
+std/network 1.1.0 hash-B
+std/network 2.0.0 hash-C
+```
+
+它们互不覆盖。
+
+同一个 CilExec 实例、同一个用户，甚至同一时间运行的不同进程，都可以分别引用不同版本。
+
+### 原则四：安装结果原子可见
+
+安装一个软件包及其依赖时，其他进程只能看到两种状态：
+
+```text
+安装前
+或者
+完整安装后
+```
+
+不能看到：
+
+```text
+主包已经存在但依赖尚未存在
+文件已经可见但安装绑定尚未建立
+新版本已经覆盖旧版本但进程引用尚未更新
+```
+
+### 原则五：发布物自包含
+
+软件包数据库必须包含运行该软件包所需要的全部发布信息：
+
+* 软件包元数据；
+* FCL 模块；
+* 资源；
+* 入口点；
+* 导出符号；
+* 精确依赖；
+* 能力申请；
+* 完整性信息；
+* 发布签名。
+
+构建机器上的目录、绝对路径和临时文件不能成为运行依赖。
+
+### 原则六：代码与运行数据分离
+
+软件包数据库只保存不可变发布内容。
+
+用户配置、缓存、运行记录和包私有数据不写回软件包数据库。
+
+它们属于 CilExec 实例中的可变数据空间。
 
 ---
 
-## 8.2 `package_manifest`
+## 7.3 软件包原子性的三个层次
 
-只有一行：
+### 构建原子性
+
+构建过程中产生的数据库文件不是有效软件包。
+
+只有完成全部表写入、约束检查、哈希计算和封存后，最终 `.db` 文件才成为有效发布物。
+
+### 导入原子性
+
+软件包数据库进入 PostgreSQL 时，发布记录、依赖、入口点、导出和原始数据库文件必须在同一个事务中建立。
+
+### 安装原子性
+
+用户或环境对一个精确 `package_hash` 的绑定，必须和依赖可用性、权限检查及数据空间建立在同一个事务中完成。
+
+不再为包安装额外设计文件式事务日志、根清单或者中间可见状态。
+
+PostgreSQL 事务就是安装事务。
+
+---
+
+# 8. 软件包 `.db` 的内部结构
+
+## 8.1 数据库文件约束
+
+软件包数据库必须满足：
 
 ```text
-package_id
+单文件
+只读发布
+固定 schema 版本
+启用外键约束
+不包含 WAL 或 journal 伴随文件
+不依赖外部数据库
+不允许 ATTACH 其他数据库
+不允许触发器执行安装逻辑
+不允许自定义扩展或虚拟表
+```
+
+软件包加载器必须检查数据库 schema，而不能仅根据扩展名判断它是合法软件包。
+
+加载器还必须执行资源限制检查：
+
+```text
+最大数据库文件体积
+最大文件数量
+单个文件最大体积
+全部 package_file 内容总量
+最大依赖数量
+最大入口点和导出数量
+最大字符串长度
+```
+
+具体上限由内核配置和软件包格式版本共同决定，验证必须在读取全部内容进入 JVM 之前尽可能提前失败。
+
+数据库中允许存在的表、列、约束和索引由软件包格式版本明确规定。
+
+未知的关键表或关键字段必须导致验证失败，避免旧内核错误解释新格式。
+
+---
+
+## 8.2 `package_metadata`
+
+该表只能存在一行：
+
+```text
+schema_version
 namespace
-package_name
+name
 version
-
-package_format_version
-fcl_language_version
+package_hash
 minimum_kernel_version
-
+fcl_language_version
 description
 license
 publisher
-homepage
-
-release_hash
 created_at
+sealed
 ```
 
-完整包名：
+其中：
 
 ```text
-namespace/package_name
+package_hash = 软件包规范化内容的 SHA-256
+sealed       = 是否已经完成封存
 ```
 
-例如：
+合法发布物必须满足：
 
 ```text
-std/network
-suheling/compiler
+sealed = true
 ```
+
+`created_at` 只用于展示，不参与 `package_hash` 计算。
 
 ---
 
-## 8.3 `package_file`
+## 8.3 数据库中的文件抽象
+
+软件包数据库中的源码和资源统一抽象为文件，但并不是所有软件包数据都是文件。
+
+以下内容是文件：
 
 ```text
+FCL 源代码
+模板
+静态资源
+二进制资源
+配置默认值
+许可证文本
+```
+
+以下内容不是文件，而是关系数据：
+
+```text
+依赖
+入口点
+导出
+能力申请
+签名
+版本信息
+```
+
+文件由 `package_file` 表表示。
+
+### `package_file`
+
+```text
+file_id
 path
-file_type
-content_hash
-size
+file_kind
 media_type
-permission_mode
+encoding
+content
+content_hash
+byte_size
 executable
 ```
 
-`file_type`：
+`file_kind`：
 
 ```text
-FILE
-DIRECTORY
-SYMLINK
+MODULE
+RESOURCE
+TEMPLATE
+DOCUMENT
+BINARY
 ```
 
-路径必须：
+规则：
 
-* 使用 `/`；
-* 是包内相对路径；
+* `path` 是软件包内部的规范化相对路径；
+* 路径统一使用 `/`；
 * 不允许 `..`；
-* 不允许宿主系统绝对路径；
+* 不允许绝对路径；
 * 不允许 Windows 盘符；
-* 不允许空路径段。
+* 不保存显式目录条目；
+* 同一路径只能存在一行；
+* `content_hash` 必须等于 `content` 的 SHA-256；
+* `byte_size` 必须等于内容字节数；
+* 文件内容一旦封存不得修改。
+
+目录由文件路径自然推导，不作为独立软件包对象保存。
 
 ---
 
-## 8.4 `package_object`
+## 8.4 `package_module`
+
+FCL 模块对 `package_file` 进行语义标注：
 
 ```text
-content_hash
-size
-compression
-content
+module_id
+module_name
+file_id
+language_version
+load_order
 ```
 
-较小的包可以每个对象一行。
-
-为了统一，也可以使用：
+约束：
 
 ```text
-package_object
-package_object_chunk
+file_id 必须引用 file_kind = MODULE 的文件
+module_name 在软件包内唯一
 ```
 
-其结构与 PostgreSQL 的 object store 一致。
+运行时按模块读取 FCL 源代码，而不是把所有 `.fcl` 文件直接拼接成一个没有身份的字符串。
 
 ---
 
 ## 8.5 `package_dependency`
 
 ```text
-dependency_namespace
-dependency_name
-version_constraint
-dependency_scope
+dependency_id
+binding
+namespace
+name
+version
+required_hash
 optional
+scope
 ```
 
-`dependency_scope`：
+`required_hash` 是最终依赖身份。
+
+`namespace/name/version` 用于诊断和展示，但加载时必须验证它们与 `required_hash` 指向的软件包一致。
+
+`scope`：
 
 ```text
 RUNTIME
@@ -779,43 +957,23 @@ BUILD
 DEVELOPMENT
 ```
 
-发布包中保存声明依赖。
+发布后的运行时依赖必须拥有精确 `required_hash`。
+
+不允许在进程启动时临时选择“最新版本”。
 
 ---
 
-## 8.6 `package_lock`
+## 8.6 `package_entrypoint`
 
 ```text
-dependency_namespace
-dependency_name
-resolved_version
-resolved_release_hash
+entrypoint_id
+name
+entrypoint_kind
+module_id
+symbol
 ```
 
-`package_dependency` 表示：
-
-```text
-允许使用什么版本
-```
-
-`package_lock` 表示：
-
-```text
-构建这个包时实际使用了什么版本
-```
-
----
-
-## 8.7 `package_entrypoint`
-
-```text
-entrypoint_name
-entrypoint_type
-target_path
-target_symbol
-```
-
-`entrypoint_type`：
+`entrypoint_kind`：
 
 ```text
 COMMAND
@@ -825,393 +983,599 @@ PLUGIN
 BOOTSTRAP
 ```
 
-例如：
-
-```text
-compile
-COMMAND
-/bin/compiler.fcl
-main
-```
+入口点必须引用数据库中真实存在的模块和符号。
 
 ---
 
-## 8.8 `package_export`
+## 8.7 `package_export`
 
 ```text
+export_id
 export_name
-export_type
-source_path
-source_symbol
+export_kind
+module_id
+symbol
 ```
 
-用于声明包对外暴露：
+它定义软件包允许其他包或用户代码访问的公开接口。
 
-* FCL 函数；
-* 命令；
-* 插件；
-* 资源；
-* 服务；
-* 类型定义。
+未列入 `package_export` 的内部函数和模块不能通过包导入机制直接访问。
 
 ---
 
-## 8.9 `package_capability`
+## 8.8 `package_capability`
 
 ```text
+capability_id
 capability_name
 resource_pattern
 required
 reason
 ```
 
-例如：
+软件包只能声明它需要什么能力。
 
-```text
-NETWORK_HTTP    https://example.com/**   true
-VFS_READ        /usr/include/**          true
-HOST_EXEC       *                        false
-```
+声明本身不会授予权限。
 
-安装时必须向用户或管理员展示这些能力要求。
-
-软件包不能因为声明了能力就自动获得能力。
-
-声明只是申请。
-
-授权仍由 CilExec 权限系统决定。
+安装时由 CilExec 权限系统决定是否允许该安装绑定获得这些能力。
 
 ---
 
-## 8.10 `package_signature`
+## 8.9 `package_signature`
 
 ```text
+signature_id
 key_id
 algorithm
-signed_release_hash
+signed_package_hash
 signature
 created_at
 ```
 
-首版建议：
+签名覆盖 `package_hash`，而不是数据库文件路径或安装位置。
+
+首版建议支持：
 
 ```text
-hash      = SHA-256
-signature = Ed25519
+SHA-256
+Ed25519
 ```
+
+签名不参与 `package_hash` 计算，否则给同一内容增加签名会改变被签名对象本身。
 
 ---
 
-## 8.11 `package_build_info`
+## 8.10 软件包数据库中明确不保存的内容
 
 ```text
-builder_version
-source_revision
-build_environment
-reproducible
-build_timestamp
+安装状态
+用户绑定
+进程引用
+用户私有数据
+缓存
+运行日志
+宿主路径
+数据库连接信息
+安装事务状态
 ```
 
-构建时间不参与语义版本 hash，否则每次构建都会产生不同发布身份。
+这些内容属于运行实例，不属于发布物。
 
 ---
 
-# 9. 软件包的两个 hash
+# 9. 哈希、版本和多版本规则
 
-必须区分：
+## 9.1 `package_hash` 是唯一持久身份
 
-## 9.1 `artifact_hash`
-
-```text
-SHA-256(.cilpkg 原始字节)
-```
-
-用途：
-
-* 下载完整性；
-* 上传完整性；
-* 缓存；
-* 判断两个文件字节是否相同。
-
-## 9.2 `release_hash`
-
-由规范化内容计算：
+`package_hash` 根据数据库中的规范化逻辑内容计算，至少覆盖：
 
 ```text
-manifest 核心字段
-+
-按路径排序的文件清单
-+
-每个文件的 content_hash
-+
-依赖锁
-+
-能力声明
+package_metadata 中参与身份的字段
+按 path 排序后的 package_file 及其 content_hash
+package_module
+按 binding 排序后的精确依赖
+entrypoint
+export
+capability
 ```
 
-用途：
-
-* 软件包发布身份；
-* 签名；
-* 依赖锁定；
-* 内容寻址；
-* 可复现构建。
-
-不能只使用 SQLite 文件本身的字节 hash 作为发布身份。
-
-SQLite 内部页面布局、索引重建或整理可能改变物理文件字节，即使包的逻辑内容相同。
-
-因此：
+不参与计算：
 
 ```text
-artifact_hash = 运输文件身份
-release_hash  = 软件包语义身份
+created_at
+签名行
+SQLite 页号
+空闲页
+数据库内部索引布局
+宿主文件名
 ```
+
+因此，同样的逻辑软件包应得到相同 `package_hash`，即使数据库文件的物理页面布局不同。
+
+---
+
+## 9.2 版本不是身份替代品
+
+版本号是人类可读的发布标签。
+
+数据库必须允许：
+
+```text
+同一 namespace/name
+存在多个 version
+每个 version 对应一个或多个 package_hash 记录
+```
+
+最终选择结果必须是精确哈希。
+
+只按版本查询时：
+
+* 若只匹配一个哈希，可以返回该发布；
+* 若匹配多个不同哈希，必须报告歧义；
+* 不得静默选择最后导入、最新时间或任意一项。
+
+正式仓库可以进一步规定：
+
+> 同一发布者已经发布的 `namespace/name/version` 不允许被另一份不同内容覆盖。
+
+但底层存储仍以哈希为身份，不依赖这条仓库策略维持正确性。
+
+---
+
+## 9.3 升级不是修改旧包
+
+升级行为是：
+
+```text
+旧安装绑定 -> hash-A
+
+原子切换为
+
+新安装绑定 -> hash-B
+```
+
+`hash-A` 对应的软件包不会被修改。
+
+仍在运行并引用 `hash-A` 的进程可以继续使用旧版本。
+
+新进程或重新解析后的环境可以使用 `hash-B`。
 
 ---
 
 # 10. 软件包在 PostgreSQL 中的表示
 
-`.cilpkg` 进入 CilExec 实例后，不能只作为一个无法查询的 BLOB 存放。
+## 10.1 设计原则
 
-它必须同时拥有：
+PostgreSQL 不把软件包拆成一套模拟旧文件系统的对象目录。
 
-```text
-原始包文件
-+
-规范化软件包记录
-```
-
-主要表：
+它只保存运行实例真正需要管理的关系：
 
 ```text
-package.package
-package.release
-package.release_file
-package.release_dependency
-package.release_entrypoint
-package.release_export
-package.release_capability
-package.release_signature
-package.installation
-package.mount
+发布物
+发布元数据
+依赖关系
+安装绑定
+进程绑定
+包数据空间
 ```
 
----
+PostgreSQL 的事务、索引、唯一约束和外键直接承担一致性、查找和引用完整性。
 
-## 10.1 `package.package`
-
-表示软件包名称：
-
-```text
-package_id
-namespace
-name
-owner_id
-description
-created_at
-```
-
-唯一约束：
-
-```text
-UNIQUE(namespace, name)
-```
+包管理层不再额外维护一套平行的持久化协议。
 
 ---
 
 ## 10.2 `package.release`
 
-表示一个不可变版本：
+一行代表一个不可变发布物：
 
 ```text
-release_id
-package_id
+package_hash
+namespace
+name
 version
-release_hash
-artifact_hash
-artifact_node_id
-publisher_id
+schema_version
 minimum_kernel_version
-published_at
-status
+fcl_language_version
+database_bytes
+database_byte_size
+database_file_hash
+publisher_id
+signature_status
+imported_at
+revoked_at
 ```
 
-`artifact_node_id` 指向 VFS 中的 `.cilpkg` 文件。
-
-状态：
+主键：
 
 ```text
-STAGED
-VERIFIED
-PUBLISHED
-REVOKED
-BROKEN
+package_hash
 ```
 
-发布后不得修改。
+`database_bytes` 保存完整的 `.db` 发布文件，使 CilExec 能够重新导出同一个软件包数据库。
 
-有变化必须发布新版本。
+`database_file_hash` 只验证传输和存储字节是否损坏。
+
+它不是软件包语义身份。
+
+核心索引：
+
+```text
+(namespace, name, version)
+(namespace, name)
+```
+
+这些索引用于查询，不承担最终身份。
 
 ---
 
-## 10.3 `package.release_file`
+## 10.3 PostgreSQL 中的发布索引表
+
+为了避免每次解析依赖都重新打开软件包数据库，导入时只抽取运行时需要频繁查询的关系：
 
 ```text
-release_id
-path
-file_type
-content_hash
-size
-permission_mode
-executable
+package.release_dependency
+package.release_entrypoint
+package.release_export
+package.release_capability
 ```
 
-这些内容从 `.cilpkg` 中读取并规范化进入 PostgreSQL。
+它们全部以 `package_hash` 为外键。
 
-运行时不需要反复打开 SQLite 软件包文件。
+软件包文件内容仍以原始数据库文件为权威，不要求在 PostgreSQL 中复制第二份完整内容。
+
+Java 可以按 `package_hash` 建立可丢弃的只读本地缓存，以便通过 SQLite 读取 `package_file` 和 `package_module`。
+
+缓存不是持久真相，删除后可以从 `database_bytes` 重新生成。
 
 ---
 
 ## 10.4 `package.installation`
 
+安装不是复制软件包，而是建立一个可见绑定：
+
 ```text
 installation_id
+owner_id
 environment_id
-release_id
-installed_by
+binding
+package_hash
+data_scope_id
 installed_at
-status
+installed_by
 ```
 
-状态：
+关键约束：
 
 ```text
-INSTALLING
-INSTALLED
-DISABLED
-REMOVED
-FAILED
+UNIQUE(owner_id, environment_id, binding)
 ```
+
+同一用户可以通过不同 binding 同时安装不同版本：
+
+```text
+network_v1 -> hash-A
+network_v2 -> hash-B
+```
+
+同一个哈希可以被多个用户和环境共享，不需要复制发布数据库。
+
+`package.installation` 行完成提交，就是安装对该用户或环境的可见性边界。
+
+不需要额外的“根清单”。
 
 ---
 
-# 11. 软件包发布流程
-
-发布分为三个阶段。
-
-## 11.1 构建
+## 10.5 `process.package_binding`
 
 ```text
-读取项目源目录
-验证 manifest
-计算所有文件 content_hash
-生成依赖锁
-计算 release_hash
-生成签名
-创建临时 SQLite 数据库
-写入所有包表
-设置 application_id
-设置 user_version
-完成 SQLite 事务
-关闭数据库
-计算 artifact_hash
+process_uid
+binding
+package_hash
+installation_id
+resolved_at
 ```
 
-构建完成后才将临时文件重命名为：
+进程第一次解析包时，将最终选择写成精确哈希。
+
+之后：
 
 ```text
-<name>-<version>.cilpkg
+用户升级安装绑定
+不会偷偷改变已运行进程的包版本
 ```
+
+恢复进程时，直接根据 `package_hash` 重新加载同一个发布物。
+
+这保证了进程恢复的确定性。
 
 ---
 
-## 11.2 导入
+## 10.6 `package.data_scope`
 
-上传 `.cilpkg` 后：
+软件包数据库不可写，因此可变数据必须单独保存：
 
 ```text
-1. 检查 SQLite 文件是否合法
-2. 检查 application_id
-3. 检查 user_version
-4. 检查必需表
-5. 检查所有路径
-6. 检查对象 hash
-7. 检查 release_hash
-8. 检查签名
-9. 检查版本冲突
+data_scope_id
+owner_id
+environment_id
+binding
+created_at
 ```
 
-这些检查在数据库事务外完成，避免长事务。
+包私有数据可以进入 VFS 或专用关系表，但必须通过 `data_scope_id` 隔离。
+
+规则：
+
+* 升级同一 binding 时默认保留原 data scope；
+* 以新 binding 并行安装时创建独立 data scope；
+* 卸载是否删除数据由用户明确决定；
+* 不允许把运行数据写回发布数据库。
 
 ---
 
-## 11.3 发布事务
+## 10.7 发布物保留与清理
+
+发布物是否仍被使用，可以通过数据库外键直接判断：
+
+```text
+package.installation -> package.release
+process.package_binding -> package.release
+```
+
+删除发布物时使用 `ON DELETE RESTRICT`。
+
+只有不存在安装绑定和进程绑定的发布物才允许清理。
+
+首版只需要一个普通的“删除无引用发布物”维护操作。
+
+长期保留某个发布物时，可以建立普通的保留策略表，但它不是包身份模型的核心组成部分。
+
+---
+
+# 11. 软件包构建、导入和安装流程
+
+## 11.1 构建与封存
+
+```text
+1. 读取包项目输入
+2. 验证元数据、模块、入口点和导出
+3. 解析并固定所有运行时依赖 hash
+4. 创建临时软件包数据库
+5. 在一个数据库事务中写入全部表
+6. 计算每个 package_file.content_hash
+7. 根据规范化逻辑内容计算 package_hash
+8. 写入 package_metadata.package_hash
+9. 写入签名
+10. 设置 sealed = true
+11. 提交并关闭数据库
+12. 完成完整性检查
+13. 将临时数据库原子发布为最终 .db 文件
+```
+
+构建失败时，不得留下一个看似有效的半成品软件包。
+
+---
+
+## 11.2 导入验证
+
+导入 `.db` 前必须验证：
+
+```text
+数据库文件可正常打开
+数据库 schema 版本受支持
+只存在允许的 schema 对象
+外键和约束完整
+package_metadata 只有一行
+sealed = true
+所有文件 hash 正确
+所有 module 引用有效
+所有 entrypoint 和 export 引用有效
+所有依赖具有精确 required_hash
+重新计算的 package_hash 与声明一致
+签名有效或符合当前信任策略
+```
+
+导入验证在 PostgreSQL 长事务之外进行。
+
+未通过验证的软件包不能进入 `package.release`。
+
+---
+
+## 11.3 发布物导入事务
 
 验证完成后开启 PostgreSQL 事务：
 
 ```text
-写入原始 .cilpkg 内容对象
-创建 VFS 软件包文件
-创建 package.release
-写入 release_file
-写入 dependencies
-写入 exports
-写入 capabilities
-写入 signatures
-将 release 设为 PUBLISHED
+插入 package.release
+插入 dependency 索引
+插入 entrypoint 索引
+插入 export 索引
+插入 capability 索引
+记录审计事件
 COMMIT
 ```
 
-如果任意一步失败，软件包完全没有发布。
+如果相同 `package_hash` 已经存在：
+
+* 数据库字节一致时视为幂等成功；
+* 数据库字节不同但逻辑 hash 相同时，保留已有发布物并记录传输差异；
+* 不得覆盖已有发布行。
 
 ---
 
-# 12. 软件包安装后的文件表现
+## 11.4 安装依赖图
 
-软件包不直接复制到用户可写目录。
-
-采用：
+安装请求必须先解析出完整的精确哈希集合：
 
 ```text
-不可变软件包层
-+
-可写覆盖层
+root hash
+依赖 hash A
+依赖 hash B
+依赖的依赖 hash C
 ```
 
-例如：
+解析和验证可以在事务外进行。
+
+最终安装事务只做确定操作：
 
 ```text
-/packages/std/network/1.2.0
+确认全部 release hash 已存在
+确认能力申请可以授权
+确认 binding 没有并发冲突
+创建或复用 data scope
+插入或更新 package.installation
+记录审计事件
+COMMIT
 ```
 
-是只读挂载。
+整个依赖图在提交前都不可见。
 
-用户配置和运行数据进入：
+安装事务不暴露任何持久中间状态，也不依赖后续恢复步骤补齐安装。
+
+PostgreSQL 已经提供了原子提交，不需要再在应用层模拟一次安装事务协议。
+
+---
+
+## 11.5 升级
+
+升级同一 binding：
 
 ```text
-/home/user/.config/network
-/var/lib/network
+锁定 installation 行
+验证新 hash 及全部依赖
+检查能力变化
+将 package_hash 从旧值更新为新值
+保留 data_scope_id
+COMMIT
 ```
 
-软件包内容来自：
+旧发布物不会被删除。
+
+已经绑定旧哈希的运行进程不受影响。
+
+---
+
+## 11.6 卸载
+
+卸载：
 
 ```text
-package.release_file
-+
-object_store.object
+锁定 installation 行
+删除 installation
+按用户选择保留或删除 data scope
+记录审计事件
+COMMIT
 ```
 
-VFS 中通过 `vfs.mount` 暴露。
+卸载不删除仍被其他安装或进程引用的发布物。
 
-好处：
+---
 
-* 安装不会复制大量相同文件；
-* 相同对象只保存一次；
-* 软件包不可被悄悄修改；
-* 卸载只删除安装和挂载关系；
-* 运行中的旧进程仍可引用旧 release；
-* 不会破坏可复现性。
+## 11.7 进程导入
+
+进程执行包导入时：
+
+```text
+读取当前 installation binding
+解析到精确 package_hash
+验证依赖图
+写入 process.package_binding
+加载精确版本模块
+推进进程 statement
+COMMIT
+```
+
+进程之后不再根据“当前安装的最新版本”重新解析。
+
+---
+
+## 11.8 首版不提供安装和卸载生命周期钩子
+
+任意生命周期钩子可能执行网络请求、宿主操作或长时间 FCL 代码，无法与 PostgreSQL 安装事务保持真正原子。
+
+因此首版明确规定：
+
+```text
+安装和卸载只改变数据库状态
+不执行任意 pre/post hook
+```
+
+未来若增加生命周期逻辑，只能采用：
+
+* 纯声明式数据库迁移；或
+* 明确属于 effect 系统的提交后任务。
+
+它们不能成为软件包“是否已经安装”的可见性边界。
+
+---
+
+# 12. 软件包文件在运行时的表现
+
+## 12.1 只读文件视图
+
+`package_file` 中的内容可以通过 VFS 暴露为只读视图，例如：
+
+```text
+/package/<package_hash>/...
+```
+
+该路径只是软件包数据库内容的视图，不是复制出来的可写目录。
+
+用户不能通过 VFS 修改包内源码或资源。
+
+---
+
+## 12.2 安装不是复制
+
+安装一个软件包只建立：
+
+```text
+binding -> package_hash
+```
+
+不会为每个用户复制一份 `.db`，也不会把所有包文件复制到用户目录。
+
+多个用户、多个进程和多个安装可以共享同一 `package.release`。
+
+---
+
+## 12.3 多版本并存
+
+VFS 视图、进程绑定和安装绑定全部以哈希为最终定位：
+
+```text
+/package/hash-A/...
+/package/hash-B/...
+```
+
+因此同一包的多个版本不会发生路径覆盖。
+
+人类可读的别名只是一层解析结果：
+
+```text
+network_v1 -> hash-A
+network_v2 -> hash-B
+```
+
+---
+
+## 12.4 可丢弃缓存
+
+SQLite JDBC 需要文件形式读取软件包数据库时，可以把 `database_bytes` 写入按哈希命名的本地只读缓存：
+
+```text
+cache/packages/<package_hash>.db
+```
+
+缓存必须满足：
+
+* 只读；
+* 可随时删除；
+* 启动时无需恢复；
+* 不包含任何唯一状态；
+* 每次使用前可验证文件 hash；
+* 不能成为安装完成的判断依据。
 
 ---
 
@@ -1463,13 +1827,15 @@ COMMIT
 COMMIT
 ```
 
-## 16.5 软件包安装
+## 16.5 软件包安装或升级
 
 ```text
-验证 release
-创建 installation
-创建 mount
-更新环境包集合
+验证完整精确依赖图
+确认所有 package_hash 已导入
+锁定目标 installation binding
+检查能力授权
+创建或复用 data scope
+插入或更新 package.installation
 记录审计
 COMMIT
 ```
@@ -1553,7 +1919,7 @@ cilexec-domain
 cilexec-interpreter
 cilexec-kernel
 cilexec-storage-postgres
-cilexec-package-format
+cilexec-package-database
 cilexec-terminal
 cilexec-tests
 ```
@@ -1582,16 +1948,16 @@ cilexec-tests
 * Repository 实现；
 * migration。
 
-## `cilexec-package-format`
+## `cilexec-package-database`
 
 包含：
 
-* `.cilpkg` 构建；
-* SQLite 读取；
-* 包验证；
-* hash；
-* 签名；
-* manifest 模型。
+* 软件包 `.db` 构建与封存；
+* SQLite 只读访问；
+* schema 验证；
+* `package_hash` 计算；
+* 签名验证；
+* 软件包数据库领域模型。
 
 ---
 
@@ -1844,25 +2210,29 @@ JVM 崩溃后消息和 timer 仍然可恢复
 
 ---
 
-## 阶段 7：软件包格式与注册表
+## 阶段 7：软件包数据库与安装绑定
 
 完成：
 
-* `.cilpkg` SQLite schema；
-* builder；
+* 软件包 `.db` schema；
+* builder 与 seal；
 * validator；
-* release hash；
-* artifact hash；
+* 规范化 `package_hash`；
 * signature；
-* PostgreSQL package registry；
-* 包发布；
-* 包安装；
-* VFS 只读挂载。
+* `package.release`；
+* `package.installation`；
+* `process.package_binding`；
+* 精确哈希依赖；
+* 原子安装、升级和卸载；
+* VFS 只读文件视图。
 
 退出条件：
 
 ```text
-一个 .cilpkg 文件可以在另一套空 CilExec 实例中验证、发布和安装
+一个软件包 .db 可以在空实例中完成验证和导入
+同一软件包的多个哈希版本能够并存
+安装绑定切换只产生提交前或提交后两种状态
+运行进程始终恢复到原先绑定的精确哈希
 ```
 
 ---
@@ -1933,7 +2303,7 @@ Kernel 不使用 owner 或 superuser 账号运行
 * 旧 lease 过期后旧 runner 提交；
 * 多进程同时写同一文件；
 * 多消费者同时接收消息；
-* 同一包版本同时发布；
+* 同一坐标的多个不同哈希同时导入；
 * 同一对象同时上传。
 
 ## 崩溃测试
@@ -1953,17 +2323,25 @@ effect 执行后但结果写回前
 
 ## 软件包测试
 
-* 文件被篡改；
-* manifest 被篡改；
-* hash 错误；
+* 软件包数据库不是合法 SQLite 文件；
+* schema 版本不受支持；
+* 存在未允许的触发器、虚拟表或附加数据库依赖；
+* `sealed` 未完成；
+* 文件内容被篡改；
+* `content_hash` 错误；
+* `package_hash` 错误；
 * 签名错误；
 * 重复路径；
 * `../` 路径；
+* 入口点或导出引用不存在；
+* 依赖哈希与坐标不匹配；
 * 循环依赖；
-* 缺失对象；
 * 不兼容内核版本；
 * 未授权 capability；
-* 相同内容重复构建得到相同 release_hash。
+* 相同逻辑内容重复构建得到相同 `package_hash`；
+* 同一包多个版本和哈希可以并存；
+* 升级不改变运行进程的旧哈希绑定；
+* 安装事务失败后不存在任何部分安装状态。
 
 ---
 
@@ -1977,14 +2355,16 @@ effect 执行后但结果写回前
 * 全表 Row-Level Security；
 * 跨 PostgreSQL cluster 的 CilExec 实例；
 * 分布式事务；
-* 软件包热更新正在运行的旧进程；
+* 自动把正在运行的旧进程切换到新软件包哈希；
 * 自动兼容旧 `.proc`；
 * PostgreSQL Large Object；
 * 把所有日志永久保存；
 * 通用 ORM；
 * 数据库触发器实现完整业务逻辑；
 * 在数据库内编写 FCL 解释器；
-* 让软件包直接执行 SQL。
+* 让软件包直接执行 PostgreSQL SQL；
+* 任意安装或卸载生命周期钩子；
+* 仅凭版本号进行有歧义的包解析。
 
 ---
 
@@ -2000,8 +2380,10 @@ ProcessRunner 不得管理 JDBC Connection
 不得双写数据库和旧文件
 不得保存 Java 序列化对象
 不得直接修改已发布 package.release
-不得把 SQLite 软件包文件作为运行时查询数据库
-不得用原始 artifact_hash 代替 release_hash
+不得修改已经 sealed 的软件包数据库
+不得把用户运行数据写回软件包数据库
+不得仅凭 namespace/name/version 替代 package_hash
+不得在有多个哈希候选时静默选择任意版本
 不得使用 PostgreSQL superuser 运行 Kernel
 ```
 
@@ -2016,16 +2398,19 @@ ProcessRunner 不得管理 JDBC Connection
 所有 IPC 来自 PostgreSQL
 所有调度状态来自 PostgreSQL
 所有 CilExec VFS 文件来自 PostgreSQL
-所有包安装状态来自 PostgreSQL
+所有软件包发布、安装绑定和进程包绑定来自 PostgreSQL
 所有外部副作用经过 effect journal
 所有状态改变拥有明确事务边界
 JVM 被强制终止后可以恢复
 不存在 .proc 运行文件
 不存在文件锁作为核心并发机制
 不存在双重真相来源
-软件包可以构建为单个 .cilpkg
-.cilpkg 可以被验证、签名、发布和安装
-相同软件包内容得到相同 release_hash
+软件包可以构建为单个不可变 .db 数据库文件
+软件包 .db 可以被验证、签名、导入和安装
+同一软件包的多个版本和哈希可以同时存在
+安装、升级和卸载只具有提交前与提交后两种可见状态
+进程使用精确 package_hash 恢复
+相同逻辑软件包内容得到相同 package_hash
 ```
 
 ---
@@ -2048,7 +2433,7 @@ PostgreSQL database: cilexec
 ├── 用户和权限
 ├── 对象存储
 ├── VFS
-├── 软件包注册表
+├── 软件包发布与安装记录
 ├── 进程
 ├── 调度
 ├── IPC
@@ -2056,19 +2441,18 @@ PostgreSQL database: cilexec
 ├── 终端
 └── 审计
 
-.cilpkg
-└── 单文件 SQLite 软件包
-    ├── manifest
-    ├── 文件清单
-    ├── 内容对象
-    ├── 依赖
-    ├── 入口
-    ├── exports
-    ├── capabilities
-    ├── 构建信息
-    └── 签名
+package.db
+└── 单文件不可变软件包数据库
+    ├── package_metadata
+    ├── package_file
+    ├── package_module
+    ├── package_dependency
+    ├── package_entrypoint
+    ├── package_export
+    ├── package_capability
+    └── package_signature
 ```
 
 最终原则：
 
-> PostgreSQL 保存实例状态，Java 推动实例运行，SQLite `.cilpkg` 负责携带软件包。
+> PostgreSQL 保存实例状态，Java 推动实例运行，不可变的 SQLite `.db` 负责携带软件包发布物。
