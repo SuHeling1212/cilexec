@@ -1,0 +1,656 @@
+package com.follarce.fcl;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/** Compiles structured FCL source into statement-addressable instructions. */
+public final class FclCompiler {
+    public FclProgram compile(String source) {
+        Objects.requireNonNull(source, "source");
+        return new Parser(source, new Lexer(source).scan()).compile();
+    }
+
+    private enum Type {
+        IDENTIFIER, NUMBER, STRING,
+        LEFT_PAREN, RIGHT_PAREN, LEFT_BRACKET, RIGHT_BRACKET,
+        LEFT_BRACE, RIGHT_BRACE, COMMA, COLON, DOT,
+        PLUS, MINUS, STAR, SLASH, PERCENT, HASH,
+        BANG, BANG_EQUAL, EQUAL, EQUAL_EQUAL,
+        LESS, LESS_EQUAL, GREATER, GREATER_EQUAL,
+        AND, OR, SEMICOLON, NEWLINE, EOF
+    }
+
+    private record Token(Type type, String text, Object literal, int line, int column) {}
+
+    private static final class Lexer {
+        private final String source;
+        private final List<Token> tokens = new ArrayList<>();
+        private int start;
+        private int current;
+        private int line = 1;
+        private int column = 1;
+        private int startColumn = 1;
+
+        private Lexer(String source) {
+            this.source = source;
+        }
+
+        private List<Token> scan() {
+            while (!atEnd()) {
+                start = current;
+                startColumn = column;
+                scanToken();
+            }
+            tokens.add(new Token(Type.EOF, "", null, line, column));
+            return List.copyOf(tokens);
+        }
+
+        private void scanToken() {
+            char character = advance();
+            switch (character) {
+                case ' ', '\t', '\f' -> { }
+                case '\r' -> {
+                    if (peek() == '\n') advance();
+                    newline();
+                }
+                case '\n' -> newline();
+                case '(' -> add(Type.LEFT_PAREN);
+                case ')' -> add(Type.RIGHT_PAREN);
+                case '[' -> add(Type.LEFT_BRACKET);
+                case ']' -> add(Type.RIGHT_BRACKET);
+                case '{' -> add(Type.LEFT_BRACE);
+                case '}' -> add(Type.RIGHT_BRACE);
+                case ',' -> add(Type.COMMA);
+                case ':' -> add(Type.COLON);
+                case '.' -> add(Type.DOT);
+                case '+' -> add(Type.PLUS);
+                case '-' -> add(Type.MINUS);
+                case '*' -> add(Type.STAR);
+                case '%' -> add(Type.PERCENT);
+                case ';' -> add(Type.SEMICOLON);
+                case '!' -> add(match('=') ? Type.BANG_EQUAL : Type.BANG);
+                case '=' -> add(match('=') ? Type.EQUAL_EQUAL : Type.EQUAL);
+                case '<' -> add(match('=') ? Type.LESS_EQUAL : Type.LESS);
+                case '>' -> add(match('=') ? Type.GREATER_EQUAL : Type.GREATER);
+                case '&' -> {
+                    if (!match('&')) error("Expected '&' after '&'");
+                    add(Type.AND);
+                }
+                case '|' -> {
+                    if (!match('|')) error("Expected '|' after '|'");
+                    add(Type.OR);
+                }
+                case '/' -> {
+                    if (match('/')) skipComment();
+                    else add(Type.SLASH);
+                }
+                case '#' -> {
+                    if (identifierStart(peek())) add(Type.HASH);
+                    else skipComment();
+                }
+                case '"' -> string();
+                default -> {
+                    if (digit(character)) number();
+                    else if (identifierStart(character)) identifier();
+                    else error("Unexpected character '" + character + "'");
+                }
+            }
+        }
+
+        private void identifier() {
+            while (identifierPart(peek())) advance();
+            while (peek() == '.' && identifierStart(peekNext())) {
+                advance();
+                while (identifierPart(peek())) advance();
+            }
+            add(Type.IDENTIFIER);
+        }
+
+        private void number() {
+            while (digit(peek())) advance();
+            boolean decimal = false;
+            if (peek() == '.' && digit(peekNext())) {
+                decimal = true;
+                advance();
+                while (digit(peek())) advance();
+            }
+            String text = source.substring(start, current);
+            try {
+                if (decimal) add(Type.NUMBER, Double.parseDouble(text));
+                else add(Type.NUMBER, Long.parseLong(text));
+            } catch (NumberFormatException failure) {
+                error("Invalid number '" + text + "'");
+            }
+        }
+
+        private void string() {
+            StringBuilder value = new StringBuilder();
+            while (!atEnd() && peek() != '"') {
+                char character = advance();
+                if (character == '\n' || character == '\r') {
+                    error("String literal cannot cross a line");
+                }
+                if (character != '\\') {
+                    value.append(character);
+                    continue;
+                }
+                if (atEnd()) error("Unterminated string escape");
+                char escaped = advance();
+                value.append(switch (escaped) {
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    case '"' -> '"';
+                    case '\\' -> '\\';
+                    default -> escaped;
+                });
+            }
+            if (atEnd()) error("Unterminated string literal");
+            advance();
+            add(Type.STRING, value.toString());
+        }
+
+        private void skipComment() {
+            while (!atEnd() && peek() != '\n' && peek() != '\r') advance();
+        }
+
+        private void newline() {
+            tokens.add(new Token(Type.NEWLINE, "\n", null, line, startColumn));
+            line++;
+            column = 1;
+        }
+
+        private char advance() {
+            char value = source.charAt(current++);
+            column++;
+            return value;
+        }
+
+        private boolean match(char expected) {
+            if (atEnd() || source.charAt(current) != expected) return false;
+            current++;
+            column++;
+            return true;
+        }
+
+        private char peek() {
+            return atEnd() ? '\0' : source.charAt(current);
+        }
+
+        private char peekNext() {
+            return current + 1 >= source.length() ? '\0' : source.charAt(current + 1);
+        }
+
+        private boolean atEnd() {
+            return current >= source.length();
+        }
+
+        private void add(Type type) {
+            add(type, null);
+        }
+
+        private void add(Type type, Object literal) {
+            tokens.add(new Token(type, source.substring(start, current), literal,
+                    line, startColumn));
+        }
+
+        private void error(String message) {
+            throw new FclCompileException(message, line, startColumn);
+        }
+
+        private static boolean digit(char value) {
+            return value >= '0' && value <= '9';
+        }
+
+        private static boolean identifierStart(char value) {
+            return value == '_' || value >= 'a' && value <= 'z'
+                    || value >= 'A' && value <= 'Z';
+        }
+
+        private static boolean identifierPart(char value) {
+            return identifierStart(value) || digit(value);
+        }
+    }
+
+    private static final class Parser {
+        private final String source;
+        private final List<Token> tokens;
+        private final List<FclInstruction> instructions = new ArrayList<>();
+        private final Map<String, FclProgram.Function> functions = new LinkedHashMap<>();
+        private int current;
+        private long expressionId = 1;
+
+        private Parser(String source, List<Token> tokens) {
+            this.source = source;
+            this.tokens = tokens;
+        }
+
+        private FclProgram compile() {
+            skipSeparators();
+            while (!check(Type.EOF)) {
+                statement(true, 0, 0);
+                skipSeparators();
+            }
+            return new FclProgram(instructions, functions, source);
+        }
+
+        private void statement(boolean topLevel, int loopDepth, int functionDepth) {
+            Token start = peek();
+            if (word("func")) {
+                if (!topLevel || functionDepth != 0) {
+                    fail(start, "Functions may only be declared at top level");
+                }
+                function(start);
+                return;
+            }
+            if (word("if")) {
+                conditional(start, loopDepth, functionDepth);
+                return;
+            }
+            if (word("while")) {
+                loop(start, loopDepth, functionDepth);
+                return;
+            }
+            if (word("break")) {
+                if (loopDepth == 0) fail(start, "break is only valid inside while");
+                instructions.add(new FclInstruction.Break(start.line()));
+                finishSimple();
+                return;
+            }
+            if (word("continue")) {
+                if (loopDepth == 0) fail(start, "continue is only valid inside while");
+                instructions.add(new FclInstruction.Continue(start.line()));
+                finishSimple();
+                return;
+            }
+            if (word("return")) {
+                FclExpression value = atStatementEnd()
+                        ? literal(null) : expression();
+                instructions.add(new FclInstruction.Return(start.line(), value, false));
+                finishSimple();
+                return;
+            }
+            if (word("import")) {
+                importInstruction(start);
+                return;
+            }
+            if (word("include")) {
+                includeInstruction(start);
+                return;
+            }
+            assignmentOrExpression(start);
+        }
+
+        private void function(Token start) {
+            Token name = consume(Type.IDENTIFIER, "Expected function name");
+            if (functions.containsKey(name.text())) {
+                fail(name, "Function is already declared: " + name.text());
+            }
+            consume(Type.LEFT_PAREN, "Expected '(' after function name");
+            List<String> parameters = new ArrayList<>();
+            if (!check(Type.RIGHT_PAREN)) {
+                do {
+                    String parameter = consume(Type.IDENTIFIER,
+                            "Expected parameter name").text();
+                    if (parameters.contains(parameter)) {
+                        fail(previous(), "Duplicate parameter: " + parameter);
+                    }
+                    parameters.add(parameter);
+                } while (match(Type.COMMA));
+            }
+            consume(Type.RIGHT_PAREN, "Expected ')' after parameters");
+            int declarationPointer = instructions.size();
+            instructions.add(new FclInstruction.FunctionDeclaration(start.line(), name.text(),
+                    parameters, -1, -1));
+            openBlock("Expected '{' before function body");
+            int bodyTarget = instructions.size();
+            block(0, 1);
+            instructions.add(new FclInstruction.Return(start.line(), literal(null), true));
+            int endTarget = instructions.size();
+            instructions.set(declarationPointer, new FclInstruction.FunctionDeclaration(
+                    start.line(), name.text(), parameters, bodyTarget, endTarget));
+            functions.put(name.text(), new FclProgram.Function(name.text(), parameters,
+                    bodyTarget, endTarget));
+        }
+
+        private void conditional(Token start, int loopDepth, int functionDepth) {
+            FclExpression condition = conditionExpression("if");
+            int conditionalPointer = instructions.size();
+            instructions.add(new FclInstruction.Conditional(start.line(), condition, -1, -1));
+            openBlock("Expected '{' after if condition");
+            block(loopDepth, functionDepth);
+            skipSeparators();
+            if (word("else")) {
+                int jumpPointer = instructions.size();
+                instructions.add(new FclInstruction.Jump(start.line(), -1));
+                int falseTarget = instructions.size();
+                openBlock("Expected '{' after else");
+                block(loopDepth, functionDepth);
+                int endTarget = instructions.size();
+                instructions.set(conditionalPointer, new FclInstruction.Conditional(
+                        start.line(), condition, falseTarget, endTarget));
+                instructions.set(jumpPointer, new FclInstruction.Jump(start.line(), endTarget));
+            } else {
+                int endTarget = instructions.size();
+                instructions.set(conditionalPointer, new FclInstruction.Conditional(
+                        start.line(), condition, endTarget, endTarget));
+            }
+        }
+
+        private void loop(Token start, int loopDepth, int functionDepth) {
+            FclExpression condition = conditionExpression("while");
+            int header = instructions.size();
+            instructions.add(new FclInstruction.Loop(start.line(), condition, -1, -1));
+            openBlock("Expected '{' after while condition");
+            int bodyTarget = instructions.size();
+            block(loopDepth + 1, functionDepth);
+            instructions.add(new FclInstruction.Jump(start.line(), header));
+            int endTarget = instructions.size();
+            instructions.set(header, new FclInstruction.Loop(start.line(), condition,
+                    bodyTarget, endTarget));
+        }
+
+        private FclExpression conditionExpression(String keyword) {
+            if (match(Type.LEFT_PAREN)) {
+                FclExpression condition = expression();
+                consume(Type.RIGHT_PAREN, "Expected ')' after " + keyword + " condition");
+                return condition;
+            }
+            if (atStatementEnd() || check(Type.LEFT_BRACE)) {
+                fail(peek(), "Expected " + keyword + " condition");
+            }
+            return expression();
+        }
+
+        private void block(int loopDepth, int functionDepth) {
+            skipSeparators();
+            while (!check(Type.RIGHT_BRACE) && !check(Type.EOF)) {
+                statement(false, loopDepth, functionDepth);
+                skipSeparators();
+            }
+            consume(Type.RIGHT_BRACE, "Expected '}' after block");
+        }
+
+        private void openBlock(String message) {
+            skipSeparators();
+            consume(Type.LEFT_BRACE, message);
+        }
+
+        private void importInstruction(Token start) {
+            String target = directiveTarget("import target");
+            String alias = null;
+            if (word("as")) {
+                alias = consume(Type.IDENTIFIER, "Expected import alias").text();
+                if (alias.contains(".")) fail(previous(), "Import alias must be a simple identifier");
+            }
+            instructions.add(new FclInstruction.Import(start.line(), target, alias,
+                    target.endsWith(".*")));
+            finishSimple();
+        }
+
+        private void includeInstruction(Token start) {
+            String target = directiveTarget("include target");
+            instructions.add(new FclInstruction.Include(start.line(), target));
+            finishSimple();
+        }
+
+        private String directiveTarget(String description) {
+            if (match(Type.STRING)) return String.valueOf(previous().literal());
+            Token target = consume(Type.IDENTIFIER, "Expected " + description);
+            String value = target.text();
+            if (match(Type.DOT)) {
+                consume(Type.STAR, "Only .* is valid after a directive target");
+                value += ".*";
+            }
+            return value;
+        }
+
+        private void assignmentOrExpression(Token start) {
+            int marker = current;
+            if (match(Type.IDENTIFIER)) {
+                Token variable = previous();
+                List<FclExpression> indices = new ArrayList<>();
+                while (match(Type.LEFT_BRACKET)) {
+                    indices.add(expression());
+                    consume(Type.RIGHT_BRACKET, "Expected ']' after assignment index");
+                }
+                if (match(Type.EQUAL)) {
+                    FclExpression value = expression();
+                    instructions.add(new FclInstruction.Assignment(start.line(), variable.text(),
+                            indices, value));
+                    finishSimple();
+                    return;
+                }
+            }
+            current = marker;
+            FclExpression expression = expression();
+            instructions.add(new FclInstruction.Evaluation(start.line(), expression));
+            finishSimple();
+        }
+
+        private FclExpression expression() {
+            return or();
+        }
+
+        private FclExpression or() {
+            FclExpression expression = and();
+            while (match(Type.OR) || word("or")) {
+                expression = new FclExpression.Binary(nextId(), "or", expression, and());
+            }
+            return expression;
+        }
+
+        private FclExpression and() {
+            FclExpression expression = equality();
+            while (match(Type.AND) || word("and")) {
+                expression = new FclExpression.Binary(nextId(), "and", expression, equality());
+            }
+            return expression;
+        }
+
+        private FclExpression equality() {
+            FclExpression expression = comparison();
+            while (match(Type.EQUAL_EQUAL, Type.BANG_EQUAL)) {
+                String operator = previous().text();
+                expression = new FclExpression.Binary(nextId(), operator, expression,
+                        comparison());
+            }
+            return expression;
+        }
+
+        private FclExpression comparison() {
+            FclExpression expression = term();
+            while (match(Type.LESS, Type.LESS_EQUAL, Type.GREATER, Type.GREATER_EQUAL)) {
+                String operator = previous().text();
+                expression = new FclExpression.Binary(nextId(), operator, expression, term());
+            }
+            return expression;
+        }
+
+        private FclExpression term() {
+            FclExpression expression = factor();
+            while (match(Type.PLUS, Type.MINUS)) {
+                String operator = previous().text();
+                expression = new FclExpression.Binary(nextId(), operator, expression, factor());
+            }
+            return expression;
+        }
+
+        private FclExpression factor() {
+            FclExpression expression = unary();
+            while (match(Type.STAR, Type.SLASH, Type.PERCENT)) {
+                String operator = previous().text();
+                expression = new FclExpression.Binary(nextId(), operator, expression, unary());
+            }
+            return expression;
+        }
+
+        private FclExpression unary() {
+            if (match(Type.BANG, Type.MINUS, Type.HASH)) {
+                return new FclExpression.Unary(nextId(), previous().text(), unary());
+            }
+            return postfix();
+        }
+
+        private FclExpression postfix() {
+            FclExpression expression = primary();
+            while (true) {
+                if (match(Type.LEFT_PAREN)) {
+                    if (!(expression instanceof FclExpression.Variable)) {
+                        fail(previous(), "Only named functions can be called");
+                    }
+                    FclExpression.Variable variable = (FclExpression.Variable) expression;
+                    List<FclExpression> arguments = new ArrayList<>();
+                    if (!check(Type.RIGHT_PAREN)) {
+                        do {
+                            arguments.add(expression());
+                        } while (match(Type.COMMA));
+                    }
+                    consume(Type.RIGHT_PAREN, "Expected ')' after arguments");
+                    expression = new FclExpression.Call(nextId(), variable.name(), arguments);
+                    continue;
+                }
+                if (match(Type.LEFT_BRACKET)) {
+                    FclExpression index = expression();
+                    consume(Type.RIGHT_BRACKET, "Expected ']' after index");
+                    expression = new FclExpression.Index(nextId(), expression, index);
+                    continue;
+                }
+                return expression;
+            }
+        }
+
+        private FclExpression primary() {
+            if (match(Type.NUMBER, Type.STRING)) {
+                return literal(previous().literal());
+            }
+            if (word("true")) return literal(true);
+            if (word("false")) return literal(false);
+            if (word("null")) return literal(null);
+            if (match(Type.IDENTIFIER)) {
+                return new FclExpression.Variable(nextId(), previous().text());
+            }
+            if (match(Type.LEFT_PAREN)) {
+                FclExpression expression = expression();
+                consume(Type.RIGHT_PAREN, "Expected ')' after expression");
+                return expression;
+            }
+            if (match(Type.LEFT_BRACKET)) {
+                List<FclExpression> elements = new ArrayList<>();
+                skipExpressionNewlines();
+                if (!check(Type.RIGHT_BRACKET)) {
+                    do {
+                        skipExpressionNewlines();
+                        elements.add(expression());
+                        skipExpressionNewlines();
+                    } while (match(Type.COMMA));
+                }
+                consume(Type.RIGHT_BRACKET, "Expected ']' after array literal");
+                return new FclExpression.ArrayLiteral(nextId(), elements);
+            }
+            if (match(Type.LEFT_BRACE)) {
+                List<FclExpression.MapEntry> entries = new ArrayList<>();
+                skipExpressionNewlines();
+                if (!check(Type.RIGHT_BRACE)) {
+                    do {
+                        skipExpressionNewlines();
+                        FclExpression key;
+                        if (check(Type.IDENTIFIER) && checkNext(Type.COLON)) {
+                            key = literal(advance().text());
+                        } else {
+                            key = expression();
+                        }
+                        consume(Type.COLON, "Expected ':' after map key");
+                        skipExpressionNewlines();
+                        FclExpression value = expression();
+                        entries.add(new FclExpression.MapEntry(key, value));
+                        skipExpressionNewlines();
+                    } while (match(Type.COMMA));
+                }
+                consume(Type.RIGHT_BRACE, "Expected '}' after map literal");
+                return new FclExpression.MapLiteral(nextId(), entries);
+            }
+            fail(peek(), "Expected expression");
+            throw new AssertionError("unreachable");
+        }
+
+        private FclExpression literal(Object value) {
+            return new FclExpression.Literal(nextId(), value);
+        }
+
+        private long nextId() {
+            return expressionId++;
+        }
+
+        private void finishSimple() {
+            if (match(Type.SEMICOLON, Type.NEWLINE)) return;
+            if (check(Type.RIGHT_BRACE) || check(Type.EOF)) return;
+            fail(peek(), "Expected end of statement");
+        }
+
+        private boolean atStatementEnd() {
+            return check(Type.SEMICOLON) || check(Type.NEWLINE)
+                    || check(Type.RIGHT_BRACE) || check(Type.EOF);
+        }
+
+        private void skipSeparators() {
+            while (match(Type.SEMICOLON, Type.NEWLINE)) { }
+        }
+
+        private void skipExpressionNewlines() {
+            while (match(Type.NEWLINE)) { }
+        }
+
+        private boolean word(String value) {
+            if (check(Type.IDENTIFIER) && peek().text().equals(value)) {
+                current++;
+                return true;
+            }
+            return false;
+        }
+
+        private boolean match(Type... types) {
+            for (Type type : types) {
+                if (check(type)) {
+                    current++;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private Token consume(Type type, String message) {
+            if (check(type)) return advance();
+            fail(peek(), message);
+            throw new AssertionError("unreachable");
+        }
+
+        private boolean check(Type type) {
+            return peek().type() == type;
+        }
+
+        private boolean checkNext(Type type) {
+            return current + 1 < tokens.size() && tokens.get(current + 1).type() == type;
+        }
+
+        private Token advance() {
+            if (!check(Type.EOF)) current++;
+            return previous();
+        }
+
+        private Token peek() {
+            return tokens.get(current);
+        }
+
+        private Token previous() {
+            return tokens.get(current - 1);
+        }
+
+        private void fail(Token token, String message) {
+            throw new FclCompileException(message, token.line(), token.column());
+        }
+    }
+}

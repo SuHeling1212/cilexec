@@ -1,0 +1,69 @@
+package com.follarce.fcl;
+
+import java.util.List;
+import java.util.Objects;
+
+/** Immutable expression tree. Node ids make suspended function calls resumable. */
+public sealed interface FclExpression permits FclExpression.Literal, FclExpression.Variable,
+        FclExpression.ArrayLiteral, FclExpression.MapLiteral, FclExpression.Unary,
+        FclExpression.Binary, FclExpression.Index, FclExpression.Call {
+
+    long id();
+
+    record Literal(long id, Object value) implements FclExpression {}
+
+    record Variable(long id, String name) implements FclExpression {
+        public Variable {
+            Objects.requireNonNull(name, "name");
+        }
+    }
+
+    record ArrayLiteral(long id, List<FclExpression> elements) implements FclExpression {
+        public ArrayLiteral {
+            elements = List.copyOf(elements);
+        }
+    }
+
+    record MapEntry(FclExpression key, FclExpression value) {
+        public MapEntry {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(value, "value");
+        }
+    }
+
+    record MapLiteral(long id, List<MapEntry> entries) implements FclExpression {
+        public MapLiteral {
+            entries = List.copyOf(entries);
+        }
+    }
+
+    record Unary(long id, String operator, FclExpression operand) implements FclExpression {
+        public Unary {
+            Objects.requireNonNull(operator, "operator");
+            Objects.requireNonNull(operand, "operand");
+        }
+    }
+
+    record Binary(long id, String operator, FclExpression left,
+                  FclExpression right) implements FclExpression {
+        public Binary {
+            Objects.requireNonNull(operator, "operator");
+            Objects.requireNonNull(left, "left");
+            Objects.requireNonNull(right, "right");
+        }
+    }
+
+    record Index(long id, FclExpression target, FclExpression index) implements FclExpression {
+        public Index {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(index, "index");
+        }
+    }
+
+    record Call(long id, String name, List<FclExpression> arguments) implements FclExpression {
+        public Call {
+            Objects.requireNonNull(name, "name");
+            arguments = List.copyOf(arguments);
+        }
+    }
+}

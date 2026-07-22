@@ -1,25 +1,11 @@
 @echo off
-chcp 65001 >nul
-echo =============== Running CilExec ===============
+setlocal
+cd /d "%~dp0\.."
 
-if exist target\* rmdir /s /q target
-
-echo Compiling...
-call mvn clean compile
-if %ERRORLEVEL% NEQ 0 (
-    echo Compilation failed!
-    exit /b 1
+if not exist target\cilexec-app.jar call build\package.bat
+if errorlevel 1 exit /b %errorlevel%
+if "%~1"=="" (
+    java %JVM_OPTIONS% -jar target\cilexec-app.jar runtime
+) else (
+    java %JVM_OPTIONS% -jar target\cilexec-app.jar %*
 )
-
-echo Checking dependencies...
-call mvn dependency:copy-dependencies -q
-
-set "CLASSPATH=target\classes"
-for %%j in (target\dependency\*.jar) do (
-    set "CLASSPATH=!CLASSPATH!;%%j"
-)
-
-echo Starting CilExec...
-java -cp "%CLASSPATH%" com.follarce.Main
-
-echo =============== Execution Finished ===============

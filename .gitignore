@@ -21,11 +21,6 @@ Thumbs.db
 
 # Logs
 *.log
-cilexec.log
-
-# VFS runtime state (auto-generated)
-cilexec_root/
-packageTEST/.runtime/
 
 # AI
 .deepseek/
@@ -40,3 +35,6 @@ dependency-reduced-pom.xml
 fcl-vscode/.codewhale/
 fcl-vscode/
 
+# Local Docker secrets (only the placeholder ignore file is tracked)
+docker/secrets/*
+!docker/secrets/.gitignore

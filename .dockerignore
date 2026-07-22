@@ -1,0 +1,12 @@
+.git
+.gitignore
+.github
+.idea
+.vscode
+.DS_Store
+target
+cilexec_root
+*.log
+docker/secrets/*
+doc
+theLastFileBeforeNewVersion.md

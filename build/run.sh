@@ -1,27 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "=============== Running CilExec ==============="
-rm -rf target/
-echo "Compiling..."
-mvn clean compile
-if [ $? -ne 0 ]; then
-    echo "Compilation failed!"
-    exit 1
+project_dir="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$project_dir"
+
+if [[ ! -f target/cilexec-app.jar ]]; then
+    "$project_dir/build/package.sh"
 fi
 
-echo "Checking dependencies..."
-mvn dependency:copy-dependencies -q
-
-# Get dependency classpath
-CLASSPATH="target/classes"
-
-# Add dependency jars
-for jar in target/dependency/*.jar; do
-    CLASSPATH="$CLASSPATH:$jar"
-done
-
-# Run the program
-echo "Starting CilExec..."
-java -cp "$CLASSPATH" com.follarce.Main
-
-echo "=============== Execution Finished ==============="
+exec java ${JVM_OPTIONS:-} -jar target/cilexec-app.jar "${1:-runtime}"

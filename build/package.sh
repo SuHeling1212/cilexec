@@ -1,15 +1,13 @@
-#!/bin/bash
-echo "=============== Packaging ==============="
-rm -rf target/
-mvn clean package
+#!/usr/bin/env bash
+set -euo pipefail
 
-if [ $? -eq 0 ]; then
-    echo "Packaging successful!"
-    echo "JAR file: target/cilexec-1.0.0-ALPHA-3.jar"
-    echo ""
-    echo "Current time: $(java -cp target/cilexec-1.0.0-ALPHA-3.jar com.follarce.Main)"   
-else
-    echo "Packaging failed!"
-    exit 1
+project_dir="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$project_dir"
+
+revision="$(git rev-parse --short=12 HEAD 2>/dev/null || true)"
+if [[ -z "$revision" ]]; then
+    revision="unknown"
 fi
-echo "=============== Packaging Complete ==============="
+
+mvn --batch-mode --no-transfer-progress -Dbuild.revision="$revision" clean verify
+printf 'Created %s\n' "$project_dir/target/cilexec-app.jar"

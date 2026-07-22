@@ -1,17 +1,9 @@
 @echo off
-chcp 65001 >nul
-echo =============== Packaging ===============
-if exist target\* rmdir /s /q target
-call mvn clean package
+setlocal
+cd /d "%~dp0\.."
 
-if %ERRORLEVEL% EQU 0 (
-    echo Packaging successful!
-    echo JAR file: target\cilexec-1.0.0-ALPHA-3.jar
-    echo.
-    echo Current time:
-    java -cp target\cilexec-1.0.0-ALPHA-3.jar com.follarce.Main
-) else (
-    echo Packaging failed!
-    exit /b 1
-)
-echo =============== Packaging Complete ===============
+set "BUILD_REVISION=unknown"
+for /f %%r in ('git rev-parse --short^=12 HEAD 2^>nul') do set "BUILD_REVISION=%%r"
+call mvn --batch-mode --no-transfer-progress -Dbuild.revision=%BUILD_REVISION% clean verify
+if errorlevel 1 exit /b %errorlevel%
+echo Created %CD%\target\cilexec-app.jar

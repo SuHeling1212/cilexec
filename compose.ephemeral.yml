@@ -1,0 +1,13 @@
+# Disposable profile: PostgreSQL data remains in the container writable layer.
+# Removing or replacing the postgres container destroys the CilExec instance.
+services:
+  postgres:
+    labels:
+      com.follarce.cilexec.storage-profile: ephemeral-disposable
+    environment:
+      PGDATA: /var/lib/postgresql/cilexec-ephemeral
+    restart: "no"
+  migrate:
+    restart: "no"
+  cilexec:
+    restart: "no"

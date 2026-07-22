@@ -1,147 +1,500 @@
-# CilExec 数据库驱动重构总方案
+# CilExec 数据库驱动与 Docker 化重构总方案（Java 版）
 
-状态：设计草案 v0.2
-目标：将 CilExec 从文件驱动运行时，重构为 PostgreSQL 持久化、Java 驱动的事务化进程系统。
+状态：**决策修订冻结版 v1.1**  
+日期：2026-07-22  
+实现语言：**Java（保留现有语言与 FCL 运行语义）**  
+运行数据库：**PostgreSQL**  
+软件包发布物：**不可变 SQLite `.db`**  
+发行形态：**Docker Compose，支持 Linux AMD64 与 ARM64**
 
 ---
 
-## 1. 本次重构的最终目标
+## 0. 文档目的与约束
 
-重构完成后，CilExec 应满足以下定义：
+本文件是 CilExec 下一版本的正式重构规格。它不再是讨论草案，而是依据已完成的 86 项架构问卷冻结后的实现边界。
 
-> 一个 PostgreSQL database 表示一个完整的 CilExec 实例；Java 程序负责解释和执行 FCL，PostgreSQL 负责保存该实例的全部持久状态。
+本轮重构同时完成三件事：
 
-PostgreSQL 中，一个 database 可以包含多个 schema；schema 用于组织表、函数和其他数据库对象。角色属于整个 PostgreSQL cluster。一个连接在同一时刻访问一个指定 database。
+1. 将 CilExec 从旧的文件驱动持久化，重构为 PostgreSQL 驱动的事务化运行系统；
+2. 保留 Java 实现与现有 FCL 语义，重构运行时分层、数据库访问和恢复边界；
+3. 将 Docker Compose 作为第一阶段即启用的标准开发、测试和发行环境。
 
-目标结构：
+本文件中的“Kernel”统一称为 **CilExec Runtime**，避免与 Linux kernel 混淆。它指负责解释 FCL、调度 CilExec 进程、访问 PostgreSQL、执行权限、IPC、VFS、软件包和恢复逻辑的 Java/JVM 核心程序。
+
+### 0.1 决策优先级
+
+发生冲突时，按以下顺序解释：
 
 ```text
-PostgreSQL cluster
-├── PostgreSQL roles
-│   ├── cilexec_owner
-│   ├── cilexec_migrator
-│   ├── cilexec_kernel
-│   ├── cilexec_effect_worker
-│   └── cilexec_readonly
-│
-└── cilexec database
-    ├── meta
-    ├── auth
-    ├── object_store
-    ├── vfs
-    ├── package
-    ├── process
-    ├── scheduler
-    ├── ipc
-    ├── effect
-    ├── terminal
-    └── audit
+数据库已提交状态是唯一真相
+> 不可变发布物和精确内容身份
+> 可恢复、可审计的事务语义
+> 用户明确选择
+> 实现便利
 ```
 
-重构完成后：
+### 0.2 第 9 题的一致性处理
+
+问卷选择了“PostgreSQL 数据存在容器可写层”。这个选择只能用于**明确可丢弃的开发模式**。
+
+原因不是改变用户决定，而是区分两个运行档案：
 
 ```text
-数据库已提交状态 = 实例的真实状态
-Java 内存对象       = 实例的一次运行投影
-COMMIT             = 状态变化正式生效的时刻
+ephemeral profile
+= 数据存在容器可写层
+= 删除或替换 PostgreSQL 容器会丢失实例
+= 只用于测试、演示和一次性运行
+
+persistent profile
+= 数据挂载 named volume、bind mount 或位于外部 PostgreSQL
+= 用于任何需要长期保存的实例
 ```
 
----
-
-# 2. 已确定的架构决策
-
-## 2.1 Java 保留
-
-CilExec 继续使用 Java。
-
-理由不是保守，而是明确的工程选择：
-
-* CilExec 的主要复杂度是状态模型和运行语义，不是底层语言。
-* Java 提供跨平台运行环境。
-* JDBC 与 PostgreSQL 集成成熟。
-* 虚拟线程适合大量等待型任务。
-* 当前开发能力和现有代码都集中在 Java。
-* 不增加 Rust、C、构建工具链和跨平台编译负担。
-
-本次重构只更换持久化内核，不更换执行语言。
+CilExec 的持久化承诺只适用于 persistent profile。程序不得把 ephemeral profile 描述为可靠持久存储。
 
 ---
 
-## 2.2 PostgreSQL 是运行实例的唯一真相来源
+# 1. 产品定位
 
-以下状态必须进入 PostgreSQL：
+CilExec 定位为：
+
+> **数据库驱动的用户态操作系统。**
+
+它运行在 Linux/Docker 上，但在自己的逻辑边界内管理：
 
 ```text
-用户
-用户组
-权限
-进程
-变量
-代码
-函数调用状态
-进程关系
+CilExec 用户和组
+CilExec 进程
+FCL 程序与执行 continuation
 调度队列
-IPC 消息
-虚拟文件系统
-软件包
+IPC、channel、topic 和广播
+Timer
+VFS
+软件包和软件包环境
+外部副作用
 终端会话
-外部副作用日志
-审计记录
-恢复信息
+审计和恢复
 ```
 
-以下内容不属于实例状态：
+Docker/Linux 提供宿主能力：
 
 ```text
-Java Thread 对象
-JDBC Connection
-PreparedStatement
-Java 锁对象
-解析器临时缓存
-ClassLoader 实例
-可重新构建的 AST
-日志输出文件
-PostgreSQL 连接密码
+CPU 与内存
+进程和线程
+TCP/IP
+块存储
+容器隔离
+宿主文件挂载
+时钟
+信号
 ```
 
-数据库外不再保存任何权威进程状态。
+PostgreSQL 提供：
+
+```text
+权威状态
+事务
+锁
+索引
+约束
+WAL 与数据库崩溃恢复
+用户 Role 与 RLS
+```
+
+Java CilExec Runtime 提供：
+
+```text
+FCL 语言语义
+进程状态机
+语句级事务推进
+调度
+权限决策
+IPC
+VFS
+软件包解析
+effect journal
+语义恢复
+```
 
 ---
 
-## 2.3 不保留旧 `.proc` 运行格式
+# 2. 最终系统拓扑
 
-项目尚未发布，因此不做：
+## 2.1 标准 Compose 拓扑
 
-* 旧格式兼容；
-* 双写；
-* 自动迁移旧测试数据；
-* `FileProcessStore`；
-* 文件存储和数据库存储并行维护。
+```text
+Docker Compose Project
+├── postgres
+│   ├── PostgreSQL server
+│   ├── healthcheck
+│   └── 数据目录
+│
+├── migrate
+│   ├── 与 CilExec 同源构建
+│   ├── 使用 migrator Role
+│   ├── 执行 Flyway migration
+│   └── 成功后退出
+│
+└── cilexec
+    ├── Java CilExec Runtime
+    ├── Scheduler workers
+    ├── Effect workers
+    ├── Terminal/API
+    └── 可丢弃 package cache
+```
 
-旧实现只保留在 Git 历史中。
+启动依赖：
 
-重构分支建立前，应创建一个标签：
+```text
+postgres healthy
+→ migrate completed successfully
+→ cilexec starts
+```
 
-```bash
-git tag -a pre-database-runtime \
-  -m "Last file-backed CilExec runtime"
+PostgreSQL 和 CilExec 分属不同容器。CilExec 也必须支持连接外部 PostgreSQL，但标准本地开发环境以 Compose 中的 PostgreSQL 为准。
+
+## 2.2 网络
+
+用户决定 PostgreSQL 5432 默认映射到宿主。标准开发配置采用：
+
+```yaml
+ports:
+  - "127.0.0.1:5432:5432"
+```
+
+这仍然属于“暴露到宿主”，但默认只绑定本机回环地址，不直接暴露到局域网。
+
+需要远程访问时，必须显式修改监听地址、TLS、认证和防火墙规则。
+
+## 2.3 多架构
+
+发行镜像必须同时发布：
+
+```text
+linux/amd64
+linux/arm64
+```
+
+开发者可在 Apple Silicon Mac 上本地运行 ARM64 镜像，并通过 Docker Buildx 或 CI 生成 AMD64 镜像。
+
+## 2.4 容器用户
+
+`cilexec` 和 `migrate` 均以固定非 root Linux 用户运行。最终镜像不得包含：
+
+```text
+完整 JDK 编译工具链
+Maven 本地仓库
+源代码
+测试代码与调试构建工具
+不需要的 shell 工具
+数据库密码
+```
+
+## 2.5 配置档案
+
+```text
+compose.ephemeral.yml
+- PostgreSQL 使用容器可写层
+- 明确标记 disposable
+- 用于测试和演示
+
+compose.persistent.yml
+- PostgreSQL 使用 named volume 或 bind mount
+- 用于本地长期开发和正式运行
+
+external-postgres
+- 只启动 migrate 与 cilexec
+- 连接外部 PostgreSQL
 ```
 
 ---
 
-## 2.4 一个实例一个 PostgreSQL database
+# 3. Java 重构边界
 
-不采用：
+本轮保留 Java，不进行语言重写。目标是把已经存在的 FCL 解释器、进程系统和内置函数迁移到清晰的数据库事务边界中，而不是重新发明语言行为。
+
+必须遵守以下原则：
 
 ```text
-一个进程一个数据库
-一个用户一个数据库
-一个模块一个数据库
+FCL 对外语义保持不变
+Java 类可以重组和重写
+旧文件持久化实现必须删除
+数据库 repository 不得渗透进表达式和语法层
+JVM 内存对象不得成为恢复真相
 ```
 
-这些方案会重新引入跨数据库事务问题。
+## 3.1 Maven 工程与 Java package 结构
 
-采用：
+继续使用 Maven。首版优先采用单仓库、多 package 的结构，不强制拆成多个独立 Maven artifact；当模块边界稳定后再决定是否转为 multi-module build。
+
+建议目录：
+
+```text
+cilexec/
+├── pom.xml
+├── Dockerfile
+├── compose.yml
+├── compose.ephemeral.yml
+├── compose.persistent.yml
+├── docker/
+│   ├── entrypoint.sh
+│   ├── healthcheck.sh
+│   └── secrets/
+├── src/main/java/com/follarce/
+│   ├── app/
+│   │   ├── CilExecApplication.java
+│   │   ├── RuntimeBootstrap.java
+│   │   └── ShutdownCoordinator.java
+│   ├── config/
+│   │   ├── CilExecConfig.java
+│   │   ├── DatabaseConfig.java
+│   │   └── DockerSecretLoader.java
+│   ├── domain/
+│   │   ├── process/
+│   │   ├── program/
+│   │   ├── ipc/
+│   │   ├── vfs/
+│   │   ├── packageinfo/
+│   │   ├── effect/
+│   │   ├── auth/
+│   │   └── audit/
+│   ├── fcl/
+│   │   ├── parser/
+│   │   ├── runtime/
+│   │   ├── function/
+│   │   └── controlflow/
+│   ├── persistence/postgres/
+│   │   ├── connection/
+│   │   ├── transaction/
+│   │   ├── repository/
+│   │   ├── mapper/
+│   │   └── retry/
+│   ├── scheduler/
+│   ├── ipc/
+│   ├── vfs/
+│   ├── package_manager/
+│   ├── effect/
+│   ├── terminal/
+│   ├── auth/
+│   ├── audit/
+│   └── health/
+├── src/main/resources/
+│   ├── db/migration/
+│   ├── logback.xml
+│   └── cilexec-defaults.properties
+├── src/test/java/
+└── src/test/resources/
+```
+
+现有 `com.follarce` 包名可以保留。迁移过程中允许先建立适配层，再逐步把旧类移动到上述边界；不能为了目录整洁一次性破坏所有现有测试。
+
+## 3.2 依赖方向
+
+```text
+domain
+↑
+process / ipc / vfs / package / effect
+↑
+fcl-runtime
+↑
+application/bootstrap
+
+persistence-postgres
+实现 domain 定义的 repository 与 transaction port
+```
+
+领域对象和 FCL 运行语义层不得直接依赖：
+
+```text
+JDBC ResultSet
+Connection 或 PreparedStatement
+PostgreSQL 专用 Java 类型
+SQL 字符串
+Docker
+HTTP 框架
+连接池实现
+具体日志后端
+```
+
+数据库行模型与领域对象必须通过 mapper 转换。禁止把可变 `ResultSet`、连接对象或数据库代理对象保存进进程 continuation。
+
+## 3.3 Java 数据访问栈
+
+标准数据访问栈：
+
+```text
+PostgreSQL JDBC Driver
+HikariCP
+Flyway
+显式 SQL
+显式 TransactionContext
+```
+
+SQLite 软件包读取使用独立的只读 SQLite JDBC 连接。PostgreSQL 连接和 SQLite 连接不得混用，也不得尝试建立跨数据库原子事务。
+
+所有依赖版本必须在 `pom.xml` 中精确固定；禁止使用浮动版本范围。
+
+## 3.4 TransactionContext
+
+Repository 方法不得自行隐藏开启、提交或回滚事务。跨模块原子操作必须由 application service 创建一个 `TransactionContext`，并把同一 JDBC `Connection` 传给参与该事务的 repository。
+
+示意：
+
+```java
+public interface TransactionContext extends AutoCloseable {
+    ProcessRepository processes();
+    ProgramRepository programs();
+    SchedulerRepository scheduler();
+    IpcRepository ipc();
+    VfsRepository vfs();
+    PackageRepository packages();
+    EffectRepository effects();
+    AuditRepository audit();
+
+    void commit() throws SQLException;
+    void rollback() throws SQLException;
+
+    @Override
+    void close();
+}
+```
+
+事务执行器必须保证：
+
+```java
+public <T> T inTransaction(
+        Isolation isolation,
+        TransactionWork<T> work
+) throws CilExecException;
+```
+
+规则：
+
+1. `autoCommit=false`；
+2. 默认隔离级别为 `READ_COMMITTED`；
+3. `commit()` 只能由最外层 application service 调用；
+4. 任意异常必须回滚；
+5. `close()` 必须恢复连接状态后归还连接池；
+6. Repository 不得把 `Connection` 暴露给 FCL 函数实现；
+7. 外部副作用不能在该事务内部执行。
+
+## 3.5 SQL 与映射规则
+
+采用具名 SQL 文件或 Java text block 均可，但每条 SQL 必须有稳定名称并能被测试定位，例如：
+
+```text
+process.claimNext
+process.loadContinuation
+process.commitStatement
+ipc.createDeliveries
+vfs.replaceContent
+package.bindRelease
+```
+
+所有更新语句必须检查影响行数。涉及乐观并发的更新，影响行数不为 1 即视为冲突，不能静默继续。
+
+数据库异常统一映射为 CilExec 异常类别：
+
+```text
+SQLSTATE 23505 → UniqueConflict
+SQLSTATE 23503 → ReferenceConflict
+SQLSTATE 40001 → SerializationRetryable
+SQLSTATE 40P01 → DeadlockRetryable
+连接中断       → DatabaseUnavailable / RuntimeFenced
+其他异常       → PersistenceFailure
+```
+
+具体 SQLSTATE 映射集中维护，不能散落在各 Repository 中。
+
+## 3.6 JVM 并发模型
+
+继续使用 Java 虚拟线程，但数据库并发必须有界。
+
+```text
+一个可运行 CilExec worker
+→ 一个短生命周期虚拟线程任务
+→ 最多持有一个数据库事务
+```
+
+禁止把 `Executors.newVirtualThreadPerTaskExecutor()` 当成无限数据库并发。必须通过以下至少一种方式限制：
+
+```text
+固定 scheduler worker 数
+Semaphore
+受限任务队列
+连接池最大连接数
+```
+
+建议关系：
+
+```text
+scheduler worker 数
+≤ cilexec_runtime 连接池可用连接数
+
+scheduler worker + effect worker + 管理连接
+< PostgreSQL max_connections 预留额度
+```
+
+control connection 是独立物理连接，不进入 HikariCP 普通池。
+
+JVM 内的以下对象全部可丢弃：
+
+```text
+Thread / VirtualThread
+Future / CompletableFuture
+Executor 队列
+Java Lock / Semaphore
+解析缓存
+函数查找缓存
+定时唤醒任务
+```
+
+它们只能加速执行，不能决定恢复结果。
+
+## 3.7 构建产物
+
+Maven 构建至少产生：
+
+```text
+cilexec-app.jar
+依赖锁定清单
+构建版本信息
+Git commit 标识
+数据库 schema 兼容范围
+FCL runtime 格式版本
+```
+
+首版可使用可执行 fat JAR，减少容器装配复杂度。若后续使用 `jlink`，必须通过完整集成测试证明 PostgreSQL JDBC、SQLite JDBC、TLS、日志和字符集模块没有被裁掉。
+
+## 3.8 Docker 多阶段构建
+
+```text
+build stage
+- 固定摘要的 Linux JDK 镜像
+- Maven Wrapper 或固定 Maven 版本
+- mvn --batch-mode verify
+- 生成最终 JAR
+
+runtime stage
+- 固定摘要的 Linux JRE 或经过验证的 jlink runtime
+- 非 root 用户
+- 只复制运行 JAR、必要配置和健康检查脚本
+- 不复制 Maven cache、源码和测试报告
+```
+
+入口形式：
+
+```text
+java <JVM_OPTIONS> -jar /opt/cilexec/cilexec-app.jar
+```
+
+JVM 参数通过配置注入，镜像中不写死机器相关内存大小。容器必须正确接收 SIGTERM，Java 主进程必须是 PID 1，不能被一个不转发信号的 shell 包裹。
+
+---
+
+# 4. PostgreSQL 实例模型
+
+## 4.1 实例边界
 
 ```text
 一个 CilExec 实例
@@ -149,1749 +502,888 @@ git tag -a pre-database-runtime \
 一个 PostgreSQL database
 ```
 
-模块通过 schema 划分，而不是通过数据库文件划分。
+一个 PostgreSQL cluster 可以容纳多个 CilExec database，但任何跨实例操作都不属于首版原子事务范围。
+
+## 4.2 Schema 总览
+
+```text
+meta
+auth
+object_store
+vfs
+program
+process
+scheduler
+ipc
+effect
+package
+terminal
+audit
+```
+
+## 4.3 数据库是真相来源
+
+以下状态必须进入 PostgreSQL：
+
+```text
+用户、组、Role 映射和 capability
+程序和程序哈希
+进程 continuation
+进程变量当前值
+进程关系
+调度队列和 lease
+IPC、channel、topic、subscription
+Timer
+VFS 节点和内容
+软件包发布物、环境和绑定
+终端提交输入和附件关系
+effect 请求、尝试和结果
+审计记录
+启动、关闭和恢复信息
+```
+
+以下内容不是权威状态：
+
+```text
+Java Thread、虚拟线程或 Future
+数据库连接对象
+连接池内部队列
+Mutex/RwLock
+解析缓存
+预编译查询缓存
+SQLite package 本地缓存
+日志文件
+容器 ID
+```
 
 ---
 
-## 2.5 首版只支持一个主动 CilExec 内核实例
+# 5. PostgreSQL Role、用户与 RLS
 
-第一版不实现分布式 CilExec 集群。
-
-规则：
-
-```text
-一个 cilexec database
-同一时间
-只能由一个主动 CilExec Kernel 控制
-```
-
-PostgreSQL 可以支持多个连接和多个 Java worker，但它们属于同一个 JVM 内核实例。
-
-未来要支持多节点时，再扩展 leader election、分布式 lease 和故障转移。
-
----
-
-# 3. 数据库 schema 总览
-
-## 3.1 `meta`
-
-保存实例自身的信息。
-
-主要表：
-
-```text
-meta.instance
-meta.boot
-meta.schema_migration
-meta.kernel_instance
-```
-
-### `meta.instance`
-
-一个实例只有一行：
-
-```text
-instance_id
-instance_name
-database_format_version
-minimum_kernel_version
-created_at
-last_started_at
-last_clean_shutdown_at
-instance_status
-```
-
-`instance_status`：
-
-```text
-INITIALIZING
-READY
-RUNNING
-RECOVERING
-STOPPING
-BROKEN
-```
-
-### `meta.boot`
-
-每次 CilExec 启动产生一行：
-
-```text
-boot_id
-kernel_instance_id
-cilexec_version
-java_version
-host_name
-started_at
-ended_at
-shutdown_type
-```
-
-`shutdown_type`：
-
-```text
-CLEAN
-CRASHED
-FORCED
-UNKNOWN
-```
-
-新启动时，所有没有 `ended_at` 的旧启动记录都被视为异常终止。
-
-### `meta.schema_migration`
-
-```text
-migration_version
-description
-checksum
-applied_at
-applied_by
-```
-
-数据库结构只能通过 migration 修改。
-
-禁止 CilExec 在普通启动过程中临时检查字段并自行修改表。
-
----
-
-## 3.2 `auth`
-
-保存 CilExec 用户和权限。
-
-主要表：
-
-```text
-auth.user_account
-auth.user_group
-auth.group_member
-auth.capability
-auth.capability_grant
-auth.session
-```
-
-普通 CilExec 用户默认不对应可直接登录 PostgreSQL 的 Role。
-
-PostgreSQL Role 用于区分系统组件：
+## 5.1 系统 Role
 
 ```text
 cilexec_owner
 cilexec_migrator
-cilexec_kernel
+cilexec_runtime
 cilexec_effect_worker
 cilexec_readonly
 ```
 
-CilExec 用户用于表达：
+职责：
+
+| Role | LOGIN | 主要权限 |
+|---|---:|---|
+| `cilexec_owner` | 可选 | 拥有 schema 和对象，不用于日常运行 |
+| `cilexec_migrator` | 是 | 创建和修改 schema、表、索引、函数与 policy |
+| `cilexec_runtime` | 是 | 执行进程、调度、IPC、VFS 和包管理 |
+| `cilexec_effect_worker` | 是 | 领取 effect、写 attempt/result、读取必要请求 |
+| `cilexec_readonly` | 是 | 诊断和只读管理 |
+
+生产环境中 Runtime 不拥有 `CREATE/ALTER/DROP` 权限。开发环境允许通过显式开关让 Runtime 执行 migration，但标准 Compose 仍使用独立 migrate 服务。
+
+## 5.2 CilExec 用户映射为 PostgreSQL LOGIN Role
+
+用户决定每个 CilExec 用户都对应一个 PostgreSQL LOGIN Role。
+
+采用稳定映射：
 
 ```text
-能否创建进程
-能否终止其他进程
-能否使用 Host Shell
-能否访问某个 VFS 路径
-能否加载某个软件包
-能否发送 IPC
-能否执行网络请求
+auth.user_account.user_id
+↔
+PostgreSQL Role: cilexec_user_<encoded_user_id>
 ```
 
-### `auth.user_account`
+用户名可修改，但数据库 Role 名以稳定 `user_id` 生成，避免重命名导致对象和 policy 失效。
+
+`auth.user_account` 至少保存：
 
 ```text
 user_id
 username
-password_hash
+postgres_role_name
 status
-primary_group_id
-home_node_id
 created_at
-last_login_at
+disabled_at
+credential_version
 ```
 
-### `auth.capability_grant`
+## 5.3 连接模型
+
+为了避免每个请求创建新物理连接，Runtime 可以维护有限连接池，并在事务内执行：
+
+```sql
+SET LOCAL ROLE cilexec_user_<id>;
+SET LOCAL app.cilexec_user_id = '<uuid>';
+```
+
+事务结束后 `SET LOCAL` 自动失效。
+
+Runtime Role 必须获得切换到用户 Role 的受控成员关系，但不得是 PostgreSQL superuser，也不得拥有 `BYPASSRLS`。
+
+直接数据库登录属于高级能力。即使 PostgreSQL 端口映射到宿主，普通 CilExec 使用流程仍通过 Runtime。管理员若允许用户直接登录，RLS 和数据库对象权限必须仍然成立。
+
+## 5.4 全面 RLS
+
+所有包含用户、所有者或实例资源边界的业务表必须启用 RLS：
+
+```sql
+ALTER TABLE process.process ENABLE ROW LEVEL SECURITY;
+ALTER TABLE process.process FORCE ROW LEVEL SECURITY;
+```
+
+策略通过事务内的用户身份识别：
+
+```sql
+current_setting('app.cilexec_user_id', true)
+```
+
+RLS 负责最后一道数据库行隔离；Runtime 仍负责更丰富的 capability、关系和状态机校验。
+
+系统级表分为：
 
 ```text
-grant_id
-subject_type
-subject_id
-capability_name
-resource_type
-resource_pattern
+全用户不可见
+只允许 readonly 管理角色
+允许 Runtime 代表用户访问
+```
+
+任何 migration 新增业务表时，如果没有声明其 RLS 策略或明确标记为系统表，migration 测试必须失败。
+
+## 5.5 Secrets
+
+数据库密码和密钥通过：
+
+```text
+Docker secrets
+或
+外部秘密管理器
+```
+
+注入。不得写入：
+
+```text
+Dockerfile
+Git
+Maven settings.xml 或 pom.xml
+镜像层
+默认 compose 文件
+日志
+数据库业务表
+```
+
+---
+
+# 6. Migration 与 Schema 版本
+
+Flyway 作为 schema 版本管理工具。
+
+```text
+V001__bootstrap_roles.sql
+V002__create_meta.sql
+V003__create_auth.sql
+...
+```
+
+规则：
+
+1. 已执行 migration 不得修改；
+2. migration 必须有 checksum；
+3. 只允许向前迁移；
+4. 禁止自动 downgrade；
+5. Runtime 启动时验证数据库版本；
+6. 生产环境数据库版本不匹配时拒绝启动；
+7. 降级通过恢复备份完成；
+8. 开发环境可以显式允许 Runtime 调用 migration，但不得成为生产默认行为。
+
+---
+
+# 7. 单主动 Runtime 与控制锁
+
+一个 database 同一时刻只允许一个主动 CilExec Runtime。
+
+启动时创建一条专用 control connection，并尝试获得 PostgreSQL session advisory lock：
+
+```sql
+SELECT pg_try_advisory_lock(:instance_lock_key);
+```
+
+结果：
+
+```text
+true  → 获得控制权，继续启动
+false → 已存在主动 Runtime，当前容器拒绝进入运行态
+```
+
+control connection 不加入普通池，不执行 FCL 事务。
+
+连接断开时：
+
+```text
+停止领取新进程
+停止提交任何运行结果
+进入 FENCED
+停止 effect worker
+关闭终端写入
+退出容器
+```
+
+不能在失去控制锁后继续纯计算并稍后提交。数据库断线期间所有 CilExec 进程冻结。
+
+---
+
+# 8. 事务和 FCL 执行模型
+
+## 8.1 默认隔离级别
+
+普通事务采用：
+
+```text
+READ COMMITTED
+```
+
+原因：
+
+```text
+事务短
+每条 FCL 语句提交
+冲突通过 state_version 和行锁验证
+失败事务允许有限重试
+```
+
+少数跨多行强不变量操作可使用 `SERIALIZABLE`，但必须显式标注，并仅对可重放事务进行有限次数、带抖动重试。
+
+## 8.2 每条 FCL 语句一次提交
+
+用户决定：
+
+```text
+一条 FCL 语句
+=
+一个持久化事务边界
+```
+
+普通语句流程：
+
+```text
+BEGIN
+验证 Runtime boot 和控制权
+验证 scheduler lease
+锁定进程行
+验证 state_version
+验证 execution_epoch
+加载该语句需要的 continuation 和变量
+执行一条 FCL 语句
+写入变量当前值
+写入 continuation
+更新当前 program counter
+更新进程状态与调度队列
+写必要审计事件
+COMMIT
+```
+
+这意味着每个已提交语句都是恢复安全点。
+
+## 8.3 强制安全点
+
+下列操作全部形成明确事务边界：
+
+```text
+fork
+IPC send/receive
+VFS 可见修改
+Timer 创建或等待
+进程挂起
+用户输入等待
+effect 请求
+包导入或绑定修改
+进程终止
+执行量子结束
+```
+
+由于首版每条语句提交，普通执行量子可视为一条 FCL 语句。未来若引入批量纯计算模式，必须作为新的格式版本和语义变更，不能悄悄改变恢复粒度。
+
+## 8.4 冲突控制
+
+采用：
+
+```text
+state_version
++
+execution_epoch
++
+必要的 SELECT ... FOR UPDATE
+```
+
+提交条件示意：
+
+```sql
+UPDATE process.process
+SET state_version = state_version + 1,
+    ...
+WHERE process_uid = :process_uid
+  AND state_version = :expected_state_version
+  AND execution_epoch = :expected_execution_epoch;
+```
+
+受影响行数不是 1 时，提交失败，不能覆盖新状态。
+
+## 8.5 锁顺序
+
+跨模块事务必须遵守统一顺序：
+
+```text
+meta instance/boot
+→ auth principal
+→ program
+→ process
+→ scheduler
+→ ipc
+→ timer
+→ vfs node
+→ object_store
+→ package environment/binding
+→ effect
+→ terminal
+→ audit
+```
+
+同一类资源按稳定主键排序后加锁。
+
+---
+
+# 9. Program 与进程 continuation
+
+## 9.1 Program 是共享不可变代码
+
+程序代码不按进程复制。
+
+```text
+program.program
+program.statement
+program.module_binding
+```
+
+`program.program`：
+
+```text
+program_id
+program_hash
+language_version
+source_object_hash
+compiled_object_hash
+statement_count
+created_at
+```
+
+`program_id` 是数据库内部稳定标识；`program_hash` 是代码逻辑内容身份。
+
+## 9.2 进程身份
+
+用户决定 PID 永不复用。
+
+```text
+process_uid = 内部 UUID
+pid         = 用户可见、实例内单调递增且永不复用
+```
+
+不需要 `generation` 参与用户身份，但 `process_uid` 仍作为所有外键和内部引用。
+
+## 9.3 完整 continuation
+
+崩溃恢复不能只保存“当前语句”。至少保存：
+
+```text
+program_id
+program_hash
+program_counter
+call stack
+return address
+scope stack
+局部变量当前值
+异常处理栈
+循环/分支 continuation
+等待原因
+等待对象 ID
+当前 package binding
+语言和 runtime 格式版本
+```
+
+建议表：
+
+```text
+process.process
+process.call_frame
+process.scope
+process.variable
+process.exception_frame
+process.wait_state
+process.relationship
+process.event
+```
+
+## 9.4 当前变量与变量审计
+
+所有进程变量的**当前值**必须持久化。
+
+不永久记录每次普通变量变化。审计只保存：
+
+```text
+安全事件
+权限变化
+管理操作
+外部可见操作
+包安装与升级
+宿主 mount
 effect
-granted_by
+异常恢复
+```
+
+这不影响状态恢复：恢复读取 `process.variable` 当前值，而不是从审计历史重放所有赋值。
+
+---
+
+# 10. 调度器
+
+首版策略：
+
+```text
+FIFO
+```
+
+`process.process` 进入 READY 后加入 `scheduler.queue`。
+
+领取示意：
+
+```sql
+SELECT process_uid
+FROM scheduler.queue
+WHERE queue_state = 'READY'
+  AND ready_at <= now()
+ORDER BY enqueued_at, process_uid
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
+```
+
+## 10.1 Worker
+
+worker 数量为配置项，默认较小。执行 worker 数量和数据库连接池大小分别配置。
+
+## 10.2 Lease
+
+每次领取创建或更新 lease：
+
+```text
+process_uid
+runner_id
+boot_id
+execution_epoch
+claimed_at
+heartbeat_at
+expires_at
+```
+
+规则：
+
+```text
+领取时 execution_epoch += 1
+worker 定期 heartbeat
+过期后可被其他 worker 重领
+旧 worker 提交时 epoch 不匹配，提交失败
+```
+
+## 10.3 崩溃恢复
+
+RUNNING 进程按最后提交状态分类：
+
+```text
+纯执行中且 continuation 完整 → READY
+等待 IPC                 → WAITING_IPC
+等待 Timer               → WAITING_TIMER
+等待 effect              → WAITING_EFFECT
+已终止但清理未完成        → TERMINATING
+状态不满足不变量          → FAILED_RECOVERY
+```
+
+---
+
+# 11. IPC、Channel、Topic 与广播
+
+首版直接支持完整消息模型：
+
+```text
+进程到进程
+命名 channel
+topic
+subscription
+广播
+```
+
+## 11.1 数据模型
+
+```text
+ipc.message
+ipc.delivery
+ipc.channel
+ipc.subscription
+ipc.topic
+```
+
+`ipc.message`：
+
+```text
+message_id
+sender_process_uid
+message_kind
+channel_id
+topic_name
+payload_type
+payload_json
+payload_object_hash
 created_at
 expires_at
 ```
 
-示例：
+`ipc.delivery`：
 
 ```text
-USER 12  VFS_READ      PATH     /home/12/**    ALLOW
-USER 12  HOST_EXEC     GLOBAL   *              DENY
-GROUP 4  PACKAGE_LOAD  PACKAGE  compiler/**    ALLOW
-```
-
----
-
-# 4. 数据库中的“文件”模型
-
-数据库中的文件不能只是：
-
-```text
-path + bytea
-```
-
-一个完整文件至少需要区分四种身份：
-
-```text
-文件节点身份
-文件当前内容身份
-文件历史版本身份
-目录中的名称和位置
-```
-
-最终模型：
-
-```text
-文件 = VFS 节点 + 不可变内容对象 + 当前版本引用
-```
-
----
-
-## 4.1 `vfs.node`
-
-每个目录、文件和符号链接都是一个节点：
-
-```text
-node_id
-parent_node_id
-name
-node_type
-
-owner_id
-group_id
-permission_mode
-
-current_content_hash
-size
-version
-
-created_at
-modified_at
-deleted_at
-```
-
-`node_type`：
-
-```text
-DIRECTORY
-FILE
-SYMLINK
-MOUNT
-DEVICE
-```
-
-关键约束：
-
-```text
-UNIQUE(parent_node_id, name)
-```
-
-目录：
-
-```text
-current_content_hash = NULL
-```
-
-普通文件：
-
-```text
-current_content_hash = 对应 object_store.object
-```
-
-文件身份由 `node_id` 决定。
-
-文件内容身份由 `current_content_hash` 决定。
-
-同一个文件可以多次修改，但 `node_id` 不变，内容 hash 改变。
-
----
-
-## 4.2 `vfs.file_revision`
-
-用于保存文件修改历史：
-
-```text
-revision_id
-node_id
-content_hash
-size
-previous_revision_id
-created_by_user
-created_by_process
-created_at
-reason
-```
-
-首版可以只为以下文件启用历史：
-
-* 系统配置；
-* FCL 源代码；
-* 软件包描述；
-* 用户主动要求版本化的文件。
-
-不要求所有临时文件永久保存历史。
-
----
-
-## 4.3 `vfs.symlink`
-
-```text
-node_id
-target_path
-```
-
----
-
-## 4.4 `vfs.mount`
-
-```text
-mount_id
-node_id
-mount_type
-source_id
-read_only
-created_at
-```
-
-`mount_type`：
-
-```text
-PACKAGE
-HOST
-TEMPORARY
-SYSTEM
-```
-
-软件包数据库中的 `package_file` 可以通过只读视图出现在 VFS 中。
-
----
-
-# 5. 不可变内容对象存储
-
-所有文件内容、软件包内容和大型二进制数据统一进入：
-
-```text
-object_store
-```
-
-## 5.1 `object_store.object`
-
-```text
-object_hash
-size
-chunk_count
-media_type
-compression
-created_at
-```
-
-建议：
-
-```text
-hash algorithm = SHA-256
-object_hash     = 32 字节 bytea
-```
-
-约束：
-
-```sql
-CHECK (octet_length(object_hash) = 32)
-```
-
-内容对象一旦创建，不允许修改。
-
-修改文件时不是修改旧对象，而是：
-
-```text
-生成新内容
-计算新 hash
-插入新 object
-更新 vfs.node.current_content_hash
-```
-
----
-
-## 5.2 `object_store.chunk`
-
-```text
-object_hash
-chunk_index
-chunk_data
-```
-
-主键：
-
-```text
-(object_hash, chunk_index)
-```
-
-首版建议固定：
-
-```text
-chunk size = 1 MiB
-```
-
-最后一块可以小于 1 MiB。
-
-采用 chunk 表而不是把整个大文件放进一行，原因是：
-
-* 可以流式读写；
-* 不必一次把整个文件读入 JVM；
-* 可以验证每个对象是否完整；
-* 避免超大单行；
-* 更容易做限额和进度报告；
-* 删除对象时可以通过外键级联删除所有 chunk。
-
----
-
-## 5.3 首版不使用 PostgreSQL Large Object
-
-PostgreSQL 提供 Large Object 接口，但它拥有独立的对象生命周期和访问方式。PostgreSQL JDBC 文档特别提醒，删除引用 Large Object 的普通表行并不会自动删除该对象，并且其权限处理也需要额外注意。
-
-因此首版采用：
-
-```text
-普通表
-+
-分块 bytea
-+
-外键
-```
-
-而不采用 `pg_largeobject`。
-
-以后只有在需要真正的超大型随机访问对象时，再重新评估。
-
----
-
-# 6. 文件原子写入流程
-
-一次 CilExec VFS 写入：
-
-```fcl
-write("/home/user/a.txt", "hello")
-```
-
-执行流程：
-
-```text
-1. Java 计算内容 hash
-2. 开启事务
-3. 如果 object 不存在，插入 object 和 chunks
-4. 锁定对应 vfs.node
-5. 插入 file_revision
-6. 更新 node.current_content_hash
-7. 更新 node.size 和 version
-8. 更新进程指令位置
-9. 写入审计事件
-10. COMMIT
-```
-
-最终只允许两种结果：
-
-```text
-文件和进程状态都更新
-或者
-任何内容都没有更新
-```
-
-不允许出现：
-
-```text
-文件已经修改
-但进程还停留在原语句
-```
-
----
-
-# 7. 软件包系统的核心定义
-
-## 7.1 一个软件包就是一个不可变数据库文件
-
-CilExec 软件包的发布实体不是目录、ZIP 归档或若干松散文件，而是一个独立的数据库文件：
-
-```text
-<package-name>-<version>.db
-```
-
-首版采用 SQLite 作为软件包数据库文件格式，原因只有一个：它能够将完整的关系数据和二进制内容封装为单个跨平台文件。
-
-运行实例仍然使用 PostgreSQL。
-
-二者职责不同：
-
-```text
-PostgreSQL
-    保存正在运行的 CilExec 实例状态
-
-软件包 .db
-    携带一个已经发布、不可修改的软件包
-```
-
-软件包数据库不是 CilExec 运行实例的子数据库，也不会长期作为可写数据库使用。
-
-它是一个可验证、可复制、可签名、可发布的只读发布物。
-
----
-
-## 7.2 软件包必须满足的设计原则
-
-### 原则一：不可变
-
-软件包完成发布后，其数据库文件中的任何内容都不得修改。
-
-需要改变代码、资源、依赖、权限声明或入口点时，必须产生新的软件包数据库，并获得新的 `package_hash`。
-
-不得对已发布软件包执行：
-
-```text
-UPDATE
-INSERT
-DELETE
-ALTER TABLE
-VACUUM 后覆盖原发布物
-```
-
-软件包可以被读取、验证和复制，但不能被原地升级。
-
-### 原则二：内容身份优先
-
-软件包的最终身份是：
-
-```text
-package_hash
-```
-
-而不是：
-
-```text
-文件路径
-安装位置
-数据库行号
-namespace/name/version
-```
-
-`namespace`、`name` 和 `version` 是供人理解和选择的坐标。
-
-`package_hash` 才是运行时、依赖、进程和安装记录最终引用的身份。
-
-### 原则三：允许同一软件包存在多个版本
-
-下面这些发布物可以同时存在：
-
-```text
-std/network 1.0.0 hash-A
-std/network 1.1.0 hash-B
-std/network 2.0.0 hash-C
-```
-
-它们互不覆盖。
-
-同一个 CilExec 实例、同一个用户，甚至同一时间运行的不同进程，都可以分别引用不同版本。
-
-### 原则四：安装结果原子可见
-
-安装一个软件包及其依赖时，其他进程只能看到两种状态：
-
-```text
-安装前
-或者
-完整安装后
-```
-
-不能看到：
-
-```text
-主包已经存在但依赖尚未存在
-文件已经可见但安装绑定尚未建立
-新版本已经覆盖旧版本但进程引用尚未更新
-```
-
-### 原则五：发布物自包含
-
-软件包数据库必须包含运行该软件包所需要的全部发布信息：
-
-* 软件包元数据；
-* FCL 模块；
-* 资源；
-* 入口点；
-* 导出符号；
-* 精确依赖；
-* 能力申请；
-* 完整性信息；
-* 发布签名。
-
-构建机器上的目录、绝对路径和临时文件不能成为运行依赖。
-
-### 原则六：代码与运行数据分离
-
-软件包数据库只保存不可变发布内容。
-
-用户配置、缓存、运行记录和包私有数据不写回软件包数据库。
-
-它们属于 CilExec 实例中的可变数据空间。
-
----
-
-## 7.3 软件包原子性的三个层次
-
-### 构建原子性
-
-构建过程中产生的数据库文件不是有效软件包。
-
-只有完成全部表写入、约束检查、哈希计算和封存后，最终 `.db` 文件才成为有效发布物。
-
-### 导入原子性
-
-软件包数据库进入 PostgreSQL 时，发布记录、依赖、入口点、导出和原始数据库文件必须在同一个事务中建立。
-
-### 安装原子性
-
-用户或环境对一个精确 `package_hash` 的绑定，必须和依赖可用性、权限检查及数据空间建立在同一个事务中完成。
-
-不再为包安装额外设计文件式事务日志、根清单或者中间可见状态。
-
-PostgreSQL 事务就是安装事务。
-
----
-
-# 8. 软件包 `.db` 的内部结构
-
-## 8.1 数据库文件约束
-
-软件包数据库必须满足：
-
-```text
-单文件
-只读发布
-固定 schema 版本
-启用外键约束
-不包含 WAL 或 journal 伴随文件
-不依赖外部数据库
-不允许 ATTACH 其他数据库
-不允许触发器执行安装逻辑
-不允许自定义扩展或虚拟表
-```
-
-软件包加载器必须检查数据库 schema，而不能仅根据扩展名判断它是合法软件包。
-
-加载器还必须执行资源限制检查：
-
-```text
-最大数据库文件体积
-最大文件数量
-单个文件最大体积
-全部 package_file 内容总量
-最大依赖数量
-最大入口点和导出数量
-最大字符串长度
-```
-
-具体上限由内核配置和软件包格式版本共同决定，验证必须在读取全部内容进入 JVM 之前尽可能提前失败。
-
-数据库中允许存在的表、列、约束和索引由软件包格式版本明确规定。
-
-未知的关键表或关键字段必须导致验证失败，避免旧内核错误解释新格式。
-
----
-
-## 8.2 `package_metadata`
-
-该表只能存在一行：
-
-```text
-schema_version
-namespace
-name
-version
-package_hash
-minimum_kernel_version
-fcl_language_version
-description
-license
-publisher
-created_at
-sealed
-```
-
-其中：
-
-```text
-package_hash = 软件包规范化内容的 SHA-256
-sealed       = 是否已经完成封存
-```
-
-合法发布物必须满足：
-
-```text
-sealed = true
-```
-
-`created_at` 只用于展示，不参与 `package_hash` 计算。
-
----
-
-## 8.3 数据库中的文件抽象
-
-软件包数据库中的源码和资源统一抽象为文件，但并不是所有软件包数据都是文件。
-
-以下内容是文件：
-
-```text
-FCL 源代码
-模板
-静态资源
-二进制资源
-配置默认值
-许可证文本
-```
-
-以下内容不是文件，而是关系数据：
-
-```text
-依赖
-入口点
-导出
-能力申请
-签名
-版本信息
-```
-
-文件由 `package_file` 表表示。
-
-### `package_file`
-
-```text
-file_id
-path
-file_kind
-media_type
-encoding
-content
-content_hash
-byte_size
-executable
-```
-
-`file_kind`：
-
-```text
-MODULE
-RESOURCE
-TEMPLATE
-DOCUMENT
-BINARY
-```
-
-规则：
-
-* `path` 是软件包内部的规范化相对路径；
-* 路径统一使用 `/`；
-* 不允许 `..`；
-* 不允许绝对路径；
-* 不允许 Windows 盘符；
-* 不保存显式目录条目；
-* 同一路径只能存在一行；
-* `content_hash` 必须等于 `content` 的 SHA-256；
-* `byte_size` 必须等于内容字节数；
-* 文件内容一旦封存不得修改。
-
-目录由文件路径自然推导，不作为独立软件包对象保存。
-
----
-
-## 8.4 `package_module`
-
-FCL 模块对 `package_file` 进行语义标注：
-
-```text
-module_id
-module_name
-file_id
-language_version
-load_order
-```
-
-约束：
-
-```text
-file_id 必须引用 file_kind = MODULE 的文件
-module_name 在软件包内唯一
-```
-
-运行时按模块读取 FCL 源代码，而不是把所有 `.fcl` 文件直接拼接成一个没有身份的字符串。
-
----
-
-## 8.5 `package_dependency`
-
-```text
-dependency_id
-binding
-namespace
-name
-version
-required_hash
-optional
-scope
-```
-
-`required_hash` 是最终依赖身份。
-
-`namespace/name/version` 用于诊断和展示，但加载时必须验证它们与 `required_hash` 指向的软件包一致。
-
-`scope`：
-
-```text
-RUNTIME
-BUILD
-DEVELOPMENT
-```
-
-发布后的运行时依赖必须拥有精确 `required_hash`。
-
-不允许在进程启动时临时选择“最新版本”。
-
----
-
-## 8.6 `package_entrypoint`
-
-```text
-entrypoint_id
-name
-entrypoint_kind
-module_id
-symbol
-```
-
-`entrypoint_kind`：
-
-```text
-COMMAND
-LIBRARY
-SERVICE
-PLUGIN
-BOOTSTRAP
-```
-
-入口点必须引用数据库中真实存在的模块和符号。
-
----
-
-## 8.7 `package_export`
-
-```text
-export_id
-export_name
-export_kind
-module_id
-symbol
-```
-
-它定义软件包允许其他包或用户代码访问的公开接口。
-
-未列入 `package_export` 的内部函数和模块不能通过包导入机制直接访问。
-
----
-
-## 8.8 `package_capability`
-
-```text
-capability_id
-capability_name
-resource_pattern
-required
-reason
-```
-
-软件包只能声明它需要什么能力。
-
-声明本身不会授予权限。
-
-安装时由 CilExec 权限系统决定是否允许该安装绑定获得这些能力。
-
----
-
-## 8.9 `package_signature`
-
-```text
-signature_id
-key_id
-algorithm
-signed_package_hash
-signature
-created_at
-```
-
-签名覆盖 `package_hash`，而不是数据库文件路径或安装位置。
-
-首版建议支持：
-
-```text
-SHA-256
-Ed25519
-```
-
-签名不参与 `package_hash` 计算，否则给同一内容增加签名会改变被签名对象本身。
-
----
-
-## 8.10 软件包数据库中明确不保存的内容
-
-```text
-安装状态
-用户绑定
-进程引用
-用户私有数据
-缓存
-运行日志
-宿主路径
-数据库连接信息
-安装事务状态
-```
-
-这些内容属于运行实例，不属于发布物。
-
----
-
-# 9. 哈希、版本和多版本规则
-
-## 9.1 `package_hash` 是唯一持久身份
-
-`package_hash` 根据数据库中的规范化逻辑内容计算，至少覆盖：
-
-```text
-package_metadata 中参与身份的字段
-按 path 排序后的 package_file 及其 content_hash
-package_module
-按 binding 排序后的精确依赖
-entrypoint
-export
-capability
-```
-
-不参与计算：
-
-```text
-created_at
-签名行
-SQLite 页号
-空闲页
-数据库内部索引布局
-宿主文件名
-```
-
-因此，同样的逻辑软件包应得到相同 `package_hash`，即使数据库文件的物理页面布局不同。
-
----
-
-## 9.2 版本不是身份替代品
-
-版本号是人类可读的发布标签。
-
-数据库必须允许：
-
-```text
-同一 namespace/name
-存在多个 version
-每个 version 对应一个或多个 package_hash 记录
-```
-
-最终选择结果必须是精确哈希。
-
-只按版本查询时：
-
-* 若只匹配一个哈希，可以返回该发布；
-* 若匹配多个不同哈希，必须报告歧义；
-* 不得静默选择最后导入、最新时间或任意一项。
-
-正式仓库可以进一步规定：
-
-> 同一发布者已经发布的 `namespace/name/version` 不允许被另一份不同内容覆盖。
-
-但底层存储仍以哈希为身份，不依赖这条仓库策略维持正确性。
-
----
-
-## 9.3 升级不是修改旧包
-
-升级行为是：
-
-```text
-旧安装绑定 -> hash-A
-
-原子切换为
-
-新安装绑定 -> hash-B
-```
-
-`hash-A` 对应的软件包不会被修改。
-
-仍在运行并引用 `hash-A` 的进程可以继续使用旧版本。
-
-新进程或重新解析后的环境可以使用 `hash-B`。
-
----
-
-# 10. 软件包在 PostgreSQL 中的表示
-
-## 10.1 设计原则
-
-PostgreSQL 不把软件包拆成一套模拟旧文件系统的对象目录。
-
-它只保存运行实例真正需要管理的关系：
-
-```text
-发布物
-发布元数据
-依赖关系
-安装绑定
-进程绑定
-包数据空间
-```
-
-PostgreSQL 的事务、索引、唯一约束和外键直接承担一致性、查找和引用完整性。
-
-包管理层不再额外维护一套平行的持久化协议。
-
----
-
-## 10.2 `package.release`
-
-一行代表一个不可变发布物：
-
-```text
-package_hash
-namespace
-name
-version
-schema_version
-minimum_kernel_version
-fcl_language_version
-database_bytes
-database_byte_size
-database_file_hash
-publisher_id
-signature_status
-imported_at
-revoked_at
-```
-
-主键：
-
-```text
-package_hash
-```
-
-`database_bytes` 保存完整的 `.db` 发布文件，使 CilExec 能够重新导出同一个软件包数据库。
-
-`database_file_hash` 只验证传输和存储字节是否损坏。
-
-它不是软件包语义身份。
-
-核心索引：
-
-```text
-(namespace, name, version)
-(namespace, name)
-```
-
-这些索引用于查询，不承担最终身份。
-
----
-
-## 10.3 PostgreSQL 中的发布索引表
-
-为了避免每次解析依赖都重新打开软件包数据库，导入时只抽取运行时需要频繁查询的关系：
-
-```text
-package.release_dependency
-package.release_entrypoint
-package.release_export
-package.release_capability
-```
-
-它们全部以 `package_hash` 为外键。
-
-软件包文件内容仍以原始数据库文件为权威，不要求在 PostgreSQL 中复制第二份完整内容。
-
-Java 可以按 `package_hash` 建立可丢弃的只读本地缓存，以便通过 SQLite 读取 `package_file` 和 `package_module`。
-
-缓存不是持久真相，删除后可以从 `database_bytes` 重新生成。
-
----
-
-## 10.4 `package.installation`
-
-安装不是复制软件包，而是建立一个可见绑定：
-
-```text
-installation_id
-owner_id
-environment_id
-binding
-package_hash
-data_scope_id
-installed_at
-installed_by
-```
-
-关键约束：
-
-```text
-UNIQUE(owner_id, environment_id, binding)
-```
-
-同一用户可以通过不同 binding 同时安装不同版本：
-
-```text
-network_v1 -> hash-A
-network_v2 -> hash-B
-```
-
-同一个哈希可以被多个用户和环境共享，不需要复制发布数据库。
-
-`package.installation` 行完成提交，就是安装对该用户或环境的可见性边界。
-
-不需要额外的“根清单”。
-
----
-
-## 10.5 `process.package_binding`
-
-```text
-process_uid
-binding
-package_hash
-installation_id
-resolved_at
-```
-
-进程第一次解析包时，将最终选择写成精确哈希。
-
-之后：
-
-```text
-用户升级安装绑定
-不会偷偷改变已运行进程的包版本
-```
-
-恢复进程时，直接根据 `package_hash` 重新加载同一个发布物。
-
-这保证了进程恢复的确定性。
-
----
-
-## 10.6 `package.data_scope`
-
-软件包数据库不可写，因此可变数据必须单独保存：
-
-```text
-data_scope_id
-owner_id
-environment_id
-binding
-created_at
-```
-
-包私有数据可以进入 VFS 或专用关系表，但必须通过 `data_scope_id` 隔离。
-
-规则：
-
-* 升级同一 binding 时默认保留原 data scope；
-* 以新 binding 并行安装时创建独立 data scope；
-* 卸载是否删除数据由用户明确决定；
-* 不允许把运行数据写回发布数据库。
-
----
-
-## 10.7 发布物保留与清理
-
-发布物是否仍被使用，可以通过数据库外键直接判断：
-
-```text
-package.installation -> package.release
-process.package_binding -> package.release
-```
-
-删除发布物时使用 `ON DELETE RESTRICT`。
-
-只有不存在安装绑定和进程绑定的发布物才允许清理。
-
-首版只需要一个普通的“删除无引用发布物”维护操作。
-
-长期保留某个发布物时，可以建立普通的保留策略表，但它不是包身份模型的核心组成部分。
-
----
-
-# 11. 软件包构建、导入和安装流程
-
-## 11.1 构建与封存
-
-```text
-1. 读取包项目输入
-2. 验证元数据、模块、入口点和导出
-3. 解析并固定所有运行时依赖 hash
-4. 创建临时软件包数据库
-5. 在一个数据库事务中写入全部表
-6. 计算每个 package_file.content_hash
-7. 根据规范化逻辑内容计算 package_hash
-8. 写入 package_metadata.package_hash
-9. 写入签名
-10. 设置 sealed = true
-11. 提交并关闭数据库
-12. 完成完整性检查
-13. 将临时数据库原子发布为最终 .db 文件
-```
-
-构建失败时，不得留下一个看似有效的半成品软件包。
-
----
-
-## 11.2 导入验证
-
-导入 `.db` 前必须验证：
-
-```text
-数据库文件可正常打开
-数据库 schema 版本受支持
-只存在允许的 schema 对象
-外键和约束完整
-package_metadata 只有一行
-sealed = true
-所有文件 hash 正确
-所有 module 引用有效
-所有 entrypoint 和 export 引用有效
-所有依赖具有精确 required_hash
-重新计算的 package_hash 与声明一致
-签名有效或符合当前信任策略
-```
-
-导入验证在 PostgreSQL 长事务之外进行。
-
-未通过验证的软件包不能进入 `package.release`。
-
----
-
-## 11.3 发布物导入事务
-
-验证完成后开启 PostgreSQL 事务：
-
-```text
-插入 package.release
-插入 dependency 索引
-插入 entrypoint 索引
-插入 export 索引
-插入 capability 索引
-记录审计事件
-COMMIT
-```
-
-如果相同 `package_hash` 已经存在：
-
-* 数据库字节一致时视为幂等成功；
-* 数据库字节不同但逻辑 hash 相同时，保留已有发布物并记录传输差异；
-* 不得覆盖已有发布行。
-
----
-
-## 11.4 安装依赖图
-
-安装请求必须先解析出完整的精确哈希集合：
-
-```text
-root hash
-依赖 hash A
-依赖 hash B
-依赖的依赖 hash C
-```
-
-解析和验证可以在事务外进行。
-
-最终安装事务只做确定操作：
-
-```text
-确认全部 release hash 已存在
-确认能力申请可以授权
-确认 binding 没有并发冲突
-创建或复用 data scope
-插入或更新 package.installation
-记录审计事件
-COMMIT
-```
-
-整个依赖图在提交前都不可见。
-
-安装事务不暴露任何持久中间状态，也不依赖后续恢复步骤补齐安装。
-
-PostgreSQL 已经提供了原子提交，不需要再在应用层模拟一次安装事务协议。
-
----
-
-## 11.5 升级
-
-升级同一 binding：
-
-```text
-锁定 installation 行
-验证新 hash 及全部依赖
-检查能力变化
-将 package_hash 从旧值更新为新值
-保留 data_scope_id
-COMMIT
-```
-
-旧发布物不会被删除。
-
-已经绑定旧哈希的运行进程不受影响。
-
----
-
-## 11.6 卸载
-
-卸载：
-
-```text
-锁定 installation 行
-删除 installation
-按用户选择保留或删除 data scope
-记录审计事件
-COMMIT
-```
-
-卸载不删除仍被其他安装或进程引用的发布物。
-
----
-
-## 11.7 进程导入
-
-进程执行包导入时：
-
-```text
-读取当前 installation binding
-解析到精确 package_hash
-验证依赖图
-写入 process.package_binding
-加载精确版本模块
-推进进程 statement
-COMMIT
-```
-
-进程之后不再根据“当前安装的最新版本”重新解析。
-
----
-
-## 11.8 首版不提供安装和卸载生命周期钩子
-
-任意生命周期钩子可能执行网络请求、宿主操作或长时间 FCL 代码，无法与 PostgreSQL 安装事务保持真正原子。
-
-因此首版明确规定：
-
-```text
-安装和卸载只改变数据库状态
-不执行任意 pre/post hook
-```
-
-未来若增加生命周期逻辑，只能采用：
-
-* 纯声明式数据库迁移；或
-* 明确属于 effect 系统的提交后任务。
-
-它们不能成为软件包“是否已经安装”的可见性边界。
-
----
-
-# 12. 软件包文件在运行时的表现
-
-## 12.1 只读文件视图
-
-`package_file` 中的内容可以通过 VFS 暴露为只读视图，例如：
-
-```text
-/package/<package_hash>/...
-```
-
-该路径只是软件包数据库内容的视图，不是复制出来的可写目录。
-
-用户不能通过 VFS 修改包内源码或资源。
-
----
-
-## 12.2 安装不是复制
-
-安装一个软件包只建立：
-
-```text
-binding -> package_hash
-```
-
-不会为每个用户复制一份 `.db`，也不会把所有包文件复制到用户目录。
-
-多个用户、多个进程和多个安装可以共享同一 `package.release`。
-
----
-
-## 12.3 多版本并存
-
-VFS 视图、进程绑定和安装绑定全部以哈希为最终定位：
-
-```text
-/package/hash-A/...
-/package/hash-B/...
-```
-
-因此同一包的多个版本不会发生路径覆盖。
-
-人类可读的别名只是一层解析结果：
-
-```text
-network_v1 -> hash-A
-network_v2 -> hash-B
-```
-
----
-
-## 12.4 可丢弃缓存
-
-SQLite JDBC 需要文件形式读取软件包数据库时，可以把 `database_bytes` 写入按哈希命名的本地只读缓存：
-
-```text
-cache/packages/<package_hash>.db
-```
-
-缓存必须满足：
-
-* 只读；
-* 可随时删除；
-* 启动时无需恢复；
-* 不包含任何唯一状态；
-* 每次使用前可验证文件 hash；
-* 不能成为安装完成的判断依据。
-
----
-
-# 13. 进程数据库模型
-
-## 13.1 进程身份
-
-采用双重身份：
-
-```text
-process_uid = 数据库内部稳定 UUID
-pid         = 用户可见进程号
-generation  = PID 复用代数
-```
-
-`process_uid` 作为数据库外键。
-
-用户界面显示：
-
-```text
-pid:generation
-```
-
-例如：
-
-```text
-42:3
-```
-
----
-
-## 13.2 `process.process`
-
-```text
-process_uid
-pid
-generation
-
-owner_id
-parent_process_uid
-
+delivery_id
+message_id
+receiver_process_uid
 status
-priority
-current_statement_id
-working_directory_node_id
-
-state_version
-execution_epoch
-
-interrupt_requested
-suspend_reason
-exit_code
-
-created_at
-updated_at
-terminated_at
+reserved_by
+reserved_at
+consumed_at
+failed_at
+failure_reason
 ```
 
 状态：
 
 ```text
-CREATED
-READY
-RUNNING
-WAITING
-SUSPENDED
-TERMINATING
-TERMINATED
+PENDING
+RESERVED
+CONSUMED
 FAILED
+DEAD
 ```
+
+## 11.2 交付语义
+
+在单一 PostgreSQL 实例内，以 `ipc.delivery` 为单位实现精确消费一次：
+
+```text
+一个 delivery 只能从 PENDING/RESERVED 进入一次 CONSUMED
+```
+
+广播不是多人争抢同一行，而是为每个订阅者建立独立 delivery。
+
+## 11.3 模式
+
+### 定点发送
+
+```text
+process A → process B
+```
+
+### Channel
+
+```text
+多个消费者监听 channel
+一条消息由其中一个消费者领取
+```
+
+### Topic/订阅
+
+```text
+发布到 topic
+为所有有效订阅生成 delivery
+```
+
+### 广播
+
+广播是 topic fan-out 的明确语法或系统 topic，不单独使用不可靠的内存事件总线。
 
 ---
 
-## 13.3 其他进程表
+# 12. Timer
+
+Timer 的权威状态进入 PostgreSQL：
 
 ```text
-process.statement
-process.variable
-process.call_frame
-process.scope
-process.import
-process.relationship
 process.timer
-process.event
+├── timer_id
+├── process_uid
+├── wake_at
+├── status
+├── created_at
+├── fired_at
+└── payload
 ```
 
-### `process.statement`
+Java Runtime 只负责：
 
 ```text
-statement_id
-process_uid
-sequence_number
-source_text
-source_origin
-source_path
-created_at
+查询即将到期 Timer
+使用虚拟线程等待或短周期轮询
+原子领取
+将等待进程唤醒
 ```
 
-### `process.variable`
-
-```text
-process_uid
-scope_id
-variable_name
-value_type
-value_json
-value_object_hash
-version
-```
-
-小型值进入 `value_json`。
-
-大型值进入 object store。
-
-不保存 Java 序列化对象。
+`ScheduledExecutorService`、`Thread.sleep` 或虚拟线程等待只用于减少轮询成本，不是 Timer 真相。容器重启后必须扫描数据库中未触发的到期 Timer。
 
 ---
 
-# 14. 调度器模型
+# 13. VFS 与 Object Store
 
-主要表：
+## 13.1 文件节点
 
 ```text
-scheduler.queue
-scheduler.runner
-scheduler.lease
+vfs.node
+├── node_id
+├── parent_node_id
+├── owner_id
+├── name
+├── node_type
+├── current_object_hash
+├── mode/capability
+├── created_at
+└── updated_at
 ```
 
-## `scheduler.queue`
+## 13.2 首版内容存储
+
+每个内容对象首版使用一个 `bytea`：
 
 ```text
-process_uid
-priority
-virtual_runtime
-ready_at
-queue_state
-enqueued_at
+object_store.object
+├── object_hash
+├── byte_size
+├── media_type
+├── content bytea
+└── created_at
 ```
 
-## `scheduler.runner`
+不在首版强制 1 MiB 分块。未来只有在真实基准证明必要时增加分块格式。
+
+## 13.3 内容寻址
+
+`object_hash` 由内容字节计算。对象不可修改：
 
 ```text
-runner_id
-boot_id
-thread_name
-status
-started_at
-heartbeat_at
+写新文件内容
+→ 计算新 hash
+→ INSERT object
+→ 更新 node.current_object_hash
+→ COMMIT
 ```
 
-## `scheduler.lease`
+## 13.4 文件历史
+
+默认只保留当前版本。指定节点或类型可以启用 revision：
 
 ```text
-process_uid
-runner_id
-execution_epoch
-claimed_at
-expires_at
+vfs.file_revision
 ```
 
-每次领取进程：
+历史保留策略可配置。
+
+## 13.5 宿主 mount
+
+允许高权限、显式配置的宿主目录挂载。
+
+必须同时满足：
 
 ```text
-execution_epoch += 1
-```
-
-提交执行结果时必须同时验证：
-
-```text
-process_uid
-state_version
-execution_epoch
-```
-
-旧 runner 即使恢复，也无法覆盖新 runner 的结果。
-
----
-
-# 15. JDBC 与虚拟线程规则
-
-虚拟线程数量可以很多。
-
-数据库连接数量不能跟虚拟线程数量一致。
-
-采用：
-
-```text
-大量虚拟线程
+Docker 层显式 bind mount
 +
-有上限的 JDBC 连接池
+CilExec capability 授权
++
+vfs.mount 数据库记录
 ```
 
-规则：
-
-* 一个虚拟线程只在短事务期间借用连接；
-* 不允许持有连接等待 IPC；
-* 不允许持有连接执行网络请求；
-* 不允许在数据库事务内等待用户输入；
-* 不允许一个进程生命周期对应一个连接；
-* 所有 JDBC 对象必须及时关闭。
+普通 FCL 代码不能任意访问未声明宿主路径。
 
 ---
 
-# 16. 事务边界
+# 14. 软件包数据库
 
-## 16.1 普通 FCL 语句
+## 14.1 发布物
 
-```text
-验证 lease
-锁定进程
-验证 state_version
-更新变量
-推进 statement
-更新状态
-更新调度队列
-COMMIT
-```
+一个软件包就是一个不可变 SQLite `.db` 文件。
 
-## 16.2 fork
+内部允许的核心表：
 
 ```text
-分配 PID 和 generation
-创建子进程
-复制必要变量和调用上下文
-写入父进程返回值
-推进父进程 statement
-加入子进程调度队列
-记录关系
-COMMIT
+package_metadata
+package_file
+package_module
+package_dependency
+package_entrypoint
+package_export
+package_capability
+package_signature
 ```
 
-## 16.3 IPC send
+软件包数据库：
 
 ```text
-创建消息
-必要时唤醒接收者
-推进发送者 statement
-更新发送者状态
-COMMIT
+只读
+不可修改
+不保存运行数据
+不依赖外部 ATTACH 数据库
+不允许虚拟表和任意扩展
 ```
 
-## 16.4 IPC receive
+## 14.2 身份
 
 ```text
-锁定消息
-写入接收变量
-标记消息已消费
-推进接收者 statement
-COMMIT
+package_hash
+=
+规范化逻辑内容哈希
 ```
 
-## 16.5 软件包安装或升级
+传输字节另有：
 
 ```text
-验证完整精确依赖图
-确认所有 package_hash 已导入
-锁定目标 installation binding
-检查能力授权
-创建或复用 data scope
-插入或更新 package.installation
-记录审计
-COMMIT
+database_file_hash
 ```
 
-PostgreSQL 使用事务组织多个步骤，提交时整体生效；WAL 负责先记录恢复所需日志，再允许实际数据页稍后写回。
+## 14.3 坐标唯一性
+
+最终决定：
+
+> **同一 `namespace/name/version` 绝对禁止对应不同 `package_hash`。**
+
+允许：
+
+```text
+std/network/1.0.0 → hash-A
+std/network/1.1.0 → hash-B
+```
+
+禁止：
+
+```text
+std/network/1.0.0 → hash-A
+std/network/1.0.0 → hash-B
+```
+
+数据库必须建立唯一约束：
+
+```text
+UNIQUE(namespace, name, version)
+```
+
+若同一坐标再次导入：
+
+```text
+hash 相同 → 幂等成功
+hash 不同 → 拒绝，报告版本污染
+```
+
+## 14.4 PostgreSQL 保存方式
+
+完整 `.db` 字节进入 `object_store.object`。
+
+```text
+package.release.database_object_hash
+→ object_store.object.object_hash
+```
+
+`package.release` 不再保存第二份 `database_bytes`，避免重复。
+
+完整原始 `.db` 是内容权威；PostgreSQL 中的依赖、入口、导出和 capability 索引是可重建派生数据。
+
+## 14.5 Package Environment
+
+首版实现显式软件包环境：
+
+```text
+package.environment
+├── environment_id
+├── owner_id
+├── name
+├── parent_environment_id
+├── status
+└── created_at
+```
+
+安装是：
+
+```text
+(environment_id, binding)
+→ package_hash
+```
+
+同一用户可以建立多个环境，各自绑定不同版本。
+
+## 14.6 进程绑定
+
+进程首次解析导入后保存精确：
+
+```text
+process.package_binding
+├── process_uid
+├── import_name
+├── environment_id
+└── package_hash
+```
+
+后续环境升级不会改变已运行进程的精确哈希。
+
+## 14.7 生命周期钩子
+
+首版完全禁止任意：
+
+```text
+pre-install
+post-install
+pre-upgrade
+post-upgrade
+pre-uninstall
+post-uninstall
+```
+
+安装、升级和卸载只改变 PostgreSQL 内的声明式绑定和授权，不自动执行任意 FCL 或宿主操作。
+
+## 14.8 可变数据
+
+软件包运行数据写入独立 `data_scope`，不得写回 package `.db`：
+
+```text
+package.data_scope
+→ VFS 或受控关系数据
+```
+
+## 14.9 签名
+
+签名可选，但必须记录：
+
+```text
+UNSIGNED
+VALID_TRUSTED
+VALID_UNTRUSTED
+INVALID
+REVOKED
+```
+
+本地开发策略可接受 unsigned；正式仓库可要求可信签名。
 
 ---
 
-# 17. 外部副作用
+# 15. 外部副作用
 
-以下操作不能直接放进数据库事务：
+所有数据库外操作必须进入 effect journal：
 
 ```text
-HTTP 请求
+HTTP
 Socket
 宿主文件写入
-启动外部程序
-发送邮件
-访问硬件
-```
-
-采用：
-
-```text
-effect.effect
-effect.attempt
-effect.result
-```
-
-流程：
-
-```text
-事务一：
-创建 PREPARED effect
-将进程设为 WAITING_EFFECT
-COMMIT
-
-事务外：
-Effect Worker 执行外部操作
-
-事务二：
-保存结果
-将 effect 设为 COMPLETED
-唤醒进程
-COMMIT
-```
-
-每个 effect 必须有：
-
-```text
-effect_id
-idempotency_key
-request_payload
-status
-attempt_count
-result_payload
+外部程序
+邮件
+硬件
+远程 API
 ```
 
 状态：
@@ -1905,554 +1397,651 @@ FAILED
 UNKNOWN
 ```
 
-数据库事务不能解决数据库外部操作的 exactly-once，因此现有 effect journal 思想必须保留。
-
----
-
-# 18. Java 代码结构
-
-建议建立以下模块边界：
+流程：
 
 ```text
-cilexec-bootstrap
-cilexec-domain
-cilexec-interpreter
-cilexec-kernel
-cilexec-storage-postgres
-cilexec-package-database
-cilexec-terminal
-cilexec-tests
+事务一：
+创建 effect
+进程进入 WAITING_EFFECT
+COMMIT
+
+事务外：
+Effect Worker 执行
+
+事务二：
+写 result
+更新 effect
+唤醒进程
+COMMIT
 ```
 
-## `cilexec-domain`
-
-只包含：
-
-* 领域对象；
-* 枚举；
-* Identity；
-* Mutation；
-* Repository 接口；
-* 不变量。
-
-不得依赖 JDBC。
-
-## `cilexec-storage-postgres`
-
-包含：
-
-* SQL；
-* JDBC；
-* RowMapper；
-* TransactionManager；
-* Repository 实现；
-* migration。
-
-## `cilexec-package-database`
-
-包含：
-
-* 软件包 `.db` 构建与封存；
-* SQLite 只读访问；
-* schema 验证；
-* `package_hash` 计算；
-* 签名验证；
-* 软件包数据库领域模型。
-
----
-
-# 19. 数据访问技术选择
-
-首版采用：
+每类 effect 必须声明：
 
 ```text
-JDBC
-+
-明确 SQL
-+
-轻量映射
+是否幂等
+幂等键如何生成
+是否可查询远端状态
+失败是否可重试
+UNKNOWN 如何处理
 ```
 
-不建议首版采用 Hibernate/JPA。
+UNKNOWN 由 effect 类型策略处理；无法确定时进入人工介入，不盲目重试。
 
-原因：
-
-* CilExec 对事务边界要求非常明确；
-* 需要精确控制锁和版本条件；
-* 大量操作不是普通 CRUD；
-* fork、领取任务、IPC 消费都需要专门 SQL；
-* 不应引入隐式 flush、延迟加载和对象生命周期。
-
-可以使用：
-
-* JDBC；
-* 自己的 RowMapper；
-* 可选 jOOQ。
-
-但 Repository 接口不能暴露 SQL。
+Effect Worker 使用独立 PostgreSQL Role。
 
 ---
 
-# 20. 启动流程
+# 16. Terminal 与中断
+
+终端只持久化完整提交输入，不记录每个按键。
 
 ```text
-1. 加载配置
-2. 创建 DataSource
-3. 验证 PostgreSQL 版本
-4. 连接目标 database
-5. 执行 migration
-6. 获取实例控制锁
-7. 创建 meta.kernel_instance
-8. 创建 meta.boot
-9. 检查旧 boot
-10. 执行语义恢复
-11. 启动 scheduler
-12. 启动 effect worker
-13. 启动 terminal
-14. 将 instance_status 设为 RUNNING
+terminal.session
+terminal.input
+terminal.attachment
 ```
 
-PostgreSQL schema 名称必须在 SQL 中完整限定。
-
-不依赖默认 `search_path`。
-
-PostgreSQL 官方文档提醒，将可被其他用户创建对象的 schema 放入 `search_path` 会形成信任和安全边界。
-
----
-
-# 21. 崩溃恢复流程
-
-PostgreSQL 首先使用 WAL 恢复到最后一个可靠数据库状态。
-
-随后 CilExec 执行语义恢复：
+Ctrl+C 不直接调用 Thread.stop，也不把取消 Java Future 当作进程终止语义，而是：
 
 ```text
-1. 标记旧 boot 为 CRASHED
-2. 使旧 runner 全部失效
-3. 清除旧 scheduler lease
-4. 找出 RUNNING 进程
-5. 检查其最后提交安全点
-6. 将可恢复进程改回 READY
-7. 检查 WAITING_EFFECT 进程
-8. 重新领取未完成 effect
-9. 扫描 PENDING IPC
-10. 扫描到期 timer
-11. 恢复 terminal attachment
-12. 启动调度
+设置 process.interrupt_requested
+→ 在下一语句事务或安全点检查
+→ 按 FCL 中断语义改变进程状态
 ```
 
-以后 CilExec 不再负责修复半写文件。
+---
 
-CilExec 只负责恢复业务语义。
+# 17. 审计、日志和健康检查
+
+## 17.1 审计
+
+结构化审计进入 PostgreSQL：
+
+```text
+audit.event
+├── event_id
+├── actor_type
+├── actor_id
+├── action
+├── resource_type
+├── resource_id
+├── result
+├── details_json
+└── created_at
+```
+
+保留期限按事件类型配置。
+
+## 17.2 运行日志
+
+普通运行日志写：
+
+```text
+stdout
+stderr
+```
+
+不写容器内部永久日志文件，也不把所有日志写入 PostgreSQL。
+
+## 17.3 健康端点
+
+区分：
+
+```text
+liveness
+= JVM 进程、控制连接监视器和核心执行循环是否存活
+
+readiness
+= PostgreSQL 可用
++ migration 版本匹配
++ 已获得 advisory lock
++ 恢复完成
++ Runtime 可接受工作
+```
 
 ---
 
-# 22. 正常关闭流程
+# 18. 启动、关闭与恢复
+
+## 18.1 启动
 
 ```text
-1. instance_status = STOPPING
+1. 加载非秘密配置
+2. 从 secret 文件读取凭据
+3. 建立数据库连接
+4. 验证 PostgreSQL 和 schema 版本
+5. 获取 session advisory lock
+6. 创建 meta.kernel_instance
+7. 创建 meta.boot
+8. 标记旧 boot 状态
+9. 执行语义恢复
+10. 启动 scheduler
+11. 启动 effect worker
+12. 启动 IPC/Timer
+13. 启动 terminal/API
+14. readiness = true
+```
+
+## 18.2 SIGTERM
+
+```text
+1. readiness = false
 2. 停止领取新进程
-3. 等待正在提交的短事务完成
-4. 请求运行进程到达安全点
-5. 释放 scheduler lease
-6. 停止 effect worker
-7. 停止 terminal
-8. 更新 meta.boot.ended_at
-9. shutdown_type = CLEAN
-10. instance_status = READY
-11. 释放实例控制锁
-12. 关闭连接池
+3. 等待正在提交的语句事务完成
+4. 停止 effect 新领取
+5. 请求当前任务结束当前安全点
+6. 释放 lease
+7. 关闭 terminal 写入
+8. 标记 CLEAN shutdown
+9. 释放 advisory lock
+10. 退出
+```
+
+设置有限宽限期。超时后可被强制终止，下一次启动按崩溃恢复处理。
+
+## 18.3 崩溃恢复
+
+PostgreSQL 先完成数据库层 WAL 恢复；CilExec 再完成语义恢复：
+
+```text
+标记旧 boot 为 CRASHED
+废弃旧 runner
+使旧 lease 失效
+按最后提交 continuation 恢复进程
+扫描到期 Timer
+恢复 PENDING/RESERVED IPC
+恢复 WAITING_EFFECT
+检查 UNKNOWN effect
+恢复 terminal attachment
+重新启动 FIFO 调度
 ```
 
 ---
 
-# 23. 重构执行阶段
+# 19. 备份、恢复与导出
 
-## 阶段 0：冻结当前语义
+## 19.1 Volume 不是备份
 
-完成：
-
-* 给当前稳定提交打 tag；
-* 列出所有进程状态；
-* 列出所有持久字段；
-* 列出所有文件写入位置；
-* 列出所有锁；
-* 列出所有副作用；
-* 建立现有行为回归测试。
-
-退出条件：
+Docker volume 或容器可写层只表示存储位置，不能防止：
 
 ```text
-能够明确回答当前系统究竟持久化了什么
+误删
+逻辑损坏
+宿主磁盘损坏
+容器数据目录破坏
+PostgreSQL 主版本不兼容
 ```
+
+## 19.2 首版灾难恢复
+
+首版采用 `pg_dump` 逻辑备份。
+
+```text
+backup
+→ PostgreSQL custom-format dump
+→ Role/global 信息按需要单独导出
+→ 记录 CilExec 与 PostgreSQL 版本
+→ 校验
+```
+
+恢复必须自动化测试。
+
+## 19.3 主版本升级
+
+首版使用：
+
+```text
+dump
+→ 新主版本 PostgreSQL
+→ restore
+→ migration
+→ CilExec 恢复验证
+```
+
+禁止直接把旧主版本 volume 挂到新主版本镜像，也禁止使用浮动 `postgres:latest`。
+
+## 19.4 CilExec 应用级导出
+
+独立提供 CilExec `.db` 逻辑导出容器，只导出持久语义状态，不导出：
+
+```text
+活跃连接
+锁
+缓存
+运行中数据库事务
+WAL 历史
+容器 ID
+Java Thread、虚拟线程、Future 或 Executor 任务
+```
+
+应用级导出和 PostgreSQL 灾难备份是两种不同产品能力。
 
 ---
 
-## 阶段 1：数据库基础设施
+# 20. 测试策略
 
-完成：
+数据库测试必须使用真实 PostgreSQL 容器，不用 H2 或 SQLite 模拟 PostgreSQL。
 
-* PostgreSQL 开发环境；
-* DataSource；
-* migration；
-* `meta` schema；
-* 测试数据库自动创建；
-* 事务管理器；
-* 数据库健康检查。
-
-退出条件：
+## 20.1 必测类别
 
 ```text
-CilExec 可以连接空数据库
-执行 migration
-记录 boot
-正常关闭
+migration
+RLS
+Role 切换
+每语句事务
+state_version 冲突
+execution_epoch fencing
+FIFO 领取
+lease 过期
+IPC 精确 delivery
+广播 fan-out
+Timer 恢复
+VFS 原子替换
+package 坐标污染拒绝
+package 哈希确定性
+effect UNKNOWN
+SIGTERM
+强制 kill
+pg_dump/restore
+双架构镜像
 ```
 
----
+## 20.2 强制崩溃点
 
-## 阶段 2：object store 与 VFS
-
-完成：
-
-* `object_store.object`；
-* `object_store.chunk`；
-* `vfs.node`；
-* 文件读写；
-* 目录操作；
-* 权限字段；
-* 内容寻址；
-* 原子文件替换。
-
-退出条件：
-
-```text
-CilExec VFS 不再依赖宿主文件保存实例内部文件
-```
-
----
-
-## 阶段 3：进程状态
-
-完成：
-
-* `process.process`；
-* statement；
-* variable；
-* call frame；
-* imports；
-* relationships；
-* 创建、加载、更新、终止进程。
-
-退出条件：
-
-```text
-删除所有 .proc 读写代码
-```
-
----
-
-## 阶段 4：调度与并发
-
-完成：
-
-* queue；
-* runner；
-* lease；
-* state_version；
-* execution_epoch；
-* 虚拟线程 worker；
-* 短事务提交。
-
-退出条件：
-
-```text
-多个 worker 无法重复提交同一进程步骤
-```
-
----
-
-## 阶段 5：IPC 与 timer
-
-完成：
-
-* durable inbox；
-* send；
-* receive；
-* 消息消费状态；
-* timer；
-* 到期唤醒。
-
-退出条件：
-
-```text
-JVM 崩溃后消息和 timer 仍然可恢复
-```
-
----
-
-## 阶段 6：effect journal
-
-完成：
-
-* effect 状态机；
-* effect worker；
-* idempotency key；
-* retry；
-* UNKNOWN 状态；
-* 恢复测试。
-
-退出条件：
-
-```text
-任何外部副作用都不能绕过 effect 层
-```
-
----
-
-## 阶段 7：软件包数据库与安装绑定
-
-完成：
-
-* 软件包 `.db` schema；
-* builder 与 seal；
-* validator；
-* 规范化 `package_hash`；
-* signature；
-* `package.release`；
-* `package.installation`；
-* `process.package_binding`；
-* 精确哈希依赖；
-* 原子安装、升级和卸载；
-* VFS 只读文件视图。
-
-退出条件：
-
-```text
-一个软件包 .db 可以在空实例中完成验证和导入
-同一软件包的多个哈希版本能够并存
-安装绑定切换只产生提交前或提交后两种状态
-运行进程始终恢复到原先绑定的精确哈希
-```
-
----
-
-## 阶段 8：用户、权限和审计
-
-完成：
-
-* auth；
-* capabilities；
-* VFS 权限；
-* package capabilities；
-* Host Shell 权限；
-* audit events；
-* PostgreSQL Role 分离。
-
-退出条件：
-
-```text
-Kernel 不使用 owner 或 superuser 账号运行
-```
-
----
-
-## 阶段 9：清理和强化
-
-删除：
-
-* 旧进程文件代码；
-* 文件锁；
-* 旧状态迁移器；
-* 旧 scheduler 持久化；
-* 旧 inbox 文件；
-* 无用序列化代码；
-* 双重状态枚举；
-* 临时兼容层。
-
-退出条件：
-
-```text
-停止 PostgreSQL 后，CilExec 无法假装实例仍然存在
-```
-
-这意味着数据库已经真正成为唯一真相来源。
-
----
-
-# 24. 必须建立的测试
-
-## 数据库事务测试
-
-* fork 中途失败；
-* IPC 发送中途失败；
-* VFS 写入中途失败；
-* 包发布中途失败；
-* 用户创建中途失败；
-* effect 创建中途失败。
-
-验证：
-
-```text
-全部提交或全部回滚
-```
-
-## 并发测试
-
-* 两个 runner 同时领取同一进程；
-* 旧 lease 过期后旧 runner 提交；
-* 多进程同时写同一文件；
-* 多消费者同时接收消息；
-* 同一坐标的多个不同哈希同时导入；
-* 同一对象同时上传。
-
-## 崩溃测试
-
-在以下位置强制终止 JVM：
+至少覆盖：
 
 ```text
 BEGIN 后
-写变量后
-推进 statement 前
-插入消息后
+变量写入后
+continuation 推进前
+IPC message 插入后
+delivery 生成中
 COMMIT 前
 COMMIT 后
 effect 执行前
-effect 执行后但结果写回前
+effect 外部成功但结果写回前
+package object 插入后
+安装 binding 提交前
 ```
 
-## 软件包测试
+## 20.3 性能
 
-* 软件包数据库不是合法 SQLite 文件；
-* schema 版本不受支持；
-* 存在未允许的触发器、虚拟表或附加数据库依赖；
-* `sealed` 未完成；
-* 文件内容被篡改；
-* `content_hash` 错误；
-* `package_hash` 错误；
-* 签名错误；
-* 重复路径；
-* `../` 路径；
-* 入口点或导出引用不存在；
-* 依赖哈希与坐标不匹配；
-* 循环依赖；
-* 不兼容内核版本；
-* 未授权 capability；
-* 相同逻辑内容重复构建得到相同 `package_hash`；
-* 同一包多个版本和哈希可以并存；
-* 升级不改变运行进程的旧哈希绑定；
-* 安装事务失败后不存在任何部分安装状态。
+首版不先拍脑袋规定数字。
 
----
-
-# 25. 首版明确不做
-
-以下内容全部推迟：
-
-* PostgreSQL 多节点高可用；
-* CilExec 多内核实例同时控制一个实例；
-* 每个普通用户一个 PostgreSQL 登录账号；
-* 全表 Row-Level Security；
-* 跨 PostgreSQL cluster 的 CilExec 实例；
-* 分布式事务；
-* 自动把正在运行的旧进程切换到新软件包哈希；
-* 自动兼容旧 `.proc`；
-* PostgreSQL Large Object；
-* 把所有日志永久保存；
-* 通用 ORM；
-* 数据库触发器实现完整业务逻辑；
-* 在数据库内编写 FCL 解释器；
-* 让软件包直接执行 PostgreSQL SQL；
-* 任意安装或卸载生命周期钩子；
-* 仅凭版本号进行有歧义的包解析。
-
----
-
-# 26. 必须遵守的禁止事项
+流程：
 
 ```text
-解释器不得直接执行 SQL
-内置函数不得直接执行 SQL
-ProcessRunner 不得管理 JDBC Connection
-普通用户不得获得数据库凭据
-不得在长时间计算期间保持事务
-不得在事务中执行网络请求
-不得双写数据库和旧文件
-不得保存 Java 序列化对象
-不得直接修改已发布 package.release
-不得修改已经 sealed 的软件包数据库
-不得把用户运行数据写回软件包数据库
-不得仅凭 namespace/name/version 替代 package_hash
-不得在有多个哈希候选时静默选择任意版本
-不得使用 PostgreSQL superuser 运行 Kernel
+完成最小可运行版本
+→ 建立可重复 benchmark
+→ 测量基线
+→ 冻结下一阶段目标
+```
+
+基线至少包括：
+
+```text
+空闲内存
+启动到 readiness 时间
+单语句事务吞吐
+进程恢复时间
+1k/10k WAITING 进程资源
+IPC direct/channel/broadcast 吞吐
+VFS bytea 读写
+package 导入
+数据库增长率
+ARM64 与 AMD64 差异
 ```
 
 ---
 
-# 27. 重构完成的定义
+# 21. 实施阶段
 
-只有同时满足以下条件，才能认为迁移完成：
+## 阶段 0：冻结旧语义与 Java 数据库重构基线
 
 ```text
-所有进程状态来自 PostgreSQL
-所有 IPC 来自 PostgreSQL
-所有调度状态来自 PostgreSQL
-所有 CilExec VFS 文件来自 PostgreSQL
-所有软件包发布、安装绑定和进程包绑定来自 PostgreSQL
+保留现有 pre-refactor tag
+继续在 main 上重构
+确认当前 JDK 与 Maven 版本并固定
+整理现有 Maven 工程和 Java package 边界
+锁定 PostgreSQL JDBC、SQLite JDBC、HikariCP 与 Flyway 版本
+建立现有 FCL 行为回归测试清单
+列出全部旧持久状态和外部副作用
+```
+
+退出条件：
+
+```text
+旧实现可通过 tag 找回
+现有 Maven 工程能在 macOS ARM64 开发机与 Linux AMD64/ARM64 CI 构建和测试
+当前 FCL 回归测试形成数据库重构前基线
+Docker build 能生成可启动的 Java 镜像骨架
+```
+
+## 阶段 1：Docker 与 PostgreSQL 基础设施
+
+```text
+postgres/migrate/cilexec 三服务
+ephemeral 与 persistent profile
+Secrets
+healthcheck
+Flyway
+Role
+全面 RLS 测试框架
+```
+
+退出条件：
+
+```text
+空数据库可自动迁移
+Runtime 获得控制锁后进入 readiness
+```
+
+## 阶段 2：Meta、Auth 与控制权
+
+```text
+meta.instance
+meta.boot
+meta.kernel_instance
+用户 ↔ PostgreSQL LOGIN Role
+SET LOCAL ROLE
+RLS
+advisory lock
+```
+
+## 阶段 3：Program、Process 与逐语句事务
+
+```text
+共享不可变 program
+完整 continuation
+变量当前值
+PID 永不复用
+state_version
+execution_epoch
+```
+
+退出条件：
+
+```text
+任意已提交 FCL 语句后强制 kill 可正确恢复
+```
+
+## 阶段 4：FIFO Scheduler 与 Lease
+
+```text
+queue
+SKIP LOCKED
+runner
+heartbeat
+expires_at
+重领和旧 epoch 拒绝
+```
+
+## 阶段 5：IPC、Topic、Broadcast 与 Timer
+
+```text
+message
+delivery
+channel
+topic
+subscription
+fan-out
+timer
+```
+
+## 阶段 6：VFS 与 Object Store
+
+```text
+node
+bytea object
+内容寻址
+原子替换
+可选 revision
+宿主 mount
+```
+
+## 阶段 7：SQLite Package 与 Environment
+
+```text
+package.db schema
+规范化 package_hash
+坐标唯一
+object_store 存完整 db
+环境
+binding
+进程精确 hash
+签名
+```
+
+## 阶段 8：Effect、Terminal、Audit
+
+```text
+effect journal
+独立 worker Role
+UNKNOWN
+终端提交输入
+持久 Ctrl+C
+审计保留策略
+```
+
+## 阶段 9：备份、导出和强化
+
+```text
+pg_dump/restore
+应用级 .db export
+多架构镜像
+崩溃矩阵
+性能基线
+删除所有旧文件持久化代码
+```
+
+---
+
+# 22. 首版明确不做
+
+```text
+裸机或自研内核
+第二套语言运行时或双实现长期并存
+多主动 Runtime
+PostgreSQL 高可用集群
+跨 database 事务
+自动 schema downgrade
+任意软件包生命周期钩子
+运行中进程自动切换新 package_hash
+SQLite 模拟 PostgreSQL 测试
+普通变量逐次变化永久审计
+PostgreSQL 主版本 volume 直接复用
+依靠宿主文件路径保存 package 真相
+```
+
+---
+
+# 23. 禁止事项
+
+```text
+不得双写旧文件和 PostgreSQL
+不得在数据库断线后继续推进进程
+不得让 Runtime 使用 PostgreSQL superuser
+不得让 Runtime 在生产环境修改 schema
+不得绕过 RLS
+不得在长时间外部操作期间持有事务
+不得在数据库事务内执行 HTTP/Socket/宿主命令
+不得使用最后写入者胜利覆盖进程状态
+不得修改已发布 package.db
+不得写回软件包数据库
+不得允许同一坐标对应不同 package_hash
+不得静默升级运行进程的包绑定
+不得把 SQLite package cache 当作真相
+不得把容器可写层描述为可靠持久存储
+不得把 volume 当作备份
+```
+
+---
+
+# 24. 重构完成定义
+
+只有满足全部条件才算完成：
+
+```text
+CilExec 核心继续由 Java 实现
+现有 FCL 对外语义保持兼容
+旧文件持久化已从正式运行路径删除
+Compose 从第一阶段即为标准环境
+PostgreSQL 是唯一权威状态
+每条 FCL 语句拥有明确事务
+完整 continuation 可恢复
+单主动 Runtime 受 advisory lock 保护
+旧 epoch 无法提交
+CilExec 用户映射 PostgreSQL LOGIN Role
+业务表全面 RLS
+FIFO 调度和 lease 可恢复
+IPC direct/channel/topic/broadcast 可持久恢复
+Timer 不依赖内存 sleep
+VFS 内容进入内容寻址 object store
+package.db 是不可变 SQLite
+同一坐标不能出现不同哈希
+package 环境和进程精确哈希有效
 所有外部副作用经过 effect journal
-所有状态改变拥有明确事务边界
-JVM 被强制终止后可以恢复
-不存在 .proc 运行文件
-不存在文件锁作为核心并发机制
-不存在双重真相来源
-软件包可以构建为单个不可变 .db 数据库文件
-软件包 .db 可以被验证、签名、导入和安装
-同一软件包的多个版本和哈希可以同时存在
-安装、升级和卸载只具有提交前与提交后两种可见状态
-进程使用精确 package_hash 恢复
-相同逻辑软件包内容得到相同 package_hash
+审计与普通日志分离
+SIGTERM 和强制 kill 均有测试
+pg_dump/restore 有自动恢复测试
+应用级 .db 导出可验证
+AMD64 和 ARM64 CI 均通过
+旧 .proc 和旧文件持久化代码被删除
 ```
 
 ---
 
-# 28. 最终架构总结
+# 25. 冻结决策登记表
+
+| 编号 | 优先级 | 问题 | 最终决定 | 补充 |
+|---|---|---|---|---|
+| 1 | P0 | 本轮是否更换语言 | A. 保留 Java，只重构持久化和部署 | 最终修订：不进行语言重写 |
+| 2 | P0 | CilExec 的正式定位 | B. 数据库驱动的用户态操作系统 |  |
+| 3 | P0 | 一个 CilExec 实例对应多少数据库 | B. 一个实例一个 PostgreSQL database |  |
+| 4 | P0 | 一个数据库允许多少主动 Kernel | A. 只允许一个主动 Kernel | 不知道啥意思 |
+| 5 | P0 | 数据库是不是唯一真相来源 | A. PostgreSQL 是唯一真相来源 |  |
+| 6 | P0 | Java 内存状态的地位 | B. 数据库状态为真，内存是可重建投影 |  |
+| 7 | P0 | PostgreSQL 与 CilExec 是否放在同一容器 | B. PostgreSQL 与 CilExec 分成两个容器 |  |
+| 8 | P0 | 是否设置独立 migration 服务 | B. 独立 migrate 容器先执行迁移 |  |
+| 9 | P0 | Docker 中的数据持久化位置 | C. 存在容器可写层 | 仅作为可丢弃开发模式；持久实例必须挂载持久存储 |
+| 10 | P1 | Docker 网络暴露 | A. PostgreSQL 5432 默认暴露到宿主 |  |
+| 11 | P0 | 启动依赖关系 | B. PostgreSQL 健康后迁移，迁移成功后启动 CilExec |  |
+| 12 | P1 | 容器收到 SIGTERM 后的行为 | B. 执行 CilExec 正常关闭流程并设置有限宽限期 |  |
+| 13 | P1 | 容器是否以 root 用户运行 | B. 固定非 root 用户 |  |
+| 14 | P1 | Docker 镜像支持哪些架构 | C. 同时发布 amd64 和 arm64 |  |
+| 15 | P1 | 软件包本地缓存放在哪里 | C. tmpfs 或可丢弃缓存目录 |  |
+| 16 | P0 | PostgreSQL 系统角色数量 | B. owner、migrator、kernel、effect-worker、readonly 分离 |  |
+| 17 | P0 | CilExec 普通用户是否对应 PostgreSQL Role | A. 每个 CilExec 用户都是数据库 LOGIN Role |  |
+| 18 | P0 | Kernel 是否可以修改数据库结构 | C. 开发环境可以，生产环境不可以 |  |
+| 19 | P2 | 是否首版启用 Row-Level Security | A. 所有业务表全面启用 |  |
+| 20 | P0 | 数据库密码如何提供 | C. Docker secrets 或外部秘密管理器 |  |
+| 21 | P0 | 单主动 Kernel 如何保证 | B. PostgreSQL session advisory lock |  |
+| 22 | P0 | control connection 断开后怎么办 | B. 停止领取和提交，进入 fenced 状态并退出容器 |  |
+| 23 | P1 | PostgreSQL 临时断线期间是否允许执行纯计算 | B. 立即冻结所有进程 |  |
+| 24 | P0 | 每条 FCL 语句是否对应一次数据库事务 | A. 每条语句 COMMIT |  |
+| 25 | P1 | 执行量子的终止条件（可多选） | C. 遇到外部可见操作；D. 遇到阻塞；E. 用户中断 |  |
+| 26 | P0 | 哪些操作是强制安全点（可多选） | A. fork；B. IPC send/receive；C. VFS 可见修改；D. timer 创建或等待；E. 进程挂起；F. 用户输入等待；G. effect 请求；H. 包导入；I. 进程终止；J. 执行量子结束 | 所有 |
+| 27 | P0 | 默认事务隔离级别 | A. READ COMMITTED | 由方案按整体一致性决定 |
+| 28 | P0 | 冲突处理方式 | B. state_version 乐观并发控制，配合必要行锁 |  |
+| 29 | P1 | 数据库死锁或序列化失败是否自动重试 | C. 有限次数、带抖动重试 |  |
+| 30 | P0 | 是否规定全局锁顺序 | B. 文档规定统一锁顺序 |  |
+| 31 | P0 | 进程代码是否每进程复制 | B. 不可变 program 共享，进程只引用 program_id | 你可能需要解释一下program ID是什么 |
+| 32 | P1 | 程序身份 | C. 内容哈希 + 内部 ID |  |
+| 33 | P0 | 进程是否保存完整 continuation | B. 保存完整解释器 continuation |  |
+| 34 | P1 | PID 的身份规则 | A. PID 永不复用 |  |
+| 35 | P0 | RUNNING 状态崩溃后的处理 | C. 根据最后安全点和等待原因分类恢复 |  |
+| 36 | P2 | 已终止进程保留多久 | C. 保留元数据，定期归档或清理重状态 | 保留期限和清理策略由配置确定 |
+| 37 | P1 | 首版调度策略 | A. FIFO |  |
+| 38 | P0 | 调度队列领取方式 | B. PostgreSQL FOR UPDATE SKIP LOCKED |  |
+| 39 | P1 | 首版 worker 数量 | C. 配置项，默认较小 |  |
+| 40 | P0 | lease 是否必须设置过期时间 | B. 有过期时间和 heartbeat |  |
+| 41 | P0 | 首版文件内容如何存储 | A. 每个文件一个 bytea |  |
+| 42 | P1 | 文件是否默认保留所有历史版本 | C. 默认只保留当前版本，指定类型可版本化 |  |
+| 43 | P0 | 是否使用内容寻址 | B. node 指向不可变内容对象 |  |
+| 44 | P0 | Object Store 是否同时保存软件包 .db | C. package.release 只引用 object_store |  |
+| 45 | P1 | VFS 是否允许宿主目录挂载 | C. 作为高权限、显式配置的 mount |  |
+| 46 | P0 | 软件包 .db 的底层格式 | A. SQLite |  |
+| 47 | P0 | 软件包最终身份 | C. 规范化逻辑内容的 package_hash |  |
+| 48 | P0 | 同一坐标能否对应多个哈希 | B. 绝对禁止 | 由方案按不可变发布和版本唯一性决定 |
+| 49 | P0 | PostgreSQL 是否保存软件包完整 .db | A. 保存完整字节 |  |
+| 50 | P0 | 包导入后谁是内容权威 | A. 原始 .db 是权威，索引表是派生数据 |  |
+| 51 | P0 | 安装概念是什么 | B. 建立 binding → package_hash |  |
+| 52 | P0 | 是否需要 package environment | B. 需要显式环境，类似独立依赖环境 |  |
+| 53 | P0 | 进程导入包时是否固定哈希 | B. 首次解析后写入精确 hash |  |
+| 54 | P0 | 软件包生命周期钩子 | A. 首版完全禁止 | 你需要解释一下什么意思 |
+| 55 | P1 | 包签名策略 | B. 签名可选，记录验证结果并由信任策略决定 |  |
+| 56 | P0 | 软件包可变数据放在哪里 | B. VFS 中的独立 data scope |  |
+| 57 | P0 | IPC 消息交付语义 | C. 数据库内精确消费一次 |  |
+| 58 | P1 | 消息消费状态机 | B. PENDING → RESERVED → CONSUMED / FAILED / DEAD |  |
+| 59 | P1 | 是否允许广播和 channel | C. 支持广播、topic 和订阅 |  |
+| 60 | P1 | Timer 的权威表示 | B. 数据库 timer 行，Java 负责唤醒 |  |
+| 61 | P1 | 终端输入保存到什么粒度 | B. 每次完整提交的输入 |  |
+| 62 | P0 | Ctrl+C 如何表达 | B. 设置持久 interrupt_requested，在安全点处理 |  |
+| 63 | P0 | 外部操作是否统一进入 effect 系统 | A. 是 |  |
+| 64 | P0 | effect 的重复执行策略 | B. 每类 effect 声明幂等性和恢复策略 |  |
+| 65 | P1 | UNKNOWN effect 如何处理 | C. 按 effect 类型处理；无法判断时人工介入 |  |
+| 66 | P1 | Effect Worker 是否使用独立数据库 Role | B. 独立 cilexec_effect_worker |  |
+| 67 | P0 | 审计事件与普通日志是否分离 | B. 审计进数据库，运行日志进 stdout/stderr |  |
+| 68 | P2 | 审计记录保留多久 | C. 根据事件类型分别设置 |  |
+| 69 | P2 | 是否记录所有变量修改 | C. 只记录安全、管理和外部可见事件 |  |
+| 70 | P1 | Docker 日志方式 | B. stdout/stderr |  |
+| 71 | P1 | 是否提供健康端点 | C. 区分 liveness 与 readiness |  |
+| 72 | P0 | PostgreSQL volume 是否视为备份 | B. 不是 |  |
+| 73 | P1 | 灾难恢复备份格式 | A. pg_dump 逻辑备份 | 不知道什么意思 |
+| 74 | P1 | CilExec 实例是否提供独立逻辑导出 | B. 导出为应用级 .db 容器 |  |
+| 75 | P0 | 是否试图导出 PostgreSQL 的全部运行状态 | B. 只导出持久语义状态 |  |
+| 76 | P1 | PostgreSQL 主版本升级策略 | B. dump/restore |  |
+| 77 | P0 | 数据库测试使用什么 | C. 启动真实 PostgreSQL 测试容器 |  |
+| 78 | P0 | 是否进行真实强制崩溃测试 | B. 强制终止 JVM 和容器后验证恢复 |  |
+| 79 | P1 | 软件包确定性测试 | C. 两者分别测试 |  |
+| 80 | P1 | Docker 测试平台 | C. CI 同时测试 Linux amd64 和 arm64 |  |
+| 81 | P1 | 性能基准目标 | A. 先完成可运行版本，测量基线后再设具体目标 |  |
+| 82 | P0 | 是否保留旧数据迁移器 | A. 不保留 |  |
+| 83 | P0 | 是否在同一分支直接重写 | A. 直接修改主分支 | 已建立重构前 tag，继续在 main 上重构 |
+| 84 | P1 | 新数据库 schema 的版本管理工具 | B. Flyway |  |
+| 85 | P0 | 是否允许自动降级数据库 schema | B. 禁止，只允许向前 migration |  |
+| 86 | P0 | Docker 是否从重构第一阶段就加入 | B. 第一阶段就用 Compose 作为标准开发环境 |  |
+
+---
+
+# 26. 最终架构摘要
 
 ```text
-Java CilExec
-├── FCL 解释器
-├── Process Runtime
-├── Scheduler
-├── IPC
-├── Effect Worker
-├── VFS
-├── Package Manager
-└── Terminal
+Host Linux / Docker
+│
+├── PostgreSQL
+│   └── 一个 database = 一个 CilExec 实例
+│
+├── Flyway migrate
+│
+└── Java CilExec Runtime
+    ├── FCL parser/runtime
+    ├── Program store
+    ├── Process continuation
+    ├── FIFO scheduler
+    ├── Persistent IPC bus
+    ├── Timer
+    ├── VFS/Object Store
+    ├── SQLite package manager
+    ├── Package environment
+    ├── Effect worker
+    ├── Terminal
+    ├── Auth/RLS
+    └── Audit
 
-PostgreSQL database: cilexec
-├── 实例元数据
-├── 用户和权限
-├── 对象存储
-├── VFS
-├── 软件包发布与安装记录
-├── 进程
-├── 调度
-├── IPC
-├── 外部副作用
-├── 终端
-└── 审计
+PostgreSQL 已提交状态
+=
+CilExec 实例的真实状态
+
+Java/JVM 内存对象
+=
+可丢弃、可从数据库重建的运行投影
 
 package.db
-└── 单文件不可变软件包数据库
-    ├── package_metadata
-    ├── package_file
-    ├── package_module
-    ├── package_dependency
-    ├── package_entrypoint
-    ├── package_export
-    ├── package_capability
-    └── package_signature
+=
+不可变 SQLite 软件包发布物
 ```
 
 最终原则：
 
-> PostgreSQL 保存实例状态，Java 推动实例运行，不可变的 SQLite `.db` 负责携带软件包发布物。
+> **Java 推动执行，PostgreSQL 保存实例真相，Docker 提供可部署宿主边界，不可变 SQLite `.db` 携带软件包。**

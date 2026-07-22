@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="false">
+    <property name="CILEXEC_LOG_LEVEL" value="${CILEXEC_LOG_LEVEL:-INFO}"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.out</target>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <charset>UTF-8</charset>
+            <pattern>%date{yyyy-MM-dd'T'HH:mm:ss.SSSXXX,UTC} %-5level [%thread] %logger{48} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="org.flywaydb" level="INFO"/>
+    <logger name="com.zaxxer.hikari" level="INFO"/>
+    <logger name="org.postgresql" level="WARN"/>
+
+    <root level="${CILEXEC_LOG_LEVEL}">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

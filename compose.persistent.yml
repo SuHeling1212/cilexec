@@ -1,0 +1,17 @@
+# Persistent profile: a named volume stores PostgreSQL data.
+# This volume is durable storage, but it is not a backup.
+services:
+  postgres:
+    labels:
+      com.follarce.cilexec.storage-profile: persistent-named-volume
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - cilexec-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+  cilexec:
+    restart: unless-stopped
+
+volumes:
+  cilexec-postgres-data:
+    name: ${CILEXEC_POSTGRES_VOLUME:-cilexec-postgres-data}

@@ -1,0 +1,69 @@
+package com.follarce.app;
+
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+class BuildInfoAndCommandTest {
+    @Test
+    void parsesFilteredBuildInformation() {
+        String properties = """
+                application.name=CilExec
+                application.version=2.4.1
+                build.revision=abc123
+                fcl.runtime.format=7
+                database.schema.minimum=11
+                database.schema.maximum=15
+                """;
+
+        BuildInfo info = BuildInfo.load(new ByteArrayInputStream(
+                properties.getBytes(StandardCharsets.ISO_8859_1)));
+
+        assertEquals("CilExec", info.applicationName());
+        assertEquals("2.4.1", info.applicationVersion());
+        assertEquals("abc123", info.revision());
+        assertEquals(7, info.fclRuntimeFormat());
+        assertEquals(11, info.minimumSchema());
+        assertEquals(15, info.maximumSchema());
+    }
+
+    @Test
+    void rejectsUnresolvedBuildPlaceholders() {
+        String properties = """
+                application.name=CilExec
+                application.version=${project.version}
+                build.revision=abc123
+                fcl.runtime.format=1
+                database.schema.minimum=1
+                database.schema.maximum=1
+                """;
+
+        assertThrows(IllegalStateException.class, () -> BuildInfo.load(
+                new ByteArrayInputStream(properties.getBytes(StandardCharsets.ISO_8859_1))));
+    }
+
+    @Test
+    void parsesTheSupportedCommandsAndExplicitExportPath() {
+        assertEquals(ApplicationCommand.RUNTIME, ApplicationCommand.parse(new String[0]));
+        assertEquals(ApplicationCommand.RUNTIME,
+                ApplicationCommand.parse(new String[]{"RUNTIME"}));
+        assertEquals(ApplicationCommand.MIGRATE,
+                ApplicationCommand.parse(new String[]{"migrate"}));
+        assertEquals(ApplicationCommand.EXPORT,
+                ApplicationCommand.parse(new String[]{"export", "snapshot.db"}));
+        assertEquals(java.nio.file.Path.of("snapshot.db"),
+                ApplicationCommand.exportPath(new String[]{"export", "snapshot.db"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> ApplicationCommand.parse(new String[]{"serve"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> ApplicationCommand.parse(new String[]{"runtime", "migrate"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> ApplicationCommand.parse(new String[]{"export"}));
+        assertThrows(IllegalArgumentException.class,
+                () -> ApplicationCommand.parse(new String[]{"export", "snapshot.sqlite"}));
+    }
+}

@@ -1,0 +1,128 @@
+name: cilexec
+
+x-cilexec-image: &cilexec-image
+  image: cilexec:${CILEXEC_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-cilexec-environment: &cilexec-environment
+  CILEXEC_INSTANCE_NAME: ${CILEXEC_INSTANCE_NAME:-cilexec}
+  CILEXEC_ADVISORY_LOCK_KEY: ${CILEXEC_ADVISORY_LOCK_KEY:-4848202279983169603}
+  CILEXEC_DATABASE_URL: jdbc:postgresql://postgres:5432/${CILEXEC_DATABASE_NAME:-cilexec}
+  CILEXEC_DATABASE_CONNECTION_TIMEOUT: ${CILEXEC_DATABASE_CONNECTION_TIMEOUT:-PT10S}
+  CILEXEC_DATABASE_VALIDATION_TIMEOUT: ${CILEXEC_DATABASE_VALIDATION_TIMEOUT:-PT5S}
+  CILEXEC_RUNTIME_DATABASE_USER: cilexec_runtime
+  CILEXEC_RUNTIME_DATABASE_PASSWORD_FILE: /run/secrets/cilexec_runtime_password
+  CILEXEC_RUNTIME_POOL_MAX: ${CILEXEC_RUNTIME_POOL_MAX:-8}
+  CILEXEC_RUNTIME_POOL_MIN_IDLE: ${CILEXEC_RUNTIME_POOL_MIN_IDLE:-2}
+  CILEXEC_EFFECT_DATABASE_USER: cilexec_effect_worker
+  CILEXEC_EFFECT_DATABASE_PASSWORD_FILE: /run/secrets/cilexec_effect_worker_password
+  CILEXEC_EFFECT_POOL_MAX: ${CILEXEC_EFFECT_POOL_MAX:-4}
+  CILEXEC_EFFECT_POOL_MIN_IDLE: ${CILEXEC_EFFECT_POOL_MIN_IDLE:-1}
+  CILEXEC_MIGRATOR_DATABASE_USER: cilexec_migrator
+  CILEXEC_MIGRATOR_DATABASE_PASSWORD_FILE: /run/secrets/cilexec_migrator_password
+  CILEXEC_MIGRATOR_POOL_MAX: ${CILEXEC_MIGRATOR_POOL_MAX:-2}
+  CILEXEC_MIGRATOR_POOL_MIN_IDLE: ${CILEXEC_MIGRATOR_POOL_MIN_IDLE:-0}
+  CILEXEC_SCHEDULER_WORKERS: ${CILEXEC_SCHEDULER_WORKERS:-4}
+  CILEXEC_LEASE_DURATION: ${CILEXEC_LEASE_DURATION:-PT30S}
+  CILEXEC_HEARTBEAT_INTERVAL: ${CILEXEC_HEARTBEAT_INTERVAL:-PT10S}
+  CILEXEC_EFFECT_WORKERS: ${CILEXEC_EFFECT_WORKERS:-2}
+  CILEXEC_SHUTDOWN_GRACE: ${CILEXEC_SHUTDOWN_GRACE:-PT30S}
+  CILEXEC_HEALTH_PORT: 8080
+  CILEXEC_MIGRATE_ON_START: "false"
+
+x-cilexec-hardening: &cilexec-hardening
+  user: "10001:10001"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: ${CILEXEC_SHUTDOWN_GRACE_SECONDS:-30s}
+
+services:
+  postgres:
+    image: postgres:${CILEXEC_POSTGRES_TAG:-17.10-bookworm}
+    restart: "no"
+    environment:
+      POSTGRES_USER: cilexec_bootstrap
+      POSTGRES_DB: postgres
+      PGDATA: /var/lib/postgresql/cilexec-ephemeral
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+      CILEXEC_DATABASE_NAME: ${CILEXEC_DATABASE_NAME:-cilexec}
+      CILEXEC_MIGRATOR_PASSWORD_FILE: /run/secrets/cilexec_migrator_password
+      CILEXEC_RUNTIME_PASSWORD_FILE: /run/secrets/cilexec_runtime_password
+      CILEXEC_EFFECT_PASSWORD_FILE: /run/secrets/cilexec_effect_worker_password
+      CILEXEC_READONLY_PASSWORD_FILE: /run/secrets/cilexec_readonly_password
+    secrets:
+      - postgres_admin_password
+      - cilexec_migrator_password
+      - cilexec_runtime_password
+      - cilexec_effect_worker_password
+      - cilexec_readonly_password
+    volumes:
+      - type: bind
+        source: ./docker/postgres/init
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+    ports:
+      - "127.0.0.1:${CILEXEC_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --quiet --username cilexec_migrator --dbname ${CILEXEC_DATABASE_NAME:-cilexec}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+
+  migrate:
+    <<: [*cilexec-image, *cilexec-hardening]
+    command: ["migrate"]
+    restart: "no"
+    environment:
+      <<: *cilexec-environment
+    secrets:
+      - cilexec_migrator_password
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+
+  cilexec:
+    <<: [*cilexec-image, *cilexec-hardening]
+    command: ["runtime"]
+    restart: "no"
+    environment:
+      <<: *cilexec-environment
+    secrets:
+      - cilexec_runtime_password
+      - cilexec_effect_worker_password
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
+      - /var/cache/cilexec/packages:rw,noexec,nosuid,size=${CILEXEC_PACKAGE_CACHE_SIZE:-256m},uid=10001,gid=10001
+    ports:
+      - "127.0.0.1:${CILEXEC_HEALTH_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+      migrate:
+        condition: service_completed_successfully
+
+secrets:
+  postgres_admin_password:
+    file: ${CILEXEC_POSTGRES_ADMIN_PASSWORD_FILE:-./docker/secrets/postgres-admin-password}
+  cilexec_migrator_password:
+    file: ${CILEXEC_MIGRATOR_PASSWORD_FILE:-./docker/secrets/cilexec-migrator-password}
+  cilexec_runtime_password:
+    file: ${CILEXEC_RUNTIME_PASSWORD_FILE:-./docker/secrets/cilexec-runtime-password}
+  cilexec_effect_worker_password:
+    file: ${CILEXEC_EFFECT_PASSWORD_FILE:-./docker/secrets/cilexec-effect-worker-password}
+  cilexec_readonly_password:
+    file: ${CILEXEC_READONLY_PASSWORD_FILE:-./docker/secrets/cilexec-readonly-password}
