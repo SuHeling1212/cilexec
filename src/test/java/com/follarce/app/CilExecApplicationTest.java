@@ -135,6 +135,34 @@ class CilExecApplicationTest {
         assertEquals(0, configLoads.get());
     }
 
+    @Test
+    void packageBuildDoesNotLoadDatabaseConfigurationOrBuildIdentity() {
+        AtomicInteger configLoads = new AtomicInteger();
+        AtomicReference<Path> source = new AtomicReference<>();
+        AtomicReference<Path> output = new AtomicReference<>();
+        CilExecApplication application = new CilExecApplication(
+                () -> {
+                    configLoads.incrementAndGet();
+                    return config();
+                },
+                () -> {
+                    throw new AssertionError("package build does not need runtime build metadata");
+                },
+                (config, build) -> 0,
+                config -> { },
+                (config, build, target) -> { },
+                (actualSource, actualOutput) -> {
+                    source.set(actualSource);
+                    output.set(actualOutput);
+                });
+
+        assertEquals(0, application.execute(new String[]{
+                "package", "build", "packages/hello", "dist/hello.db"}));
+        assertEquals(Path.of("packages/hello"), source.get());
+        assertEquals(Path.of("dist/hello.db"), output.get());
+        assertEquals(0, configLoads.get());
+    }
+
     private static CilExecConfig config() {
         DatabaseConfig runtime = database("runtime", "/secrets/runtime", 4);
         DatabaseConfig effects = database("effect", "/secrets/effect", 1);

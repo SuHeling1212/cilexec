@@ -115,6 +115,30 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  export:
+    <<: [*cilexec-image, *cilexec-hardening]
+    profiles: ["tools"]
+    command: ["export", "/exports/${CILEXEC_EXPORT_FILE:-cilexec-export.db}"]
+    restart: "no"
+    environment:
+      <<: *cilexec-environment
+    secrets:
+      - cilexec_migrator_password
+    volumes:
+      - type: bind
+        source: ${CILEXEC_EXPORT_DIRECTORY:-./exports}
+        target: /exports
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+      migrate:
+        condition: service_completed_successfully
+
 secrets:
   postgres_admin_password:
     file: ${CILEXEC_POSTGRES_ADMIN_PASSWORD_FILE:-./docker/secrets/postgres-admin-password}

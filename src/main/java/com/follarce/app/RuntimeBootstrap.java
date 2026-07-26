@@ -6,6 +6,7 @@ import com.follarce.config.CilExecConfig;
 import com.follarce.effect.EffectHandler;
 import com.follarce.effect.EffectHandlerRegistry;
 import com.follarce.effect.EffectWorkerService;
+import com.follarce.effect.BuiltinEffectHandlers;
 import com.follarce.health.HealthServer;
 import com.follarce.health.HealthState;
 import com.follarce.persistence.postgres.connection.ControlLock;
@@ -35,7 +36,8 @@ public final class RuntimeBootstrap {
     }
 
     public static RuntimeLifecycle assemble(CilExecConfig config, BuildInfo buildInfo) {
-        return assemble(config, buildInfo, ProcessStatementExecutor::new, List.of());
+        return assemble(config, buildInfo, ProcessStatementExecutor::new,
+                BuiltinEffectHandlers.defaults());
     }
 
     public static RuntimeLifecycle assemble(
@@ -122,7 +124,9 @@ public final class RuntimeBootstrap {
         public void beginBoot(int schemaVersion) {
             boot = metadata.beginBoot(config.instanceName(), config.advisoryLockKey(),
                     buildInfo.applicationVersion() + "+" + buildInfo.revision(), schemaVersion,
-                    buildInfo.fclRuntimeFormat());
+                    buildInfo.fclRuntimeFormat(),
+                    Objects.requireNonNull(control, "control lock has not been acquired")
+                            .identity());
         }
 
         @Override

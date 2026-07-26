@@ -21,6 +21,11 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
             "meta.kernel_instance",
             "scheduler.lease",
             "scheduler.runner");
+    static final Map<String, List<String>> EXCLUDED_COLUMNS = Map.of(
+            "meta.boot", List.of(
+                    "control_backend_pid",
+                    "control_backend_started_at",
+                    "control_proof_lock_key"));
 
     private static final List<String> APPLICATION_SCHEMAS = List.of(
             "audit", "auth", "effect", "ipc", "meta", "object_store", "package",
@@ -48,6 +53,7 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
                             + " is outside this build's supported range "
                             + buildInfo.minimumSchema() + ".." + buildInfo.maximumSchema());
                 }
+                assumeOwnerRole(source);
                 writer.begin(metadata(source, buildInfo, exportedAt, schemaVersion));
                 for (String table : discoverTables(source)) {
                     writer.beginTable(table);
@@ -72,7 +78,6 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
         source.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
         try (Statement statement = source.createStatement()) {
             statement.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ ONLY, DEFERRABLE");
-            statement.execute("SET LOCAL ROLE cilexec_owner");
             statement.execute("SET LOCAL TIME ZONE 'UTC'");
             statement.execute("SET LOCAL bytea_output = 'hex'");
             statement.execute("SET LOCAL DateStyle = 'ISO, YMD'");
@@ -83,6 +88,15 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
                 || !"on".equals(setting(source, "transaction_read_only"))) {
             throw new LogicalExportException(
                     "PostgreSQL refused a serializable read-only export transaction");
+        }
+    }
+
+    private static void assumeOwnerRole(Connection source) throws SQLException {
+        try (Statement statement = source.createStatement()) {
+            statement.execute("SET LOCAL ROLE cilexec_owner");
+        }
+        if (!"cilexec_owner".equals(scalar(source, "SELECT current_user"))) {
+            throw new LogicalExportException("Export database role cannot assume cilexec_owner");
         }
     }
 
@@ -108,6 +122,10 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
         values.put("source.transaction.deferrable", "true");
         values.put("source.excluded.relations",
                 String.join(",", EXCLUDED_RELATIONS.stream().sorted().toList()));
+        values.put("source.excluded.columns", EXCLUDED_COLUMNS.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(entry -> entry.getKey() + ":" + String.join(",", entry.getValue()))
+                .collect(java.util.stream.Collectors.joining(";")));
         return values;
     }
 
@@ -154,9 +172,17 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
             throw new LogicalExportException("Invalid discovered table name: " + qualifiedTable);
         }
         String relation = quote(identifiers[0]) + "." + quote(identifiers[1]);
-        String query = "SELECT pg_catalog.to_jsonb(source_row)::text AS row_json FROM "
-                + relation + " AS source_row ORDER BY pg_catalog.convert_to("
-                + "pg_catalog.to_jsonb(source_row)::text,'UTF8')";
+        String rowExpression = "pg_catalog.to_jsonb(source_row)";
+        List<String> excludedColumns = EXCLUDED_COLUMNS.get(qualifiedTable);
+        if (excludedColumns != null) {
+            String keys = excludedColumns.stream()
+                    .map(column -> "'" + column + "'")
+                    .collect(java.util.stream.Collectors.joining(","));
+            rowExpression += " - ARRAY[" + keys + "]::text[]";
+        }
+        String query = "SELECT (" + rowExpression + ")::text AS row_json FROM "
+                + relation + " AS source_row ORDER BY pg_catalog.convert_to(("
+                + rowExpression + ")::text,'UTF8')";
         try (Statement statement = source.createStatement()) {
             statement.setFetchSize(500);
             try (ResultSet rows = statement.executeQuery(query)) {

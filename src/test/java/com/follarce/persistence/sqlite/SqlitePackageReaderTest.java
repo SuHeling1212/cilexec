@@ -107,7 +107,9 @@ class SqlitePackageReaderTest {
                     + "('language_version','1')");
             statement.execute("INSERT INTO package_module(module_name,module_object_path,module_hash) "
                     + "VALUES ('main','modules/main.fcl','"
-                    + "00".repeat(32) + "')");
+                    + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'" + ")");
+            statement.execute("INSERT INTO package_file(file_path,content) "
+                    + "VALUES ('modules/main.fcl',X'')");
             statement.execute("INSERT INTO package_dependency(dependency_namespace,dependency_name,"
                     + "version_constraint,optional) VALUES ('std','base','1.0.0',0)");
             statement.execute("INSERT INTO package_capability(capability_name,required,rationale) "

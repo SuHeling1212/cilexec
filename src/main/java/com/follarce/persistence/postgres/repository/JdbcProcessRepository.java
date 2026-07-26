@@ -4,6 +4,7 @@ import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessIdentity;
+import com.follarce.domain.scheduler.SchedulerClaim;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import com.follarce.persistence.postgres.mapper.JsonCodec;
 
@@ -14,6 +15,8 @@ import java.sql.SQLException;
 import java.sql.Types;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /** Durable process aggregate and its normalized recovery projections. */
@@ -62,6 +65,35 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
     }
 
     @Override
+    public List<CilProcess> findAll() {
+        String sql = "SELECT " + COLUMNS + " FROM process.process ORDER BY pid FOR UPDATE";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rows = statement.executeQuery()) {
+            List<CilProcess> processes = new ArrayList<>();
+            while (rows.next()) processes.add(map(readRow(rows)));
+            return List.copyOf(processes);
+        } catch (SQLException exception) {
+            throw failure("process.findAll", exception);
+        }
+    }
+
+    @Override
+    public List<CilProcess> findChildren(UUID parentProcessUid) {
+        String sql = "SELECT " + COLUMNS + " FROM process.process "
+                + "WHERE parent_process_uid=? ORDER BY pid FOR UPDATE";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, parentProcessUid);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<CilProcess> children = new ArrayList<>();
+                while (rows.next()) children.add(map(readRow(rows)));
+                return List.copyOf(children);
+            }
+        } catch (SQLException exception) {
+            throw failure("process.findChildren", exception);
+        }
+    }
+
+    @Override
     public void insert(CilProcess process) {
         validateStatusWait(process);
         String sql = "INSERT INTO process.process(process_uid,pid,owner_id,program_id,"
@@ -103,13 +135,34 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
     @Override
     public UpdateResult update(CilProcess process, long expectedStateVersion,
                                long expectedExecutionEpoch) {
+        return updateInternal(process, expectedStateVersion, expectedExecutionEpoch,
+                Optional.empty());
+    }
+
+    @Override
+    public UpdateResult updateClaimed(CilProcess process, long expectedStateVersion,
+                                      SchedulerClaim claim) {
+        if (!process.identity().processUid().equals(claim.processUid())
+                || !process.ownerId().equals(claim.ownerId())
+                || process.executionEpoch() != claim.executionEpoch()) {
+            throw new IllegalArgumentException("Scheduler claim does not match the process");
+        }
+        return updateInternal(process, expectedStateVersion, claim.executionEpoch(),
+                Optional.of(claim));
+    }
+
+    private UpdateResult updateInternal(CilProcess process, long expectedStateVersion,
+                                        long expectedExecutionEpoch,
+                                        Optional<SchedulerClaim> claim) {
         validateStatusWait(process);
         String sql = "UPDATE process.process SET status=?,program_id=?,program_counter=?,"
                 + "state_version=?,execution_epoch=?,wait_reason=?,wait_object_id=?,"
                 + "runtime_format_version=?,language_version=?,continuation_json=?,"
                 + "parent_process_uid=?,updated_at=?,terminated_at=CASE WHEN ? IN "
                 + "('TERMINATED','FAILED','FAILED_RECOVERY') THEN ? ELSE terminated_at END "
-                + "WHERE process_uid=? AND state_version=? AND execution_epoch=?";
+                + "WHERE process_uid=? AND state_version=? AND execution_epoch=?"
+                + (claim.isPresent()
+                ? " AND scheduler.claim_authorizes_commit(?,?,?,?,?)" : "");
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, process.status().name());
             statement.setObject(2, process.continuation().programId());
@@ -128,6 +181,14 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
             statement.setObject(15, process.identity().processUid());
             statement.setLong(16, expectedStateVersion);
             statement.setLong(17, expectedExecutionEpoch);
+            if (claim.isPresent()) {
+                SchedulerClaim guard = claim.orElseThrow();
+                statement.setObject(18, guard.processUid());
+                statement.setObject(19, guard.ownerId());
+                statement.setObject(20, guard.runnerId());
+                statement.setObject(21, guard.bootId());
+                statement.setLong(22, guard.executionEpoch());
+            }
             if (statement.executeUpdate() == 1) {
                 projections.replace(process);
                 projections.appendEvent(process, "STATE_COMMITTED");
@@ -137,11 +198,12 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
             throw failure("process.commitStatement", exception);
         }
         return classifyConflict(process.identity().processUid(), expectedStateVersion,
-                expectedExecutionEpoch);
+                expectedExecutionEpoch, claim.isPresent());
     }
 
     private UpdateResult classifyConflict(UUID processUid, long expectedStateVersion,
-                                          long expectedExecutionEpoch) {
+                                          long expectedExecutionEpoch,
+                                          boolean claimedCommit) {
         String sql = "SELECT state_version,execution_epoch FROM process.process "
                 + "WHERE process_uid=?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -153,7 +215,8 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
                 if (rows.getLong("state_version") != expectedStateVersion) {
                     return UpdateResult.VERSION_CONFLICT;
                 }
-                return UpdateResult.VERSION_CONFLICT;
+                return claimedCommit ? UpdateResult.EPOCH_FENCED
+                        : UpdateResult.VERSION_CONFLICT;
             }
         } catch (SQLException exception) {
             throw failure("process.classifyConflict", exception);

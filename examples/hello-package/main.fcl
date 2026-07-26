@@ -1,0 +1,8 @@
+func greet(name) {
+    return "Hello, " + name
+}
+
+func run() {
+    io.println(greet("from package.run"))
+    return 0
+}

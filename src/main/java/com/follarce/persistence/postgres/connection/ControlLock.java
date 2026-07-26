@@ -8,7 +8,9 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.security.SecureRandom;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -18,18 +20,21 @@ import java.util.concurrent.locks.LockSupport;
 /** Owns the pool-external session that fences a single active Runtime. */
 public final class ControlLock implements AutoCloseable {
     private static final String ACQUIRE_SQL = "SELECT pg_try_advisory_lock(?)";
-    private static final String VERIFY_SQL = "SELECT pg_advisory_lock_held(?)";
+    private static final String ACQUIRE_PROOF_SQL = "SELECT pg_try_advisory_lock(?)";
     private static final String RELEASE_SQL = "SELECT pg_advisory_unlock(?)";
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Connection connection;
     private final long lockKey;
+    private final ControlIdentity identity;
     private final AtomicBoolean held = new AtomicBoolean(true);
     private final AtomicBoolean monitoring = new AtomicBoolean();
     private Thread monitor;
 
-    private ControlLock(Connection connection, long lockKey) {
+    private ControlLock(Connection connection, long lockKey, ControlIdentity identity) {
         this.connection = connection;
         this.lockKey = lockKey;
+        this.identity = identity;
     }
 
     public static ControlLock acquire(DatabaseConfig database, long lockKey) {
@@ -40,8 +45,9 @@ public final class ControlLock implements AutoCloseable {
         try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
             properties.setProperty("password", secret.exposeForDriver());
         }
+        Connection connection = null;
         try {
-            Connection connection = DriverManager.getConnection(database.jdbcUrl(), properties);
+            connection = DriverManager.getConnection(database.jdbcUrl(), properties);
             connection.setAutoCommit(true);
             try (PreparedStatement statement = connection.prepareStatement(ACQUIRE_SQL)) {
                 statement.setLong(1, lockKey);
@@ -52,8 +58,16 @@ public final class ControlLock implements AutoCloseable {
                     }
                 }
             }
-            return new ControlLock(connection, lockKey);
+            long proofKey = acquireProofLock(connection, lockKey);
+            return new ControlLock(connection, lockKey, readIdentity(connection, proofKey));
         } catch (SQLException exception) {
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (SQLException closeFailure) {
+                    exception.addSuppressed(closeFailure);
+                }
+            }
             throw SqlStateClassifier.classify("runtime.acquireControlLock", exception);
         }
     }
@@ -85,13 +99,62 @@ public final class ControlLock implements AutoCloseable {
         return held.get();
     }
 
-    private boolean serverStillOwnsLock() throws SQLException {
-        // pg_locks is checked in-session because advisory locks are scoped to this connection.
-        String sql = "SELECT EXISTS (SELECT 1 FROM pg_locks "
-                + "WHERE locktype='advisory' AND pid=pg_backend_pid() AND granted)";
+    public ControlIdentity identity() {
+        return identity;
+    }
+
+    private static long acquireProofLock(Connection connection, long controlKey)
+            throws SQLException {
+        for (int attempt = 0; attempt < 8; attempt++) {
+            long proofKey = RANDOM.nextLong();
+            if (proofKey == controlKey) continue;
+            try (PreparedStatement statement = connection.prepareStatement(ACQUIRE_PROOF_SQL)) {
+                statement.setLong(1, proofKey);
+                try (ResultSet result = statement.executeQuery()) {
+                    if (result.next() && result.getBoolean(1)) return proofKey;
+                }
+            }
+        }
+        throw new SQLException("Cannot acquire a unique control proof lock", "55P03");
+    }
+
+    private static ControlIdentity readIdentity(Connection connection, long proofKey)
+            throws SQLException {
+        String sql = "SELECT activity.pid,activity.backend_start "
+                + "FROM pg_catalog.pg_stat_activity AS activity "
+                + "WHERE activity.pid=pg_backend_pid()";
         try (PreparedStatement statement = connection.prepareStatement(sql);
              ResultSet result = statement.executeQuery()) {
-            return result.next() && result.getBoolean(1);
+            if (!result.next()) {
+                throw new SQLException("Control backend identity is unavailable", "08006");
+            }
+            return new ControlIdentity(result.getInt("pid"),
+                    result.getTimestamp("backend_start").toInstant(), proofKey);
+        }
+    }
+
+    private boolean serverStillOwnsLock() throws SQLException {
+        // Both keys must remain on this exact backend. Checking for merely any
+        // advisory lock could leave the Runtime alive after its singleton lock
+        // was released while the per-boot proof lock was still present.
+        return ownsAdvisoryLock(connection, lockKey)
+                && ownsAdvisoryLock(connection, identity.proofLockKey());
+    }
+
+    private static boolean ownsAdvisoryLock(Connection connection, long key)
+            throws SQLException {
+        String sql = "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks "
+                + "WHERE locktype='advisory' AND pid=pg_backend_pid() AND granted "
+                + "AND database=(SELECT oid FROM pg_catalog.pg_database "
+                + "WHERE datname=current_database()) "
+                + "AND classid::bigint=((? >> 32) & 4294967295::bigint) "
+                + "AND objid::bigint=(? & 4294967295::bigint) AND objsubid=1)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, key);
+            statement.setLong(2, key);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() && result.getBoolean(1);
+            }
         }
     }
 
@@ -120,6 +183,15 @@ public final class ControlLock implements AutoCloseable {
             connection.close();
         } catch (SQLException ignored) {
             // Nothing can recover this session during shutdown.
+        }
+    }
+
+    /** Stable identity of the PostgreSQL backend holding the singleton lock. */
+    public record ControlIdentity(int backendPid, Instant backendStartedAt,
+                                  long proofLockKey) {
+        public ControlIdentity {
+            if (backendPid < 1) throw new IllegalArgumentException("backendPid must be positive");
+            Objects.requireNonNull(backendStartedAt, "backendStartedAt");
         }
     }
 }

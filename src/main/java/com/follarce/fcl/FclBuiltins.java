@@ -19,6 +19,7 @@ public final class FclBuiltins {
         registerMath(registry);
         registerUtil(registry, new Gson());
         registerPath(registry);
+        registerTerminal(registry);
         return registry;
     }
 
@@ -155,6 +156,67 @@ public final class FclBuiltins {
                     }
                     return normalizePath(String.join("/", parts));
                 });
+    }
+
+    private static void registerTerminal(FclFunctionRegistry registry) {
+        registry.register("term", "color", args -> {
+                    arity(args, 2, "color");
+                    return ansiColor(stringAt(args, 0, "color"))
+                            + String.valueOf(args.get(1)) + "\u001b[0m";
+                }, "paint")
+                .register("term", "bold", args -> ansiWrap(args, "bold", "1"))
+                .register("term", "dim", args -> ansiWrap(args, "dim", "2"))
+                .register("term", "reset", args -> {
+                    arity(args, 0, "reset");
+                    return "\u001b[0m";
+                })
+                .register("term", "clear", args -> {
+                    arity(args, 0, "clear");
+                    return "\u001b[2J\u001b[H";
+                })
+                .register("term", "eraseLine", args -> {
+                    arity(args, 0, "eraseLine");
+                    return "\u001b[2K\r";
+                })
+                .register("term", "cursorUp", args -> cursor(args, "cursorUp", "A"))
+                .register("term", "cursorDown", args -> cursor(args, "cursorDown", "B"))
+                .register("term", "cursorForward", args -> cursor(args, "cursorForward", "C"))
+                .register("term", "cursorBack", args -> cursor(args, "cursorBack", "D"));
+        String[] colors = {"red", "green", "yellow", "blue", "magenta", "cyan", "white"};
+        for (String color : colors) {
+            registry.register("term", color, args -> {
+                arity(args, 1, color);
+                return ansiColor(color) + String.valueOf(args.getFirst()) + "\u001b[0m";
+            });
+        }
+    }
+
+    private static String ansiWrap(List<Object> args, String function, String code) {
+        arity(args, 1, function);
+        return "\u001b[" + code + "m" + String.valueOf(args.getFirst()) + "\u001b[0m";
+    }
+
+    private static String cursor(List<Object> args, String function, String suffix) {
+        arity(args, 1, function);
+        Object value = args.getFirst();
+        if (!(value instanceof Number number) || number.longValue() < 1) {
+            throw new FclRuntimeException(function + " requires a positive count");
+        }
+        return "\u001b[" + number.longValue() + suffix;
+    }
+
+    private static String ansiColor(String name) {
+        return switch (name.toLowerCase(java.util.Locale.ROOT)) {
+            case "black" -> "\u001b[30m";
+            case "red" -> "\u001b[31m";
+            case "green" -> "\u001b[32m";
+            case "yellow" -> "\u001b[33m";
+            case "blue" -> "\u001b[34m";
+            case "magenta" -> "\u001b[35m";
+            case "cyan" -> "\u001b[36m";
+            case "white" -> "\u001b[37m";
+            default -> throw new FclRuntimeException("Unknown terminal color: " + name);
+        };
     }
 
     private static String normalizePath(String source) {

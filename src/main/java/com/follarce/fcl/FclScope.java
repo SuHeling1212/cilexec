@@ -37,6 +37,14 @@ public final class FclScope {
         values.put(name, FclValues.deepCopy(value));
     }
 
+    /** Removes and returns a value, used to consume a durable asynchronous inbox once. */
+    public Object remove(String name) {
+        if (!values.containsKey(name)) {
+            throw new FclRuntimeException("Undefined variable: " + name);
+        }
+        return values.remove(name);
+    }
+
     public Map<String, Object> values() {
         Map<String, Object> copy = new LinkedHashMap<>();
         values.forEach((key, value) -> copy.put(key, FclValues.deepCopy(value)));

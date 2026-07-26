@@ -45,6 +45,13 @@ public final class FclRuntime {
             return executeInstruction(program, continuation, instruction, pointer);
         } catch (FclExpressionEvaluator.UserCallSignal call) {
             return enterCall(program, continuation, initialPointer, call.call());
+        } catch (FclSuspension suspension) {
+            if (continuation.waitState().kind() == FclContinuation.WaitKind.NONE) {
+                return fail(program, continuation, initialPointer,
+                        new FclRuntimeException("A host function suspended without a wait state"));
+            }
+            return result(FclStepResult.Status.WAITING, initialPointer, continuation,
+                    lineAt(program, continuation.programCounter()), null);
         } catch (RuntimeException failure) {
             return fail(program, continuation, initialPointer, failure);
         }

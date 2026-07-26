@@ -2,14 +2,16 @@ SET ROLE cilexec_owner;
 
 -- A boot records the exact PostgreSQL session that owns the singleton
 -- advisory lock. PID alone is insufficient because backend identifiers can be
--- reused after a disconnect, so the backend start timestamp is part of the
--- durable control identity.
+-- reused after a disconnect, so the backend start timestamp is recorded and a
+-- random second advisory lock acts as an unforgeable, live proof for the boot.
 -- name: migration.V020.control_backend_identity
 ALTER TABLE meta.boot
     ADD COLUMN control_backend_pid integer,
     ADD COLUMN control_backend_started_at timestamptz,
+    ADD COLUMN control_proof_lock_key bigint,
     ADD CONSTRAINT ck_boot_control_backend_identity CHECK (
         (control_backend_pid IS NULL) = (control_backend_started_at IS NULL)
+        AND (control_backend_pid IS NULL) = (control_proof_lock_key IS NULL)
         AND (control_backend_pid IS NULL OR control_backend_pid > 0)
     );
 
@@ -61,12 +63,8 @@ BEGIN
           ON runtime.kernel_instance_id = boot.kernel_instance_id
          AND runtime.instance_id = boot.instance_id
         JOIN meta.instance AS instance ON instance.instance_id = boot.instance_id
-        JOIN pg_catalog.pg_stat_activity AS activity
-          ON activity.pid = boot.control_backend_pid
-         AND activity.backend_start = boot.control_backend_started_at
-         AND activity.datname = current_database()
         JOIN pg_catalog.pg_locks AS control_lock
-          ON control_lock.pid = activity.pid
+          ON control_lock.pid = boot.control_backend_pid
          AND control_lock.locktype = 'advisory'
          AND control_lock.database = (
              SELECT database_oid.oid
@@ -90,6 +88,21 @@ BEGIN
           AND boot.status IN ('RECOVERING', 'ACTIVE')
           AND runtime.status IN ('STARTING', 'ACTIVE')
           AND instance.status IN ('INITIALIZING', 'ACTIVE')
+          AND boot.control_proof_lock_key IS DISTINCT FROM instance.advisory_lock_key
+          AND EXISTS (
+              SELECT 1
+              FROM pg_catalog.pg_locks AS proof_lock
+              WHERE proof_lock.pid = boot.control_backend_pid
+                AND proof_lock.locktype = 'advisory'
+                AND proof_lock.database = control_lock.database
+                AND proof_lock.classid::bigint
+                    = ((boot.control_proof_lock_key >> 32) & 4294967295::bigint)
+                AND proof_lock.objid::bigint
+                    = (boot.control_proof_lock_key & 4294967295::bigint)
+                AND proof_lock.objsubid = 1
+                AND proof_lock.mode = 'ExclusiveLock'
+                AND proof_lock.granted
+          )
     );
 END
 $function$;
@@ -152,6 +165,15 @@ BEGIN
     END IF;
     EXECUTE format(
         'GRANT EXECUTE ON FUNCTION scheduler.claim_authorizes_commit(uuid, uuid, uuid, uuid, bigint) TO %I',
+        mapped_role
+    );
+    -- The invoker wrapper captures current_user and the identity GUC before
+    -- calling the identity-bound definer. PostgreSQL still checks EXECUTE on
+    -- the inner function for an invoker wrapper, so principals need this
+    -- narrow grant as well; claim_authorizes_commit_as rejects forged roles,
+    -- users and owners against the actual SET ROLE identity.
+    EXECUTE format(
+        'GRANT EXECUTE ON FUNCTION scheduler.claim_authorizes_commit_as(name, text, uuid, uuid, uuid, uuid, bigint) TO %I',
         mapped_role
     );
 END

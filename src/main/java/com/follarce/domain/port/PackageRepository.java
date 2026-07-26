@@ -7,6 +7,7 @@ import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 public interface PackageRepository {
@@ -16,15 +17,39 @@ public interface PackageRepository {
 
     Optional<PackageRelease> findRelease(PackageRelease.Coordinate coordinate);
 
+    default List<PackageRelease> findReleases() {
+        throw new UnsupportedOperationException("Package release listing is not implemented");
+    }
+
     void saveEnvironment(PackageEnvironment environment);
+
+    default Optional<PackageEnvironment> findEnvironment(UUID environmentId) {
+        return Optional.empty();
+    }
+
+    default Optional<PackageEnvironment> findEnvironmentByName(String name) {
+        return Optional.empty();
+    }
+
+    default List<PackageEnvironment> findEnvironments() {
+        return List.of();
+    }
 
     void saveBinding(PackageBinding binding);
 
     Optional<PackageBinding> findBinding(UUID environmentId, String binding);
 
+    default boolean deleteBinding(UUID environmentId, String binding) {
+        throw new UnsupportedOperationException("Package binding deletion is not implemented");
+    }
+
     void saveProcessBinding(ProcessPackageBinding binding);
 
     Optional<ProcessPackageBinding> findProcessBinding(UUID processUid, String importName);
+
+    default List<ProcessPackageBinding> findProcessBindings(UUID processUid) {
+        return List.of();
+    }
 
     enum ReleaseWriteResult {
         REGISTERED,

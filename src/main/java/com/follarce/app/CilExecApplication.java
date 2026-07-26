@@ -5,6 +5,7 @@ import com.follarce.exporter.LogicalExportReport;
 import com.follarce.exporter.LogicalExportService;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.FlywayMigrator;
+import com.follarce.package_manager.PackageBuilder;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +26,7 @@ public final class CilExecApplication {
     private final RuntimeAction runtime;
     private final MigrationAction migration;
     private final ExportAction export;
+    private final PackageBuildAction packageBuild;
 
     CilExecApplication(
             Supplier<CilExecConfig> configSource,
@@ -33,11 +35,26 @@ public final class CilExecApplication {
             MigrationAction migration,
             ExportAction export
     ) {
+        this(configSource, buildSource, runtime, migration, export,
+                (source, output) -> {
+                    throw new AssertionError("package build action was not configured");
+                });
+    }
+
+    CilExecApplication(
+            Supplier<CilExecConfig> configSource,
+            Supplier<BuildInfo> buildSource,
+            RuntimeAction runtime,
+            MigrationAction migration,
+            ExportAction export,
+            PackageBuildAction packageBuild
+    ) {
         this.configSource = Objects.requireNonNull(configSource, "configSource");
         this.buildSource = Objects.requireNonNull(buildSource, "buildSource");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.migration = Objects.requireNonNull(migration, "migration");
         this.export = Objects.requireNonNull(export, "export");
+        this.packageBuild = Objects.requireNonNull(packageBuild, "packageBuild");
     }
 
     public static int run(String[] arguments) {
@@ -46,7 +63,8 @@ public final class CilExecApplication {
                 BuildInfo::load,
                 CilExecApplication::runRuntime,
                 CilExecApplication::runMigration,
-                CilExecApplication::runExport);
+                CilExecApplication::runExport,
+                CilExecApplication::runPackageBuild);
         try {
             return application.execute(arguments);
         } catch (IllegalArgumentException usage) {
@@ -60,20 +78,28 @@ public final class CilExecApplication {
 
     int execute(String[] arguments) {
         ApplicationCommand command = ApplicationCommand.parse(arguments);
-        CilExecConfig config = Objects.requireNonNull(configSource.get(), "config");
         return switch (command) {
-            case RUNTIME -> runtime.run(config,
+            case RUNTIME -> runtime.run(config(),
                     Objects.requireNonNull(buildSource.get(), "buildInfo"));
             case MIGRATE -> {
-                migration.run(config);
+                migration.run(config());
                 yield 0;
             }
             case EXPORT -> {
-                export.run(config, Objects.requireNonNull(buildSource.get(), "buildInfo"),
+                export.run(config(), Objects.requireNonNull(buildSource.get(), "buildInfo"),
                         ApplicationCommand.exportPath(arguments));
                 yield 0;
             }
+            case PACKAGE_BUILD -> {
+                packageBuild.run(ApplicationCommand.packageSourcePath(arguments),
+                        ApplicationCommand.packageOutputPath(arguments));
+                yield 0;
+            }
         };
+    }
+
+    private CilExecConfig config() {
+        return Objects.requireNonNull(configSource.get(), "config");
     }
 
     private static int runRuntime(CilExecConfig config, BuildInfo buildInfo) {
@@ -116,6 +142,13 @@ public final class CilExecApplication {
         }
     }
 
+    private static void runPackageBuild(Path source, Path output) {
+        var descriptor = new PackageBuilder().build(source, output);
+        System.out.printf("Built package %s at %s (package hash %s, file hash %s)%n",
+                descriptor.coordinate(), output.toAbsolutePath(), descriptor.packageHash(),
+                descriptor.databaseFileHash());
+    }
+
     @FunctionalInterface
     interface RuntimeAction {
         int run(CilExecConfig config, BuildInfo buildInfo);
@@ -129,5 +162,10 @@ public final class CilExecApplication {
     @FunctionalInterface
     interface ExportAction {
         void run(CilExecConfig config, BuildInfo buildInfo, Path output);
+    }
+
+    @FunctionalInterface
+    interface PackageBuildAction {
+        void run(Path source, Path output);
     }
 }

@@ -208,6 +208,19 @@ public final class FclContinuation {
         waitState = new WaitState(WaitKind.EXTERNAL, key, payload);
     }
 
+    /** Requests normal process completion from a host function such as {@code util.exit}. */
+    public void exit(Object value) {
+        halt(value);
+    }
+
+    /** Seeds the result of the current call in a cloned continuation, used by durable fork. */
+    public void cacheCallResult(long expressionId, Object value) {
+        if (pendingStatement == null) {
+            pendingStatement = new PendingStatement(programCounter);
+        }
+        pendingStatement = pendingStatement.withResult(expressionId, value);
+    }
+
     /** Completes a host-resolved directive with a durable interpreter failure. */
     public void rejectDirective(String message) {
         if (waitState.kind() != WaitKind.IMPORT && waitState.kind() != WaitKind.INCLUDE) {

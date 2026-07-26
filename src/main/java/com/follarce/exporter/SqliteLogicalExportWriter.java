@@ -40,12 +40,21 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
         Objects.requireNonNull(database, "database");
         try {
             connection = DriverManager.getConnection("jdbc:sqlite:" + database.toAbsolutePath());
+        } catch (SQLException failure) {
+            throw new LogicalExportException("Cannot open SQLite logical export", failure);
+        }
+        try {
             configure();
             createSchema();
             insertRow = connection.prepareStatement(
                     "INSERT INTO export_row(table_name,row_number,row_json,row_sha256) "
                             + "VALUES (?,?,?,?)");
         } catch (SQLException failure) {
+            try {
+                connection.close();
+            } catch (SQLException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
             throw new LogicalExportException("Cannot initialize SQLite logical export", failure);
         }
     }
@@ -151,10 +160,6 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
             insert.executeBatch();
             createReadOnlyTriggers();
             connection.commit();
-            connection.setAutoCommit(true);
-            try (Statement statement = connection.createStatement()) {
-                statement.execute("VACUUM");
-            }
             complete = true;
         } catch (SQLException failure) {
             rollback(failure);
@@ -190,7 +195,6 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
     }
 
     private void configure() throws SQLException {
-        connection.setAutoCommit(false);
         try (Statement statement = connection.createStatement()) {
             statement.execute("PRAGMA journal_mode=DELETE");
             statement.execute("PRAGMA synchronous=FULL");
@@ -199,6 +203,7 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
             statement.execute("PRAGMA application_id=" + APPLICATION_ID);
             statement.execute("PRAGMA user_version=" + FORMAT_VERSION);
         }
+        connection.setAutoCommit(false);
     }
 
     private void createSchema() throws SQLException {
@@ -226,15 +231,21 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
 
     private void createReadOnlyTriggers() throws SQLException {
         try (Statement statement = connection.createStatement()) {
-            for (String table : TABLES.stream().sorted().toList()) {
-                for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
-                    String trigger = "guard_" + table + "_" + operation.toLowerCase();
-                    statement.execute("CREATE TRIGGER " + trigger + " BEFORE " + operation
-                            + " ON " + table + " BEGIN SELECT RAISE(ABORT,"
-                            + "'CilExec logical export is read-only'); END");
-                }
+            for (String sql : readOnlyTriggers().values()) statement.execute(sql);
+        }
+    }
+
+    static Map<String, String> readOnlyTriggers() {
+        Map<String, String> triggers = new TreeMap<>();
+        for (String table : TABLES.stream().sorted().toList()) {
+            for (String operation : List.of("INSERT", "UPDATE", "DELETE")) {
+                String trigger = "guard_" + table + "_" + operation.toLowerCase();
+                triggers.put(trigger, "CREATE TRIGGER " + trigger + " BEFORE " + operation
+                        + " ON " + table + " BEGIN SELECT RAISE(ABORT,"
+                        + "'CilExec logical export is read-only'); END");
             }
         }
+        return Map.copyOf(triggers);
     }
 
     private void requireBegun() {

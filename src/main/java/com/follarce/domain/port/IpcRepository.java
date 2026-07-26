@@ -5,7 +5,9 @@ import com.follarce.domain.ipc.IpcChannel;
 import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.ipc.IpcSubscription;
 import com.follarce.domain.ipc.IpcTopic;
+import com.follarce.domain.process.Continuation;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,4 +38,83 @@ public interface IpcRepository {
     List<IpcDelivery> findPending(UUID receiverProcessUid, int limit);
 
     boolean updateDelivery(IpcDelivery delivery, IpcDelivery.Status expectedStatus);
+
+    default boolean createSwapPool(UUID ownerId, UUID ownerProcessUid, String poolName,
+                                   Instant createdAt) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean removeSwapPool(UUID ownerId, UUID ownerProcessUid, String poolName) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean swapPoolExists(UUID ownerId, String poolName) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default List<String> findSwapPools(UUID ownerId) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default List<String> findSwapVariables(UUID ownerId, String poolName) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean addSwapValue(UUID ownerId, String poolName, String variableName,
+                                 Continuation.PersistedValue value, String retentionMode,
+                                 Optional<Integer> remainingReads, Instant at) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default Optional<Continuation.PersistedValue> consumeSwapValue(UUID ownerId, String poolName,
+                                                                    String variableName,
+                                                                    Instant at) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean updateSwapValue(UUID ownerId, String poolName, String variableName,
+                                    Continuation.PersistedValue value, UUID processUid,
+                                    long executionEpoch, Optional<Long> fencingToken, Instant at) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean removeSwapValue(UUID ownerId, String poolName, String variableName,
+                                    UUID processUid, long executionEpoch,
+                                    Optional<Long> fencingToken) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default int clearSwapPool(UUID ownerId, String poolName, UUID ownerProcessUid) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default Optional<SwapLock> acquireSwapLock(UUID ownerId, String poolName,
+                                               String variableName, UUID processUid,
+                                               long executionEpoch, Instant leaseUntil,
+                                               Instant at) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default Optional<SwapLock> renewSwapLock(UUID ownerId, String poolName,
+                                             String variableName, UUID processUid,
+                                             long executionEpoch, long fencingToken,
+                                             Instant leaseUntil, Instant at) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean releaseSwapLock(UUID ownerId, String poolName, String variableName,
+                                    UUID processUid, long executionEpoch, long fencingToken) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean signalSwapValue(UUID ownerId, String poolName, String variableName,
+                                    Instant at) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    default boolean consumeSwapSignal(UUID ownerId, String poolName, String variableName) {
+        throw new UnsupportedOperationException("Swap pools are not implemented");
+    }
+
+    record SwapLock(long fencingToken, Instant leaseUntil) {}
 }

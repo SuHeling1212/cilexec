@@ -55,6 +55,8 @@ class BuildInfoAndCommandTest {
                 ApplicationCommand.parse(new String[]{"migrate"}));
         assertEquals(ApplicationCommand.EXPORT,
                 ApplicationCommand.parse(new String[]{"export", "snapshot.db"}));
+        assertEquals(ApplicationCommand.PACKAGE_BUILD, ApplicationCommand.parse(
+                new String[]{"package", "build", "hello", "hello.db"}));
         assertEquals(java.nio.file.Path.of("snapshot.db"),
                 ApplicationCommand.exportPath(new String[]{"export", "snapshot.db"}));
         assertThrows(IllegalArgumentException.class,
@@ -65,5 +67,11 @@ class BuildInfoAndCommandTest {
                 () -> ApplicationCommand.parse(new String[]{"export"}));
         assertThrows(IllegalArgumentException.class,
                 () -> ApplicationCommand.parse(new String[]{"export", "snapshot.sqlite"}));
+        assertEquals(java.nio.file.Path.of("hello"), ApplicationCommand.packageSourcePath(
+                new String[]{"package", "build", "hello", "hello.db"}));
+        assertEquals(java.nio.file.Path.of("hello.db"), ApplicationCommand.packageOutputPath(
+                new String[]{"package", "build", "hello", "hello.db"}));
+        assertThrows(IllegalArgumentException.class, () -> ApplicationCommand.parse(
+                new String[]{"package", "install", "hello", "hello.db"}));
     }
 }

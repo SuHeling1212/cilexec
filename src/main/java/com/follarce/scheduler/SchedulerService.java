@@ -12,9 +12,12 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Bounded virtual-thread scheduler; its queues and leases remain PostgreSQL rows. */
 public final class SchedulerService implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(SchedulerService.class);
     private final TransactionExecutor transactions;
     private final ClaimedProcessHandler handler;
     private final UUID bootId;
@@ -71,6 +74,7 @@ public final class SchedulerService implements AutoCloseable {
                     fatalFailure.accept(failure);
                     return;
                 }
+                LOG.warn("Scheduler worker {} rejected a claim cycle", runnerId, failure);
                 LockSupport.parkNanos(idlePoll.toNanos());
             }
         }

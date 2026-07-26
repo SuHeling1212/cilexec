@@ -1,0 +1,18 @@
+{
+  "namespace": "demo",
+  "name": "hello",
+  "version": "1.0.0",
+  "languageVersion": "fcl-1",
+  "modules": [
+    {"name": "main", "path": "main.fcl"}
+  ],
+  "resources": [],
+  "dependencies": [],
+  "entrypoints": [
+    {"name": "run", "module": "main", "function": "run"}
+  ],
+  "exports": [
+    {"name": "greet", "module": "main", "symbol": "greet"}
+  ],
+  "capabilities": []
+}

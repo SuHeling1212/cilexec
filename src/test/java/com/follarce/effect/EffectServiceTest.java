@@ -242,6 +242,10 @@ class EffectServiceTest {
             process = changed;
             return UpdateResult.UPDATED;
         }
+        @Override public UpdateResult updateClaimed(CilProcess changed,
+                long expectedStateVersion, SchedulerClaim claim) {
+            return update(changed, expectedStateVersion, claim.executionEpoch());
+        }
     }
 
     private static final class MemoryScheduler implements SchedulerRepository {

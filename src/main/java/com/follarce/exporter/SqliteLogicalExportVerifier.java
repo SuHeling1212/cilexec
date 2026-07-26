@@ -19,8 +19,6 @@ import java.util.TreeMap;
 
 /** Recomputes every count and digest before an export file is published. */
 public final class SqliteLogicalExportVerifier {
-    private static final int READ_ONLY_TRIGGER_COUNT = SqliteLogicalExportWriter.TABLES.size() * 3;
-
     public LogicalExportReport verify(Path database) {
         if (database == null || !Files.isRegularFile(database)) {
             throw new LogicalExportException("Logical export database does not exist: " + database);
@@ -102,21 +100,15 @@ public final class SqliteLogicalExportVerifier {
 
     private static void validateSchema(Connection connection) throws SQLException {
         Set<String> tables = new LinkedHashSet<>();
-        int triggers = 0;
+        Map<String, String> triggers = new TreeMap<>();
         try (Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(
-                     "SELECT type,name FROM sqlite_schema "
+                     "SELECT type,name,sql FROM sqlite_schema "
                              + "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")) {
             while (rows.next()) {
                 switch (rows.getString(1)) {
                     case "table" -> tables.add(rows.getString(2));
-                    case "trigger" -> {
-                        if (!rows.getString(2).startsWith("guard_export_")) {
-                            throw new LogicalExportException(
-                                    "Unexpected logical export trigger: " + rows.getString(2));
-                        }
-                        triggers++;
-                    }
+                    case "trigger" -> triggers.put(rows.getString(2), rows.getString(3));
                     default -> throw new LogicalExportException(
                             "Unexpected logical export schema object: " + rows.getString(2));
                 }
@@ -125,7 +117,7 @@ public final class SqliteLogicalExportVerifier {
         if (!tables.equals(new java.util.TreeSet<>(SqliteLogicalExportWriter.TABLES))) {
             throw new LogicalExportException("Logical export has an unexpected table set: " + tables);
         }
-        if (triggers != READ_ONLY_TRIGGER_COUNT) {
+        if (!triggers.equals(SqliteLogicalExportWriter.readOnlyTriggers())) {
             throw new LogicalExportException("Logical export read-only guards are incomplete");
         }
     }

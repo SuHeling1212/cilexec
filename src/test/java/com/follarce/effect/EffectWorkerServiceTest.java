@@ -183,7 +183,10 @@ class EffectWorkerServiceTest {
     }
 
     private static EffectRequest unknown(EffectRequest.Policy policy) {
-        return prepared(policy).claim(UUID.randomUUID(), NOW.minusSeconds(3))
+        EffectRequest prepared = EffectRequest.prepare(UUID.randomUUID(), UUID.randomUUID(),
+                "test.effect", value("json", "{\"request\":true}"), policy,
+                NOW.minusSeconds(4));
+        return prepared.claim(UUID.randomUUID(), NOW.minusSeconds(3))
                 .start(NOW.minusSeconds(2)).unknown("runtime stopped", NOW.minusSeconds(1));
     }
 
@@ -338,6 +341,10 @@ class EffectWorkerServiceTest {
         @Override public Optional<CilProcess> findByPid(long pid) { return Optional.empty(); }
         @Override public void insert(CilProcess process) { throw new UnsupportedOperationException(); }
         @Override public UpdateResult update(CilProcess process, long state, long epoch) {
+            throw new UnsupportedOperationException();
+        }
+        @Override public UpdateResult updateClaimed(CilProcess process, long state,
+                com.follarce.domain.scheduler.SchedulerClaim claim) {
             throw new UnsupportedOperationException();
         }
     }

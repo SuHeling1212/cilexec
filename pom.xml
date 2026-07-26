@@ -35,7 +35,9 @@
         <project.build.outputTimestamp>2026-07-22T00:00:00Z</project.build.outputTimestamp>
         <fcl.runtime.format.version>1</fcl.runtime.format.version>
         <database.schema.minimum>1</database.schema.minimum>
-        <database.schema.maximum>19</database.schema.maximum>
+        <database.schema.maximum>25</database.schema.maximum>
+        <!-- Docker Engine 29 rejects docker-java's legacy default API. -->
+        <docker.api.version>1.44</docker.api.version>
         <!-- CI/Docker may override with -Dbuild.revision=<git SHA>. -->
         <build.revision>unknown</build.revision>
     </properties>
@@ -207,6 +209,9 @@
                 <configuration>
                     <useModulePath>false</useModulePath>
                     <includes><include>**/*IT.java</include></includes>
+                    <systemPropertyVariables>
+                        <api.version>${docker.api.version}</api.version>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
             <plugin>

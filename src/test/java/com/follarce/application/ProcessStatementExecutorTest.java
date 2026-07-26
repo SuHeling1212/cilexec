@@ -1,12 +1,17 @@
 package com.follarce.application;
 
 import com.follarce.domain.port.ProcessRepository;
+import com.follarce.domain.packageinfo.PackageRelease;
+import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.scheduler.SchedulerClaim;
+import com.follarce.domain.vfs.BinaryContent;
+import com.follarce.domain.vfs.ObjectHash;
+import com.follarce.domain.vfs.StoredObject;
 import com.follarce.fcl.FclBuiltins;
 import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclContinuation;
@@ -14,6 +19,10 @@ import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
+import com.follarce.package_manager.PackageBuilder;
+import com.follarce.package_manager.PackageEnvironments;
+import com.follarce.package_manager.PackageManifest;
+import com.follarce.persistence.sqlite.SqlitePackageReader;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -92,6 +101,57 @@ class ProcessStatementExecutorTest {
         assertTrue(failure.halted());
         assertTrue(failure.failed());
         assertFalse(failure.exceptionStack().isEmpty());
+    }
+
+    @Test
+    void linksPinnedPackageExportsAndPersistsTheExactHash() {
+        Fixture fixture = new Fixture("""
+                import "hello" as hello
+                result = hello.greet("CilExec")
+                """);
+        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
+                List.of(new PackageManifest.Entrypoint("run", "main", "run")),
+                List.of(new PackageManifest.Export("greet", "main", "greet")), List.of());
+        byte[] database = new PackageBuilder().build(manifest, path -> """
+                func prefix(value) { return "Hello, " + value }
+                func greet(value) { return prefix(value) }
+                func run() { return greet("package") }
+                """.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var descriptor = new SqlitePackageReader().inspect(database);
+        StoredObject object = StoredObject.create(new BinaryContent(database),
+                "application/vnd.sqlite3", NOW);
+        fixture.persistence.vfs.saveObject(object);
+        PackageRelease release = new PackageRelease(new PackageRelease.Coordinate("demo", "hello",
+                "1.0.0"), new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
+                object.objectHash(), object.objectHash(), PackageRelease.SignatureStatus.UNSIGNED,
+                NOW);
+        fixture.persistence.packages.releases.put(release.packageHash(), release);
+        var environment = PackageEnvironments.ensureDefault(fixture.persistence.packages,
+                fixture.ownerId, NOW);
+        fixture.persistence.packages.saveBinding(new com.follarce.domain.packageinfo.PackageBinding(
+                environment.environmentId(), "hello", release.packageHash(), NOW));
+
+        int steps = 0;
+        while (!fixture.persistence.processes.current.isTerminal() && steps++ < 30) {
+            if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = fixture.persistence.processes.current.claim(
+                        fixture.persistence.processes.current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                        claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+            fixture.executor.executeOne(fixture.claim);
+        }
+
+        assertEquals(CilProcess.Status.TERMINATED,
+                fixture.persistence.processes.current.status());
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals("Hello, CilExec", restored.scope().get("result"));
+        assertEquals(release.packageHash().value(), fixture.persistence.processes.current
+                .continuation().packageBindings().get("hello"));
     }
 
     @Test

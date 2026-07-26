@@ -69,6 +69,27 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     }
 
     @Override
+    public Optional<StoredObject> findObjectByAdministrator(ObjectHash objectHash) {
+        String sql = "SELECT object_hash,byte_size,media_type,content,created_at "
+                + "FROM object_store.object WHERE object_hash=?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(objectHash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                return Optional.of(new StoredObject(
+                        JdbcValues.hash(rows.getBytes("object_hash")),
+                        rows.getLong("byte_size"),
+                        rows.getString("media_type"),
+                        new BinaryContent(rows.getBytes("content")),
+                        rows.getTimestamp("created_at").toInstant()
+                ));
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.findByAdministrator", exception);
+        }
+    }
+
+    @Override
     public Optional<VfsNode> findNode(UUID nodeId) {
         return find("vfs.findNode", "SELECT * FROM vfs.node WHERE node_id=?",
                 statement -> statement.setObject(1, nodeId));
@@ -83,6 +104,84 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
                     JdbcValues.nullableUuid(statement, 2, parentNodeId);
                     statement.setString(3, name);
                 });
+    }
+
+    @Override
+    public List<VfsNode> findChildren(UUID ownerId, Optional<UUID> parentNodeId) {
+        String sql = "SELECT * FROM vfs.node WHERE owner_id=? "
+                + "AND parent_node_id IS NOT DISTINCT FROM ? ORDER BY node_name,node_id";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            JdbcValues.nullableUuid(statement, 2, parentNodeId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<VfsNode> nodes = new ArrayList<>();
+                while (rows.next()) nodes.add(map(rows));
+                return List.copyOf(nodes);
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.findChildren", exception);
+        }
+    }
+
+    @Override
+    public List<VfsNode> findAllNodes(UUID ownerId) {
+        String sql = "SELECT * FROM vfs.node WHERE owner_id=? "
+                + "ORDER BY parent_node_id NULLS FIRST,node_name,node_id";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<VfsNode> nodes = new ArrayList<>();
+                while (rows.next()) nodes.add(map(rows));
+                return List.copyOf(nodes);
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.findAllNodes", exception);
+        }
+    }
+
+    @Override
+    public List<VfsNode> findAllNodesByAdministrator(UUID administratorId, UUID ownerId,
+                                                     UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM vfs.admin_list_nodes(?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, auditEventId);
+            statement.setTimestamp(4, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                List<VfsNode> nodes = new ArrayList<>();
+                while (rows.next()) nodes.add(map(rows));
+                return List.copyOf(nodes);
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.findAllNodesByAdministrator", exception);
+        }
+    }
+
+    @Override
+    public StoredObject readFileByAdministrator(UUID administratorId, UUID ownerId,
+                                                UUID nodeId, UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM vfs.admin_read_file(?,?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, nodeId);
+            statement.setObject(4, auditEventId);
+            statement.setTimestamp(5, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException(
+                        "Administrator VFS reader returned no content");
+                return new StoredObject(
+                        JdbcValues.hash(rows.getBytes("object_hash")),
+                        rows.getLong("byte_size"),
+                        rows.getString("media_type"),
+                        new BinaryContent(rows.getBytes("content")),
+                        rows.getTimestamp("created_at").toInstant()
+                );
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.readFileByAdministrator", exception);
+        }
     }
 
     @Override
@@ -112,6 +211,38 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     }
 
     @Override
+    public boolean renameNode(UUID nodeId, UUID ownerId, String replacementName,
+                              Instant updatedAt) {
+        String sql = "UPDATE vfs.node SET node_name=?,state_version=state_version+1,updated_at=? "
+                + "WHERE node_id=? AND owner_id=? AND parent_node_id IS NOT NULL";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, replacementName);
+            statement.setTimestamp(2, java.sql.Timestamp.from(updatedAt));
+            statement.setObject(3, nodeId);
+            statement.setObject(4, ownerId);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("vfs.renameNode", exception);
+        }
+    }
+
+    @Override
+    public boolean deleteNode(UUID nodeId, UUID ownerId) {
+        String sql = "DELETE FROM vfs.node WHERE node_id=? AND owner_id=? "
+                + "AND parent_node_id IS NOT NULL "
+                + "AND NOT EXISTS (SELECT 1 FROM vfs.node child WHERE child.parent_node_id=vfs.node.node_id) "
+                + "AND NOT EXISTS (SELECT 1 FROM vfs.file_revision revision "
+                + "WHERE revision.node_id=vfs.node.node_id)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, nodeId);
+            statement.setObject(2, ownerId);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("vfs.deleteNode", exception);
+        }
+    }
+
+    @Override
     public boolean replaceContent(UUID nodeId, Optional<ObjectHash> expectedObjectHash,
                                   ObjectHash replacementObjectHash, Instant updatedAt) {
         String sql = "UPDATE vfs.node SET current_object_hash=?,state_version=state_version+1,updated_at=? "
@@ -126,6 +257,117 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             return statement.executeUpdate() == 1;
         } catch (SQLException exception) {
             throw failure("vfs.replaceContent", exception);
+        }
+    }
+
+    @Override
+    public void saveObjectByAdministrator(StoredObject object, UUID administratorId) {
+        String insert = "INSERT INTO object_store.object(object_hash,byte_size,media_type,content,"
+                + "created_by,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT (object_hash) DO NOTHING";
+        try (PreparedStatement statement = connection.prepareStatement(insert)) {
+            statement.setBytes(1, JdbcValues.hash(object.objectHash()));
+            statement.setLong(2, object.byteSize());
+            statement.setString(3, object.mediaType());
+            statement.setBytes(4, object.content().bytes());
+            statement.setObject(5, administratorId);
+            statement.setTimestamp(6, java.sql.Timestamp.from(object.createdAt()));
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("object_store.saveByAdministrator", exception);
+        }
+        StoredObject stored = findObjectByAdministrator(object.objectHash()).orElseThrow(() ->
+                new IllegalStateException("Administrator object write was not persisted"));
+        if (stored.byteSize() != object.byteSize()
+                || !java.util.Arrays.equals(stored.content().bytes(), object.content().bytes())) {
+            throw new IllegalStateException("Existing object does not match supplied bytes");
+        }
+    }
+
+    @Override
+    public VfsNode replaceContentByAdministrator(UUID administratorId, UUID ownerId,
+                                                 UUID nodeId, StoredObject object,
+                                                 UUID revisionId, UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM vfs.admin_replace_file(?,?,?,?,?,?,?,?,?)";
+        return administratorNode("vfs.replaceContentByAdministrator", sql, statement -> {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, nodeId);
+            statement.setBytes(4, JdbcValues.hash(object.objectHash()));
+            statement.setString(5, object.mediaType());
+            statement.setBytes(6, object.content().bytes());
+            statement.setObject(7, revisionId);
+            statement.setObject(8, auditEventId);
+            statement.setTimestamp(9, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public VfsNode createDirectoryByAdministrator(UUID administratorId, UUID ownerId,
+                                                  UUID nodeId, UUID parentNodeId, String name,
+                                                  UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM vfs.admin_create_directory(?,?,?,?,?,?,?)";
+        return administratorNode("vfs.createDirectoryByAdministrator", sql, statement -> {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, nodeId);
+            statement.setObject(4, parentNodeId);
+            statement.setString(5, name);
+            statement.setObject(6, auditEventId);
+            statement.setTimestamp(7, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public VfsNode createFileByAdministrator(UUID administratorId, UUID ownerId,
+                                             UUID nodeId, UUID parentNodeId, String name,
+                                             StoredObject object, boolean revisionEnabled,
+                                             UUID revisionId, UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM vfs.admin_create_file(?,?,?,?,?,?,?,?,?,?,?,?)";
+        return administratorNode("vfs.createFileByAdministrator", sql, statement -> {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, nodeId);
+            statement.setObject(4, parentNodeId);
+            statement.setString(5, name);
+            statement.setBytes(6, JdbcValues.hash(object.objectHash()));
+            statement.setString(7, object.mediaType());
+            statement.setBytes(8, object.content().bytes());
+            statement.setBoolean(9, revisionEnabled);
+            statement.setObject(10, revisionId);
+            statement.setObject(11, auditEventId);
+            statement.setTimestamp(12, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public VfsNode renameByAdministrator(UUID administratorId, UUID ownerId, UUID nodeId,
+                                         String replacementName, UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM vfs.admin_rename(?,?,?,?,?,?)";
+        return administratorNode("vfs.renameByAdministrator", sql, statement -> {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, nodeId);
+            statement.setString(4, replacementName);
+            statement.setObject(5, auditEventId);
+            statement.setTimestamp(6, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public boolean deleteByAdministrator(UUID administratorId, UUID ownerId, UUID nodeId,
+                                         UUID auditEventId, Instant at) {
+        String sql = "SELECT vfs.admin_delete(?,?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, nodeId);
+            statement.setObject(4, auditEventId);
+            statement.setTimestamp(5, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() && rows.getBoolean(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.deleteByAdministrator", exception);
         }
     }
 
@@ -151,6 +393,47 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             }
         } catch (SQLException exception) {
             throw failure("vfs.appendRevision", exception);
+        }
+    }
+
+    @Override
+    public FileRevision appendRevisionByAdministrator(UUID revisionId, UUID nodeId,
+                                                       UUID ownerId, ObjectHash objectHash,
+                                                       UUID administratorId, Instant createdAt) {
+        String lock = "SELECT node_type,current_object_hash,revision_enabled FROM vfs.node "
+                + "WHERE node_id=? AND owner_id=? FOR UPDATE";
+        try (PreparedStatement statement = connection.prepareStatement(lock)) {
+            statement.setObject(1, nodeId);
+            statement.setObject(2, ownerId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || !"FILE".equals(rows.getString("node_type"))
+                        || !rows.getBoolean("revision_enabled")
+                        || !objectHash.equals(JdbcValues.hash(rows.getBytes("current_object_hash")))) {
+                    throw new IllegalArgumentException(
+                            "Revision must identify the current content of a versioned target file");
+                }
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.lockRevisionByAdministrator", exception);
+        }
+        String insert = "INSERT INTO vfs.file_revision(revision_id,node_id,owner_id,"
+                + "revision_number,object_hash,created_by,created_at) "
+                + "SELECT ?,?,?,COALESCE(max(revision_number),0)+1,?,?,? "
+                + "FROM vfs.file_revision WHERE node_id=? RETURNING *";
+        try (PreparedStatement statement = connection.prepareStatement(insert)) {
+            statement.setObject(1, revisionId);
+            statement.setObject(2, nodeId);
+            statement.setObject(3, ownerId);
+            statement.setBytes(4, JdbcValues.hash(objectHash));
+            statement.setObject(5, administratorId);
+            statement.setTimestamp(6, java.sql.Timestamp.from(createdAt));
+            statement.setObject(7, nodeId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException("Administrator revision was not persisted");
+                return mapRevision(rows);
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.appendRevisionByAdministrator", exception);
         }
     }
 
@@ -243,6 +526,90 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             return statement.executeUpdate() == 1;
         } catch (SQLException exception) {
             throw failure("vfs.disableMount", exception);
+        }
+    }
+
+    @Override
+    public Optional<FileLock> acquireLock(UUID nodeId, UUID ownerId, UUID processUid,
+                                          long executionEpoch, Instant leaseUntil, Instant at) {
+        String sql = "INSERT INTO vfs.node_lock(node_id,owner_id,process_uid,execution_epoch,"
+                + "lease_until,fencing_token,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?) "
+                + "ON CONFLICT (node_id) DO UPDATE SET process_uid=EXCLUDED.process_uid,"
+                + "execution_epoch=EXCLUDED.execution_epoch,lease_until=EXCLUDED.lease_until,"
+                + "fencing_token=vfs.node_lock.fencing_token+1,updated_at=EXCLUDED.updated_at "
+                + "WHERE vfs.node_lock.lease_until<=EXCLUDED.updated_at OR "
+                + "(vfs.node_lock.process_uid=EXCLUDED.process_uid AND "
+                + "vfs.node_lock.execution_epoch=EXCLUDED.execution_epoch) "
+                + "RETURNING fencing_token,lease_until";
+        return fileLock("vfs.acquireLock", sql, statement -> {
+            statement.setObject(1, nodeId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, processUid);
+            statement.setLong(4, executionEpoch);
+            statement.setTimestamp(5, java.sql.Timestamp.from(leaseUntil));
+            statement.setTimestamp(6, java.sql.Timestamp.from(at));
+            statement.setTimestamp(7, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public Optional<FileLock> renewLock(UUID nodeId, UUID ownerId, UUID processUid,
+                                        long executionEpoch, long fencingToken,
+                                        Instant leaseUntil, Instant at) {
+        String sql = "UPDATE vfs.node_lock SET lease_until=?,updated_at=? WHERE node_id=? "
+                + "AND owner_id=? AND process_uid=? AND execution_epoch=? AND fencing_token=? "
+                + "AND lease_until>? RETURNING fencing_token,lease_until";
+        return fileLock("vfs.renewLock", sql, statement -> {
+            statement.setTimestamp(1, java.sql.Timestamp.from(leaseUntil));
+            statement.setTimestamp(2, java.sql.Timestamp.from(at));
+            statement.setObject(3, nodeId);
+            statement.setObject(4, ownerId);
+            statement.setObject(5, processUid);
+            statement.setLong(6, executionEpoch);
+            statement.setLong(7, fencingToken);
+            statement.setTimestamp(8, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public boolean releaseLock(UUID nodeId, UUID ownerId, UUID processUid,
+                               long executionEpoch, long fencingToken) {
+        String sql = "DELETE FROM vfs.node_lock WHERE node_id=? AND owner_id=? AND process_uid=? "
+                + "AND execution_epoch=? AND fencing_token=?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, nodeId);
+            statement.setObject(2, ownerId);
+            statement.setObject(3, processUid);
+            statement.setLong(4, executionEpoch);
+            statement.setLong(5, fencingToken);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("vfs.releaseLock", exception);
+        }
+    }
+
+    private Optional<FileLock> fileLock(String operation, String sql, Binder binder) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Optional.of(new FileLock(rows.getLong(1),
+                        rows.getTimestamp(2).toInstant())) : Optional.empty();
+            }
+        } catch (SQLException exception) {
+            throw failure(operation, exception);
+        }
+    }
+
+    private VfsNode administratorNode(String operation, String sql, Binder binder) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException(
+                        "Administrator VFS operation returned no node");
+                return map(rows);
+            }
+        } catch (SQLException exception) {
+            throw failure(operation, exception);
         }
     }
 

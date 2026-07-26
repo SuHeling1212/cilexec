@@ -8,10 +8,13 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.Arrays;
 import java.util.Optional;
 import java.util.Set;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.UUID;
 
 public final class JdbcAuthRepository extends JdbcRepositorySupport implements AuthRepository {
@@ -29,6 +32,95 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     public Optional<UserAccount> findUser(String username) {
         return find("auth.findUserByName", "SELECT * FROM auth.user_account WHERE lower(username)=lower(?)",
                 statement -> statement.setString(1, username));
+    }
+
+    @Override
+    public List<UserAccount> findUsers() {
+        String sql = "SELECT * FROM auth.user_account ORDER BY lower(username),user_id";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rows = statement.executeQuery()) {
+            List<UserAccount> users = new ArrayList<>();
+            while (rows.next()) users.add(map(rows));
+            return List.copyOf(users);
+        } catch (SQLException exception) {
+            throw failure("auth.findUsers", exception);
+        }
+    }
+
+    @Override
+    public List<UserAccount> findUsersByAdministrator(UUID administratorId) {
+        String sql = "SELECT * FROM auth.admin_list_users(?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<UserAccount> users = new ArrayList<>();
+                while (rows.next()) users.add(map(rows));
+                return List.copyOf(users);
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.findUsersByAdministrator", exception);
+        }
+    }
+
+    @Override
+    public UserAccount createUserByAdministrator(UUID administratorId, UUID userId,
+                                                  String username, char[] password,
+                                                  Set<Capability> capabilities,
+                                                  UUID auditEventId, Instant at) {
+        if (password == null || password.length < 16) {
+            throw new IllegalArgumentException("Database login password must contain at least 16 characters");
+        }
+        char[] copy = password.clone();
+        java.sql.Array capabilityArray = null;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT * FROM auth.admin_create_user(?,?,?,?,?,?,?)")) {
+            String[] keys = capabilities.stream()
+                    .map(capability -> capability.name().toLowerCase(java.util.Locale.ROOT))
+                    .sorted().toArray(String[]::new);
+            capabilityArray = connection.createArrayOf("text", keys);
+            statement.setObject(1, administratorId);
+            statement.setObject(2, userId);
+            statement.setString(3, username);
+            statement.setString(4, new String(copy));
+            statement.setArray(5, capabilityArray);
+            statement.setObject(6, auditEventId);
+            statement.setTimestamp(7, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException(
+                        "Administrator user creator returned no account");
+                return map(rows);
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.createUserByAdministrator", exception);
+        } finally {
+            Arrays.fill(copy, '\0');
+            if (capabilityArray != null) {
+                try {
+                    capabilityArray.free();
+                } catch (SQLException ignored) {
+                    // The connection owns the array and will release it on close.
+                }
+            }
+        }
+    }
+
+    @Override
+    public UserAccount disableUserByAdministrator(UUID administratorId, UUID userId,
+                                                   UUID auditEventId, Instant at) {
+        String sql = "SELECT * FROM auth.admin_disable_user(?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, userId);
+            statement.setObject(3, auditEventId);
+            statement.setTimestamp(4, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException(
+                        "Administrator user disabler returned no account");
+                return map(rows);
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.disableUserByAdministrator", exception);
+        }
     }
 
     @Override
@@ -106,6 +198,33 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     }
 
     @Override
+    public boolean hasCapabilityByAdministrator(UUID userId, Capability capability) {
+        String sql = "SELECT EXISTS(SELECT 1 FROM auth.user_capability assignment "
+                + "JOIN auth.capability capability USING (capability_id) "
+                + "WHERE assignment.user_id=? AND capability.capability_key=? "
+                + "AND (assignment.expires_at IS NULL OR assignment.expires_at>clock_timestamp()) "
+                + "UNION ALL SELECT 1 FROM auth.group_member member "
+                + "JOIN auth.group_account group_account USING (group_id,owner_id) "
+                + "JOIN auth.group_capability assignment USING (group_id,owner_id) "
+                + "JOIN auth.capability capability USING (capability_id) "
+                + "WHERE member.member_user_id=? AND group_account.status='ACTIVE' "
+                + "AND capability.capability_key=? AND (assignment.expires_at IS NULL "
+                + "OR assignment.expires_at>clock_timestamp()))";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            String key = capability.name().toLowerCase(java.util.Locale.ROOT);
+            statement.setObject(1, userId);
+            statement.setString(2, key);
+            statement.setObject(3, userId);
+            statement.setString(4, key);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() && rows.getBoolean(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.hasCapabilityByAdministrator", exception);
+        }
+    }
+
+    @Override
     public void replaceCapabilities(UUID userId, Set<Capability> capabilities) {
         try (PreparedStatement delete = connection.prepareStatement(
                 "DELETE FROM auth.user_capability WHERE user_id=?")) {
@@ -136,19 +255,23 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
             binder.bind(statement);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) return Optional.empty();
-                return Optional.of(new UserAccount(
-                        rows.getObject("user_id", UUID.class),
-                        rows.getString("username"),
-                        rows.getString("postgres_role_name"),
-                        UserAccount.Status.valueOf(rows.getString("status")),
-                        rows.getTimestamp("created_at").toInstant(),
-                        JdbcValues.optionalInstant(rows, "disabled_at"),
-                        rows.getLong("credential_version")
-                ));
+                return Optional.of(map(rows));
             }
         } catch (SQLException exception) {
             throw failure(operation, exception);
         }
+    }
+
+    private static UserAccount map(ResultSet rows) throws SQLException {
+        return new UserAccount(
+                rows.getObject("user_id", UUID.class),
+                rows.getString("username"),
+                rows.getString("postgres_role_name"),
+                UserAccount.Status.valueOf(rows.getString("status")),
+                rows.getTimestamp("created_at").toInstant(),
+                JdbcValues.optionalInstant(rows, "disabled_at"),
+                rows.getLong("credential_version")
+        );
     }
 
     @FunctionalInterface

@@ -2,21 +2,31 @@ package com.follarce.application;
 
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.ProcessRepository;
+import com.follarce.domain.packageinfo.PackageBinding;
+import com.follarce.domain.packageinfo.PackageIndex;
+import com.follarce.domain.packageinfo.PackageRelease;
+import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.scheduler.SchedulerClaim;
+import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.fcl.FclBuiltins;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclProgram;
+import com.follarce.fcl.FclProgramLinker;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.scheduler.ClaimedProcessHandler;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.persistence.sqlite.PackageDescriptor;
+import com.follarce.persistence.sqlite.SqlitePackageReader;
+import com.follarce.package_manager.PackageEnvironments;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -25,21 +35,28 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.Optional;
+import java.util.UUID;
 
 /** Executes and durably commits exactly one FCL semantic step for a scheduler claim. */
 public final class ProcessStatementExecutor implements ClaimedProcessHandler {
-    private static final Set<String> PURE_IMPORTS = Set.of(
-            "math", "std.math", "util", "std.util", "path", "std.path");
+    private static final Set<String> BUILTIN_IMPORTS = Set.of(
+            "math", "std.math", "util", "std.util", "path", "std.path", "term", "file",
+            "io", "process", "user", "swapPool", "network", "socket", "package", "system");
     private final UserTransactionExecutor transactions;
-    private final FclRuntime runtime;
+    private final FclRuntime fixedRuntime;
     private final FclProgramCodec programCodec;
     private final FclPersistenceBridge continuationBridge;
     private final Clock clock;
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions) {
-        this(transactions, new FclRuntime(FclBuiltins.pureRegistry()),
-                new FclProgramCodec(), new FclContinuationCodec(), Clock.systemUTC());
+        this(transactions, null, new FclProgramCodec(), new FclContinuationCodec(),
+                Clock.systemUTC());
     }
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions, FclRuntime runtime,
@@ -47,7 +64,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                                     FclContinuationCodec continuationCodec,
                                     Clock clock) {
         this.transactions = Objects.requireNonNull(transactions, "transactions");
-        this.runtime = Objects.requireNonNull(runtime, "runtime");
+        this.fixedRuntime = runtime;
         this.programCodec = Objects.requireNonNull(programCodec, "programCodec");
         this.continuationBridge = new FclPersistenceBridge(
                 Objects.requireNonNull(continuationCodec, "continuationCodec"));
@@ -79,19 +96,33 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     .orElseThrow(() -> new IllegalStateException("Process program no longer exists"));
             FclPersistenceBridge.ensureProgramIdentity(program, current.continuation());
             FclProgram compiled = loadProgram(transaction, program);
+            compiled = linkPackages(transaction, current, compiled, program);
             FclContinuation continuation = continuationBridge.restore(current.continuation());
 
-            FclStepResult step = runtime.executeOne(compiled, continuation);
-            resolveDirective(transaction, current, continuation);
+            FclRuntime statementRuntime = fixedRuntime != null ? fixedRuntime
+                    : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program, now));
+            FclStepResult step = statementRuntime.executeOne(compiled, continuation);
+            Program committedProgram = program;
+            Continuation previousForPersistence = current.continuation();
+            ExecutionReplacement replacement = resolveExecutionReplacement(transaction,
+                    continuation);
+            if (replacement != null) {
+                committedProgram = replacement.program();
+                continuation = replacement.continuation();
+                previousForPersistence = initialContinuation(committedProgram);
+            }
+            resolveDirective(transaction, current, continuation, now);
             deliverPendingTerminalInput(transaction, current, continuation, now);
-            Continuation persisted = continuationBridge.persist(current.identity().processUid(), program,
-                    current.continuation(), continuation.snapshot());
+            Continuation persisted = continuationBridge.persist(current.identity().processUid(),
+                    committedProgram, previousForPersistence, continuation.snapshot());
+            persisted = withPackageBindings(persisted,
+                    transaction.packages().findProcessBindings(current.identity().processUid()));
             CilProcess.Status target = targetStatus(step, continuation);
             CilProcess committed = current.commitStatement(persisted, target,
                     current.stateVersion(), claim.executionEpoch(), now);
 
-            ProcessRepository.UpdateResult update = transaction.processes().update(committed,
-                    current.stateVersion(), claim.executionEpoch());
+            ProcessRepository.UpdateResult update = transaction.processes().updateClaimed(
+                    committed, current.stateVersion(), claim);
             if (update == ProcessRepository.UpdateResult.EPOCH_FENCED) {
                 throw new StaleClaimException("Statement commit was fenced by a newer execution epoch");
             }
@@ -137,12 +168,117 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         return decoded;
     }
 
+    private static FclProgram linkPackages(
+            com.follarce.domain.port.TransactionContext transaction,
+            CilProcess process,
+            FclProgram base,
+            Program program
+    ) {
+        List<ImportSpec> imports = base.instructions().stream()
+                .filter(FclInstruction.Import.class::isInstance)
+                .map(FclInstruction.Import.class::cast)
+                .filter(value -> !isBuiltinImport(normalizeImport(value.target())))
+                .map(value -> new ImportSpec(normalizeImport(value.target()), value.alias(),
+                        value.wildcard()))
+                .toList();
+        if (imports.isEmpty()) return base;
+        Map<String, ProcessPackageBinding> bindings = new LinkedHashMap<>();
+        transaction.packages().findProcessBindings(process.identity().processUid())
+                .forEach(binding -> bindings.put(binding.importName(), binding));
+        Map<String, FclProgramLinker.Module> modules = new LinkedHashMap<>();
+        SqlitePackageReader reader = new SqlitePackageReader();
+        for (Map.Entry<String, ProcessPackageBinding> entry : bindings.entrySet()) {
+            List<ImportSpec> matching = imports.stream()
+                    .filter(spec -> spec.target().equals(entry.getKey())).toList();
+            if (matching.isEmpty()) continue;
+            PackageRelease release = transaction.packages().findRelease(entry.getValue().packageHash())
+                    .orElseThrow(() -> new IllegalStateException("Pinned package release is missing"));
+            StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
+                    .orElseThrow(() -> new IllegalStateException("Pinned package database is missing"));
+            PackageDescriptor descriptor = reader.inspect(database.content().bytes());
+            if (!descriptor.languageVersion().equals(program.languageVersion())) {
+                throw new IllegalStateException("Package language version does not match program: "
+                        + descriptor.coordinate());
+            }
+            String identity = release.packageHash().value().value();
+            for (PackageIndex.Module module : descriptor.moduleIndex()) {
+                byte[] sourceBytes = reader.readResource(database.content().bytes(),
+                        module.objectPath());
+                if (!ObjectHash.sha256(new com.follarce.domain.vfs.BinaryContent(sourceBytes))
+                        .equals(module.hash())) {
+                    throw new IllegalStateException("Package module hash mismatch: "
+                            + module.name());
+                }
+                List<FclProgramLinker.Export> exports = publishedFunctions(descriptor, module,
+                        matching);
+                mergeModule(modules, new FclProgramLinker.Module(identity, module.name(),
+                        utf8(sourceBytes, "package module " + module.name()), exports));
+            }
+        }
+        return new FclProgramLinker().link(base, List.copyOf(modules.values()));
+    }
+
+    private static void mergeModule(Map<String, FclProgramLinker.Module> modules,
+                                    FclProgramLinker.Module candidate) {
+        String key = candidate.packageIdentity() + "\u0000" + candidate.moduleName();
+        FclProgramLinker.Module existing = modules.get(key);
+        if (existing == null) {
+            modules.put(key, candidate);
+            return;
+        }
+        if (!existing.source().equals(candidate.source())) {
+            throw new IllegalStateException("Identical package module identity has different source");
+        }
+        Map<String, List<String>> published = new LinkedHashMap<>();
+        for (FclProgramLinker.Export export : existing.exports()) {
+            published.put(export.symbol(), new ArrayList<>(export.publicNames()));
+        }
+        for (FclProgramLinker.Export export : candidate.exports()) {
+            published.computeIfAbsent(export.symbol(), ignored -> new ArrayList<>())
+                    .addAll(export.publicNames());
+        }
+        List<FclProgramLinker.Export> exports = published.entrySet().stream()
+                .map(entry -> new FclProgramLinker.Export(entry.getKey(),
+                        entry.getValue().stream().distinct().toList())).toList();
+        modules.put(key, new FclProgramLinker.Module(existing.packageIdentity(),
+                existing.moduleName(), existing.source(), exports));
+    }
+
+    private static List<FclProgramLinker.Export> publishedFunctions(
+            PackageDescriptor descriptor,
+            PackageIndex.Module module,
+            List<ImportSpec> imports
+    ) {
+        Map<String, List<String>> names = new LinkedHashMap<>();
+        descriptor.exports().stream().filter(value -> value.moduleName().equals(module.name()))
+                .forEach(value -> imports.forEach(spec -> names
+                        .computeIfAbsent(value.symbolName(), ignored -> new ArrayList<>())
+                        .add(publicName(spec, value.name()))));
+        descriptor.entrypoints().stream()
+                .filter(value -> value.moduleName().equals(module.name()))
+                .forEach(value -> imports.forEach(spec -> names
+                        .computeIfAbsent(value.functionName(), ignored -> new ArrayList<>())
+                        .add(publicName(spec, value.name()))));
+        return names.entrySet().stream().map(entry -> new FclProgramLinker.Export(
+                entry.getKey(), entry.getValue().stream().distinct().toList())).toList();
+    }
+
+    private static String publicName(ImportSpec spec, String exportedName) {
+        if (spec.wildcard()) return exportedName;
+        String namespace = spec.alias() == null ? spec.target() : spec.alias();
+        return namespace + "." + exportedName;
+    }
+
     private static String utf8(StoredObject object, String description) {
+        return utf8(object.content().bytes(), description);
+    }
+
+    private static String utf8(byte[] bytes, String description) {
         try {
             return StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(object.content().bytes())).toString();
+                    .decode(ByteBuffer.wrap(bytes)).toString();
         } catch (CharacterCodingException failure) {
             throw new IllegalStateException(description + " is not valid UTF-8", failure);
         }
@@ -169,14 +305,14 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         CilProcess terminating = current.commitStatement(current.continuation(),
                 CilProcess.Status.TERMINATING, current.stateVersion(),
                 claim.executionEpoch(), now);
-        ProcessRepository.UpdateResult first = transaction.processes().update(terminating,
-                current.stateVersion(), claim.executionEpoch());
+        ProcessRepository.UpdateResult first = transaction.processes().updateClaimed(
+                terminating, current.stateVersion(), claim);
         if (first != ProcessRepository.UpdateResult.UPDATED) {
             throw new StaleClaimException("Interrupt was fenced by a concurrent process update");
         }
         CilProcess terminated = terminating.transitionTo(CilProcess.Status.TERMINATED, now);
-        ProcessRepository.UpdateResult second = transaction.processes().update(terminated,
-                terminating.stateVersion(), claim.executionEpoch());
+        ProcessRepository.UpdateResult second = transaction.processes().updateClaimed(
+                terminated, terminating.stateVersion(), claim);
         if (second != ProcessRepository.UpdateResult.UPDATED) {
             throw new StaleClaimException("Interrupt termination was fenced");
         }
@@ -205,27 +341,106 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private static void resolveDirective(
             com.follarce.domain.port.TransactionContext transaction,
             CilProcess process,
-            FclContinuation continuation
+            FclContinuation continuation,
+            Instant now
     ) {
         FclContinuation.WaitState wait = continuation.waitState();
         if (wait.kind() == FclContinuation.WaitKind.NONE
                 || wait.kind() == FclContinuation.WaitKind.EXTERNAL) return;
-        String target = wait.key();
+        String target = normalizeImport(wait.key());
         if (wait.kind() == FclContinuation.WaitKind.INCLUDE) {
             continuation.rejectDirective(
                     "include requires a compiled source dependency; unresolved include: " + target);
             return;
         }
-        boolean pure = PURE_IMPORTS.contains(target);
-        boolean pinnedInContinuation = process.continuation().packageBindings().containsKey(target);
-        boolean pinnedInDatabase = !pure && !pinnedInContinuation
-                && transaction.packages().findProcessBinding(
-                process.identity().processUid(), target).isPresent();
-        if (pure || pinnedInContinuation || pinnedInDatabase) {
+        if (isBuiltinImport(target)) {
             continuation.clearWait();
-        } else {
-            continuation.rejectDirective("Unresolved package import: " + target);
+            return;
         }
+        Optional<ProcessPackageBinding> pinned = transaction.packages().findProcessBinding(
+                process.identity().processUid(), target);
+        if (pinned.isEmpty()) {
+            var environment = PackageEnvironments.ensureDefault(transaction.packages(),
+                    process.ownerId(), now);
+            Optional<PackageBinding> declared = transaction.packages().findBinding(
+                    environment.environmentId(), target);
+            if (declared.isEmpty()) {
+                Optional<PackageRelease> direct = directRelease(transaction, target);
+                if (direct.isPresent()) {
+                    PackageBinding binding = new PackageBinding(environment.environmentId(), target,
+                            direct.orElseThrow().packageHash(), now);
+                    transaction.packages().saveBinding(binding);
+                    declared = Optional.of(binding);
+                }
+            }
+            if (declared.isEmpty()) {
+                continuation.rejectDirective("Unresolved package import: " + target);
+                return;
+            }
+            ProcessPackageBinding resolved = new ProcessPackageBinding(
+                    process.identity().processUid(), target, environment.environmentId(),
+                    declared.orElseThrow().packageHash(), now);
+            transaction.packages().saveProcessBinding(resolved);
+        }
+        continuation.clearWait();
+    }
+
+    private static Optional<PackageRelease> directRelease(
+            com.follarce.domain.port.TransactionContext transaction, String target) {
+        String[] coordinate = target.split("/", 3);
+        if (coordinate.length != 3) return Optional.empty();
+        try {
+            return transaction.packages().findRelease(new PackageRelease.Coordinate(
+                    coordinate[0], coordinate[1], coordinate[2]));
+        } catch (IllegalArgumentException invalid) {
+            return Optional.empty();
+        }
+    }
+
+    private static Continuation withPackageBindings(Continuation continuation,
+                                                   List<ProcessPackageBinding> bindings) {
+        Map<String, ObjectHash> exact = new LinkedHashMap<>();
+        bindings.forEach(binding -> exact.put(binding.importName(),
+                binding.packageHash().value()));
+        return new Continuation(continuation.programId(), continuation.programHash(),
+                continuation.programCounter(), continuation.callStack(), continuation.scopeStack(),
+                continuation.exceptionStack(), continuation.controlStack(),
+                continuation.waitState(), continuation.globalVariables(), Map.copyOf(exact),
+                continuation.languageVersion(), continuation.runtimeFormatVersion());
+    }
+
+    private static String normalizeImport(String target) {
+        return target != null && target.endsWith(".*")
+                ? target.substring(0, target.length() - 2) : target;
+    }
+
+    private static boolean isBuiltinImport(String target) {
+        return BUILTIN_IMPORTS.contains(target);
+    }
+
+    private static ExecutionReplacement resolveExecutionReplacement(
+            com.follarce.domain.port.TransactionContext transaction,
+            FclContinuation continuation
+    ) {
+        FclContinuation.WaitState wait = continuation.waitState();
+        if (wait.kind() != FclContinuation.WaitKind.EXTERNAL || wait.key() == null
+                || !wait.key().startsWith("exec:")) return null;
+        UUID programId;
+        try {
+            programId = UUID.fromString(wait.key().substring("exec:".length()));
+        } catch (IllegalArgumentException failure) {
+            throw new IllegalStateException("Invalid process.exec program identity", failure);
+        }
+        Program target = transaction.programs().findById(programId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown exec program"));
+        return new ExecutionReplacement(target, new FclContinuation());
+    }
+
+    private static Continuation initialContinuation(Program program) {
+        return new Continuation(program.programId(), program.programHash(), 0,
+                java.util.List.of(), java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), Optional.empty(), java.util.Map.of(), java.util.Map.of(),
+                program.languageVersion(), Integer.toString(program.runtimeFormatVersion()));
     }
 
     private static CilProcess.Status targetStatus(FclStepResult step,
@@ -255,6 +470,10 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         }
         return CilProcess.Status.WAITING_EFFECT;
     }
+
+    private record ExecutionReplacement(Program program, FclContinuation continuation) {}
+
+    private record ImportSpec(String target, String alias, boolean wildcard) {}
 
     /** The lease or process epoch no longer authorizes this worker. */
     public static final class StaleClaimException extends IllegalStateException {

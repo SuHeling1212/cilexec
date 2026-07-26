@@ -50,6 +50,8 @@ class JdbcProcessEffectIT {
             statement.execute("CREATE ROLE cilexec_runtime NOLOGIN");
             statement.execute("CREATE ROLE cilexec_effect_worker NOLOGIN");
             statement.execute("CREATE ROLE cilexec_readonly NOLOGIN");
+            statement.execute("ALTER DATABASE \"" + connection.getCatalog().replace("\"", "\"\"")
+                    + "\" OWNER TO cilexec_owner");
         }
         Flyway.configure()
                 .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
@@ -282,7 +284,6 @@ class JdbcProcessEffectIT {
                 program.setBytes(4, JdbcValues.hash(sourceHash));
                 program.executeUpdate();
             }
-            connection.commit();
         }
     }
 

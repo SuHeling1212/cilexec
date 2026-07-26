@@ -79,13 +79,22 @@ final class FclExpressionEvaluator {
             if (!call.name().contains(".") && userFunction != null) {
                 throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments));
             }
+            Object value;
             if (call.name().contains(".") && functions.hasQualified(call.name())) {
-                return functions.invoke(call.name(), arguments);
-            }
-            if (userFunction != null) {
+                value = functions.invoke(call.name(), arguments,
+                        new FclFunctionRegistry.Invocation(call.id(), continuation));
+            } else if (userFunction != null) {
                 throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments));
+            } else {
+                value = functions.invoke(call.name(), arguments,
+                        new FclFunctionRegistry.Invocation(call.id(), continuation));
             }
-            return functions.invoke(call.name(), arguments);
+            FclContinuation.PendingStatement current = continuation.pendingStatement();
+            if (current == null) {
+                current = new FclContinuation.PendingStatement(continuation.programCounter());
+            }
+            continuation.pendingStatement(current.withResult(call.id(), value));
+            return value;
         }
         throw new FclRuntimeException("Unsupported expression node: "
                 + expression.getClass().getSimpleName());

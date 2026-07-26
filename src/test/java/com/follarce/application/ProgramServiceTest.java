@@ -258,6 +258,14 @@ class ProgramServiceTest {
             current = process;
             return UpdateResult.UPDATED;
         }
+        @Override public UpdateResult updateClaimed(CilProcess process, long expectedVersion,
+                                                    SchedulerClaim claim) {
+            if (!process.identity().processUid().equals(claim.processUid())
+                    || !process.ownerId().equals(claim.ownerId())) {
+                return UpdateResult.EPOCH_FENCED;
+            }
+            return update(process, expectedVersion, claim.executionEpoch());
+        }
     }
 
     static final class MemorySchedulerRepository implements SchedulerRepository {
@@ -369,25 +377,31 @@ class ProgramServiceTest {
 
     static final class MemoryPackageRepository implements PackageRepository {
         final Map<String, ProcessPackageBinding> processBindings = new LinkedHashMap<>();
+        final Map<PackageRelease.Hash, PackageRelease> releases = new LinkedHashMap<>();
+        final Map<UUID, PackageEnvironment> environments = new LinkedHashMap<>();
+        final Map<String, PackageBinding> bindings = new LinkedHashMap<>();
 
         @Override public ReleaseWriteResult registerRelease(PackageIndex packageIndex) {
             throw new UnsupportedOperationException();
         }
         @Override public Optional<PackageRelease> findRelease(PackageRelease.Hash packageHash) {
-            return Optional.empty();
+            return Optional.ofNullable(releases.get(packageHash));
         }
         @Override public Optional<PackageRelease> findRelease(
                 PackageRelease.Coordinate coordinate) {
             return Optional.empty();
         }
         @Override public void saveEnvironment(PackageEnvironment environment) {
-            throw new UnsupportedOperationException();
+            environments.put(environment.environmentId(), environment);
+        }
+        @Override public Optional<PackageEnvironment> findEnvironment(UUID environmentId) {
+            return Optional.ofNullable(environments.get(environmentId));
         }
         @Override public void saveBinding(PackageBinding binding) {
-            throw new UnsupportedOperationException();
+            bindings.put(binding.environmentId() + ":" + binding.binding(), binding);
         }
         @Override public Optional<PackageBinding> findBinding(UUID environmentId, String binding) {
-            return Optional.empty();
+            return Optional.ofNullable(bindings.get(environmentId + ":" + binding));
         }
         @Override public void saveProcessBinding(ProcessPackageBinding binding) {
             processBindings.put(binding.processUid() + ":" + binding.importName(), binding);
@@ -395,6 +409,12 @@ class ProgramServiceTest {
         @Override public Optional<ProcessPackageBinding> findProcessBinding(
                 UUID processUid, String importName) {
             return Optional.ofNullable(processBindings.get(processUid + ":" + importName));
+        }
+        @Override public List<ProcessPackageBinding> findProcessBindings(UUID processUid) {
+            return processBindings.values().stream()
+                    .filter(binding -> binding.processUid().equals(processUid))
+                    .sorted(java.util.Comparator.comparing(ProcessPackageBinding::importName))
+                    .toList();
         }
     }
 

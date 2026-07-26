@@ -12,5 +12,6 @@ public enum Capability {
     PACKAGE_BIND,
     EFFECT_REQUEST,
     TERMINAL_ATTACH,
-    AUDIT_READ
+    AUDIT_READ,
+    SYSTEM_ADMIN
 }

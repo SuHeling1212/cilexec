@@ -17,8 +17,21 @@ public final class FclFunctionRegistry {
         Object invoke(List<Object> arguments);
     }
 
+    /** Host-aware function that may use the current durable continuation. */
+    @FunctionalInterface
+    public interface ContextFunction {
+        Object invoke(List<Object> arguments, Invocation invocation);
+    }
+
+    /** Per-call interpreter context; it contains no JDBC or host resource. */
+    public record Invocation(long expressionId, FclContinuation continuation) {
+        public Invocation {
+            Objects.requireNonNull(continuation, "continuation");
+        }
+    }
+
     public record Definition(String namespace, String name, Set<String> aliases,
-                             Function function) {
+                             ContextFunction function) {
         public Definition {
             Objects.requireNonNull(namespace, "namespace");
             Objects.requireNonNull(name, "name");
@@ -38,6 +51,14 @@ public final class FclFunctionRegistry {
 
     public FclFunctionRegistry register(String namespace, String name, Function function,
                                         String... aliases) {
+        Objects.requireNonNull(function, "function");
+        return registerContextual(namespace, name,
+                (arguments, ignored) -> function.invoke(arguments), aliases);
+    }
+
+    public FclFunctionRegistry registerContextual(String namespace, String name,
+                                                  ContextFunction function,
+                                                  String... aliases) {
         validateName(namespace, "namespace");
         validateName(name, "function");
         Objects.requireNonNull(function, "function");
@@ -55,6 +76,18 @@ public final class FclFunctionRegistry {
             bindQualified(namespace + "." + alias, definition);
             bindBare(alias, definition);
         }
+        return this;
+    }
+
+    /** Publishes a second qualified spelling for the same implementation without bare ambiguity. */
+    public FclFunctionRegistry aliasQualified(String existingIdentifier, String namespace,
+                                              String name) {
+        validateName(namespace, "namespace");
+        validateName(name, "function");
+        Definition definition = resolve(existingIdentifier);
+        bindQualified(namespace + "." + name, definition);
+        bare.computeIfAbsent(name, ignored -> new LinkedHashMap<>())
+                .put(definition.qualifiedName(), definition);
         return this;
     }
 
@@ -83,12 +116,18 @@ public final class FclFunctionRegistry {
     }
 
     public Object invoke(String identifier, List<Object> arguments) {
+        return invoke(identifier, arguments, new Invocation(-1, new FclContinuation()));
+    }
+
+    public Object invoke(String identifier, List<Object> arguments, Invocation invocation) {
         Definition definition = resolve(identifier);
         List<Object> safeArguments = new ArrayList<>(arguments.size());
         arguments.forEach(value -> safeArguments.add(FclValues.deepCopy(value)));
         try {
             return FclValues.deepCopy(definition.function().invoke(
-                    Collections.unmodifiableList(safeArguments)));
+                    Collections.unmodifiableList(safeArguments), invocation));
+        } catch (FclSuspension suspension) {
+            throw suspension;
         } catch (FclRuntimeException failure) {
             throw failure;
         } catch (RuntimeException failure) {

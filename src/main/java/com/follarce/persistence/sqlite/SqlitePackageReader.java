@@ -14,6 +14,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -53,6 +54,8 @@ public final class SqlitePackageReader {
                 validateSchema(connection);
                 Map<String, String> metadata = readMetadata(connection);
                 rejectLifecycleHooks(metadata);
+                List<PackageIndex.Module> modules = readModules(connection);
+                validateModuleContent(connection, modules);
                 return new PackageDescriptor(
                         required(metadata, "namespace"),
                         required(metadata, "name"),
@@ -60,7 +63,7 @@ public final class SqlitePackageReader {
                         required(metadata, "language_version"),
                         logicalHash(connection),
                         hash(databaseBytes),
-                        readModules(connection),
+                        modules,
                         readDependencies(connection),
                         readEntrypoints(connection),
                         readExports(connection),
@@ -71,6 +74,54 @@ public final class SqlitePackageReader {
             throw exception;
         } catch (SQLException | IOException | IllegalArgumentException exception) {
             throw new PackageDatabaseException("Cannot validate SQLite package database", exception);
+        } finally {
+            if (cache != null) {
+                try {
+                    Files.deleteIfExists(cache);
+                } catch (IOException ignored) {
+                    cache.toFile().deleteOnExit();
+                }
+            }
+        }
+    }
+
+    /** Reads one exact package resource through the same immutable/query-only SQLite boundary. */
+    public byte[] readResource(byte[] databaseBytes, String resourcePath) {
+        if (databaseBytes == null || databaseBytes.length < 100) {
+            throw new PackageDatabaseException("Package database is empty or truncated");
+        }
+        if (resourcePath == null || resourcePath.isBlank() || resourcePath.startsWith("/")
+                || resourcePath.indexOf('\\') >= 0) {
+            throw new PackageDatabaseException("Package resource path must be relative");
+        }
+        for (String part : resourcePath.split("/", -1)) {
+            if (part.isBlank() || part.equals(".") || part.equals("..")) {
+                throw new PackageDatabaseException("Package resource path is not canonical");
+            }
+        }
+        Path cache = null;
+        try {
+            cache = Files.createTempFile("cilexec-package-resource-", ".db");
+            Files.write(cache, databaseBytes);
+            try (Connection connection = openImmutable(cache)) {
+                validateSchema(connection);
+                try (PreparedStatement statement = connection.prepareStatement(
+                        "SELECT content FROM package_file WHERE file_path=?")) {
+                    statement.setString(1, resourcePath);
+                    try (ResultSet rows = statement.executeQuery()) {
+                        if (!rows.next()) throw new PackageDatabaseException(
+                                "Unknown package resource: " + resourcePath);
+                        byte[] content = rows.getBytes(1);
+                        if (rows.next()) throw new PackageDatabaseException(
+                                "Duplicate package resource: " + resourcePath);
+                        return content == null ? new byte[0] : content.clone();
+                    }
+                }
+            }
+        } catch (PackageDatabaseException exception) {
+            throw exception;
+        } catch (SQLException | IOException exception) {
+            throw new PackageDatabaseException("Cannot read SQLite package resource", exception);
         } finally {
             if (cache != null) {
                 try {
@@ -216,6 +267,28 @@ public final class SqlitePackageReader {
             }
         }
         return List.copyOf(modules);
+    }
+
+    private static void validateModuleContent(Connection connection,
+                                              List<PackageIndex.Module> modules)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT content FROM package_file WHERE file_path=?")) {
+            for (PackageIndex.Module module : modules) {
+                statement.setString(1, module.objectPath());
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) throw new PackageDatabaseException(
+                            "Package module content is missing: " + module.objectPath());
+                    byte[] content = rows.getBytes(1);
+                    if (content == null || !hash(content).equals(module.hash().value())) {
+                        throw new PackageDatabaseException(
+                                "Package module hash mismatch: " + module.name());
+                    }
+                    if (rows.next()) throw new PackageDatabaseException(
+                            "Duplicate package module content: " + module.objectPath());
+                }
+            }
+        }
     }
 
     private static List<PackageIndex.Dependency> readDependencies(Connection connection)

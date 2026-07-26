@@ -138,7 +138,10 @@ class PackageManagerTest {
                     + "('namespace','std'),('name','example'),('version','1.2.3'),"
                     + "('language_version','1')");
             statement.execute("INSERT INTO package_module VALUES "
-                    + "('main','modules/main.fcl','" + moduleHash + "')");
+                    + "('main','modules/main.fcl','" + sha256(java.util.HexFormat.of()
+                    .parseHex(moduleHash)) + "')");
+            statement.execute("INSERT INTO package_file VALUES "
+                    + "('modules/main.fcl',X'" + moduleHash + "')");
             statement.execute("INSERT INTO package_dependency VALUES "
                     + "('std','base','1.0.0',0)");
             statement.execute("INSERT INTO package_entrypoint VALUES ('run','main','main')");
@@ -147,6 +150,15 @@ class PackageManagerTest {
                     + "('vfs_read',1,'read package data')");
         }
         return database;
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
     }
 
     private static final class MemoryPersistence implements UserTransactionExecutor,

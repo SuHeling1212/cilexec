@@ -6,6 +6,7 @@ import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.ipc.IpcSubscription;
 import com.follarce.domain.ipc.IpcTopic;
 import com.follarce.domain.port.IpcRepository;
+import com.follarce.domain.process.Continuation;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -15,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Instant;
 
 public final class JdbcIpcRepository extends JdbcRepositorySupport implements IpcRepository {
     public JdbcIpcRepository(Connection connection) {
@@ -262,6 +264,336 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
         }
     }
 
+    @Override
+    public boolean createSwapPool(UUID ownerId, UUID ownerProcessUid, String poolName,
+                                  Instant createdAt) {
+        String sql = "INSERT INTO ipc.swap_pool(pool_id,owner_id,owner_process_uid,pool_name,created_at) "
+                + "SELECT ?,owner_id,?,?,? FROM process.process WHERE process_uid=? AND owner_id=? "
+                + "ON CONFLICT (owner_id,pool_name) DO NOTHING";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, ownerProcessUid);
+            statement.setString(3, poolName);
+            statement.setTimestamp(4, java.sql.Timestamp.from(createdAt));
+            statement.setObject(5, ownerProcessUid);
+            statement.setObject(6, ownerId);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("ipc.createSwapPool", exception);
+        }
+    }
+
+    @Override
+    public boolean removeSwapPool(UUID ownerId, UUID ownerProcessUid, String poolName) {
+        return change("ipc.removeSwapPool", "DELETE FROM ipc.swap_pool WHERE owner_id=? "
+                        + "AND owner_process_uid=? AND pool_name=?",
+                statement -> {
+                    statement.setObject(1, ownerId);
+                    statement.setObject(2, ownerProcessUid);
+                    statement.setString(3, poolName);
+                }) == 1;
+    }
+
+    @Override
+    public boolean swapPoolExists(UUID ownerId, String poolName) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT EXISTS(SELECT 1 FROM ipc.swap_pool WHERE owner_id=? AND pool_name=?)")) {
+            statement.setObject(1, ownerId);
+            statement.setString(2, poolName);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() && rows.getBoolean(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("ipc.swapPoolExists", exception);
+        }
+    }
+
+    @Override
+    public List<String> findSwapPools(UUID ownerId) {
+        return stringList("ipc.findSwapPools",
+                "SELECT pool_name FROM ipc.swap_pool WHERE owner_id=? ORDER BY pool_name",
+                statement -> statement.setObject(1, ownerId));
+    }
+
+    @Override
+    public List<String> findSwapVariables(UUID ownerId, String poolName) {
+        return stringList("ipc.findSwapVariables", "SELECT value.variable_name "
+                        + "FROM ipc.swap_value value JOIN ipc.swap_pool pool USING (pool_id,owner_id) "
+                        + "WHERE value.owner_id=? AND pool.pool_name=? ORDER BY value.variable_name",
+                statement -> {
+                    statement.setObject(1, ownerId);
+                    statement.setString(2, poolName);
+                });
+    }
+
+    @Override
+    public boolean addSwapValue(UUID ownerId, String poolName, String variableName,
+                                Continuation.PersistedValue value, String retentionMode,
+                                Optional<Integer> remainingReads, Instant at) {
+        String sql = "INSERT INTO ipc.swap_value(pool_id,owner_id,variable_name,value_type,"
+                + "value_payload,retention_mode,remaining_reads,changed,created_at,updated_at) "
+                + "SELECT pool_id,owner_id,?,?,?,?,?,true,?,? FROM ipc.swap_pool "
+                + "WHERE owner_id=? AND pool_name=? ON CONFLICT (pool_id,variable_name) DO NOTHING";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, variableName);
+            statement.setString(2, value.type());
+            statement.setString(3, value.canonicalPayload());
+            statement.setString(4, retentionMode);
+            if (remainingReads.isPresent()) statement.setInt(5, remainingReads.orElseThrow());
+            else statement.setNull(5, java.sql.Types.INTEGER);
+            statement.setTimestamp(6, java.sql.Timestamp.from(at));
+            statement.setTimestamp(7, java.sql.Timestamp.from(at));
+            statement.setObject(8, ownerId);
+            statement.setString(9, poolName);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("ipc.addSwapValue", exception);
+        }
+    }
+
+    @Override
+    public Optional<Continuation.PersistedValue> consumeSwapValue(UUID ownerId, String poolName,
+                                                                   String variableName,
+                                                                   Instant at) {
+        String sql = "SELECT value.pool_id,value.value_type,value.value_payload,"
+                + "value.retention_mode,value.remaining_reads,value.changed "
+                + "FROM ipc.swap_value value JOIN ipc.swap_pool pool USING (pool_id,owner_id) "
+                + "WHERE value.owner_id=? AND pool.pool_name=? AND value.variable_name=? FOR UPDATE";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            statement.setString(2, poolName);
+            statement.setString(3, variableName);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                String mode = rows.getString("retention_mode");
+                if (mode.equals("SYNC") && !rows.getBoolean("changed")) return Optional.empty();
+                Continuation.PersistedValue value = new Continuation.PersistedValue(
+                        rows.getString("value_type"), rows.getString("value_payload"));
+                UUID poolId = rows.getObject("pool_id", UUID.class);
+                int remaining = rows.getInt("remaining_reads");
+                if (mode.equals("TIMES") && remaining <= 1) {
+                    deleteSwapRow(poolId, variableName);
+                } else {
+                    String update = "UPDATE ipc.swap_value SET changed=false,remaining_reads="
+                            + "CASE WHEN retention_mode='TIMES' THEN remaining_reads-1 "
+                            + "ELSE remaining_reads END,updated_at=? WHERE pool_id=? AND variable_name=?";
+                    try (PreparedStatement changed = connection.prepareStatement(update)) {
+                        changed.setTimestamp(1, java.sql.Timestamp.from(at));
+                        changed.setObject(2, poolId);
+                        changed.setString(3, variableName);
+                        changed.executeUpdate();
+                    }
+                }
+                return Optional.of(value);
+            }
+        } catch (SQLException exception) {
+            throw failure("ipc.consumeSwapValue", exception);
+        }
+    }
+
+    @Override
+    public boolean updateSwapValue(UUID ownerId, String poolName, String variableName,
+                                   Continuation.PersistedValue value, UUID processUid,
+                                   long executionEpoch, Optional<Long> fencingToken, Instant at) {
+        String sql = "UPDATE ipc.swap_value value SET value_type=?,value_payload=?,changed=true,"
+                + "updated_at=? FROM ipc.swap_pool pool WHERE value.pool_id=pool.pool_id "
+                + "AND value.owner_id=pool.owner_id AND value.owner_id=? AND pool.pool_name=? "
+                + "AND value.variable_name=? AND (value.lock_process_uid IS NULL "
+                + "OR value.lease_until<=? OR (value.lock_process_uid=? "
+                + "AND value.lock_execution_epoch=? AND value.fencing_token=?))";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, value.type());
+            statement.setString(2, value.canonicalPayload());
+            statement.setTimestamp(3, java.sql.Timestamp.from(at));
+            statement.setObject(4, ownerId);
+            statement.setString(5, poolName);
+            statement.setString(6, variableName);
+            statement.setTimestamp(7, java.sql.Timestamp.from(at));
+            statement.setObject(8, processUid);
+            statement.setLong(9, executionEpoch);
+            if (fencingToken.isPresent()) statement.setLong(10, fencingToken.orElseThrow());
+            else statement.setLong(10, -1);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("ipc.updateSwapValue", exception);
+        }
+    }
+
+    @Override
+    public boolean removeSwapValue(UUID ownerId, String poolName, String variableName,
+                                   UUID processUid, long executionEpoch,
+                                   Optional<Long> fencingToken) {
+        String sql = "DELETE FROM ipc.swap_value value USING ipc.swap_pool pool "
+                + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
+                + "AND value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
+                + "AND (value.lock_process_uid IS NULL OR value.lease_until<=clock_timestamp() "
+                + "OR (value.lock_process_uid=? AND value.lock_execution_epoch=? "
+                + "AND value.fencing_token=?))";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            statement.setString(2, poolName);
+            statement.setString(3, variableName);
+            statement.setObject(4, processUid);
+            statement.setLong(5, executionEpoch);
+            if (fencingToken.isPresent()) statement.setLong(6, fencingToken.orElseThrow());
+            else statement.setLong(6, -1);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("ipc.removeSwapValue", exception);
+        }
+    }
+
+    @Override
+    public int clearSwapPool(UUID ownerId, String poolName, UUID ownerProcessUid) {
+        return change("ipc.clearSwapPool", "DELETE FROM ipc.swap_value value USING ipc.swap_pool pool "
+                        + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
+                        + "AND value.owner_id=? AND pool.pool_name=? AND pool.owner_process_uid=?",
+                statement -> {
+                    statement.setObject(1, ownerId);
+                    statement.setString(2, poolName);
+                    statement.setObject(3, ownerProcessUid);
+                });
+    }
+
+    @Override
+    public Optional<SwapLock> acquireSwapLock(UUID ownerId, String poolName,
+                                              String variableName, UUID processUid,
+                                              long executionEpoch, Instant leaseUntil,
+                                              Instant at) {
+        String sql = "UPDATE ipc.swap_value value SET lock_process_uid=?,lock_execution_epoch=?,"
+                + "lease_until=?,fencing_token=fencing_token+1,updated_at=? FROM ipc.swap_pool pool "
+                + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
+                + "AND value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
+                + "AND (value.lock_process_uid IS NULL OR value.lease_until<=? "
+                + "OR (value.lock_process_uid=? AND value.lock_execution_epoch=?)) "
+                + "RETURNING value.fencing_token,value.lease_until";
+        return swapLock("ipc.acquireSwapLock", sql, statement -> {
+            statement.setObject(1, processUid);
+            statement.setLong(2, executionEpoch);
+            statement.setTimestamp(3, java.sql.Timestamp.from(leaseUntil));
+            statement.setTimestamp(4, java.sql.Timestamp.from(at));
+            statement.setObject(5, ownerId);
+            statement.setString(6, poolName);
+            statement.setString(7, variableName);
+            statement.setTimestamp(8, java.sql.Timestamp.from(at));
+            statement.setObject(9, processUid);
+            statement.setLong(10, executionEpoch);
+        });
+    }
+
+    @Override
+    public Optional<SwapLock> renewSwapLock(UUID ownerId, String poolName, String variableName,
+                                            UUID processUid, long executionEpoch,
+                                            long fencingToken, Instant leaseUntil, Instant at) {
+        String sql = "UPDATE ipc.swap_value value SET lease_until=?,updated_at=? "
+                + "FROM ipc.swap_pool pool WHERE value.pool_id=pool.pool_id "
+                + "AND value.owner_id=pool.owner_id AND value.owner_id=? AND pool.pool_name=? "
+                + "AND value.variable_name=? AND value.lock_process_uid=? "
+                + "AND value.lock_execution_epoch=? AND value.fencing_token=? AND value.lease_until>? "
+                + "RETURNING value.fencing_token,value.lease_until";
+        return swapLock("ipc.renewSwapLock", sql, statement -> {
+            statement.setTimestamp(1, java.sql.Timestamp.from(leaseUntil));
+            statement.setTimestamp(2, java.sql.Timestamp.from(at));
+            statement.setObject(3, ownerId);
+            statement.setString(4, poolName);
+            statement.setString(5, variableName);
+            statement.setObject(6, processUid);
+            statement.setLong(7, executionEpoch);
+            statement.setLong(8, fencingToken);
+            statement.setTimestamp(9, java.sql.Timestamp.from(at));
+        });
+    }
+
+    @Override
+    public boolean releaseSwapLock(UUID ownerId, String poolName, String variableName,
+                                   UUID processUid, long executionEpoch, long fencingToken) {
+        String sql = "UPDATE ipc.swap_value value SET lock_process_uid=NULL,"
+                + "lock_execution_epoch=NULL,lease_until=NULL FROM ipc.swap_pool pool "
+                + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
+                + "AND value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
+                + "AND value.lock_process_uid=? AND value.lock_execution_epoch=? "
+                + "AND value.fencing_token=?";
+        return change("ipc.releaseSwapLock", sql, statement -> {
+            statement.setObject(1, ownerId);
+            statement.setString(2, poolName);
+            statement.setString(3, variableName);
+            statement.setObject(4, processUid);
+            statement.setLong(5, executionEpoch);
+            statement.setLong(6, fencingToken);
+        }) == 1;
+    }
+
+    @Override
+    public boolean signalSwapValue(UUID ownerId, String poolName, String variableName,
+                                   Instant at) {
+        String sql = "UPDATE ipc.swap_value value SET changed=true,updated_at=? "
+                + "FROM ipc.swap_pool pool WHERE value.pool_id=pool.pool_id "
+                + "AND value.owner_id=pool.owner_id AND value.owner_id=? "
+                + "AND pool.pool_name=? AND value.variable_name=?";
+        return change("ipc.signalSwapValue", sql, statement -> {
+            statement.setTimestamp(1, java.sql.Timestamp.from(at));
+            statement.setObject(2, ownerId);
+            statement.setString(3, poolName);
+            statement.setString(4, variableName);
+        }) == 1;
+    }
+
+    @Override
+    public boolean consumeSwapSignal(UUID ownerId, String poolName, String variableName) {
+        String sql = "UPDATE ipc.swap_value value SET changed=false FROM ipc.swap_pool pool "
+                + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
+                + "AND value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
+                + "AND value.changed=true";
+        return change("ipc.consumeSwapSignal", sql, statement -> {
+            statement.setObject(1, ownerId);
+            statement.setString(2, poolName);
+            statement.setString(3, variableName);
+        }) == 1;
+    }
+
+    private void deleteSwapRow(UUID poolId, String variableName) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM ipc.swap_value WHERE pool_id=? AND variable_name=?")) {
+            statement.setObject(1, poolId);
+            statement.setString(2, variableName);
+            statement.executeUpdate();
+        }
+    }
+
+    private List<String> stringList(String operation, String sql, Binder binder) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<String> values = new ArrayList<>();
+                while (rows.next()) values.add(rows.getString(1));
+                return List.copyOf(values);
+            }
+        } catch (SQLException exception) {
+            throw failure(operation, exception);
+        }
+    }
+
+    private int change(String operation, String sql, Binder binder) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            return statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure(operation, exception);
+        }
+    }
+
+    private Optional<SwapLock> swapLock(String operation, String sql, Binder binder) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Optional.of(new SwapLock(rows.getLong(1),
+                        rows.getTimestamp(2).toInstant())) : Optional.empty();
+            }
+        } catch (SQLException exception) {
+            throw failure(operation, exception);
+        }
+    }
+
     private static IpcMessage mapMessage(ResultSet rows) throws SQLException {
         byte[] objectHash = rows.getBytes("payload_object_hash");
         return new IpcMessage(
@@ -306,5 +638,10 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                 JdbcValues.optionalInstant(rows, "failed_at"),
                 JdbcValues.optionalString(rows, "failure_reason")
         );
+    }
+
+    @FunctionalInterface
+    private interface Binder {
+        void bind(PreparedStatement statement) throws SQLException;
     }
 }

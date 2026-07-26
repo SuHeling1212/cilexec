@@ -7,7 +7,8 @@ import java.util.Locale;
 public enum ApplicationCommand {
     RUNTIME,
     MIGRATE,
-    EXPORT;
+    EXPORT,
+    PACKAGE_BUILD;
 
     public static ApplicationCommand parse(String[] arguments) {
         if (arguments == null || arguments.length == 0) return RUNTIME;
@@ -19,12 +20,18 @@ public enum ApplicationCommand {
                 exportPath(arguments);
                 yield EXPORT;
             }
+            case "package" -> {
+                packageSourcePath(arguments);
+                packageOutputPath(arguments);
+                yield PACKAGE_BUILD;
+            }
             default -> throw usage();
         };
     }
 
     public static Path exportPath(String[] arguments) {
-        if (arguments == null || arguments.length != 2 || arguments[1] == null
+        if (arguments == null || arguments.length != 2 || arguments[0] == null
+                || !"export".equalsIgnoreCase(arguments[0]) || arguments[1] == null
                 || arguments[1].isBlank()) {
             throw usage();
         }
@@ -39,6 +46,37 @@ public enum ApplicationCommand {
         }
     }
 
+    public static Path packageSourcePath(String[] arguments) {
+        packageArguments(arguments);
+        return safePath(arguments[2]);
+    }
+
+    public static Path packageOutputPath(String[] arguments) {
+        packageArguments(arguments);
+        Path path = safePath(arguments[3]);
+        if (path.getFileName() == null || !path.getFileName().toString().endsWith(".db")) {
+            throw usage();
+        }
+        return path;
+    }
+
+    private static void packageArguments(String[] arguments) {
+        if (arguments == null || arguments.length != 4 || arguments[0] == null
+                || !"package".equalsIgnoreCase(arguments[0]) || arguments[1] == null
+                || !"build".equalsIgnoreCase(arguments[1]) || arguments[2] == null
+                || arguments[2].isBlank() || arguments[3] == null || arguments[3].isBlank()) {
+            throw usage();
+        }
+    }
+
+    private static Path safePath(String value) {
+        try {
+            return Path.of(value);
+        } catch (InvalidPathException invalid) {
+            throw usage();
+        }
+    }
+
     private static ApplicationCommand exactly(String[] arguments, ApplicationCommand command) {
         if (arguments.length != 1) throw usage();
         return command;
@@ -46,6 +84,6 @@ public enum ApplicationCommand {
 
     private static IllegalArgumentException usage() {
         return new IllegalArgumentException(
-                "Usage: cilexec [runtime|migrate|export <output.db>]");
+                "Usage: cilexec [runtime|migrate|export <output.db>|package build <source-dir> <output.db>]");
     }
 }

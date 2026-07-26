@@ -1,5 +1,6 @@
 package com.follarce.persistence.postgres.repository;
 
+import com.follarce.persistence.postgres.connection.ControlLock;
 import com.follarce.persistence.postgres.error.SqlStateClassifier;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -20,7 +21,9 @@ public final class RuntimeMetadataStore {
     }
 
     public BootIdentity beginBoot(String instanceName, long lockKey, String runtimeVersion,
-                                  int schemaVersion, int fclFormatVersion) {
+                                  int schemaVersion, int fclFormatVersion,
+                                  ControlLock.ControlIdentity controlIdentity) {
+        java.util.Objects.requireNonNull(controlIdentity, "controlIdentity");
         try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             UUID instanceId = ensureInstance(connection, instanceName, lockKey);
@@ -44,15 +47,20 @@ public final class RuntimeMetadataStore {
             }
             try (PreparedStatement statement = connection.prepareStatement(
                     "INSERT INTO meta.boot(boot_id,instance_id,kernel_instance_id,status,runtime_version,"
-                            + "schema_version,fcl_runtime_format_version,started_at) "
-                            + "VALUES (?,?,?,'STARTING',?,?,?,?)")) {
+                            + "schema_version,fcl_runtime_format_version,control_backend_pid,"
+                            + "control_backend_started_at,control_proof_lock_key,started_at) "
+                            + "VALUES (?,?,?,'STARTING',?,?,?,?,?,?,?)")) {
                 statement.setObject(1, bootId);
                 statement.setObject(2, instanceId);
                 statement.setObject(3, runtimeId);
                 statement.setString(4, runtimeVersion);
                 statement.setString(5, Integer.toString(schemaVersion));
                 statement.setInt(6, fclFormatVersion);
-                statement.setTimestamp(7, java.sql.Timestamp.from(now));
+                statement.setInt(7, controlIdentity.backendPid());
+                statement.setTimestamp(8, java.sql.Timestamp.from(
+                        controlIdentity.backendStartedAt()));
+                statement.setLong(9, controlIdentity.proofLockKey());
+                statement.setTimestamp(10, java.sql.Timestamp.from(now));
                 statement.executeUpdate();
             }
             connection.commit();
@@ -121,19 +129,21 @@ public final class RuntimeMetadataStore {
 
     private void updateBoot(BootIdentity identity, String status, String additional, String reason) {
         String sql = "UPDATE meta.boot SET status=?," + additional + " WHERE boot_id=?";
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, status);
-            int identityIndex;
-            if (reason != null) {
-                statement.setString(2, reason);
-                identityIndex = 3;
-            } else {
-                identityIndex = 2;
-            }
-            statement.setObject(identityIndex, identity.bootId());
-            if (statement.executeUpdate() != 1) {
-                throw new IllegalStateException("Boot row disappeared");
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setString(1, status);
+                int identityIndex;
+                if (reason != null) {
+                    statement.setString(2, reason);
+                    identityIndex = 3;
+                } else {
+                    identityIndex = 2;
+                }
+                statement.setObject(identityIndex, identity.bootId());
+                if (statement.executeUpdate() != 1) {
+                    throw new IllegalStateException("Boot row disappeared");
+                }
             }
             try (PreparedStatement runtime = connection.prepareStatement(
                     "UPDATE meta.kernel_instance SET status=?,last_seen_at=clock_timestamp(),"
