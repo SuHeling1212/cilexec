@@ -10,4 +10,8 @@ public interface TerminalAccess {
     UserAccount register(String username, char[] password);
 
     UserAccount register(String username, char[] password, char[] adminPassword);
+
+    boolean isFirstUse();
+
+    UserAccount bootstrap(String username, char[] password);
 }

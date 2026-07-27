@@ -147,19 +147,17 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     @Override
     public String provisionPrincipal(UUID userId, char[] password) {
         PasswordPolicy.require(password);
-        char[] copy = password.clone();
+        String hashed = PasswordPolicy.sha512Hex(password);
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT auth.provision_principal(?,?)")) {
             statement.setObject(1, userId);
-            statement.setString(2, new String(copy));
+            statement.setString(2, hashed);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) throw new IllegalStateException("Principal provisioner returned no role");
                 return rows.getString(1);
             }
         } catch (SQLException exception) {
             throw failure("auth.provisionPrincipal", exception);
-        } finally {
-            Arrays.fill(copy, '\0');
         }
     }
 

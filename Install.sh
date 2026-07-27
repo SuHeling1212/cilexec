@@ -5,11 +5,11 @@ project_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$project_dir"
 
 if ! command -v docker >/dev/null 2>&1; then
-    echo "错误：没有找到 Docker，请先安装并启动 Docker Desktop。" >&2
+    echo "Error: Docker not found. Please install and start Docker Desktop." >&2
     exit 1
 fi
 if ! docker compose version >/dev/null 2>&1; then
-    echo "错误：当前 Docker 没有 Compose 插件。" >&2
+    echo "Error: Docker Compose plugin is not available." >&2
     exit 1
 fi
 
@@ -35,10 +35,6 @@ create_internal_secret "$secret_dir/cilexec-runtime-password"
 create_internal_secret "$secret_dir/cilexec-effect-worker-password"
 create_internal_secret "$secret_dir/cilexec-readonly-password"
 
-# This secret provisions the local administrator when a new database is created.
-printf '%s\n' '12345678' > "$secret_dir/cilexec-terminal-password"
-chmod 600 "$secret_dir/cilexec-terminal-password"
-
 compose=(docker compose -f compose.yml -f compose.persistent.yml)
 
 cleanup() {
@@ -46,14 +42,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "正在启动 CilExec……"
+echo "Starting CilExec..."
 "${compose[@]}" up -d postgres
 "${compose[@]}" run --rm --build migrate
 
 echo
-echo "管理员用户名：local"
-echo "默认密码：12345678"
-echo "请选择 login 登录；输入 :exit 可退出。"
+echo "On first use you will be prompted to create the administrator password."
+echo "Choose login and enter username local with the password you set."
+echo "Type :exit to quit."
 echo
 
 "${compose[@]}" run --rm --no-deps cilexec

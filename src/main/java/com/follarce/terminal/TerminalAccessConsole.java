@@ -27,6 +27,12 @@ public final class TerminalAccessConsole implements Runnable {
 
     @Override
     public void run() {
+        try {
+            firstTimeSetup();
+        } catch (IOException closed) {
+            output.println("terminal closed: " + closed.getMessage());
+            return;
+        }
         output.println("CilExec access; choose login, create, or shutdown");
         while (!Thread.currentThread().isInterrupted()) {
             try {
@@ -56,6 +62,31 @@ public final class TerminalAccessConsole implements Runnable {
                 output.println("terminal closed: " + closed.getMessage());
                 return;
             }
+        }
+    }
+
+    private void firstTimeSetup() throws IOException {
+        if (!access.isFirstUse()) return;
+        output.println("First time setup - create the administrator account");
+        output.println("Username: local");
+        char[] password = password("Password (" + PasswordPolicy.MINIMUM_LENGTH
+                + "+ characters)> ");
+        if (password == null) return;
+        char[] confirmation = password("Confirm password> ");
+        if (confirmation == null) {
+            Arrays.fill(password, '\0');
+            return;
+        }
+        try {
+            if (!Arrays.equals(password, confirmation)) {
+                throw new IllegalArgumentException("Passwords do not match");
+            }
+            access.bootstrap("local", password);
+            output.println("Administrator account created.");
+            output.println();
+        } finally {
+            Arrays.fill(password, '\0');
+            Arrays.fill(confirmation, '\0');
         }
     }
 

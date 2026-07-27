@@ -106,4 +106,4 @@ secrets:
   cilexec_effect_worker_password:
     file: ${CILEXEC_EFFECT_PASSWORD_FILE:-./docker/secrets/cilexec-effect-worker-password}
   cilexec_terminal_password:
-    file: ${CILEXEC_TERMINAL_PASSWORD_FILE:-./docker/secrets/cilexec-terminal-password}
+    file: ${CILEXEC_TERMINAL_PASSWORD_FILE:-/dev/null}

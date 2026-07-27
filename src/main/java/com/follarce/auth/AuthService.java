@@ -39,6 +39,10 @@ public final class AuthService {
                     throw new IllegalStateException("Database provisioned an unexpected role");
                 }
                 transaction.auth().replaceCapabilities(account.userId(), Set.copyOf(capabilities));
+                if (transaction.vfs().findChild(account.userId(), Optional.empty(), "/").isEmpty()) {
+                    transaction.vfs().createDirectory(account.userId(), Optional.empty(), "/",
+                            Set.of());
+                }
                 transaction.audit().append(audit("auth.user.create", account, now));
                 return account;
             });

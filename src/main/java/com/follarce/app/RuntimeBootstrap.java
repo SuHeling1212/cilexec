@@ -227,7 +227,8 @@ public final class RuntimeBootstrap {
 
         private void startTerminal() {
             Clock clock = Clock.systemUTC();
-            new TerminalBootstrap(runtimeTransactions, clock).ensure(terminalSettings);
+            new TerminalBootstrap(runtimeTransactions, clock).ensure(terminalSettings)
+                    .ifPresent(_ -> {});
             TerminalInput input = TerminalInput.system(
                     Objects.requireNonNull(terminalInput, "terminal input"));
             PrintWriter output = new PrintWriter(new OutputStreamWriter(

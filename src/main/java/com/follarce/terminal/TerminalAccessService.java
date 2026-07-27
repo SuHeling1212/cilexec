@@ -62,10 +62,8 @@ public final class TerminalAccessService implements TerminalAccess {
 
     @Override
     public UserAccount register(String username, char[] password) {
-        UserAccount account = new AuthService(transactions, clock).create(
+        return new AuthService(transactions, clock).create(
                 normalizeUsername(username), password, USER_CAPABILITIES);
-        ensureRoot(account);
-        return account;
     }
 
     @Override
@@ -76,10 +74,20 @@ public final class TerminalAccessService implements TerminalAccess {
         if (!verifyLocalPassword(adminPassword)) {
             throw new IllegalArgumentException("Invalid local administrator password");
         }
-        UserAccount account = new AuthService(transactions, clock).create(
+        return new AuthService(transactions, clock).create(
                 normalizeUsername(username), password, ADMIN_CAPABILITIES);
-        ensureRoot(account);
-        return account;
+    }
+
+    @Override
+    public boolean isFirstUse() {
+        return transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser("local")).isEmpty();
+    }
+
+    @Override
+    public UserAccount bootstrap(String username, char[] password) {
+        return new AuthService(transactions, clock).create(
+                normalizeUsername(username), password, ADMIN_CAPABILITIES);
     }
 
     private boolean verifyLocalPassword(char[] password) {
@@ -93,7 +101,7 @@ public final class TerminalAccessService implements TerminalAccess {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(jdbcUrl);
         source.setUser(account.postgresRoleName());
-        source.setPassword(new String(password));
+        source.setPassword(com.follarce.auth.PasswordPolicy.sha512Hex(password));
         try (Connection connection = source.getConnection();
              Statement statement = connection.createStatement();
              ResultSet row = statement.executeQuery("SELECT session_user")) {

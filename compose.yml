@@ -153,4 +153,4 @@ secrets:
   cilexec_readonly_password:
     file: ${CILEXEC_READONLY_PASSWORD_FILE:-./docker/secrets/cilexec-readonly-password}
   cilexec_terminal_password:
-    file: ${CILEXEC_TERMINAL_PASSWORD_FILE:-./docker/secrets/cilexec-terminal-password}
+    file: ${CILEXEC_TERMINAL_PASSWORD_FILE:-/dev/null}

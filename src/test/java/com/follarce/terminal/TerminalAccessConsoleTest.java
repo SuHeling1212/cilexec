@@ -24,7 +24,8 @@ class TerminalAccessConsoleTest {
 
     @Test
     void supportsLoginCreationLogoutAndPasswordErasure() {
-        String source = "login\nalice\nwrong-password-value\n"
+        String source = PASSWORD + "\n" + PASSWORD + "\n"  // first-time setup
+                + "login\nalice\nwrong-password-value\n"
                 + "create\nalice\n" + PASSWORD + "\n" + PASSWORD + "\nn\n:logout\n"
                 + "login\nalice\n" + PASSWORD + "\n:exit\n";
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -87,6 +88,18 @@ class TerminalAccessConsoleTest {
             receivedPasswords.add(password);
             receivedPasswords.add(adminPassword);
             registrations++;
+            created = true;
+            return alice;
+        }
+
+        @Override
+        public boolean isFirstUse() {
+            return !created;
+        }
+
+        @Override
+        public UserAccount bootstrap(String username, char[] password) {
+            receivedPasswords.add(password);
             created = true;
             return alice;
         }
