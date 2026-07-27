@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 class CilExecConfigTest {
@@ -14,6 +15,7 @@ class CilExecConfigTest {
         assertEquals("cilexec", config.instanceName());
         assertEquals(4, config.schedulerWorkers());
         assertEquals(8, config.runtimeDatabase().maximumPoolSize());
+        assertEquals(Duration.ofMillis(25), config.schedulerIdlePoll());
     }
 
     @Test

@@ -159,7 +159,8 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
                 + "state_version=?,execution_epoch=?,wait_reason=?,wait_object_id=?,"
                 + "runtime_format_version=?,language_version=?,continuation_json=?,"
                 + "parent_process_uid=?,updated_at=?,terminated_at=CASE WHEN ? IN "
-                + "('TERMINATED','FAILED','FAILED_RECOVERY') THEN ? ELSE terminated_at END "
+                + "('TERMINATED','FAILED','FAILED_RECOVERY') "
+                + "THEN CAST(? AS timestamptz) ELSE NULL::timestamptz END "
                 + "WHERE process_uid=? AND state_version=? AND execution_epoch=?"
                 + (claim.isPresent()
                 ? " AND scheduler.claim_authorizes_commit(?,?,?,?,?)" : "");

@@ -38,4 +38,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
     CMD ["/opt/cilexec/healthcheck.sh", "ready"]
 
 ENTRYPOINT ["java", "-XX:+ExitOnOutOfMemoryError", "-jar", "/opt/cilexec/cilexec-app.jar"]
-CMD ["runtime"]
+CMD ["terminal"]

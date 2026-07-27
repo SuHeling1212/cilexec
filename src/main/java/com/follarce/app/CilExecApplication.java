@@ -24,6 +24,7 @@ public final class CilExecApplication {
     private final Supplier<CilExecConfig> configSource;
     private final Supplier<BuildInfo> buildSource;
     private final RuntimeAction runtime;
+    private final RuntimeAction terminal;
     private final MigrationAction migration;
     private final ExportAction export;
     private final PackageBuildAction packageBuild;
@@ -38,7 +39,7 @@ public final class CilExecApplication {
         this(configSource, buildSource, runtime, migration, export,
                 (source, output) -> {
                     throw new AssertionError("package build action was not configured");
-                });
+                }, runtime);
     }
 
     CilExecApplication(
@@ -49,9 +50,22 @@ public final class CilExecApplication {
             ExportAction export,
             PackageBuildAction packageBuild
     ) {
+        this(configSource, buildSource, runtime, migration, export, packageBuild, runtime);
+    }
+
+    CilExecApplication(
+            Supplier<CilExecConfig> configSource,
+            Supplier<BuildInfo> buildSource,
+            RuntimeAction runtime,
+            MigrationAction migration,
+            ExportAction export,
+            PackageBuildAction packageBuild,
+            RuntimeAction terminal
+    ) {
         this.configSource = Objects.requireNonNull(configSource, "configSource");
         this.buildSource = Objects.requireNonNull(buildSource, "buildSource");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
+        this.terminal = Objects.requireNonNull(terminal, "terminal");
         this.migration = Objects.requireNonNull(migration, "migration");
         this.export = Objects.requireNonNull(export, "export");
         this.packageBuild = Objects.requireNonNull(packageBuild, "packageBuild");
@@ -64,7 +78,8 @@ public final class CilExecApplication {
                 CilExecApplication::runRuntime,
                 CilExecApplication::runMigration,
                 CilExecApplication::runExport,
-                CilExecApplication::runPackageBuild);
+                CilExecApplication::runPackageBuild,
+                CilExecApplication::runTerminal);
         try {
             return application.execute(arguments);
         } catch (IllegalArgumentException usage) {
@@ -79,6 +94,8 @@ public final class CilExecApplication {
     int execute(String[] arguments) {
         ApplicationCommand command = ApplicationCommand.parse(arguments);
         return switch (command) {
+            case TERMINAL -> terminal.run(config(),
+                    Objects.requireNonNull(buildSource.get(), "buildInfo"));
             case RUNTIME -> runtime.run(config(),
                     Objects.requireNonNull(buildSource.get(), "buildInfo"));
             case MIGRATE -> {
@@ -103,7 +120,15 @@ public final class CilExecApplication {
     }
 
     private static int runRuntime(CilExecConfig config, BuildInfo buildInfo) {
-        RuntimeLifecycle lifecycle = RuntimeBootstrap.assemble(config, buildInfo);
+        return runLifecycle(RuntimeBootstrap.assemble(config, buildInfo));
+    }
+
+    private static int runTerminal(CilExecConfig config, BuildInfo buildInfo) {
+        return runLifecycle(RuntimeBootstrap.assembleTerminal(config, buildInfo,
+                com.follarce.terminal.TerminalSettings.load(), System.in, System.out));
+    }
+
+    private static int runLifecycle(RuntimeLifecycle lifecycle) {
         Thread shutdownHook = Thread.ofPlatform().name("cilexec-sigterm")
                 .unstarted(() -> lifecycle.shutdown("SIGTERM"));
         Runtime runtime = Runtime.getRuntime();

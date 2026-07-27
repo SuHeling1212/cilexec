@@ -2,6 +2,7 @@ package com.follarce.persistence.postgres.repository;
 
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
+import com.follarce.auth.PasswordPolicy;
 import com.follarce.domain.port.AuthRepository;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import java.sql.Connection;
@@ -67,9 +68,7 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
                                                   String username, char[] password,
                                                   Set<Capability> capabilities,
                                                   UUID auditEventId, Instant at) {
-        if (password == null || password.length < 16) {
-            throw new IllegalArgumentException("Database login password must contain at least 16 characters");
-        }
+        PasswordPolicy.require(password);
         char[] copy = password.clone();
         java.sql.Array capabilityArray = null;
         try (PreparedStatement statement = connection.prepareStatement(
@@ -147,9 +146,7 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
 
     @Override
     public String provisionPrincipal(UUID userId, char[] password) {
-        if (password == null || password.length < 16) {
-            throw new IllegalArgumentException("Database login password must contain at least 16 characters");
-        }
+        PasswordPolicy.require(password);
         char[] copy = password.clone();
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT auth.provision_principal(?,?)")) {

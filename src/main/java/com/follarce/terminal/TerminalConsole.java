@@ -6,13 +6,19 @@ import java.io.PrintWriter;
 
 /** Optional host console. It delegates every mutation to the database-backed control service. */
 public final class TerminalConsole implements Runnable {
-    private final BufferedReader input;
+    enum Outcome { LOGOUT, EXIT, END_OF_INPUT }
+
+    private final TerminalInput input;
     private final PrintWriter output;
     private final TerminalControl control;
     private final ShellCommandParser parser;
 
     public TerminalConsole(BufferedReader input, PrintWriter output, TerminalControl control) {
-        this.input = input;
+        this(TerminalInput.visible(input), output, control);
+    }
+
+    TerminalConsole(TerminalInput input, PrintWriter output, TerminalControl control) {
+        this.input = java.util.Objects.requireNonNull(input, "input");
         this.output = output;
         this.control = control;
         this.parser = new ShellCommandParser();
@@ -20,29 +26,66 @@ public final class TerminalConsole implements Runnable {
 
     @Override
     public void run() {
-        output.println("CilExec terminal; type help for commands");
+        runSession();
+    }
+
+    Outcome runSession() {
+        output.println("CilExec FCL terminal; :help shows terminal commands, other input runs as FCL");
+        StringBuilder submission = new StringBuilder();
         while (!Thread.currentThread().isInterrupted()) {
-            output.print("cilexec> ");
-            output.flush();
             try {
-                String line = input.readLine();
+                String line = input.readLine(output,
+                        submission.isEmpty() ? control.prompt() : "...> ",
+                        !control.awaitingAttachedInput());
                 if (line == null) {
-                    return;
+                    return Outcome.END_OF_INPUT;
                 }
-                ShellCommand command = parser.parse(line);
-                String result = control.execute(command);
+                String result;
+                ShellCommand command = null;
+                if (submission.isEmpty() && line.stripLeading().startsWith("::")
+                        && control.awaitingAttachedInput()) {
+                    result = control.submitAttachedInput(line.stripLeading().substring(1));
+                } else if (submission.isEmpty() && line.stripLeading().startsWith(":")) {
+                    String commandText = line.stripLeading().substring(1);
+                    command = parser.parse(commandText);
+                    result = control.execute(command);
+                } else if (submission.isEmpty() && control.awaitingAttachedInput()) {
+                    result = control.submitAttachedInput(line);
+                } else {
+                    if (submission.isEmpty() && (line.strip().equals("ls")
+                            || line.strip().equals("cd") || line.strip().startsWith("cd "))) {
+                        throw new IllegalArgumentException(
+                                "Terminal command must start with :, for example :ls or :cd /path");
+                    }
+                    if (!submission.isEmpty()) submission.append('\n');
+                    submission.append(line);
+                    if (!FclInputBuffer.complete(submission.toString())) {
+                        continue;
+                    }
+                    String source = submission.toString();
+                    submission.setLength(0);
+                    result = source.isBlank() ? "" : control.evaluate(source);
+                }
                 if (result != null && !result.isEmpty()) {
                     output.println(result);
                 }
+                if (command instanceof ShellCommand.Logout) {
+                    return Outcome.LOGOUT;
+                }
                 if (command instanceof ShellCommand.Exit) {
-                    return;
+                    return Outcome.EXIT;
                 }
             } catch (IllegalArgumentException exception) {
+                submission.setLength(0);
+                output.println("error: " + exception.getMessage());
+            } catch (RuntimeException exception) {
+                submission.setLength(0);
                 output.println("error: " + exception.getMessage());
             } catch (IOException exception) {
                 output.println("terminal closed: " + exception.getMessage());
-                return;
+                return Outcome.END_OF_INPUT;
             }
         }
+        return Outcome.END_OF_INPUT;
     }
 }

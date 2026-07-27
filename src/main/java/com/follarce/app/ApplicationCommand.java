@@ -5,15 +5,17 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 public enum ApplicationCommand {
+    TERMINAL,
     RUNTIME,
     MIGRATE,
     EXPORT,
     PACKAGE_BUILD;
 
     public static ApplicationCommand parse(String[] arguments) {
-        if (arguments == null || arguments.length == 0) return RUNTIME;
+        if (arguments == null || arguments.length == 0) return TERMINAL;
         if (arguments[0] == null) throw usage();
         return switch (arguments[0].toLowerCase(Locale.ROOT)) {
+            case "terminal", "repl" -> exactly(arguments, TERMINAL);
             case "runtime" -> exactly(arguments, RUNTIME);
             case "migrate" -> exactly(arguments, MIGRATE);
             case "export" -> {
@@ -84,6 +86,6 @@ public enum ApplicationCommand {
 
     private static IllegalArgumentException usage() {
         return new IllegalArgumentException(
-                "Usage: cilexec [runtime|migrate|export <output.db>|package build <source-dir> <output.db>]");
+                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>]");
     }
 }

@@ -104,7 +104,8 @@ class FclSystemFunctionsExternalIT {
                 owner.userId().toString().equals(item.get("ownerId"))));
         @SuppressWarnings("unchecked")
         List<Object> names = (List<Object>) ownerRuntime.scope().get("functions");
-        assertTrue(names.contains("file.adminRead"));
+        assertTrue(names.contains("file.read"));
+        assertFalse(names.stream().anyMatch(name -> String.valueOf(name).startsWith("file.admin")));
         assertTrue(names.contains("network.httpGet"));
         assertTrue(names.contains("package.install"));
         assertTrue(names.contains("socket.connect"));
@@ -134,13 +135,13 @@ class FclSystemFunctionsExternalIT {
 
         String createdUsername = "fcl-created-" + suffix;
         String adminSource = """
-                data = file.adminRead("%s", "%s")
-                written = file.adminWrite("%s", "%s", "changed")
-                managed = file.adminCreateDir("%s", "%s", "managed")
-                createdFile = file.adminCreateFile("%s", managed, "new.txt", "body", false)
-                renamed = file.adminRename("%s", createdFile, "renamed.txt")
-                nodes = file.adminList("%s")
-                deleted = file.adminDelete("%s", renamed)
+                data = file.read("/private.txt", "%s")
+                written = file.write("/private.txt", "changed", "%s")
+                managed = file.createDir("/managed", "%s")
+                createdFile = file.createFile("/managed/new.txt", "body", "%s")
+                renamed = file.rename("/managed/new.txt", "renamed.txt", "%s")
+                nodes = file.listdir("/", "%s")
+                deleted = file.removeFile("/managed/renamed.txt", "%s")
                 users = user.getListOfUsers()
                 valid = user.validateUser("%s")
                 created = user.createUser("%s", "created-password-123")
@@ -151,9 +152,8 @@ class FclSystemFunctionsExternalIT {
                 killed = process.kill(%s)
                 finished = process.waitPID(%s)
                 """.formatted(
-                owner.userId(), privateFile.nodeId(), owner.userId(), privateFile.nodeId(),
-                owner.userId(), ownerRoot.nodeId(), owner.userId(), owner.userId(),
-                owner.userId(), owner.userId(), removable.userId(), createdUsername,
+                owner.userId(), owner.userId(), owner.userId(), owner.userId(),
+                owner.userId(), owner.userId(), owner.userId(), removable.userId(), createdUsername,
                 removable.userId(), ownerProcess.identity().pid(), ownerProcess.identity().pid(),
                 ownerProcess.identity().pid(), ownerProcess.identity().pid());
         var adminProgram = new ProgramService(transactions).create(administrator.userId(),
@@ -200,7 +200,7 @@ class FclSystemFunctionsExternalIT {
             FclStepResult result = transactions.inUserTransaction(process.ownerId(),
                     Isolation.READ_COMMITTED, transaction -> new FclRuntime(
                             FclRuntimeFunctions.create(transaction, process, program,
-                                    Clock.systemUTC().instant()))
+                                    current, Clock.systemUTC().instant()))
                             .executeOne(compiled, current));
             assertFalse(result.status() == FclStepResult.Status.FAILED,
                     () -> String.valueOf(result.value()));

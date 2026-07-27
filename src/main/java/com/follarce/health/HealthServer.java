@@ -6,6 +6,8 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -39,7 +41,21 @@ public final class HealthServer implements AutoCloseable {
             exchange.close();
             return;
         }
-        byte[] body = gson.toJson(state.snapshot()).getBytes(StandardCharsets.UTF_8);
+        // Gson cannot reflectively serialize java.time.Instant on strongly encapsulated JDKs.
+        // Keep the management response to JSON primitives so a health-check failure can never
+        // turn into a dropped HTTP connection.
+        HealthState.Snapshot snapshot = state.snapshot();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("live", snapshot.live());
+        response.put("ready", snapshot.ready());
+        response.put("phase", snapshot.phase().name());
+        response.put("database", snapshot.database());
+        response.put("schema", snapshot.schema());
+        response.put("controlLock", snapshot.controlLock());
+        response.put("recoveryComplete", snapshot.recoveryComplete());
+        response.put("schedulerLoop", snapshot.schedulerLoop());
+        response.put("startedAt", snapshot.startedAt().toString());
+        byte[] body = gson.toJson(response).getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         exchange.sendResponseHeaders(healthy ? 200 : 503, body.length);
@@ -52,5 +68,9 @@ public final class HealthServer implements AutoCloseable {
     public void close() {
         server.stop(0);
         executor.close();
+    }
+
+    int port() {
+        return server.getAddress().getPort();
     }
 }

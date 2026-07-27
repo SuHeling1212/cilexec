@@ -23,6 +23,8 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class JdbcVfsRepository extends JdbcRepositorySupport implements VfsRepository {
+    private static final String CHUNK_MANIFEST_MEDIA_TYPE =
+            "application/vnd.cilexec.chunk-manifest;version=1";
     private final JsonCodec json;
 
     public JdbcVfsRepository(Connection connection, JsonCodec json) {
@@ -66,6 +68,71 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
         } catch (SQLException exception) {
             throw failure("object_store.find", exception);
         }
+    }
+
+    @Override
+    public long logicalObjectSize(ObjectHash objectHash) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT object_store.logical_object_size(?)")) {
+            statement.setBytes(1, JdbcValues.hash(objectHash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getObject(1) == null) {
+                    throw new IllegalArgumentException("Unknown or inaccessible object");
+                }
+                return rows.getLong(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.logicalSize", exception);
+        }
+    }
+
+    @Override
+    public byte[] readObjectRange(ObjectHash objectHash, long offset, int maximumBytes) {
+        if (offset < 0 || maximumBytes < 0 || maximumBytes > 64 * 1024 * 1024) {
+            throw new IllegalArgumentException("Invalid bounded object range");
+        }
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT object_store.read_object_range(?,?,?)")) {
+            statement.setBytes(1, JdbcValues.hash(objectHash));
+            statement.setLong(2, offset);
+            statement.setInt(3, maximumBytes);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getBytes(1) == null) {
+                    throw new IllegalArgumentException("Unknown or inaccessible object");
+                }
+                return rows.getBytes(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.readRange", exception);
+        }
+    }
+
+    @Override
+    public StoredObject appendChunkedObject(ObjectHash currentObjectHash, byte[] tail,
+                                            String mediaType, Instant at) {
+        StoredObject chunk = StoredObject.create(new BinaryContent(tail), mediaType, at);
+        saveObject(chunk);
+        long total = Math.addExact(logicalObjectSize(currentObjectHash), tail.length);
+        String descriptor = "CILEXEC-CHUNK-MANIFEST-V1\n" + currentObjectHash.value() + "\n"
+                + chunk.objectHash().value() + "\n" + total + "\n";
+        StoredObject manifest = StoredObject.create(new BinaryContent(
+                descriptor.getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
+                CHUNK_MANIFEST_MEDIA_TYPE, at);
+        saveObject(manifest);
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT object_store.append_chunk_manifest(?,?,?)")) {
+            statement.setBytes(1, JdbcValues.hash(manifest.objectHash()));
+            statement.setBytes(2, JdbcValues.hash(currentObjectHash));
+            statement.setBytes(3, JdbcValues.hash(chunk.objectHash()));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getLong(1) != total) {
+                    throw new IllegalStateException("Object store did not confirm chunk append");
+                }
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.appendChunk", exception);
+        }
+        return manifest;
     }
 
     @Override

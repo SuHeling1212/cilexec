@@ -48,7 +48,9 @@ class BuildInfoAndCommandTest {
 
     @Test
     void parsesTheSupportedCommandsAndExplicitExportPath() {
-        assertEquals(ApplicationCommand.RUNTIME, ApplicationCommand.parse(new String[0]));
+        assertEquals(ApplicationCommand.TERMINAL, ApplicationCommand.parse(new String[0]));
+        assertEquals(ApplicationCommand.TERMINAL,
+                ApplicationCommand.parse(new String[]{"repl"}));
         assertEquals(ApplicationCommand.RUNTIME,
                 ApplicationCommand.parse(new String[]{"RUNTIME"}));
         assertEquals(ApplicationCommand.MIGRATE,

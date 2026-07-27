@@ -23,6 +23,7 @@ import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.scheduler.ClaimedProcessHandler;
+import com.follarce.util.CommandTiming;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
@@ -75,7 +76,9 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     public void executeOne(SchedulerClaim claim) {
         Objects.requireNonNull(claim, "claim");
         Instant now = clock.instant();
-        transactions.inUserTransaction(claim.ownerId(), Isolation.READ_COMMITTED, transaction -> {
+        String[] traceId = {null};
+        try {
+            transactions.inUserTransaction(claim.ownerId(), Isolation.READ_COMMITTED, transaction -> {
             if (!claim.authorizes(claim.executionEpoch(), now)) {
                 throw new StaleClaimException("Scheduler claim has expired");
             }
@@ -95,13 +98,21 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     .findById(current.continuation().programId())
                     .orElseThrow(() -> new IllegalStateException("Process program no longer exists"));
             FclPersistenceBridge.ensureProgramIdentity(program, current.continuation());
-            FclProgram compiled = loadProgram(transaction, program);
-            compiled = linkPackages(transaction, current, compiled, program);
             FclContinuation continuation = continuationBridge.restore(current.continuation());
+            boolean terminalProcess = TerminalReplService.isTerminalProcess(continuation);
+            traceId[0] = trace(continuation);
+            CommandTiming.point(traceId[0], "scheduler.claimed pid="
+                    + current.identity().pid());
+            FclProgram compiled = loadProgram(transaction, program);
+            CommandTiming.point(traceId[0], "executor.program.loaded");
+            compiled = linkPackages(transaction, current, compiled, program);
+            CommandTiming.point(traceId[0], "executor.packages.linked");
 
             FclRuntime statementRuntime = fixedRuntime != null ? fixedRuntime
-                    : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program, now));
+                    : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program,
+                    continuation, now));
             FclStepResult step = statementRuntime.executeOne(compiled, continuation);
+            CommandTiming.point(traceId[0], "executor.fcl.step.executed=" + step);
             Program committedProgram = program;
             Continuation previousForPersistence = current.continuation();
             ExecutionReplacement replacement = resolveExecutionReplacement(transaction,
@@ -117,7 +128,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     committedProgram, previousForPersistence, continuation.snapshot());
             persisted = withPackageBindings(persisted,
                     transaction.packages().findProcessBindings(current.identity().processUid()));
-            CilProcess.Status target = targetStatus(step, continuation);
+            CilProcess.Status target = targetStatus(step, continuation, terminalProcess);
             CilProcess committed = current.commitStatement(persisted, target,
                     current.stateVersion(), claim.executionEpoch(), now);
 
@@ -133,8 +144,21 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             // Queue state and continuation become visible in the same commit. READY is
             // re-queued; wait/terminal/failure states are removed by repository policy.
             transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
+            CommandTiming.point(traceId[0], "executor.state-written status=" + target);
             return null;
-        });
+            });
+            CommandTiming.point(traceId[0], "executor.transaction.committed");
+        } catch (RuntimeException failure) {
+            CommandTiming.point(traceId[0], "executor.failed="
+                    + failure.getClass().getSimpleName());
+            throw failure;
+        }
+    }
+
+    private static String trace(FclContinuation continuation) {
+        if (!continuation.scope().contains(CommandTiming.SCOPE_KEY)) return null;
+        Object value = continuation.scope().get(CommandTiming.SCOPE_KEY);
+        return value instanceof String traceId ? traceId : null;
     }
 
     private FclProgram loadProgram(com.follarce.domain.port.TransactionContext transaction,
@@ -444,12 +468,19 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     }
 
     private static CilProcess.Status targetStatus(FclStepResult step,
-                                                  FclContinuation continuation) {
-        if (continuation.failed()) return CilProcess.Status.FAILED;
-        if (continuation.halted()) return CilProcess.Status.TERMINATED;
+                                                  FclContinuation continuation,
+                                                  boolean terminalProcess) {
+        if (continuation.failed()) {
+            return terminalProcess ? CilProcess.Status.PAUSED : CilProcess.Status.FAILED;
+        }
+        if (continuation.halted()) {
+            return terminalProcess ? CilProcess.Status.PAUSED : CilProcess.Status.TERMINATED;
+        }
         return switch (step.status()) {
-            case FAILED -> CilProcess.Status.FAILED;
-            case COMPLETED -> CilProcess.Status.TERMINATED;
+            case FAILED -> terminalProcess ? CilProcess.Status.PAUSED
+                    : CilProcess.Status.FAILED;
+            case COMPLETED -> terminalProcess ? CilProcess.Status.PAUSED
+                    : CilProcess.Status.TERMINATED;
             case WAITING, DIRECTIVE -> continuation.waitState().kind()
                     == FclContinuation.WaitKind.NONE
                     ? CilProcess.Status.READY : waitingStatus(continuation.waitState());

@@ -58,6 +58,58 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
     }
 
     @Override
+    public Optional<TerminalSession> findOpenSession(UUID ownerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT * FROM terminal.session WHERE owner_id=? AND status='OPEN' "
+                        + "ORDER BY last_activity_at DESC,session_id LIMIT 1")) {
+            statement.setObject(1, ownerId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                return Optional.of(new TerminalSession(
+                        rows.getObject("session_id", UUID.class),
+                        rows.getObject("owner_id", UUID.class),
+                        TerminalSession.Status.valueOf(rows.getString("status")),
+                        rows.getLong("next_input_sequence"),
+                        rows.getTimestamp("opened_at").toInstant(),
+                        rows.getTimestamp("last_activity_at").toInstant(),
+                        JdbcValues.optionalInstant(rows, "closed_at")));
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.findOpenSession", exception);
+        }
+    }
+
+    @Override
+    public String workingDirectory(UUID sessionId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT working_directory FROM terminal.session WHERE session_id=?")) {
+            statement.setObject(1, sessionId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalArgumentException("Unknown terminal session");
+                return rows.getString(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.workingDirectory", exception);
+        }
+    }
+
+    @Override
+    public boolean changeWorkingDirectory(UUID sessionId, String expected,
+                                          String replacement, java.time.Instant at) {
+        String sql = "UPDATE terminal.session SET working_directory=?,last_activity_at=? "
+                + "WHERE session_id=? AND status='OPEN' AND working_directory=?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, replacement);
+            statement.setTimestamp(2, java.sql.Timestamp.from(at));
+            statement.setObject(3, sessionId);
+            statement.setString(4, expected);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("terminal.changeWorkingDirectory", exception);
+        }
+    }
+
+    @Override
     public void appendInput(TerminalSession.Input input) {
         String sql = "INSERT INTO terminal.input(input_id,session_id,owner_id,input_sequence,submitted_text,"
                 + "submitted_at,accepted_at,target_process_uid) "

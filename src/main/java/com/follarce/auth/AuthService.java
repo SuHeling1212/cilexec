@@ -24,7 +24,7 @@ public final class AuthService {
     }
 
     public UserAccount create(String username, char[] password, Set<Capability> capabilities) {
-        requirePassword(password);
+        PasswordPolicy.require(password);
         char[] secret = password.clone();
         try {
             Instant now = clock.instant();
@@ -48,7 +48,7 @@ public final class AuthService {
     }
 
     public UserAccount rotateCredential(UUID userId, char[] password) {
-        requirePassword(password);
+        PasswordPolicy.require(password);
         char[] secret = password.clone();
         try {
             Instant now = clock.instant();
@@ -80,12 +80,6 @@ public final class AuthService {
             transaction.audit().append(audit("auth.user.disable", disabled, now));
             return disabled;
         });
-    }
-
-    private static void requirePassword(char[] password) {
-        if (password == null || password.length < 16) {
-            throw new IllegalArgumentException("Password must contain at least 16 characters");
-        }
     }
 
     private static AuditEvent audit(String action, UserAccount account, Instant now) {

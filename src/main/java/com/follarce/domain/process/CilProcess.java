@@ -59,6 +59,21 @@ public record CilProcess(
         return copy(target, stateVersion + 1, executionEpoch, continuation, at);
     }
 
+    /**
+     * Atomically installs the next program in an already suspended interactive process.
+     * The process identity and execution epoch are retained; only a PAUSED process can
+     * accept new work, which prevents terminal input from racing active execution.
+     */
+    public CilProcess acceptSubmission(Continuation submittedContinuation, Instant at) {
+        Invariant.check(status == Status.PAUSED,
+                "only a PAUSED process can accept a new submission");
+        Invariant.required(submittedContinuation, "submittedContinuation");
+        Invariant.check(submittedContinuation.waitState().isEmpty(),
+                "a new submission cannot start in a wait state");
+        return copy(Status.READY, stateVersion + 1, executionEpoch,
+                submittedContinuation, at);
+    }
+
     public CilProcess commitStatement(
             Continuation committedContinuation,
             Status target,

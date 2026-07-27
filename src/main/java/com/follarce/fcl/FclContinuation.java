@@ -253,6 +253,22 @@ public final class FclContinuation {
                 halted, failed, result);
     }
 
+    /**
+     * Prepares the next terminal submission without replacing the process context.
+     * Execution-only state is cleared while the durable outermost/global scope is
+     * retained. If the previous input failed inside a function, its local frames are
+     * deliberately discarded and the caller's global scope survives.
+     */
+    public FclContinuation nextSubmission() {
+        if (!halted) {
+            throw new IllegalStateException(
+                    "Only a completed continuation can accept the next submission");
+        }
+        FclScope global = callStack.isEmpty() ? scope : callStack.getFirst().callerScope();
+        return new FclContinuation(formatVersion, 0, global, List.of(), List.of(),
+                List.of(), List.of(), WaitState.ready(), null, false, false, null);
+    }
+
     static FclContinuation restore(int formatVersion, int programCounter, FclScope scope,
                                    List<CallFrame> callStack,
                                    List<ExceptionFrame> exceptionStack,

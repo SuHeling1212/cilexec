@@ -147,6 +147,27 @@ class ProgramProcessDomainTest {
         assertNotEquals(running.stateVersion(), terminated.stateVersion());
     }
 
+    @Test
+    void onlyPausedProcessCanAtomicallyAcceptANewSubmission() {
+        CilProcess running = new CilProcess(
+                new ProcessIdentity(UUID.randomUUID(), 10), UUID.randomUUID(),
+                CilProcess.Status.RUNNING, 2, 3, continuation(Optional.empty()),
+                Optional.empty(), T0, T0);
+        CilProcess paused = running.transitionTo(CilProcess.Status.PAUSED,
+                T0.plusSeconds(1));
+        Continuation submitted = continuation(Optional.empty());
+
+        CilProcess ready = paused.acceptSubmission(submitted, T0.plusSeconds(2));
+
+        assertEquals(CilProcess.Status.READY, ready.status());
+        assertEquals(paused.identity(), ready.identity());
+        assertEquals(paused.executionEpoch(), ready.executionEpoch());
+        assertEquals(paused.stateVersion() + 1, ready.stateVersion());
+        assertEquals(submitted, ready.continuation());
+        assertThrows(IllegalArgumentException.class,
+                () -> running.acceptSubmission(submitted, T0.plusSeconds(1)));
+    }
+
     private static Continuation continuation(Optional<Continuation.WaitState> waitState) {
         return new Continuation(UUID.randomUUID(), hash("program"), 0, List.of(), List.of(),
                 List.of(), List.of(), waitState, Map.of(), Map.of(), "fcl-1", "runtime-1");

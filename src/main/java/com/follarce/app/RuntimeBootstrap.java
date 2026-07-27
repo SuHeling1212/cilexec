@@ -19,6 +19,12 @@ import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.follarce.scheduler.ClaimedProcessHandler;
 import com.follarce.scheduler.SchedulerService;
 import com.follarce.timer.TimerService;
+import com.follarce.terminal.DatabaseTerminalControl;
+import com.follarce.terminal.TerminalAccessConsole;
+import com.follarce.terminal.TerminalAccessService;
+import com.follarce.terminal.TerminalBootstrap;
+import com.follarce.terminal.TerminalInput;
+import com.follarce.terminal.TerminalSettings;
 import com.zaxxer.hikari.HikariDataSource;
 
 import java.time.Clock;
@@ -29,6 +35,11 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 
 /** Explicit production assembly for the single active Runtime. */
 public final class RuntimeBootstrap {
@@ -40,6 +51,17 @@ public final class RuntimeBootstrap {
                 BuiltinEffectHandlers.defaults());
     }
 
+    public static RuntimeLifecycle assembleTerminal(CilExecConfig config, BuildInfo buildInfo,
+                                                    TerminalSettings settings,
+                                                    InputStream input, OutputStream output) {
+        ProductionHooks hooks = new ProductionHooks(config, buildInfo,
+                ProcessStatementExecutor::new, BuiltinEffectHandlers.defaults(), settings,
+                input, output);
+        RuntimeLifecycle lifecycle = new RuntimeLifecycle(hooks, config.shutdownGrace());
+        hooks.terminalShutdown = () -> lifecycle.shutdown("terminal closed");
+        return lifecycle;
+    }
+
     public static RuntimeLifecycle assemble(
             CilExecConfig config,
             BuildInfo buildInfo,
@@ -47,7 +69,7 @@ public final class RuntimeBootstrap {
             List<? extends EffectHandler> effectHandlers
     ) {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo, handlerFactory,
-                effectHandlers);
+                effectHandlers, null, null, null);
         return new RuntimeLifecycle(hooks, config.shutdownGrace());
     }
 
@@ -64,6 +86,9 @@ public final class RuntimeBootstrap {
         private final List<? extends EffectHandler> effectHandlers;
         private final RuntimeMetadataStore metadata;
         private final RecoveryCoordinator recovery;
+        private final TerminalSettings terminalSettings;
+        private final InputStream terminalInput;
+        private final OutputStream terminalOutput;
         private final AtomicBoolean resourcesClosed = new AtomicBoolean();
 
         private volatile Consumer<Throwable> fence;
@@ -74,16 +99,24 @@ public final class RuntimeBootstrap {
         private volatile HikariDataSource effectDataSource;
         private volatile EffectWorkerService effectWorkers;
         private volatile TimerLoop timerLoop;
+        private volatile Thread terminalThread;
+        private volatile Runnable terminalShutdown = () -> { };
 
         private ProductionHooks(
                 CilExecConfig config,
                 BuildInfo buildInfo,
                 Function<JdbcTransactionExecutor, ? extends ClaimedProcessHandler> handlerFactory,
-                List<? extends EffectHandler> effectHandlers
+                List<? extends EffectHandler> effectHandlers,
+                TerminalSettings terminalSettings,
+                InputStream terminalInput,
+                OutputStream terminalOutput
         ) {
             this.config = Objects.requireNonNull(config, "config");
             this.buildInfo = Objects.requireNonNull(buildInfo, "buildInfo");
             this.effectHandlers = List.copyOf(effectHandlers);
+            this.terminalSettings = terminalSettings;
+            this.terminalInput = terminalInput;
+            this.terminalOutput = terminalOutput;
             runtimeDataSource = DataSourceFactory.create(config.runtimeDatabase());
             runtimeTransactions = new JdbcTransactionExecutor(runtimeDataSource);
             processHandler = Objects.requireNonNull(handlerFactory, "handlerFactory")
@@ -151,7 +184,7 @@ public final class RuntimeBootstrap {
         public void startScheduler() {
             scheduler = new SchedulerService(runtimeTransactions, processHandler,
                     requireBoot().bootId(), config.schedulerWorkers(), config.leaseDuration(),
-                    config.heartbeatInterval(), requireFence());
+                    config.schedulerIdlePoll(), requireFence());
             scheduler.start();
             health.schedulerLoop(true);
         }
@@ -189,6 +222,29 @@ public final class RuntimeBootstrap {
         @Override
         public void markReady() {
             metadata.markReady(requireBoot());
+            if (terminalSettings != null) startTerminal();
+        }
+
+        private void startTerminal() {
+            Clock clock = Clock.systemUTC();
+            new TerminalBootstrap(runtimeTransactions, clock).ensure(terminalSettings);
+            TerminalInput input = TerminalInput.system(
+                    Objects.requireNonNull(terminalInput, "terminal input"));
+            PrintWriter output = new PrintWriter(new OutputStreamWriter(
+                    Objects.requireNonNull(terminalOutput, "terminal output"),
+                    StandardCharsets.UTF_8), true);
+            var access = new TerminalAccessService(runtimeTransactions,
+                    config.runtimeDatabase().jdbcUrl(), clock);
+            var console = new TerminalAccessConsole(input, output, access,
+                    account -> new DatabaseTerminalControl(runtimeTransactions, account,
+                            terminalShutdown));
+            terminalThread = Thread.ofPlatform().daemon(true).name("cilexec-terminal").start(() -> {
+                try {
+                    console.run();
+                } finally {
+                    terminalShutdown.run();
+                }
+            });
         }
 
         @Override

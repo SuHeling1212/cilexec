@@ -70,11 +70,11 @@ class PostgresLogicalExportIT {
 
         LogicalExportReport report = new LogicalExportService(source,
                 Clock.fixed(NOW, ZoneOffset.UTC)).export(database,
-                new BuildInfo("CilExec", "1.0", "integration", 1, 1, 25));
+                new BuildInfo("CilExec", "1.0", "integration", 1, 1, 29));
 
         assertTrue(report.tableCount() > 30);
         assertTrue(report.rowCount() > 1);
-        assertEquals("25", scalar(database, "SELECT metadata_value FROM export_metadata "
+        assertEquals("29", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='database.schema.version'"));
         assertEquals(0, number(database, "SELECT count(*) FROM export_table WHERE table_name IN "
                 + "('meta.kernel_instance','scheduler.runner','scheduler.lease')"));

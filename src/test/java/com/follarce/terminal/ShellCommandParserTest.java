@@ -4,29 +4,31 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class ShellCommandParserTest {
     private final ShellCommandParser parser = new ShellCommandParser();
 
     @Test
-    void parsesQuotedRunOptionsWithoutHostPathExpansion() {
-        ShellCommand.Run command = assertInstanceOf(ShellCommand.Run.class,
-                parser.parse("run \"/user/alice/my app.fcl\" --user alice --name \"my app\""));
-        assertEquals("/user/alice/my app.fcl", command.vfsPath());
-        assertEquals(Optional.of("alice"), command.user());
-        assertEquals(Optional.of("my app"), command.name());
+    void parsesQuotedWorkingDirectoryCommands() {
+        ShellCommand.ChangeDirectory command = assertInstanceOf(
+                ShellCommand.ChangeDirectory.class, parser.parse("cd \"/user/alice/my files\""));
+        assertEquals("/user/alice/my files", command.path());
+        assertEquals(new ShellCommand.ListDirectory(java.util.Optional.empty()),
+                parser.parse("ls"));
+        assertEquals(new ShellCommand.WorkingDirectory(), parser.parse("pwd"));
     }
 
     @Test
-    void resumeKeepsTheHistoricalContinueSpelling() {
-        assertEquals(new ShellCommand.Resume(42), parser.parse("continue 42"));
+    void keepsOnlyTheMinimalSessionCommands() {
+        assertEquals(new ShellCommand.Logout(), parser.parse("logout"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("ps"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("kill 42"));
     }
 
     @Test
-    void rejectsIncompleteQuotesAndNonPositivePid() {
-        assertThrows(IllegalArgumentException.class, () -> parser.parse("run \"broken"));
-        assertThrows(IllegalArgumentException.class, () -> parser.parse("kill 0"));
+    void rejectsIncompleteQuotesAndExtraArguments() {
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("cd \"broken"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("ls / extra"));
     }
 }

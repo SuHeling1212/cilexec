@@ -40,6 +40,21 @@ public final class TerminalService {
         });
     }
 
+    /** Reuses the durable REPL session so login and Runtime restarts retain context. */
+    public TerminalSession openOrResume(UUID ownerId) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
+            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+            return transaction.terminal().findOpenSession(ownerId).orElseGet(() -> {
+                Instant now = clock.instant();
+                TerminalSession session = new TerminalSession(UUID.randomUUID(), ownerId,
+                        TerminalSession.Status.OPEN, 1, now, now, Optional.empty());
+                transaction.terminal().saveSession(session);
+                transaction.audit().append(audit(ownerId, "terminal.open", session.sessionId(), now));
+                return session;
+            });
+        });
+    }
+
     public TerminalSession.Input submit(UUID ownerId, UUID sessionId, String completeInput) {
         Instant now = clock.instant();
         return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {

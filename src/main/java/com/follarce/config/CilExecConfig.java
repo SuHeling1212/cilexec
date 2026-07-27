@@ -19,6 +19,7 @@ public record CilExecConfig(
         int effectWorkers,
         Duration leaseDuration,
         Duration heartbeatInterval,
+        Duration schedulerIdlePoll,
         Duration shutdownGrace,
         int healthPort,
         boolean migrateOnStart
@@ -32,6 +33,7 @@ public record CilExecConfig(
         Objects.requireNonNull(migratorDatabase, "migratorDatabase");
         leaseDuration = positive(leaseDuration, "leaseDuration");
         heartbeatInterval = positive(heartbeatInterval, "heartbeatInterval");
+        schedulerIdlePoll = positive(schedulerIdlePoll, "schedulerIdlePoll");
         shutdownGrace = positive(shutdownGrace, "shutdownGrace");
         if (schedulerWorkers < 1 || effectWorkers < 1) {
             throw new ConfigException("Worker counts must be positive");
@@ -75,6 +77,7 @@ public record CilExecConfig(
                 integer(environment, defaults, "CILEXEC_EFFECT_WORKERS", "effect.workers"),
                 duration(environment, defaults, "CILEXEC_LEASE_DURATION", "scheduler.lease-duration"),
                 duration(environment, defaults, "CILEXEC_HEARTBEAT_INTERVAL", "scheduler.heartbeat-interval"),
+                duration(environment, defaults, "CILEXEC_SCHEDULER_IDLE_POLL", "scheduler.idle-poll"),
                 duration(environment, defaults, "CILEXEC_SHUTDOWN_GRACE", "runtime.shutdown-grace"),
                 integer(environment, defaults, "CILEXEC_HEALTH_PORT", "health.port"),
                 bool(environment, defaults, "CILEXEC_MIGRATE_ON_START", "database.migrate-on-start")

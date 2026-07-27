@@ -234,8 +234,9 @@ class ProgramServiceTest {
         CilProcess current;
         UpdateResult forcedResult;
         int updates;
+        long nextPid = 1;
 
-        @Override public long allocatePid() { throw new UnsupportedOperationException(); }
+        @Override public long allocatePid() { return nextPid++; }
         @Override public Optional<CilProcess> findByUid(UUID processUid) {
             return current != null && current.identity().processUid().equals(processUid)
                     ? Optional.of(current) : Optional.empty();
@@ -347,19 +348,31 @@ class ProgramServiceTest {
 
     static final class MemoryTerminalRepository implements TerminalRepository {
         boolean interrupt;
+        final Map<UUID, TerminalSession> sessions = new LinkedHashMap<>();
+        final Map<UUID, TerminalSession.Attachment> attachments = new LinkedHashMap<>();
+        final List<TerminalSession.Input> inputs = new java.util.ArrayList<>();
 
-        @Override public void saveSession(TerminalSession session) { }
-        @Override public Optional<TerminalSession> findSession(UUID sessionId) {
-            return Optional.empty();
+        @Override public void saveSession(TerminalSession session) {
+            sessions.put(session.sessionId(), session);
         }
-        @Override public void appendInput(TerminalSession.Input input) { }
-        @Override public void saveAttachment(TerminalSession.Attachment attachment) { }
+        @Override public Optional<TerminalSession> findSession(UUID sessionId) {
+            return Optional.ofNullable(sessions.get(sessionId));
+        }
+        @Override public void appendInput(TerminalSession.Input input) { inputs.add(input); }
+        @Override public void saveAttachment(TerminalSession.Attachment attachment) {
+            attachments.entrySet().removeIf(entry -> entry.getValue().sessionId()
+                    .equals(attachment.sessionId()) && entry.getValue().detachedAt().isEmpty());
+            attachments.put(attachment.processUid(), attachment);
+        }
         @Override public Optional<TerminalSession.Attachment> findAttachment(
                 UUID sessionId, UUID processUid) {
-            return Optional.empty();
+            return Optional.ofNullable(attachments.get(processUid))
+                    .filter(value -> value.sessionId().equals(sessionId));
         }
         @Override public Optional<TerminalSession.Attachment> findActiveAttachment(UUID sessionId) {
-            return Optional.empty();
+            return attachments.values().stream()
+                    .filter(value -> value.sessionId().equals(sessionId))
+                    .filter(value -> value.detachedAt().isEmpty()).findFirst();
         }
         @Override public Optional<TerminalSession.Input> acceptPendingInput(
                 UUID processUid, Instant at) {

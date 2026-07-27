@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -126,6 +127,100 @@ class RuntimeSignalIT {
                 runtime.waitFor(5, TimeUnit.SECONDS);
             }
         }
+    }
+
+    @Test
+    void defaultEntryPointRunsThePersistentFclTerminalAndShutsDownOnExit() throws Exception {
+        Path secret = temporaryDirectory.resolve("terminal.password");
+        Files.writeString(secret, PASSWORD);
+        Path output = temporaryDirectory.resolve("terminal.log");
+        ProcessBuilder builder = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-cp", System.getProperty("java.class.path"), "com.follarce.Main");
+        configure(builder.environment(), secret, availablePort(), "signal-test",
+                "4411099817001");
+        builder.environment().put("CILEXEC_TERMINAL_USERNAME", "local");
+        builder.environment().put("CILEXEC_TERMINAL_PASSWORD_FILE", secret.toString());
+        builder.redirectErrorStream(true).redirectOutput(output.toFile());
+
+        Process terminal = builder.start();
+        try {
+            String alicePassword = "alice123";
+            terminal.getOutputStream().write(("login\nlocal\nwrong-password-value\n"
+                    + "login\nlocal\n" + PASSWORD + "\n"
+                    + "answer = 40 + 2\n:logout\n"
+                    + "login\nlocal\n" + PASSWORD + "\nanswer + 1\n{\"answer\": answer}\n:logout\n"
+                    + "create\nalice\n" + alicePassword + "\n" + alicePassword + "\n"
+                    + "user.isLocal()\n:logout\nlogin\nalice\n" + alicePassword + "\n"
+                    + "user.isLocal()\n:exit\n").getBytes(StandardCharsets.UTF_8));
+            terminal.getOutputStream().flush();
+            terminal.getOutputStream().close();
+
+            assertTrue(terminal.waitFor(25, TimeUnit.SECONDS), diagnostic(output));
+            assertEquals(0, terminal.exitValue(), diagnostic(output));
+            String transcript = Files.readString(output);
+            assertTrue(transcript.contains("CilExec access"), transcript);
+            assertTrue(transcript.contains("invalid username or password"), transcript);
+            assertTrue(transcript.contains("authenticated as local"), transcript);
+            assertTrue(transcript.contains("authenticated as alice"), transcript);
+            assertTrue(transcript.contains("43"), transcript);
+            assertTrue(transcript.contains("\"answer\":42"), transcript);
+            assertTrue(transcript.contains("false"), transcript);
+            assertEquals(1, count("SELECT count(*) FROM auth.user_account account "
+                    + "JOIN auth.user_capability assignment USING (user_id) "
+                    + "JOIN auth.capability capability USING (capability_id) "
+                    + "WHERE account.username='local' AND capability.capability_key='system_admin'"));
+            assertEquals(9, count("SELECT count(*) FROM auth.user_account account "
+                    + "JOIN auth.user_capability assignment USING (user_id) "
+                    + "WHERE account.username='alice'"));
+            assertEquals(0, count("SELECT count(*) FROM auth.user_account account "
+                    + "JOIN auth.user_capability assignment USING (user_id) "
+                    + "JOIN auth.capability capability USING (capability_id) "
+                    + "WHERE account.username='alice' "
+                    + "AND capability.capability_key='system_admin'"));
+            assertEquals(1, count("SELECT count(*) FROM vfs.node node "
+                    + "JOIN auth.user_account account ON account.user_id=node.owner_id "
+                    + "WHERE account.username='alice' AND node.parent_node_id IS NULL "
+                    + "AND node.node_name='/'"));
+            assertEquals(5, count("SELECT count(*) FROM audit.event "
+                    + "WHERE action='terminal.repl.submit'"));
+        } finally {
+            if (terminal.isAlive()) {
+                terminal.destroyForcibly();
+                terminal.waitFor(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    private static int count(String sql) throws Exception {
+        try (Connection connection = adminConnection(); Statement statement =
+                connection.createStatement(); ResultSet result = statement.executeQuery(sql)) {
+            result.next();
+            return result.getInt(1);
+        }
+    }
+
+    private static void configure(Map<String, String> environment, Path secret, int healthPort,
+                                  String instance, String lockKey) {
+        environment.put("CILEXEC_DATABASE_URL", POSTGRES.getJdbcUrl());
+        environment.put("CILEXEC_RUNTIME_DATABASE_USER", "cilexec_runtime");
+        environment.put("CILEXEC_EFFECT_DATABASE_USER", "cilexec_effect_worker");
+        environment.put("CILEXEC_MIGRATOR_DATABASE_USER", "cilexec_migrator");
+        environment.put("CILEXEC_RUNTIME_DATABASE_PASSWORD_FILE", secret.toString());
+        environment.put("CILEXEC_EFFECT_DATABASE_PASSWORD_FILE", secret.toString());
+        environment.put("CILEXEC_MIGRATOR_DATABASE_PASSWORD_FILE", secret.toString());
+        environment.put("CILEXEC_INSTANCE_NAME", instance);
+        environment.put("CILEXEC_ADVISORY_LOCK_KEY", lockKey);
+        environment.put("CILEXEC_SCHEDULER_WORKERS", "1");
+        environment.put("CILEXEC_EFFECT_WORKERS", "1");
+        environment.put("CILEXEC_RUNTIME_POOL_MAX", "4");
+        environment.put("CILEXEC_RUNTIME_POOL_MIN_IDLE", "1");
+        environment.put("CILEXEC_EFFECT_POOL_MAX", "2");
+        environment.put("CILEXEC_EFFECT_POOL_MIN_IDLE", "1");
+        environment.put("CILEXEC_HEARTBEAT_INTERVAL", "PT0.2S");
+        environment.put("CILEXEC_LEASE_DURATION", "PT2S");
+        environment.put("CILEXEC_SHUTDOWN_GRACE", "PT5S");
+        environment.put("CILEXEC_HEALTH_PORT", Integer.toString(healthPort));
     }
 
     private static void awaitActiveBoot(Process runtime, Path output, Duration timeout)

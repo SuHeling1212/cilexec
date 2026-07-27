@@ -5,16 +5,49 @@ import com.follarce.domain.vfs.FileRevision;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsMount;
 import com.follarce.domain.vfs.VfsNode;
+import com.follarce.domain.vfs.BinaryContent;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.Arrays;
 
 public interface VfsRepository {
     void saveObject(StoredObject object);
 
     Optional<StoredObject> findObject(ObjectHash objectHash);
+
+    /** Logical file size; chunked manifests may be much larger than one JVM array. */
+    default long logicalObjectSize(ObjectHash objectHash) {
+        return findObject(objectHash).orElseThrow(() ->
+                new IllegalArgumentException("Unknown object")).byteSize();
+    }
+
+    /** Bounded random-access read used for files that cannot be materialized as one array. */
+    default byte[] readObjectRange(ObjectHash objectHash, long offset, int maximumBytes) {
+        if (offset < 0 || maximumBytes < 0) {
+            throw new IllegalArgumentException("Invalid object range");
+        }
+        byte[] bytes = findObject(objectHash).orElseThrow(() ->
+                new IllegalArgumentException("Unknown object")).content().bytes();
+        if (offset >= bytes.length) return new byte[0];
+        int start = Math.toIntExact(offset);
+        return Arrays.copyOfRange(bytes, start, Math.min(bytes.length, start + maximumBytes));
+    }
+
+    /** Appends one bounded chunk without materializing the existing logical file. */
+    default StoredObject appendChunkedObject(ObjectHash currentObjectHash, byte[] tail,
+                                             String mediaType, Instant at) {
+        StoredObject current = findObject(currentObjectHash).orElseThrow(() ->
+                new IllegalArgumentException("Unknown object"));
+        byte[] original = current.content().bytes();
+        byte[] combined = Arrays.copyOf(original, Math.addExact(original.length, tail.length));
+        System.arraycopy(tail, 0, combined, original.length, tail.length);
+        StoredObject replacement = StoredObject.create(new BinaryContent(combined), mediaType, at);
+        saveObject(replacement);
+        return replacement;
+    }
 
     /** Reads immutable bytes from the trusted runtime administrator path. */
     default Optional<StoredObject> findObjectByAdministrator(ObjectHash objectHash) {

@@ -41,8 +41,25 @@ The packaged executable is `target/cilexec-app.jar`. The build also creates
 
 ## Run with Compose
 
-Create the five secret files under `docker/secrets/` (each password must be at least 16
-characters):
+For the normal local setup, the one-command launcher creates all missing internal secrets,
+uses `12345678` as the initial `local` administrator password, starts PostgreSQL, applies
+migrations, and opens the interactive terminal:
+
+```bash
+./start.sh
+```
+
+At the access prompt choose `login`, then enter username `local` and password `12345678`.
+The launcher uses the persistent Compose profile and stops the containers when the terminal
+exits; the database volume is retained for the next run.
+
+The terminal prints `[CILEXEC-TIMING]` lines by default so command latency can be diagnosed.
+Set `CILEXEC_COMMAND_TIMING=false` before the launcher to turn those diagnostic lines off.
+
+The manual deployment procedure is below.
+
+Create the six secret files under `docker/secrets/`. The five PostgreSQL service passwords must
+contain at least 16 characters; the human `cilexec-terminal-password` must contain at least 8:
 
 ```text
 postgres-admin-password
@@ -50,6 +67,7 @@ cilexec-migrator-password
 cilexec-runtime-password
 cilexec-effect-worker-password
 cilexec-readonly-password
+cilexec-terminal-password
 ```
 
 Disposable database:
@@ -69,17 +87,39 @@ For an externally managed database, bootstrap the service roles once using
 `compose.external.yml` and set `CILEXEC_DATABASE_URL`. External servers older than
 PostgreSQL 17.1 are rejected.
 
-The migration container receives only the migrator secret. The runtime container receives
-only runtime/effect secrets. CilExec runs as UID/GID 10001 with a read-only root filesystem.
+The migration container receives only the migrator secret. The terminal Runtime receives its
+runtime/effect secrets plus the one-time password used to provision the deployment-bound
+`local` CilExec administrator. CilExec runs as UID/GID 10001 with a read-only root filesystem.
 
 ## Commands
 
 ```bash
+java -jar target/cilexec-app.jar terminal
 java -jar target/cilexec-app.jar migrate
 java -jar target/cilexec-app.jar runtime
 java -jar target/cilexec-app.jar export /explicit/path/cilexec-export.db
 java -jar target/cilexec-app.jar package build ./examples/hello-package ./hello.db
 ```
+
+With no arguments, the JAR starts the authenticated composite FCL REPL and terminal. Choose
+`login` to authenticate with a CilExec username and password, or `create` to register a regular
+user with all owner-scoped process, file, package, effect, terminal, and audit capabilities. The
+deployment-bound `local` account remains the system administrator. Real TTY password entry has
+echo disabled. `:logout` returns to the access prompt and preserves the durable REPL context for
+the next login.
+
+Compose exposes this terminal as the user interface (`stdin_open` plus TTY); the health endpoint
+remains internal to the container. The deliberately small colon-command surface is `:help`,
+`:cd`, `:pwd`, `:ls`, `:logout`, and `:exit`; process, file, package, user, effect, and system
+operations use FCL functions. Every other complete input is compiled and run as FCL with the full
+function registry. A terminal owns one permanent process and PID: each completed input leaves that
+process `PAUSED`, and the next input is installed atomically only while it remains suspended. Its
+working directory, variables, imports, and function declarations live in that process and survive
+logout/login and Runtime restarts.
+Relative VFS paths in REPL submissions resolve against the terminal's durable working directory.
+Use `:help` for the command list. The explicit
+`runtime` command remains a headless operations mode for deployments that deliberately provide
+another terminal transport.
 
 `package build` is an offline command and does not read database configuration or secrets. It
 reads `package.json` plus the explicitly declared module/resource files, validates every FCL
@@ -110,14 +150,19 @@ separate `pg_dump` disaster-recovery backup.
 
 ## FCL system APIs
 
+Complete user-facing signatures, aliases, permission scope, terminal commands, and examples are
+in [the FCL function reference](docs/fcl-function-reference.md).
+
 The runtime registry exposes `math`, `util`, `path`, `term`, `file`, `io`, `process`, `user`,
 `swapPool`, `network`, `socket`, `package`, and `system` namespaces. Local database operations
 commit with the FCL statement. Input, timers, HTTP, terminal output, one-shot sockets, and
 allowlisted host commands suspend the continuation and resume through durable inbox/effect rows;
 already completed calls in the same statement are not repeated after recovery.
 
-`file.adminRead/adminWrite/adminList/adminCreateDir/adminCreateFile/adminRename/adminDelete`
-require `SYSTEM_ADMIN` and emit administrator audit events. `process.getList()` (also available as
+File functions accept an optional final target-user argument for cross-user operations. The same
+function checks the current process identity internally: ordinary users remain owner-scoped, while
+`SYSTEM_ADMIN` users may target any user and administrator actions are audited. There is no parallel
+`file.admin*` namespace. `process.getList()` (also available as
 `process.getListOfProcess()`) lists the caller's processes for ordinary users and every process for
 administrators; administrators may also pause, continue, terminate, or wait for foreign processes.
 All calls still execute under the caller's stable PostgreSQL LOGIN role and forced RLS.
