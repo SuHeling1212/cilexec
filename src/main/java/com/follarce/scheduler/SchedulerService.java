@@ -89,7 +89,19 @@ public final class SchedulerService implements AutoCloseable {
     @Override
     public synchronized void close() {
         running.set(false);
-        for (Thread worker : workers) worker.interrupt();
+        // Give workers a brief window to finish their current transaction cleanly.
+        for (Thread worker : workers) {
+            try {
+                worker.join(idlePoll.toMillis() * 2);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        // Interrupt any workers that didn't stop yet, then wait.
+        for (Thread worker : workers) {
+            if (worker.isAlive()) worker.interrupt();
+        }
         for (Thread worker : workers) {
             try {
                 worker.join(Duration.ofSeconds(5));

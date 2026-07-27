@@ -4,6 +4,12 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$project_dir"
 
+# Use a unique project name per install directory so volumes and networks
+# don't conflict with other CilExec installations on the same machine.
+project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
+export COMPOSE_PROJECT_NAME="cilexec-${project_hash}"
+export CILEXEC_POSTGRES_VOLUME="cilexec-pgdata-${project_hash}"
+
 if ! command -v docker >/dev/null 2>&1; then
     echo "Error: Docker not found. Please install and start Docker Desktop." >&2
     exit 1
@@ -44,7 +50,16 @@ trap cleanup EXIT
 
 echo "Starting CilExec..."
 "${compose[@]}" up -d postgres
-"${compose[@]}" run --rm --build migrate
+
+# Build the image only when source code is present (development mode).
+# Pre-built distributions already include the image via docker load.
+if [ -d "$project_dir/src" ]; then
+    echo "Image cilexec:local Building"
+    "${compose[@]}" build
+    echo "Image cilexec:local Built"
+fi
+
+"${compose[@]}" run --rm migrate
 
 echo
 echo "On first use you will be prompted to create the administrator password."
