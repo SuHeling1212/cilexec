@@ -53,9 +53,6 @@ At the access prompt choose `login`, then enter username `local` and password `1
 The launcher uses the persistent Compose profile and stops the containers when the terminal
 exits; the database volume is retained for the next run.
 
-The terminal prints `[CILEXEC-TIMING]` lines by default so command latency can be diagnosed.
-Set `CILEXEC_COMMAND_TIMING=false` before the launcher to turn those diagnostic lines off.
-
 The manual deployment procedure is below.
 
 Create the six secret files under `docker/secrets/`. The five PostgreSQL service passwords must

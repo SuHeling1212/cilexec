@@ -8,7 +8,6 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.fcl.FclPath;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
-import com.follarce.util.CommandTiming;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -57,9 +56,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
     @Override
     public String evaluate(String source) {
         TerminalReplService.Submission submission = repl.submit(user.userId(), sessionId, source);
-        CommandTiming.point(submission.traceId(), "terminal.await.begin pid="
-                + submission.process().identity().pid());
-        return await(submission.process().identity().pid(), submission.traceId());
+        return await(submission.process().identity().pid());
     }
 
     @Override
@@ -70,7 +67,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
             throw new IllegalStateException("Attached PID is not waiting for input");
         }
         terminals.submit(user.userId(), sessionId, input);
-        return await(active.pid(), null);
+        return await(active.pid());
     }
 
     @Override
@@ -151,7 +148,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
         return message;
     }
 
-    private String await(long pid, String traceId) {
+    private String await(long pid) {
         Instant deadline = Instant.now().plus(FOREGROUND_WAIT);
         TerminalReplService.Snapshot latest;
         int polls = 0;
@@ -161,24 +158,17 @@ public final class DatabaseTerminalControl implements TerminalControl {
                     .filter(value -> value.pid() == pid)
                     .orElseGet(() -> snapshot(pid));
             if (terminal(latest.status()) || latest.status() == CilProcess.Status.PAUSED) {
-                CommandTiming.finish(traceId, "terminal.result status=" + latest.status()
-                        + " polls=" + polls);
                 return renderFinished(latest);
             }
             if (latest.status() == CilProcess.Status.WAITING_INPUT) {
-                CommandTiming.point(traceId, "terminal.await.suspended status=" + latest.status()
-                        + " polls=" + polls);
                 return "PID " + pid + " is " + latest.status();
             }
             LockSupport.parkNanos(POLL_INTERVAL.toNanos());
             if (Thread.currentThread().isInterrupted()) {
                 Thread.currentThread().interrupt();
-                CommandTiming.point(traceId, "terminal.await.interrupted polls=" + polls);
                 return "PID " + pid + " continues in background (terminal interrupted)";
             }
         } while (Instant.now().isBefore(deadline));
-        CommandTiming.point(traceId, "terminal.await.timeout status=" + latest.status()
-                + " polls=" + polls);
         return "PID " + pid + " continues in background (" + latest.status() + ")";
     }
 

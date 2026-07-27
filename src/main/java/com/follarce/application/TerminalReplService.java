@@ -18,7 +18,6 @@ import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
-import com.follarce.util.CommandTiming;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -59,18 +58,11 @@ public final class TerminalReplService {
     public Submission submit(UUID ownerId, UUID sessionId, String submittedSource) {
         java.util.Objects.requireNonNull(ownerId, "ownerId");
         java.util.Objects.requireNonNull(sessionId, "sessionId");
-        String traceId = CommandTiming.begin("terminal.received chars="
-                + (submittedSource == null ? 0 : submittedSource.length()));
-        try {
-            String library = library(ownerId, sessionId);
-            CommandTiming.point(traceId, "repl.previous-context.loaded");
-            PreparedSource prepared = replSource(submittedSource, library);
-            CommandTiming.point(traceId, "repl.compiled-and-prepared");
-            Program program = programs.create(ownerId, prepared.source());
-            CommandTiming.point(traceId, "repl.program.persisted");
-            Instant now = clock.instant();
-            Submission submission = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
-            CommandTiming.point(traceId, "repl.enqueue.transaction.open");
+        String library = library(ownerId, sessionId);
+        PreparedSource prepared = replSource(submittedSource, library);
+        Program program = programs.create(ownerId, prepared.source());
+        Instant now = clock.instant();
+        Submission submission = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PROCESS_CREATE);
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
             TerminalSession session = transaction.terminal().findSession(sessionId)
@@ -90,7 +82,6 @@ public final class TerminalReplService {
             }
 
             FclContinuation runtime = nextSubmission(previous);
-            runtime.scope().put(CommandTiming.SCOPE_KEY, traceId);
             runtime.scope().put(TERMINAL_PROCESS_SCOPE_KEY, true);
             runtime.scope().put(FclPath.SCOPE_KEY,
                     transaction.terminal().workingDirectory(sessionId));
@@ -125,17 +116,9 @@ public final class TerminalReplService {
                             "programId", program.programId().toString(),
                             "reusedProcess", Boolean.toString(previous.isPresent())),
                     now));
-            CommandTiming.point(traceId, "repl.enqueued pid=" + process.identity().pid()
-                    + " reused=" + previous.isPresent());
-            return new Submission(process, prepared.source(), traceId);
+            return new Submission(process, prepared.source());
             });
-            CommandTiming.point(traceId, "repl.enqueue.transaction.committed");
             return submission;
-        } catch (RuntimeException failure) {
-            CommandTiming.finish(traceId, "terminal.submit.failed="
-                    + failure.getClass().getSimpleName());
-            throw failure;
-        }
     }
 
     public Optional<Snapshot> active(UUID ownerId, UUID sessionId) {
@@ -162,7 +145,6 @@ public final class TerminalReplService {
         variables.remove(LIBRARY_SCOPE_KEY);
         variables.remove(TERMINAL_PROCESS_SCOPE_KEY);
         variables.remove(FclPath.SCOPE_KEY);
-        variables.remove(CommandTiming.SCOPE_KEY);
         return new Snapshot(process.identity().pid(), process.status(), runtime.result(),
                 Map.copyOf(variables), runtime.failed(), runtime.exceptionStack().stream()
                 .map(frame -> frame.type() + ": " + frame.message()).toList());
@@ -175,9 +157,6 @@ public final class TerminalReplService {
         ProcessInbox.keys().forEach(name -> {
             if (next.scope().contains(name)) next.scope().remove(name);
         });
-        if (next.scope().contains(CommandTiming.SCOPE_KEY)) {
-            next.scope().remove(CommandTiming.SCOPE_KEY);
-        }
         return next;
     }
 
@@ -266,7 +245,7 @@ public final class TerminalReplService {
         return displayJson.toJson(value);
     }
 
-    public record Submission(CilProcess process, String source, String traceId) {
+    public record Submission(CilProcess process, String source) {
     }
 
     public record Snapshot(long pid, CilProcess.Status status, Object result,

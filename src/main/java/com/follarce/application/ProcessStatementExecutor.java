@@ -23,7 +23,6 @@ import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.scheduler.ClaimedProcessHandler;
-import com.follarce.util.CommandTiming;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
@@ -76,9 +75,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     public void executeOne(SchedulerClaim claim) {
         Objects.requireNonNull(claim, "claim");
         Instant now = clock.instant();
-        String[] traceId = {null};
-        try {
-            transactions.inUserTransaction(claim.ownerId(), Isolation.READ_COMMITTED, transaction -> {
+        transactions.inUserTransaction(claim.ownerId(), Isolation.READ_COMMITTED, transaction -> {
             if (!claim.authorizes(claim.executionEpoch(), now)) {
                 throw new StaleClaimException("Scheduler claim has expired");
             }
@@ -100,19 +97,13 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             FclPersistenceBridge.ensureProgramIdentity(program, current.continuation());
             FclContinuation continuation = continuationBridge.restore(current.continuation());
             boolean terminalProcess = TerminalReplService.isTerminalProcess(continuation);
-            traceId[0] = trace(continuation);
-            CommandTiming.point(traceId[0], "scheduler.claimed pid="
-                    + current.identity().pid());
             FclProgram compiled = loadProgram(transaction, program);
-            CommandTiming.point(traceId[0], "executor.program.loaded");
             compiled = linkPackages(transaction, current, compiled, program);
-            CommandTiming.point(traceId[0], "executor.packages.linked");
 
             FclRuntime statementRuntime = fixedRuntime != null ? fixedRuntime
                     : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program,
                     continuation, now));
             FclStepResult step = statementRuntime.executeOne(compiled, continuation);
-            CommandTiming.point(traceId[0], "executor.fcl.step.executed=" + step);
             Program committedProgram = program;
             Continuation previousForPersistence = current.continuation();
             ExecutionReplacement replacement = resolveExecutionReplacement(transaction,
@@ -144,21 +135,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             // Queue state and continuation become visible in the same commit. READY is
             // re-queued; wait/terminal/failure states are removed by repository policy.
             transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
-            CommandTiming.point(traceId[0], "executor.state-written status=" + target);
             return null;
             });
-            CommandTiming.point(traceId[0], "executor.transaction.committed");
-        } catch (RuntimeException failure) {
-            CommandTiming.point(traceId[0], "executor.failed="
-                    + failure.getClass().getSimpleName());
-            throw failure;
-        }
-    }
-
-    private static String trace(FclContinuation continuation) {
-        if (!continuation.scope().contains(CommandTiming.SCOPE_KEY)) return null;
-        Object value = continuation.scope().get(CommandTiming.SCOPE_KEY);
-        return value instanceof String traceId ? traceId : null;
     }
 
     private FclProgram loadProgram(com.follarce.domain.port.TransactionContext transaction,
