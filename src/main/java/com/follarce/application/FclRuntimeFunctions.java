@@ -51,10 +51,21 @@ import java.util.Set;
 import java.util.UUID;
 
 /** Explicit application adapter that exposes durable CilExec services to one FCL statement. */
-final class FclRuntimeFunctions {
+public final class FclRuntimeFunctions {
     private static final String TEXT = "text/plain;charset=utf-8";
     private static final EffectRequest.Policy MANUAL_EFFECT = new EffectRequest.Policy(
             false, Optional.empty(), false, false, EffectRequest.UnknownAction.MANUAL);
+
+    @FunctionalInterface
+    public interface LocalPasswordVerifier {
+        boolean verify(char[] password);
+    }
+
+    private static volatile LocalPasswordVerifier passwordVerifier;
+
+    public static void setPasswordVerifier(LocalPasswordVerifier verifier) {
+        passwordVerifier = java.util.Objects.requireNonNull(verifier, "passwordVerifier");
+    }
 
     private final TransactionContext transaction;
     private final CilProcess process;
@@ -486,11 +497,28 @@ final class FclRuntimeFunctions {
 
     private Object createUser(List<Object> args) {
         if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
-                "user.createUser expects username, password, and optional capability array");
+                "user.createUser expects username, password, and optional local admin password");
         String username = string(args.get(0), "user.createUser username");
         String password = string(args.get(1), "user.createUser password");
-        Set<Capability> capabilities = args.size() == 3
-                ? capabilitySet(args.get(2)) : Set.of();
+        Set<Capability> capabilities;
+        if (args.size() == 3) {
+            String adminPassword = string(args.get(2),
+                    "user.createUser local admin password");
+            if (passwordVerifier == null) throw new FclRuntimeException(
+                    "user.createUser: password verifier is not available");
+            char[] adminSecret = adminPassword.toCharArray();
+            try {
+                if (!passwordVerifier.verify(adminSecret)) {
+                    throw new FclRuntimeException(
+                            "Invalid local administrator password");
+                }
+            } finally {
+                java.util.Arrays.fill(adminSecret, '\0');
+            }
+            capabilities = com.follarce.terminal.TerminalAccessService.ADMIN_CAPABILITIES;
+        } else {
+            capabilities = com.follarce.terminal.TerminalAccessService.USER_CAPABILITIES;
+        }
         Optional<UserAccount> existing = transaction.auth()
                 .findUsersByAdministrator(process.ownerId()).stream()
                 .filter(user -> user.username().equalsIgnoreCase(username)).findFirst();
@@ -502,21 +530,6 @@ final class FclRuntimeFunctions {
         } finally {
             java.util.Arrays.fill(secret, '\0');
         }
-    }
-
-    private static Set<Capability> capabilitySet(Object value) {
-        if (!(value instanceof List<?> list)) throw new FclRuntimeException(
-                "user.createUser capabilities must be an array");
-        java.util.EnumSet<Capability> capabilities = java.util.EnumSet.noneOf(Capability.class);
-        for (Object item : list) {
-            try {
-                capabilities.add(Capability.valueOf(string(item, "capability")
-                        .toUpperCase(java.util.Locale.ROOT)));
-            } catch (IllegalArgumentException failure) {
-                throw new FclRuntimeException("Unknown capability: " + item, failure);
-            }
-        }
-        return Set.copyOf(capabilities);
     }
 
     private static Map<String, Object> userMap(UserAccount user) {

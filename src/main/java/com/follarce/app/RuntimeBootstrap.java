@@ -235,6 +235,8 @@ public final class RuntimeBootstrap {
                     StandardCharsets.UTF_8), true);
             var access = new TerminalAccessService(runtimeTransactions,
                     config.runtimeDatabase().jdbcUrl(), clock);
+            com.follarce.application.FclRuntimeFunctions.setPasswordVerifier(
+                    password -> access.login("local", password).isPresent());
             var console = new TerminalAccessConsole(input, output, access,
                     account -> new DatabaseTerminalControl(runtimeTransactions, account,
                             terminalShutdown));

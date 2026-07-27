@@ -88,6 +88,21 @@ public final class TerminalAccessConsole implements Runnable {
             if (!Arrays.equals(password, confirmation)) {
                 throw new IllegalArgumentException("Passwords do not match");
             }
+            String adminChoice = line("Create as administrator? (Y/N)> ");
+            if (adminChoice == null) {
+                return Optional.empty();
+            }
+            if (adminChoice.trim().equalsIgnoreCase("y")) {
+                char[] adminPassword = password("local admin password> ");
+                if (adminPassword == null) {
+                    return Optional.empty();
+                }
+                try {
+                    return Optional.of(access.register(username, password, adminPassword));
+                } finally {
+                    Arrays.fill(adminPassword, '\0');
+                }
+            }
             return Optional.of(access.register(username, password));
         } finally {
             Arrays.fill(password, '\0');

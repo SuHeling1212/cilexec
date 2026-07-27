@@ -29,6 +29,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
     private final TerminalReplService repl;
     private final Runnable shutdown;
     private UUID sessionId;
+    private volatile Boolean isAdmin;
 
     public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
                                    Runnable shutdown) {
@@ -79,11 +80,35 @@ public final class DatabaseTerminalControl implements TerminalControl {
 
     @Override
     public String prompt() {
+        String usernameColor = isAdmin() ? "[31m" : "[32m";
+        String reset = "[0m";
+        String blue = "[34m";
+        String bold = "[1m";
+
+        String coloredUser = usernameColor + user.username() + reset;
+        String coloredHost = blue + "cilexec" + reset;
+
         Optional<TerminalReplService.Snapshot> active = repl.active(user.userId(), sessionId);
         if (active.isPresent() && active.orElseThrow().status() == CilProcess.Status.WAITING_INPUT) {
-            return user.username() + "@cilexec[pid:" + active.orElseThrow().pid() + "]? ";
+            return coloredUser + "@" + coloredHost
+                    + "[pid:" + active.orElseThrow().pid() + "]? ";
         }
-        return user.username() + "@cilexec:" + workingDirectory() + "$ ";
+        String coloredPath = bold + workingDirectory() + reset;
+        return coloredUser + "@" + coloredHost + ":" + coloredPath + "$ ";
+    }
+
+    private boolean isAdmin() {
+        if (isAdmin == null) {
+            synchronized (this) {
+                if (isAdmin == null) {
+                    isAdmin = transactions.inUserTransaction(user.userId(),
+                            Isolation.READ_COMMITTED,
+                            transaction -> transaction.auth().capabilities(user.userId())
+                                    .contains(com.follarce.domain.auth.Capability.SYSTEM_ADMIN));
+                }
+            }
+        }
+        return isAdmin;
     }
 
     private String changeDirectory(String path) {

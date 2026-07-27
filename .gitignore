@@ -3,6 +3,10 @@ target/
 *.jar
 *.war
 *.class
+secrets/
+exports/
+*.db
+.github/
 
 # IDE
 .idea/

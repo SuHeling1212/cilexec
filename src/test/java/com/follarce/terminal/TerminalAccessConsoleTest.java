@@ -25,7 +25,7 @@ class TerminalAccessConsoleTest {
     @Test
     void supportsLoginCreationLogoutAndPasswordErasure() {
         String source = "login\nalice\nwrong-password-value\n"
-                + "create\nalice\n" + PASSWORD + "\n" + PASSWORD + "\n:logout\n"
+                + "create\nalice\n" + PASSWORD + "\n" + PASSWORD + "\nn\n:logout\n"
                 + "login\nalice\n" + PASSWORD + "\n:exit\n";
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         RecordingAccess access = new RecordingAccess();
@@ -77,6 +77,15 @@ class TerminalAccessConsoleTest {
         @Override
         public UserAccount register(String username, char[] password) {
             receivedPasswords.add(password);
+            registrations++;
+            created = true;
+            return alice;
+        }
+
+        @Override
+        public UserAccount register(String username, char[] password, char[] adminPassword) {
+            receivedPasswords.add(password);
+            receivedPasswords.add(adminPassword);
             registrations++;
             created = true;
             return alice;

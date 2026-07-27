@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 ARG BUILD_IMAGE=maven:3.9.16-eclipse-temurin-26-noble
 ARG RUNTIME_IMAGE=eclipse-temurin:26-jre-noble
 

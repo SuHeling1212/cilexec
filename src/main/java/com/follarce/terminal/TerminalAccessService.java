@@ -18,7 +18,7 @@ import java.util.Set;
 
 /** Authenticates terminal users against their stable PostgreSQL LOGIN roles. */
 public final class TerminalAccessService implements TerminalAccess {
-    private static final Set<Capability> USER_CAPABILITIES = Set.of(
+    public static final Set<Capability> USER_CAPABILITIES = Set.of(
             Capability.PROCESS_CREATE,
             Capability.PROCESS_CONTROL_OWN,
             Capability.VFS_READ,
@@ -28,6 +28,13 @@ public final class TerminalAccessService implements TerminalAccess {
             Capability.EFFECT_REQUEST,
             Capability.TERMINAL_ATTACH,
             Capability.AUDIT_READ);
+
+    public static final Set<Capability> ADMIN_CAPABILITIES;
+    static {
+        java.util.EnumSet<Capability> caps = java.util.EnumSet.copyOf(USER_CAPABILITIES);
+        caps.add(Capability.SYSTEM_ADMIN);
+        ADMIN_CAPABILITIES = Set.copyOf(caps);
+    }
 
     private final JdbcTransactionExecutor transactions;
     private final String jdbcUrl;
@@ -59,6 +66,27 @@ public final class TerminalAccessService implements TerminalAccess {
                 normalizeUsername(username), password, USER_CAPABILITIES);
         ensureRoot(account);
         return account;
+    }
+
+    @Override
+    public UserAccount register(String username, char[] password, char[] adminPassword) {
+        if (adminPassword == null || adminPassword.length == 0) {
+            throw new IllegalArgumentException("Admin password is required to create an administrator");
+        }
+        if (!verifyLocalPassword(adminPassword)) {
+            throw new IllegalArgumentException("Invalid local administrator password");
+        }
+        UserAccount account = new AuthService(transactions, clock).create(
+                normalizeUsername(username), password, ADMIN_CAPABILITIES);
+        ensureRoot(account);
+        return account;
+    }
+
+    private boolean verifyLocalPassword(char[] password) {
+        Optional<UserAccount> local = transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser("local"));
+        if (local.isEmpty()) return false;
+        return principalAccepts(local.orElseThrow(), password);
     }
 
     private boolean principalAccepts(UserAccount account, char[] password) {

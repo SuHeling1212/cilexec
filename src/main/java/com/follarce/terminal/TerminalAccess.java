@@ -8,4 +8,6 @@ public interface TerminalAccess {
     Optional<UserAccount> login(String username, char[] password);
 
     UserAccount register(String username, char[] password);
+
+    UserAccount register(String username, char[] password, char[] adminPassword);
 }
