@@ -6,7 +6,7 @@ import java.security.NoSuchAlgorithmException;
 
 /** Human terminal-account password policy and hashing. */
 public final class PasswordPolicy {
-    public static final int MINIMUM_LENGTH = 8;
+    public static final int MINIMUM_LENGTH = 6;
 
     private PasswordPolicy() {
     }

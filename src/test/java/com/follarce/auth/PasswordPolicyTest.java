@@ -7,10 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class PasswordPolicyTest {
     @Test
-    void acceptsEightCharactersAndRejectsShorterPasswords() {
-        assertDoesNotThrow(() -> PasswordPolicy.require("12345678".toCharArray()));
+    void acceptsSixCharactersAndRejectsShorterPasswords() {
+        assertDoesNotThrow(() -> PasswordPolicy.require("123456".toCharArray()));
         assertThrows(IllegalArgumentException.class,
-                () -> PasswordPolicy.require("1234567".toCharArray()));
+                () -> PasswordPolicy.require("12345".toCharArray()));
         assertThrows(IllegalArgumentException.class, () -> PasswordPolicy.require(null));
     }
 }

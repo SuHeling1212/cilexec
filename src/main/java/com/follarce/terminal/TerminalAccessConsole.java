@@ -69,24 +69,29 @@ public final class TerminalAccessConsole implements Runnable {
         if (!access.isFirstUse()) return;
         output.println("First time setup - create the administrator account");
         output.println("Username: local");
-        char[] password = password("Password (" + PasswordPolicy.MINIMUM_LENGTH
-                + "+ characters)> ");
-        if (password == null) return;
-        char[] confirmation = password("Confirm password> ");
-        if (confirmation == null) {
-            Arrays.fill(password, '\0');
-            return;
-        }
-        try {
-            if (!Arrays.equals(password, confirmation)) {
-                throw new IllegalArgumentException("Passwords do not match");
+        while (!Thread.currentThread().isInterrupted()) {
+            char[] password = password("Password (" + PasswordPolicy.MINIMUM_LENGTH
+                    + "+ characters)> ");
+            if (password == null) return;
+            char[] confirmation = password("Confirm password> ");
+            if (confirmation == null) {
+                Arrays.fill(password, '\0');
+                return;
             }
-            access.bootstrap("local", password);
-            output.println("Administrator account created.");
-            output.println();
-        } finally {
-            Arrays.fill(password, '\0');
-            Arrays.fill(confirmation, '\0');
+            try {
+                if (!Arrays.equals(password, confirmation)) {
+                    throw new IllegalArgumentException("Passwords do not match");
+                }
+                access.bootstrap("local", password);
+                output.println("Administrator account created.");
+                output.println();
+                return;
+            } catch (IllegalArgumentException failure) {
+                output.println("error: " + failure.getMessage());
+            } finally {
+                Arrays.fill(password, '\0');
+                Arrays.fill(confirmation, '\0');
+            }
         }
     }
 

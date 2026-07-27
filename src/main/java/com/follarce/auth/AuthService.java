@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -40,8 +41,10 @@ public final class AuthService {
                 }
                 transaction.auth().replaceCapabilities(account.userId(), Set.copyOf(capabilities));
                 if (transaction.vfs().findChild(account.userId(), Optional.empty(), "/").isEmpty()) {
-                    transaction.vfs().createDirectory(account.userId(), Optional.empty(), "/",
-                            Set.of());
+                    transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
+                            UUID.randomUUID(), Optional.empty(), account.userId(), "/",
+                            com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                            Set.of(), false, now, now));
                 }
                 transaction.audit().append(audit("auth.user.create", account, now));
                 return account;
