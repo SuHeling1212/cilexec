@@ -16,9 +16,13 @@ cd "$project_dir"
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
-COMPOSE_PROJECT_NAME="cilexec"
+# 使用与 install.sh 相同的项目名和卷名计算逻辑，
+# 确保能正确找到并清理对应安装实例的资源。
+project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
+export COMPOSE_PROJECT_NAME="cilexec-${project_hash}"
+export CILEXEC_POSTGRES_VOLUME="cilexec-pgdata-${project_hash}"
 IMAGE_NAME="${CILEXEC_IMAGE_TAG:-cilexec:local}"
-VOLUME_NAME="${CILEXEC_POSTGRES_VOLUME:-cilexec-postgres-data}"
+VOLUME_NAME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 SECRET_DIR="$project_dir/docker/secrets"
 EXPORT_DIR="${CILEXEC_EXPORT_DIRECTORY:-$project_dir/exports}"
 
@@ -234,8 +238,8 @@ fi
 header "第 8 步：清理 Docker 构建缓存"
 
 if command -v docker >/dev/null 2>&1; then
-    docker builder prune --filter "label=com.follarce.cilexec" --force 2>/dev/null || true
-    info "已清理 CilExec 构建缓存"
+    docker builder prune --force 2>/dev/null || true
+    info "已清理构建缓存"
 else
     warn "Docker 不可用，跳过构建缓存清理"
 fi

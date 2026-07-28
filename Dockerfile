@@ -6,13 +6,23 @@ WORKDIR /workspace
 
 COPY pom.xml ./
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn --batch-mode --no-transfer-progress dependency:go-offline
+    mvn --batch-mode --no-transfer-progress \
+        -Djava.net.preferIPv4Stack=true \
+        -Dmaven.wagon.http.retryHandler.count=3 \
+        -Dmaven.wagon.http.connectionTimeout=30000 \
+        dependency:go-offline
 
 COPY src ./src
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn --batch-mode --no-transfer-progress -DskipITs verify
+    mvn --batch-mode --no-transfer-progress \
+        -Djava.net.preferIPv4Stack=true \
+        -Dmaven.wagon.http.retryHandler.count=3 \
+        -Dmaven.wagon.http.connectionTimeout=30000 \
+        -DskipITs verify
 
 FROM ${RUNTIME_IMAGE} AS runtime
+
+LABEL com.follarce.cilexec=true
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl \
