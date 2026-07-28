@@ -41,6 +41,8 @@ class PostgresWalCrashIT {
 
     @BeforeAll
     static void migrate() throws Exception {
+        // The supervisor shell opens the port before PostgreSQL has finished recovery.
+        awaitDatabase(Duration.ofSeconds(20));
         try (Connection connection = adminConnection(); Statement statement = connection.createStatement()) {
             statement.execute("CREATE ROLE cilexec_owner NOLOGIN");
             statement.execute("CREATE ROLE cilexec_migrator NOLOGIN");

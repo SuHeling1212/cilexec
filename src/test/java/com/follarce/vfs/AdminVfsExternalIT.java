@@ -48,7 +48,9 @@ class AdminVfsExternalIT {
                         Capability.PROCESS_CREATE));
 
         VfsService ordinary = new VfsService(transactions, clock);
-        VfsNode root = ordinary.createDirectory(owner.userId(), Optional.empty(), "/", Set.of());
+        VfsNode root = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.vfs().findChild(owner.userId(), Optional.empty(), "/")
+                        .orElseThrow());
         VfsNode file = ordinary.createFile(owner.userId(), root.nodeId(), "private.txt",
                 "owner-data".getBytes(StandardCharsets.UTF_8), "text/plain", Set.of(), true);
         assertThrows(SecurityException.class,

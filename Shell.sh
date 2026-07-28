@@ -5,8 +5,8 @@ project_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$project_dir"
 
 project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
-export COMPOSE_PROJECT_NAME="cilexec-${project_hash}"
-export CILEXEC_POSTGRES_VOLUME="cilexec-pgdata-${project_hash}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
+export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "Error: Docker not found. Please install and start Docker Desktop." >&2
@@ -56,26 +56,15 @@ if [ -d "$project_dir/src" ]; then
 fi
 
 enter_program() {
-    local network
-    network="$("${compose[@]}" ps postgres 2>/dev/null | awk 'NR>1 {print $1}' | head -1)"
-    if [[ -z "$network" ]]; then
-        echo "Error: Could not determine postgres network." >&2
-        exit 1
+    if ! "${compose[@]}" ps cilexec 2>/dev/null | grep -q 'Up'; then
+        echo "Starting cilexec..."
+        "${compose[@]}" up -d cilexec
     fi
 
-    echo "Entering cilexec 应用容器 (root, writable)..."
+    echo "Entering the running cilexec application container (root, read-only root filesystem)..."
     echo "Type 'exit' or press Ctrl+D to leave."
     echo
-
-    docker run --rm -it \
-        --network "container:${network}" \
-        --user root \
-        --entrypoint /bin/bash \
-        -v "${project_dir}/docker/secrets:/run/secrets:ro" \
-        --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-        -w /opt/cilexec \
-        cilexec:local \
-        "$@"
+    "${compose[@]}" exec --user root -it cilexec /bin/bash "$@"
 }
 
 enter_data() {
@@ -86,7 +75,7 @@ enter_data() {
 }
 
 echo
-echo "  [1] program  — cilexec 应用容器 (root, 可写, 可 apt install)"
+echo "  [1] program  — 当前 cilexec 应用容器 (root；系统目录只读)"
 echo "  [2] data     — postgres 数据库容器 (直接操作数据库)"
 echo
 

@@ -31,40 +31,33 @@ public final class TerminalConsole implements Runnable {
 
     Outcome runSession() {
         output.println("CilExec FCL terminal; :help shows terminal commands, other input runs as FCL");
-        StringBuilder submission = new StringBuilder();
         while (!Thread.currentThread().isInterrupted()) {
             try {
-                String line = input.readLine(output,
-                        submission.isEmpty() ? control.prompt() : "...> ",
-                        !control.awaitingAttachedInput());
+                boolean awaitingAttachedInput = control.awaitingAttachedInput();
+                String line = input.readSubmission(output, control.prompt(), "...> ",
+                        !awaitingAttachedInput, source -> awaitingAttachedInput
+                                || source.stripLeading().startsWith(":")
+                                || FclInputBuffer.complete(source));
                 if (line == null) {
                     return Outcome.END_OF_INPUT;
                 }
                 String result;
                 ShellCommand command = null;
-                if (submission.isEmpty() && line.stripLeading().startsWith("::")
-                        && control.awaitingAttachedInput()) {
+                if (line.stripLeading().startsWith("::") && awaitingAttachedInput) {
                     result = control.submitAttachedInput(line.stripLeading().substring(1));
-                } else if (submission.isEmpty() && line.stripLeading().startsWith(":")) {
+                } else if (line.stripLeading().startsWith(":")) {
                     String commandText = line.stripLeading().substring(1);
                     command = parser.parse(commandText);
                     result = control.execute(command);
-                } else if (submission.isEmpty() && control.awaitingAttachedInput()) {
+                } else if (awaitingAttachedInput) {
                     result = control.submitAttachedInput(line);
                 } else {
-                    if (submission.isEmpty() && (line.strip().equals("ls")
-                            || line.strip().equals("cd") || line.strip().startsWith("cd "))) {
+                    if (line.strip().equals("ls")
+                            || line.strip().equals("cd") || line.strip().startsWith("cd ")) {
                         throw new IllegalArgumentException(
                                 "Terminal command must start with :, for example :ls or :cd /path");
                     }
-                    if (!submission.isEmpty()) submission.append('\n');
-                    submission.append(line);
-                    if (!FclInputBuffer.complete(submission.toString())) {
-                        continue;
-                    }
-                    String source = submission.toString();
-                    submission.setLength(0);
-                    result = source.isBlank() ? "" : control.evaluate(source);
+                    result = line.isBlank() ? "" : control.evaluate(line);
                 }
                 if (result != null && !result.isEmpty()) {
                     output.println(result);
@@ -76,10 +69,8 @@ public final class TerminalConsole implements Runnable {
                     return Outcome.EXIT;
                 }
             } catch (IllegalArgumentException exception) {
-                submission.setLength(0);
                 output.println("error: " + exception.getMessage());
             } catch (RuntimeException exception) {
-                submission.setLength(0);
                 output.println("error: " + exception.getMessage());
             } catch (IOException exception) {
                 output.println("terminal closed: " + exception.getMessage());

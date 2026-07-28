@@ -39,12 +39,19 @@ public final class TerminalAccessService implements TerminalAccess {
     private final JdbcTransactionExecutor transactions;
     private final String jdbcUrl;
     private final Clock clock;
+    private final String administratorUsername;
 
     public TerminalAccessService(JdbcTransactionExecutor transactions, String jdbcUrl,
                                  Clock clock) {
+        this(transactions, jdbcUrl, clock, "local");
+    }
+
+    public TerminalAccessService(JdbcTransactionExecutor transactions, String jdbcUrl,
+                                 Clock clock, String administratorUsername) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.jdbcUrl = requireJdbcUrl(jdbcUrl);
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
+        this.administratorUsername = normalizeUsername(administratorUsername);
     }
 
     @Override
@@ -71,8 +78,8 @@ public final class TerminalAccessService implements TerminalAccess {
         if (adminPassword == null || adminPassword.length == 0) {
             throw new IllegalArgumentException("Admin password is required to create an administrator");
         }
-        if (!verifyLocalPassword(adminPassword)) {
-            throw new IllegalArgumentException("Invalid local administrator password");
+        if (!verifyAdministratorPassword(adminPassword)) {
+            throw new IllegalArgumentException("Invalid administrator password");
         }
         return new AuthService(transactions, clock).create(
                 normalizeUsername(username), password, ADMIN_CAPABILITIES);
@@ -81,7 +88,7 @@ public final class TerminalAccessService implements TerminalAccess {
     @Override
     public boolean isFirstUse() {
         return transactions.inTransaction(Isolation.READ_COMMITTED,
-                transaction -> transaction.auth().findUser("local")).isEmpty();
+                transaction -> transaction.auth().findUser(administratorUsername)).isEmpty();
     }
 
     @Override
@@ -90,18 +97,30 @@ public final class TerminalAccessService implements TerminalAccess {
                 normalizeUsername(username), password, ADMIN_CAPABILITIES);
     }
 
-    private boolean verifyLocalPassword(char[] password) {
-        Optional<UserAccount> local = transactions.inTransaction(Isolation.READ_COMMITTED,
-                transaction -> transaction.auth().findUser("local"));
-        if (local.isEmpty()) return false;
-        return principalAccepts(local.orElseThrow(), password);
+    private boolean verifyAdministratorPassword(char[] password) {
+        Optional<UserAccount> administrator = transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser(administratorUsername));
+        if (administrator.isEmpty()) return false;
+        return principalAccepts(administrator.orElseThrow(), password);
     }
 
     private boolean principalAccepts(UserAccount account, char[] password) {
+        if (databaseAccepts(account, com.follarce.auth.PasswordPolicy.sha512Hex(password))) {
+            return true;
+        }
+        // Releases before the password-hashing change stored the human password directly in
+        // the PostgreSQL LOGIN role. Accept it once, then atomically rotate that role to the
+        // current digest representation so upgrades do not lock out existing accounts.
+        if (!databaseAccepts(account, new String(password))) return false;
+        new AuthService(transactions, clock).rotateCredential(account.userId(), password);
+        return true;
+    }
+
+    private boolean databaseAccepts(UserAccount account, String databasePassword) {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(jdbcUrl);
         source.setUser(account.postgresRoleName());
-        source.setPassword(com.follarce.auth.PasswordPolicy.sha512Hex(password));
+        source.setPassword(databasePassword);
         try (Connection connection = source.getConnection();
              Statement statement = connection.createStatement();
              ResultSet row = statement.executeQuery("SELECT session_user")) {

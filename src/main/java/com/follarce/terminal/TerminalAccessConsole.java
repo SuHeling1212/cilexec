@@ -15,14 +15,26 @@ public final class TerminalAccessConsole implements Runnable {
     private final PrintWriter output;
     private final TerminalAccess access;
     private final Function<UserAccount, TerminalControl> controls;
+    private final String administratorUsername;
 
     public TerminalAccessConsole(TerminalInput input, PrintWriter output,
                                  TerminalAccess access,
                                  Function<UserAccount, TerminalControl> controls) {
+        this(input, output, access, controls, "local");
+    }
+
+    public TerminalAccessConsole(TerminalInput input, PrintWriter output,
+                                 TerminalAccess access,
+                                 Function<UserAccount, TerminalControl> controls,
+                                 String administratorUsername) {
         this.input = java.util.Objects.requireNonNull(input, "input");
         this.output = java.util.Objects.requireNonNull(output, "output");
         this.access = java.util.Objects.requireNonNull(access, "access");
         this.controls = java.util.Objects.requireNonNull(controls, "controls");
+        if (administratorUsername == null || administratorUsername.isBlank()) {
+            throw new IllegalArgumentException("Administrator username is required");
+        }
+        this.administratorUsername = administratorUsername.trim();
     }
 
     @Override
@@ -70,7 +82,7 @@ public final class TerminalAccessConsole implements Runnable {
     private void firstTimeSetup() throws IOException {
         if (!access.isFirstUse()) return;
         output.println("First time setup - create the administrator account");
-        output.println("Username: local");
+        output.println("Username: " + administratorUsername);
         while (!Thread.currentThread().isInterrupted()) {
             char[] password = password("Password (" + PasswordPolicy.MINIMUM_LENGTH
                     + "+ characters)> ");
@@ -84,7 +96,7 @@ public final class TerminalAccessConsole implements Runnable {
                 if (!Arrays.equals(password, confirmation)) {
                     throw new IllegalArgumentException("Passwords do not match");
                 }
-                access.bootstrap("local", password);
+                access.bootstrap(administratorUsername, password);
                 output.println("Administrator account created.");
                 output.println();
                 return;
@@ -131,7 +143,7 @@ public final class TerminalAccessConsole implements Runnable {
                 return Optional.empty();
             }
             if (adminChoice.trim().equalsIgnoreCase("y")) {
-                char[] adminPassword = password("local admin password> ");
+                char[] adminPassword = password(administratorUsername + " admin password> ");
                 if (adminPassword == null) {
                     return Optional.empty();
                 }

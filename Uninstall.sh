@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# CilExec 恢复脚本 — 将系统恢复到安装 CilExec 之前的状态
+# CilExec 卸载脚本 — 删除当前安装目录对应的 CilExec 实例
 #
-# 此脚本会删除 CilExec 创建的所有 Docker 资源（容器、镜像、卷、网络）
-# 以及本地生成的密码文件和导出文件。
+# 此脚本仅删除当前 Compose 项目的容器、卷和网络，以及当前安装目录内
+# 生成的密码文件和默认导出目录；不会全局清理其他实例或 Docker 缓存。
 #
-# 用法: ./cilexec-restore.sh [--force]
+# 用法: ./Uninstall.sh [--force]
 #   --force  跳过确认提示，直接执行清理
 # ==============================================================================
 set -euo pipefail
@@ -19,14 +19,22 @@ cd "$project_dir"
 # 使用与 install.sh 相同的项目名和卷名计算逻辑，
 # 确保能正确找到并清理对应安装实例的资源。
 project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
-export COMPOSE_PROJECT_NAME="cilexec-${project_hash}"
-export CILEXEC_POSTGRES_VOLUME="cilexec-pgdata-${project_hash}"
-IMAGE_NAME="${CILEXEC_IMAGE_TAG:-cilexec:local}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
+export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
+IMAGE_NAME="cilexec:${CILEXEC_IMAGE_TAG:-local}"
 VOLUME_NAME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 SECRET_DIR="$project_dir/docker/secrets"
-EXPORT_DIR="${CILEXEC_EXPORT_DIRECTORY:-$project_dir/exports}"
+DEFAULT_EXPORT_DIR="$project_dir/exports"
+configured_export_dir="${CILEXEC_EXPORT_DIRECTORY:-$DEFAULT_EXPORT_DIR}"
+if [[ "$configured_export_dir" == /* ]]; then
+    EXPORT_DIR="${configured_export_dir%/}"
+else
+    EXPORT_DIR="${project_dir}/${configured_export_dir#./}"
+    EXPORT_DIR="${EXPORT_DIR%/}"
+fi
 
 FORCE=false
+IMAGE_REMOVED=false
 if [[ "${1:-}" == "--force" ]]; then
     FORCE=true
 fi
@@ -54,9 +62,9 @@ header() {
 if [[ "$FORCE" != true ]]; then
     echo ""
     printf "${RED}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}\n"
-    printf "${RED}${BOLD}║  警告：此操作将永久删除 CilExec 的所有数据！                       ║${NC}\n"
-    printf "${RED}${BOLD}║  包括 Docker 容器、镜像、数据库卷、密码文件和导出文件。              ║${NC}\n"
-    printf "${RED}${BOLD}║  此操作不可逆！                                                 ß║${NC}\n"
+    printf "${RED}${BOLD}║  警告：此操作将永久删除当前 CilExec 实例的数据！                    ║${NC}\n"
+    printf "${RED}${BOLD}║  包括容器、数据库卷、密码文件和默认导出文件。                        ║${NC}\n"
+    printf "${RED}${BOLD}║  此操作不可逆！                                                  ║${NC}\n"
     printf "${RED}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}\n"
     echo ""
 
@@ -66,7 +74,8 @@ if [[ "$FORCE" != true ]]; then
 
         echo ""
         echo "【容器】"
-        docker ps -a --filter "name=cilexec" --format '  {{.Names}} ({{.Status}})' 2>/dev/null || echo "  (无)"
+        docker ps -a --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+            --format '  {{.Names}} ({{.Status}})' 2>/dev/null || echo "  (无)"
 
         echo ""
         echo "【镜像】"
@@ -141,15 +150,18 @@ if [[ -f "$project_dir/compose.yml" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 第 2 步：强制删除任何残留的 CilExec 容器
+# 第 2 步：删除当前安装实例的残留容器
 # ---------------------------------------------------------------------------
 header "第 2 步：清理残留容器"
 
 if command -v docker >/dev/null 2>&1; then
-    containers=$(docker ps -a --filter "name=cilexec" -q 2>/dev/null || true)
+    containers=$(docker ps -a \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        -q 2>/dev/null || true)
     if [[ -n "$containers" ]]; then
-        # shellcheck disable=SC2086
-        docker rm -f $containers 2>/dev/null || true
+        while read -r container; do
+            [[ -z "$container" ]] || docker rm -f "$container" 2>/dev/null || true
+        done <<< "$containers"
         info "已删除残留容器"
     else
         info "无残留容器"
@@ -165,8 +177,15 @@ header "第 3 步：删除 Docker 镜像"
 
 if command -v docker >/dev/null 2>&1; then
     if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
-        docker rmi -f "$IMAGE_NAME" 2>/dev/null || true
-        info "已删除镜像 $IMAGE_NAME"
+        image_users=$(docker ps -a --filter "ancestor=$IMAGE_NAME" -q 2>/dev/null || true)
+        if [[ -n "$image_users" ]]; then
+            warn "镜像 $IMAGE_NAME 仍被其他容器使用，已保留"
+        elif docker rmi "$IMAGE_NAME" >/dev/null 2>&1; then
+            IMAGE_REMOVED=true
+            info "已删除镜像 $IMAGE_NAME"
+        else
+            warn "无法安全删除镜像 $IMAGE_NAME，已保留"
+        fi
     else
         info "镜像 $IMAGE_NAME 不存在"
     fi
@@ -196,11 +215,14 @@ fi
 header "第 5 步：删除网络"
 
 if command -v docker >/dev/null 2>&1; then
-    networks=$(docker network ls --filter "name=cilexec" -q 2>/dev/null || true)
+    networks=$(docker network ls \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+        -q 2>/dev/null || true)
     if [[ -n "$networks" ]]; then
-        # shellcheck disable=SC2086
-        docker network rm $networks 2>/dev/null || true
-        info "已删除 CilExec 网络"
+        while read -r network; do
+            [[ -z "$network" ]] || docker network rm "$network" 2>/dev/null || true
+        done <<< "$networks"
+        info "已删除当前实例的 CilExec 网络"
     else
         info "无 CilExec 网络"
     fi
@@ -225,43 +247,50 @@ fi
 # ---------------------------------------------------------------------------
 header "第 7 步：删除导出文件"
 
-if [[ -d "$EXPORT_DIR" ]]; then
-    rm -rf "$EXPORT_DIR"
-    info "已删除导出目录 $EXPORT_DIR"
+if [[ "$EXPORT_DIR" != "$DEFAULT_EXPORT_DIR" ]]; then
+    warn "自定义导出目录不属于安装实例，已保留：$EXPORT_DIR"
+elif [[ -d "$DEFAULT_EXPORT_DIR" ]]; then
+    rm -rf "$DEFAULT_EXPORT_DIR"
+    info "已删除默认导出目录 $DEFAULT_EXPORT_DIR"
 else
-    info "导出目录 $EXPORT_DIR 不存在"
+    info "默认导出目录 $DEFAULT_EXPORT_DIR 不存在"
 fi
 
 # ---------------------------------------------------------------------------
-# 第 8 步：清理 Docker 构建缓存（可选）
+# 第 8 步：保留共享 Docker 构建缓存
 # ---------------------------------------------------------------------------
-header "第 8 步：清理 Docker 构建缓存"
-
-if command -v docker >/dev/null 2>&1; then
-    docker builder prune --force 2>/dev/null || true
-    info "已清理构建缓存"
-else
-    warn "Docker 不可用，跳过构建缓存清理"
-fi
+header "第 8 步：保留共享构建缓存"
+info "Docker 构建缓存可能被其他项目使用，未执行全局清理"
 
 # ---------------------------------------------------------------------------
 # 完成
 # ---------------------------------------------------------------------------
 echo ""
 printf "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}\n"
-printf "${GREEN}${BOLD}║  CilExec 已完全从本机移除，系统已恢复到安装前状态。                 ║${NC}\n"
+printf "${GREEN}${BOLD}║  当前 CilExec 安装实例已移除。                                     ║${NC}\n"
 printf "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}\n"
 echo ""
 echo "已删除的内容："
-echo "  • Docker 容器 (cilexec, postgres, migrate)"
-echo "  • Docker 镜像 ($IMAGE_NAME)"
+echo "  • 当前 Compose 实例的容器 ($COMPOSE_PROJECT_NAME)"
+if [[ "$IMAGE_REMOVED" == true ]]; then
+    echo "  • 未被其他容器使用的 Docker 镜像 ($IMAGE_NAME)"
+fi
 echo "  • 数据卷 ($VOLUME_NAME) — 所有数据库数据"
-echo "  • Docker 网络 (cilexec_*)"
+echo "  • 当前 Compose 实例的网络 ($COMPOSE_PROJECT_NAME)"
 echo "  • 密码文件 ($SECRET_DIR)"
-echo "  • 导出文件 ($EXPORT_DIR)"
+if [[ "$EXPORT_DIR" == "$DEFAULT_EXPORT_DIR" ]]; then
+    echo "  • 默认导出文件 ($DEFAULT_EXPORT_DIR)"
+fi
 echo ""
 echo "未受影响的内容："
 echo "  • 源代码目录 ($project_dir)"
 echo "  • Maven 本地缓存 (~/.m2)"
 echo "  • Docker 本身和其他项目"
+echo "  • Docker 全局构建缓存"
+if [[ "$IMAGE_REMOVED" != true ]]; then
+    echo "  • 共享或不存在的 Docker 镜像 ($IMAGE_NAME)"
+fi
+if [[ "$EXPORT_DIR" != "$DEFAULT_EXPORT_DIR" ]]; then
+    echo "  • 自定义导出目录 ($EXPORT_DIR)"
+fi
 echo ""

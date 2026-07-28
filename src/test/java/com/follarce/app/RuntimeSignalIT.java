@@ -140,18 +140,18 @@ class RuntimeSignalIT {
         configure(builder.environment(), secret, availablePort(), "signal-test",
                 "4411099817001");
         builder.environment().put("CILEXEC_TERMINAL_USERNAME", "local");
-        builder.environment().put("CILEXEC_TERMINAL_PASSWORD_FILE", secret.toString());
         builder.redirectErrorStream(true).redirectOutput(output.toFile());
 
         Process terminal = builder.start();
         try {
             String alicePassword = "alice123";
-            terminal.getOutputStream().write(("login\nlocal\nwrong-password-value\n"
+            terminal.getOutputStream().write((PASSWORD + "\n" + PASSWORD + "\n"
+                    + "login\nlocal\nwrong-password-value\n"
                     + "login\nlocal\n" + PASSWORD + "\n"
                     + "answer = 40 + 2\n:logout\n"
                     + "login\nlocal\n" + PASSWORD + "\nanswer + 1\n{\"answer\": answer}\n:logout\n"
                     + "create\nalice\n" + alicePassword + "\n" + alicePassword + "\n"
-                    + "user.isLocal()\n:logout\nlogin\nalice\n" + alicePassword + "\n"
+                    + "n\nuser.isLocal()\n:logout\nlogin\nalice\n" + alicePassword + "\n"
                     + "user.isLocal()\n:exit\n").getBytes(StandardCharsets.UTF_8));
             terminal.getOutputStream().flush();
             terminal.getOutputStream().close();

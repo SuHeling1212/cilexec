@@ -72,7 +72,7 @@ cd "$INSTALL_DIR"
 echo "Loading container image..."
 gunzip -c cilexec-local.tar.gz | docker load
 
-chmod +x Install.sh
+chmod +x Install.sh Uninstall.sh Shell.sh
 
 echo
 echo "Installation complete!"
@@ -88,6 +88,7 @@ trap "rm -rf $temp_dir" EXIT
 docker save cilexec:local | gzip > "$temp_dir/cilexec-local.tar.gz"
 cp Install.sh "$temp_dir/"
 cp Uninstall.sh "$temp_dir/"
+cp Shell.sh "$temp_dir/"
 cp compose.yml "$temp_dir/"
 cp compose.persistent.yml "$temp_dir/"
 cp Dockerfile "$temp_dir/"

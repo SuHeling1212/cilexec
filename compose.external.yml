@@ -35,7 +35,6 @@ x-cilexec-environment: &cilexec-environment
   CILEXEC_HEALTH_PORT: 8080
   CILEXEC_MIGRATE_ON_START: "false"
   CILEXEC_TERMINAL_USERNAME: ${CILEXEC_TERMINAL_USERNAME:-local}
-  CILEXEC_TERMINAL_PASSWORD_FILE: /run/secrets/cilexec_terminal_password
 
 x-cilexec-hardening: &cilexec-hardening
   user: "10001:10001"
@@ -69,7 +68,6 @@ services:
     secrets:
       - cilexec_runtime_password
       - cilexec_effect_worker_password
-      - cilexec_terminal_password
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
       - /var/cache/cilexec/packages:rw,noexec,nosuid,size=${CILEXEC_PACKAGE_CACHE_SIZE:-256m},uid=10001,gid=10001
@@ -105,5 +103,3 @@ secrets:
     file: ${CILEXEC_RUNTIME_PASSWORD_FILE:-./docker/secrets/cilexec-runtime-password}
   cilexec_effect_worker_password:
     file: ${CILEXEC_EFFECT_PASSWORD_FILE:-./docker/secrets/cilexec-effect-worker-password}
-  cilexec_terminal_password:
-    file: ${CILEXEC_TERMINAL_PASSWORD_FILE:-/dev/null}

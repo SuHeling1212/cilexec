@@ -7,8 +7,8 @@ cd "$project_dir"
 # Use a unique project name per install directory so volumes and networks
 # don't conflict with other CilExec installations on the same machine.
 project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
-export COMPOSE_PROJECT_NAME="cilexec-${project_hash}"
-export CILEXEC_POSTGRES_VOLUME="cilexec-pgdata-${project_hash}"
+export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
+export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "Error: Docker not found. Please install and start Docker Desktop." >&2
@@ -63,7 +63,7 @@ fi
 
 echo
 echo "On first use you will be prompted to create the administrator password."
-echo "Choose login and enter username local with the password you set."
+echo "Choose login and enter username ${CILEXEC_TERMINAL_USERNAME:-local} with the password you set."
 echo "Type :exit to quit."
 echo
 

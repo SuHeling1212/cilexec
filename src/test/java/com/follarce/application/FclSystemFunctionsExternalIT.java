@@ -11,6 +11,7 @@ import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
+import com.follarce.terminal.TerminalAccessService;
 import com.follarce.vfs.AdminVfsService;
 import com.follarce.vfs.VfsService;
 import org.junit.jupiter.api.Test;
@@ -33,10 +34,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class FclSystemFunctionsExternalIT {
     @Test
     void executesVfsSwapProcessAndAdministratorFunctionsFromFcl() {
-        execute(transactions());
+        execute(transactions(), System.getProperty("cilexec.external.jdbc"));
     }
 
-    static void execute(JdbcTransactionExecutor transactions) {
+    static void execute(JdbcTransactionExecutor transactions, String jdbcUrl) {
         Clock clock = Clock.systemUTC();
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         AuthService auth = new AuthService(transactions, clock);
@@ -52,7 +53,9 @@ class FclSystemFunctionsExternalIT {
         UserAccount removable = auth.create("fcl-removable-" + suffix,
                 "removable-password-123".toCharArray(), Set.of(Capability.VFS_READ));
         VfsService vfs = new VfsService(transactions, clock);
-        VfsNode ownerRoot = vfs.createDirectory(owner.userId(), Optional.empty(), "/", Set.of());
+        VfsNode ownerRoot = transactions.inUserTransaction(owner.userId(),
+                Isolation.READ_COMMITTED, transaction -> transaction.vfs()
+                        .findChild(owner.userId(), Optional.empty(), "/").orElseThrow());
         VfsNode privateFile = vfs.createFile(owner.userId(), ownerRoot.nodeId(), "private.txt",
                 "secret".getBytes(StandardCharsets.UTF_8), "text/plain", Set.of(), false);
         VfsNode packageSource = vfs.createDirectory(owner.userId(),
@@ -181,6 +184,8 @@ class FclSystemFunctionsExternalIT {
         Map<String, Object> removed = (Map<String, Object>) adminRuntime.scope().get("removed");
         assertEquals(createdUsername, created.get("username"));
         assertEquals("ACTIVE", created.get("status"));
+        assertTrue(new TerminalAccessService(transactions, jdbcUrl, clock)
+                .login(createdUsername, "created-password-123".toCharArray()).isPresent());
         assertEquals("DISABLED", removed.get("status"));
         AdminVfsService administratorVfs = new AdminVfsService(transactions, clock);
         assertEquals("changed", new String(administratorVfs

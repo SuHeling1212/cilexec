@@ -43,7 +43,7 @@ class TerminalAccessConsoleTest {
                         commands.add(command);
                         return "ok";
                     };
-                }).run();
+                }, "operator").run();
 
         String transcript = bytes.toString(StandardCharsets.UTF_8);
         assertTrue(transcript.contains("invalid username or password"), transcript);
@@ -52,6 +52,7 @@ class TerminalAccessConsoleTest {
         assertEquals(List.of("alice", "alice"), authenticated);
         assertEquals(List.of(new ShellCommand.Logout(), new ShellCommand.Exit()), commands);
         assertEquals(1, access.registrations);
+        assertEquals("operator", access.bootstrapUsername);
         assertTrue(access.receivedPasswords.stream()
                 .allMatch(value -> value.length > 0 && allZero(value)));
     }
@@ -67,6 +68,7 @@ class TerminalAccessConsoleTest {
         private final List<char[]> receivedPasswords = new ArrayList<>();
         private boolean created;
         private int registrations;
+        private String bootstrapUsername;
 
         @Override
         public Optional<UserAccount> login(String username, char[] password) {
@@ -100,6 +102,7 @@ class TerminalAccessConsoleTest {
         @Override
         public UserAccount bootstrap(String username, char[] password) {
             receivedPasswords.add(password);
+            bootstrapUsername = username;
             created = true;
             return alice;
         }

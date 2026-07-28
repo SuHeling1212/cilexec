@@ -41,22 +41,23 @@ The packaged executable is `target/cilexec-app.jar`. The build also creates
 
 ## Run with Compose
 
-For the normal local setup, the one-command launcher creates all missing internal secrets,
-uses `12345678` as the initial `local` administrator password, starts PostgreSQL, applies
-migrations, and opens the interactive terminal:
+For the normal local setup, the one-command launcher creates all missing internal service
+secrets, starts PostgreSQL, applies migrations, and opens the interactive terminal:
 
 ```bash
-./start.sh
+./Install.sh
 ```
 
-At the access prompt choose `login`, then enter username `local` and password `12345678`.
-The launcher uses the persistent Compose profile and stops the containers when the terminal
-exits; the database volume is retained for the next run.
+On first use, the terminal asks you to choose and confirm the administrator password (minimum
+eight characters). Afterwards choose `login`, then enter username `local` and that password.
+Set `CILEXEC_TERMINAL_USERNAME` before starting if the deployment administrator should have a
+different name. The launcher uses the persistent Compose profile; the database volume is retained
+for the next run.
 
 The manual deployment procedure is below.
 
-Create the six secret files under `docker/secrets/`. The five PostgreSQL service passwords must
-contain at least 16 characters; the human `cilexec-terminal-password` must contain at least 8:
+Create the five PostgreSQL service secret files under `docker/secrets/`. Each must contain at
+least 16 characters:
 
 ```text
 postgres-admin-password
@@ -64,7 +65,6 @@ cilexec-migrator-password
 cilexec-runtime-password
 cilexec-effect-worker-password
 cilexec-readonly-password
-cilexec-terminal-password
 ```
 
 Disposable database:
@@ -85,8 +85,8 @@ For an externally managed database, bootstrap the service roles once using
 PostgreSQL 17.1 are rejected.
 
 The migration container receives only the migrator secret. The terminal Runtime receives its
-runtime/effect secrets plus the one-time password used to provision the deployment-bound
-`local` CilExec administrator. CilExec runs as UID/GID 10001 with a read-only root filesystem.
+runtime/effect secrets; the administrator password is entered interactively on first use and is
+not stored in a host secret file. CilExec runs as UID/GID 10001 with a read-only root filesystem.
 
 ## Commands
 
@@ -95,13 +95,14 @@ java -jar target/cilexec-app.jar terminal
 java -jar target/cilexec-app.jar migrate
 java -jar target/cilexec-app.jar runtime
 java -jar target/cilexec-app.jar export /explicit/path/cilexec-export.db
-java -jar target/cilexec-app.jar package build ./examples/hello-package ./hello.db
+java -jar target/cilexec-app.jar package build ./docs/examples/hello-package ./hello.db
 ```
 
 With no arguments, the JAR starts the authenticated composite FCL REPL and terminal. Choose
 `login` to authenticate with a CilExec username and password, or `create` to register a regular
 user with all owner-scoped process, file, package, effect, terminal, and audit capabilities. The
-deployment-bound `local` account remains the system administrator. Real TTY password entry has
+deployment-bound configured administrator account (default `local`) remains the system
+administrator. Real TTY password entry has
 echo disabled. `:logout` returns to the access prompt and preserves the durable REPL context for
 the next login.
 

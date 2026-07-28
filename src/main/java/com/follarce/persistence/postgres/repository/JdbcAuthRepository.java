@@ -77,10 +77,11 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
                     .map(capability -> capability.name().toLowerCase(java.util.Locale.ROOT))
                     .sorted().toArray(String[]::new);
             capabilityArray = connection.createArrayOf("text", keys);
+            String hashed = PasswordPolicy.sha512Hex(copy);
             statement.setObject(1, administratorId);
             statement.setObject(2, userId);
             statement.setString(3, username);
-            statement.setString(4, new String(copy));
+            statement.setString(4, hashed);
             statement.setArray(5, capabilityArray);
             statement.setObject(6, auditEventId);
             statement.setTimestamp(7, java.sql.Timestamp.from(at));

@@ -235,12 +235,12 @@ public final class RuntimeBootstrap {
                     Objects.requireNonNull(terminalOutput, "terminal output"),
                     StandardCharsets.UTF_8), true);
             var access = new TerminalAccessService(runtimeTransactions,
-                    config.runtimeDatabase().jdbcUrl(), clock);
+                    config.runtimeDatabase().jdbcUrl(), clock, terminalSettings.username());
             com.follarce.application.FclRuntimeFunctions.setPasswordVerifier(
-                    password -> access.login("local", password).isPresent());
+                    password -> access.login(terminalSettings.username(), password).isPresent());
             var console = new TerminalAccessConsole(input, output, access,
                     account -> new DatabaseTerminalControl(runtimeTransactions, account,
-                            terminalShutdown));
+                            terminalShutdown), terminalSettings.username());
             terminalThread = Thread.ofPlatform().daemon(true).name("cilexec-terminal").start(() -> {
                 try {
                     console.run();

@@ -37,4 +37,42 @@ class EditableTerminalInputTest {
         assertEquals("saved", input.edit(output, "test> ", true));
         assertEquals("draft", input.edit(output, "test> ", true));
     }
+
+    @Test
+    void backspaceAtStartOfContinuationLineMergesWithPreviousLine() throws Exception {
+        byte[] source = ("ab{\ncd\b\b\b}\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("ab{}", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void upAndDownArrowsMoveTheCursorBetweenSubmissionLines() throws Exception {
+        byte[] source = ("ab{\ncd\u001b[AX\u001b[B}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("abX{\ncd}", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void leftAndRightArrowsCrossTheLineBoundary() throws Exception {
+        byte[] source = ("ab{\ncd\u001b[D\u001b[D\u001b[D\u001b[CX}\n")
+                .getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("ab{\nX}cd", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
 }

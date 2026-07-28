@@ -78,7 +78,9 @@ class AdminVfsServiceIT {
                 Set.of(Capability.VFS_READ));
 
         VfsService ownerVfs = new VfsService(transactions, clock);
-        VfsNode root = ownerVfs.createDirectory(owner.userId(), Optional.empty(), "/", Set.of());
+        VfsNode root = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.vfs().findChild(owner.userId(), Optional.empty(), "/")
+                        .orElseThrow());
         VfsNode file = ownerVfs.createFile(owner.userId(), root.nodeId(), "private.txt",
                 "original".getBytes(StandardCharsets.UTF_8), "text/plain", Set.of(), true);
 
