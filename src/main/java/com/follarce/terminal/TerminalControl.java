@@ -1,8 +1,12 @@
 package com.follarce.terminal;
 
+import java.util.List;
+
 /** Application boundary used by host terminal transports. */
 @FunctionalInterface
 public interface TerminalControl {
+    enum AttachedInputMode { NONE, LINE, KEY }
+
     String execute(ShellCommand command);
 
     /** Evaluates one complete FCL submission in the durable REPL session. */
@@ -19,7 +23,20 @@ public interface TerminalControl {
         return false;
     }
 
+    /** Describes how the attached FCL process expects its next terminal input. */
+    default AttachedInputMode attachedInputMode() {
+        return awaitingAttachedInput() ? AttachedInputMode.LINE : AttachedInputMode.NONE;
+    }
+
     default String prompt() {
         return "cilexec> ";
+    }
+
+    /** Persistent command history for the authenticated user, oldest first. */
+    default List<String> commandHistory() {
+        return List.of();
+    }
+
+    default void rememberCommand(String command) {
     }
 }

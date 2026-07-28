@@ -1,0 +1,388 @@
+# CilEdit: the full-screen editor distributed through the CilExec package market.
+
+func ed_min(a, b) {
+    if a < b { return a }
+    return b
+}
+
+func ed_max(a, b) {
+    if a > b { return a }
+    return b
+}
+
+func ed_fit(value, width) {
+    visible = text.replace(value, "\t", "    ")
+    if #visible > width { return text.slice(visible, 0, width) }
+    return visible + text.repeat(" ", width - #visible)
+}
+
+func ed_fix(state) {
+    lines = state["lines"]
+    if state["row"] < 0 { state["row"] = 0 }
+    if state["row"] >= #lines { state["row"] = #lines - 1 }
+    width = 80
+    height = 18
+    line = lines[state["row"]]
+    if state["col"] < 0 { state["col"] = 0 }
+    if state["col"] > #line { state["col"] = #line }
+    if state["row"] < state["top"] { state["top"] = state["row"] }
+    if state["row"] >= state["top"] + height {
+        state["top"] = state["row"] - height + 1
+    }
+    if state["col"] < state["left"] { state["left"] = state["col"] }
+    if state["col"] >= state["left"] + width {
+        state["left"] = state["col"] - width + 1
+    }
+    if state["top"] < 0 { state["top"] = 0 }
+    if state["left"] < 0 { state["left"] = 0 }
+    return state
+}
+
+func ed_insert(state, value) {
+    row = state["row"]
+    col = state["col"]
+    line = state["lines"][row]
+    state["lines"][row] = text.slice(line, 0, col) + value + text.slice(line, col)
+    state["col"] = col + #value
+    state["dirty"] = true
+    state["message"] = ""
+    return ed_fix(state)
+}
+
+func ed_enter(state) {
+    row = state["row"]
+    col = state["col"]
+    lines = state["lines"]
+    line = lines[row]
+    result = []
+    index = 0
+    while index < row {
+        result = result + [lines[index]]
+        index = index + 1
+    }
+    result = result + [text.slice(line, 0, col), text.slice(line, col)]
+    index = row + 1
+    while index < #lines {
+        result = result + [lines[index]]
+        index = index + 1
+    }
+    state["lines"] = result
+    state["row"] = row + 1
+    state["col"] = 0
+    state["dirty"] = true
+    state["message"] = ""
+    return ed_fix(state)
+}
+
+func ed_remove_row(lines, row) {
+    if #lines == 1 { return [""] }
+    result = []
+    index = 0
+    while index < #lines {
+        if index != row { result = result + [lines[index]] }
+        index = index + 1
+    }
+    return result
+}
+
+func ed_backspace(state) {
+    row = state["row"]
+    col = state["col"]
+    lines = state["lines"]
+    if col > 0 {
+        line = lines[row]
+        lines[row] = text.slice(line, 0, col - 1) + text.slice(line, col)
+        state["col"] = col - 1
+        state["lines"] = lines
+        state["dirty"] = true
+    } else {
+        if row > 0 {
+            previous = lines[row - 1]
+            lines[row - 1] = previous + lines[row]
+            state["lines"] = ed_remove_row(lines, row)
+            state["row"] = row - 1
+            state["col"] = #previous
+            state["dirty"] = true
+        }
+    }
+    state["message"] = ""
+    return ed_fix(state)
+}
+
+func ed_delete(state) {
+    row = state["row"]
+    col = state["col"]
+    lines = state["lines"]
+    line = lines[row]
+    if col < #line {
+        lines[row] = text.slice(line, 0, col) + text.slice(line, col + 1)
+        state["lines"] = lines
+        state["dirty"] = true
+    } else {
+        if row + 1 < #lines {
+            lines[row] = line + lines[row + 1]
+            state["lines"] = ed_remove_row(lines, row + 1)
+            state["dirty"] = true
+        }
+    }
+    state["message"] = ""
+    return ed_fix(state)
+}
+
+func ed_cut(state) {
+    row = state["row"]
+    state["clipboard"] = state["lines"][row]
+    state["lines"] = ed_remove_row(state["lines"], row)
+    if state["row"] >= #state["lines"] { state["row"] = #state["lines"] - 1 }
+    state["col"] = 0
+    state["dirty"] = true
+    state["message"] = "Cut one line"
+    return ed_fix(state)
+}
+
+func ed_save(state) {
+    content = text.join(state["lines"], "\n")
+    file.write(state["path"], content)
+    state["dirty"] = false
+    state["message"] = "Wrote " + util.toString(#state["lines"]) + " lines"
+    return state
+}
+
+func ed_search(state) {
+    query = state["query"]
+    if #query == 0 {
+        state["message"] = "Search cancelled"
+        state["mode"] = "normal"
+        return state
+    }
+    lines = state["lines"]
+    startRow = state["row"]
+    row = startRow
+    from = state["col"] + 1
+    visited = 0
+    while visited < #lines {
+        found = text.indexOf(lines[row], query, ed_min(from, #lines[row]))
+        if found >= 0 {
+            state["row"] = row
+            state["col"] = found
+            state["mode"] = "normal"
+            state["message"] = "Found: " + query
+            return ed_fix(state)
+        }
+        row = row + 1
+        if row >= #lines { row = 0 }
+        from = 0
+        visited = visited + 1
+    }
+    state["mode"] = "normal"
+    state["message"] = "Not found: " + query
+    return state
+}
+
+func ed_prompt_key(state, key) {
+    mode = state["mode"]
+    if mode == "help" {
+        state["mode"] = "normal"
+        state["message"] = ""
+        return state
+    }
+    if mode == "exit" {
+        if key == "y" or key == "Y" {
+            state = ed_save(state)
+            state["running"] = false
+        } else {
+            if key == "n" or key == "N" {
+                state["running"] = false
+            } else {
+                if key == "CTRL_C" or key == "ESCAPE" {
+                    state["mode"] = "normal"
+                    state["message"] = "Exit cancelled"
+                }
+            }
+        }
+        return state
+    }
+    if mode == "search" {
+        if key == "ENTER" {
+            return ed_search(state)
+        }
+        if key == "CTRL_C" or key == "ESCAPE" {
+            state["mode"] = "normal"
+            state["message"] = "Search cancelled"
+            return state
+        }
+        if key == "BACKSPACE" {
+            if #state["query"] > 0 {
+                state["query"] = text.slice(state["query"], 0, #state["query"] - 1)
+            }
+            return state
+        }
+        if #key == 1 { state["query"] = state["query"] + key }
+        return state
+    }
+    return state
+}
+
+func ed_key(state, key) {
+    if state["mode"] != "normal" { return ed_prompt_key(state, key) }
+    lines = state["lines"]
+    row = state["row"]
+    col = state["col"]
+    if key == "CTRL_S" or key == "CTRL_O" { return ed_save(state) }
+    if key == "CTRL_X" {
+        if state["dirty"] {
+            state["mode"] = "exit"
+        } else {
+            state["running"] = false
+        }
+        return state
+    }
+    if key == "CTRL_W" {
+        state["mode"] = "search"
+        state["query"] = ""
+        return state
+    }
+    if key == "CTRL_G" {
+        state["mode"] = "help"
+        return state
+    }
+    if key == "CTRL_K" { return ed_cut(state) }
+    if key == "CTRL_U" {
+        if #state["clipboard"] > 0 { return ed_insert(state, state["clipboard"]) }
+        state["message"] = "Clipboard is empty"
+        return state
+    }
+    if key == "UP" {
+        if row > 0 { state["row"] = row - 1 }
+        return ed_fix(state)
+    }
+    if key == "DOWN" {
+        if row + 1 < #lines { state["row"] = row + 1 }
+        return ed_fix(state)
+    }
+    if key == "LEFT" {
+        if col > 0 {
+            state["col"] = col - 1
+        } else {
+            if row > 0 {
+                state["row"] = row - 1
+                state["col"] = #lines[row - 1]
+            }
+        }
+        return ed_fix(state)
+    }
+    if key == "RIGHT" {
+        if col < #lines[row] {
+            state["col"] = col + 1
+        } else {
+            if row + 1 < #lines {
+                state["row"] = row + 1
+                state["col"] = 0
+            }
+        }
+        return ed_fix(state)
+    }
+    if key == "HOME" {
+        state["col"] = 0
+        return ed_fix(state)
+    }
+    if key == "END" {
+        state["col"] = #lines[row]
+        return ed_fix(state)
+    }
+    if key == "PAGE_UP" {
+        state["row"] = ed_max(0, row - 18)
+        return ed_fix(state)
+    }
+    if key == "PAGE_DOWN" {
+        state["row"] = ed_min(#lines - 1, row + 18)
+        return ed_fix(state)
+    }
+    if key == "BACKSPACE" { return ed_backspace(state) }
+    if key == "DELETE" { return ed_delete(state) }
+    if key == "ENTER" { return ed_enter(state) }
+    if key == "TAB" { return ed_insert(state, "    ") }
+    if #key == 1 { return ed_insert(state, key) }
+    return state
+}
+
+func ed_render_help(state) {
+    screen = term.hideCursor() + term.clear()
+    screen = screen + term.inverse(ed_fit(" CilEdit Help", 80)) + "\r\n"
+    screen = screen + "Ctrl-O / Ctrl-S  Save file\r\n"
+    screen = screen + "Ctrl-X  Exit (asks before discarding changes)\r\n"
+    screen = screen + "Ctrl-W  Search forward\r\n"
+    screen = screen + "Ctrl-K  Cut current line\r\n"
+    screen = screen + "Ctrl-U  Paste cut line\r\n"
+    screen = screen + "Arrows, Home, End, PageUp, PageDown move the cursor\r\n"
+    screen = screen + "Backspace, Delete, Enter and Tab edit the buffer\r\n\r\n"
+    screen = screen + "Press any key to return"
+    return screen
+}
+
+func ed_render(state) {
+    if state["mode"] == "help" { return ed_render_help(state) }
+    width = 80
+    height = 18
+    title = " CilEdit  " + state["path"]
+    if state["dirty"] { title = title + "  [Modified]" }
+    screen = term.hideCursor() + term.clear() + term.inverse(ed_fit(title, width)) + "\r\n"
+    visibleRow = 0
+    while visibleRow < height {
+        lineIndex = state["top"] + visibleRow
+        if lineIndex < #state["lines"] {
+            line = state["lines"][lineIndex]
+            start = ed_min(state["left"], #line)
+            end = ed_min(#line, start + width)
+            screen = screen + ed_fit(text.slice(line, start, end), width)
+        } else {
+            screen = screen + ed_fit("~", width)
+        }
+        screen = screen + "\r\n"
+        visibleRow = visibleRow + 1
+    }
+    status = " line " + util.toString(state["row"] + 1) + "/" + util.toString(#state["lines"])
+    status = status + "  col " + util.toString(state["col"] + 1)
+    screen = screen + term.inverse(ed_fit(status, width)) + "\r\n"
+    if state["mode"] == "exit" {
+        screen = screen + ed_fit("Save modified buffer?  Y Yes   N No   Ctrl-C Cancel", width)
+    } else {
+        if state["mode"] == "search" {
+            screen = screen + ed_fit("Search: " + state["query"], width)
+        } else {
+            footer = "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
+            if #state["message"] > 0 { footer = state["message"] }
+            screen = screen + ed_fit(footer, width)
+        }
+    }
+    cursorRow = state["row"] - state["top"] + 2
+    cursorCol = state["col"] - state["left"] + 1
+    return screen + term.cursorTo(cursorRow, cursorCol) + term.showCursor()
+}
+
+func open(editorPath) {
+    editorContent = ""
+    if file.exists(editorPath) { editorContent = file.read(editorPath) }
+    editorState = {
+        path: editorPath,
+        lines: text.split(editorContent, "\n"),
+        row: 0,
+        col: 0,
+        top: 0,
+        left: 0,
+        dirty: false,
+        running: true,
+        mode: "normal",
+        query: "",
+        clipboard: "",
+        message: ""
+    }
+    io.print(ed_render(editorState))
+    while editorState["running"] {
+        editorKey = io.readKey()
+        editorState = ed_key(editorState, editorKey)
+        if editorState["running"] { io.print(ed_render(editorState)) }
+    }
+    io.print(term.showCursor() + term.clear())
+    return null
+}

@@ -30,7 +30,20 @@ package.run("demo")
 | `:logout` | 回到登录界面，保留该用户的终端状态和工作目录。 |
 | `:exit` | 退出终端和 Runtime。 |
 
-在真实交互终端中，`↑` / `↓` 选取本次终端会话中先前输入的 FCL 或冒号指令，`←` / `→` 在当前输入行内移动光标。用户名、密码和 `io.input()` 的原始输入不会进入历史记录。
+在真实交互终端中，`↑` / `↓` 选取当前用户先前输入的 FCL 或冒号指令，`←` / `→` 在当前输入行内移动光标。历史记录按用户持久化，重新登录、重启 Runtime 或重启容器后仍可用；启动时不会主动显示，只有按方向键时才会调出。用户名、密码和 `io.input()` 的原始输入不会进入历史记录。
+
+编辑器不是冒号指令，也不内置在 Runtime 中。它是宿主机本地市场发布的 SQLite FCL
+包。第一次使用时先下载和安装，之后可以在持久终端上下文中直接调用：
+
+```fcl
+network.download("http://host.docker.internal:8787/packages/cilexec/editor/1.0.0/editor.db", "/editor.db")
+package.install("/editor.db", "editor")
+import "editor"
+editor.open("notes.txt")
+```
+
+其包坐标为 `cilexec/editor/1.0.0`，绑定名为 `editor`，公开函数为
+`editor.open(path)`。
 
 ## 通用数据与权限规则
 
@@ -43,6 +56,7 @@ package.run("demo")
 | 管理员 | `local` 初始账户拥有 `SYSTEM_ADMIN`。函数会以当前登录用户身份授权。 |
 | 外部操作 | 输入、打印、HTTP、Socket、系统命令会暂停 FCL 进程，完成后自动恢复。 |
 | 查看实际名称 | `system.ls()` 返回本次 Runtime 可调用的全部限定函数名和别名。 |
+| 查看 Java 扩展 | `system.extensions()` 返回构建时封装进系统的固定扩展清单。 |
 
 常见能力名称：`PROCESS_CREATE`、`PROCESS_CONTROL_OWN`、`PROCESS_CONTROL_ANY`、`VFS_READ`、`VFS_WRITE`、`PACKAGE_IMPORT`、`PACKAGE_BIND`、`EFFECT_REQUEST`、`TERMINAL_ATTACH`、`AUDIT_READ`、`SYSTEM_ADMIN`。普通用户在注册时获得其所有者范围内的常用能力；管理员额外拥有全部权限。
 
@@ -109,6 +123,22 @@ package.run("demo")
 | `term.clear()` / `term.eraseLine()` | 返回清屏 / 清除当前行控制序列。 |
 | `term.cursorUp(n)` / `term.cursorDown(n)` | 返回光标上移 / 下移 `n` 行的控制序列。 |
 | `term.cursorForward(n)` / `term.cursorBack(n)` | 返回光标右移 / 左移 `n` 列的控制序列。 |
+| `term.cursorTo(row, column)` | 返回绝对光标定位控制序列，行列从 1 开始。 |
+| `term.inverse(value)` | 使用反显样式包裹文本。 |
+| `term.hideCursor()` / `term.showCursor()` | 隐藏 / 显示终端光标。 |
+| `term.getSize()` | 返回当前终端字符尺寸，例如 `{"width":120,"height":40}`。别名：`term.size()`。输入层检查尺寸变化，刷新频率最多每秒一次。 |
+
+## 文本处理：`text`
+
+| 调用 | 作用 |
+| --- | --- |
+| `text.slice(value, start [, end])` | 按字符索引截取字符串。 |
+| `text.split(value, delimiter)` | 拆分字符串并保留末尾空项。 |
+| `text.join(values, delimiter)` | 使用分隔符连接数组。 |
+| `text.indexOf(value, search [, start])` | 从指定位置向后查找，未找到返回 `-1`。 |
+| `text.lastIndexOf(value, search [, start])` | 从指定位置向前查找，未找到返回 `-1`。 |
+| `text.repeat(value, count)` | 重复字符串。 |
+| `text.replace(value, search, replacement)` | 替换全部匹配文本。 |
 
 ## 输入与输出：`io`
 
@@ -118,6 +148,7 @@ package.run("demo")
 | `io.println(value)` | 输出并换行。别名：`util.println(value)`。 |
 | `io.input([prompt])` | 等待一整行输入。别名：`util.input([prompt])`。当进程等待输入时，终端提示符变为 `pid:?`。 |
 | `io.readChar()` | 等待输入并返回第一个字符；空输入返回空字符串。 |
+| `io.readKey()` | 全屏 FCL 程序专用：立即读取一个按键，并将方向键、Ctrl 键等规范化为名称。 |
 | `io.readFile(path [, targetUser])` | `file.read` 的别名。 |
 | `io.writeFile(path, content [, targetUser])` | `file.write` 的别名。 |
 
@@ -144,6 +175,9 @@ package.run("demo")
 | `file.lock(path, leaseMilliseconds)` | 获取文件租约锁，成功返回 `{fencingToken, leaseUntil}`，失败返回 `null`。 |
 | `file.renewLock(path, fencingToken, leaseMilliseconds)` | 续期文件锁。 |
 | `file.unlock(path, fencingToken)` | 释放当前进程持有的文件锁。 |
+
+单个 VFS 文件至少支持 1 GiB。大文件应通过多次 `file.append` 写入，并用
+`file.size` 和 `file.readChunk` 检查或分段读取；不要用 `file.read` 一次性装入 JVM 字符串。
 
 ## 进程：`process`
 
@@ -176,12 +210,13 @@ package.run("demo")
 
 ## 网络与一次性 Socket：`network`、`socket`
 
-这些函数属于外部效果，会等待结果后恢复。HTTP 响应最多 4 MiB；Socket 是一次性操作，不保存可跨崩溃复用的连接句柄。
+这些函数属于外部效果，会等待结果后恢复。`httpGet/httpPost` 的普通响应最多 4 MiB；`network.download` 使用下表所述的独立分块限制。Socket 是一次性操作，不保存可跨崩溃复用的连接句柄。
 
 | 调用 | 作用 |
 | --- | --- |
 | `network.httpGet(url)` | 发起 HTTP/HTTPS GET，返回 `{status, body, headers}`。别名：`network.webget(url)`。 |
 | `network.httpPost(url, body)` | 发起 HTTP/HTTPS POST，返回 `{status, body, headers}`。别名：`network.webpost(url, body)`。 |
+| `network.download(url, vfsPath)` | 以 4 MiB 持久化分块下载二进制文件并原样写入当前用户 VFS，返回路径、状态码、大小和媒体类型。单文件上限为 1 GiB；服务器必须支持 HTTP Range 才能下载超过 4 MiB 的文件。 |
 | `socket.connect(host, port)` | 验证能否连接，返回端点信息后即关闭连接。 |
 | `socket.send(host, port, data)` | 连接、发送 UTF-8 数据、关闭，返回写入字节数。也可用 `socket.send({"host":"…","port":123}, data)`。 |
 | `socket.receive(host, port [, maximumBytes])` | 连接并读取文本后关闭。 |
@@ -192,6 +227,9 @@ package.run("demo")
 ## 包：`package`
 
 包是不可变 SQLite `package.db` 文件。推荐流程：`package.build` → `package.install` → `import` 或 `package.run`。
+
+宿主机市场的默认索引是 `http://127.0.0.1:8787/v1/index.json`；容器内使用
+`http://host.docker.internal:8787/`。完整方案见 `docs/package-market.md`。
 
 | 调用 | 作用 |
 | --- | --- |
@@ -238,6 +276,7 @@ package.run("demo")
 | --- | --- |
 | `system.ls()` | 返回当前 Runtime 注册的全部函数名和别名。 |
 | `system.ls(path)` | 列出当前用户该目录下的节点元数据；终端中更易读的目录列表请用 `:ls`。 |
+| `system.extensions()` | 返回源码构建期封装的 Java 扩展 `id`、`version`、`description`。运行期不能增删或替换扩展。 |
 | `system.kill(pid)` | `process.kill(pid)` 的别名。 |
 | `system.exec(command)` | 管理员执行宿主机允许名单内命令。`command` 可为字符串或字符串数组；不经 Shell，且必须设置 `CILEXEC_FCL_EXEC_ALLOWLIST`，默认不允许任何程序。 |
 | `system.invoke(qualifiedFunction [, argumentArray])` | 管理员用字符串调用其他 FCL 函数，例如 `system.invoke("file.read", ["/x.txt", "alice"])`。不能调用自身。 |

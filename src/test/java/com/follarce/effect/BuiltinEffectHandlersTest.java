@@ -2,8 +2,12 @@ package com.follarce.effect;
 
 import com.follarce.domain.process.Continuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,6 +27,7 @@ class BuiltinEffectHandlersTest {
         assertEquals("io.output", handlers.require("io.output").effectType());
         assertEquals("network.http-get", handlers.require("network.http-get").effectType());
         assertEquals("network.http-post", handlers.require("network.http-post").effectType());
+        assertEquals("network.download", handlers.require("network.download").effectType());
         assertEquals("socket.connect", handlers.require("socket.connect").effectType());
         assertEquals("socket.accept", handlers.require("socket.accept").effectType());
 
@@ -37,6 +42,75 @@ class BuiltinEffectHandlersTest {
                 && Boolean.TRUE.equals(envelope.get("ok"))
                 && envelope.get("value") instanceof Map<?, ?> endpoint
                 && Boolean.TRUE.equals(endpoint.get("oneShot")));
+    }
+
+    @Test
+    void downloadsBinaryResponsesWithoutUtf8Corruption() throws Exception {
+        byte[] packageBytes = new byte[]{0x53, 0x51, 0x4c, (byte) 0xff, 0x00, (byte) 0x80};
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/editor.db", exchange -> {
+            exchange.getResponseHeaders().set("Content-Type", "application/vnd.sqlite3");
+            exchange.sendResponseHeaders(200, packageBytes.length);
+            exchange.getResponseBody().write(packageBytes);
+            exchange.close();
+        });
+        server.start();
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.download");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of("url",
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/editor.db")),
+                    Optional.empty());
+            Object decoded = codec.valueFromJson(result.canonicalPayload());
+            assertTrue(decoded instanceof Map<?, ?> envelope);
+            Object value = ((Map<?, ?>) decoded).get("value");
+            assertTrue(value instanceof Map<?, ?>);
+            Map<?, ?> response = (Map<?, ?>) value;
+            assertEquals(200L, response.get("status"));
+            assertEquals("application/vnd.sqlite3", response.get("mediaType"));
+            assertEquals(Base64.getEncoder().encodeToString(packageBytes),
+                    response.get("bodyBase64"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void downloadsBoundedRangesForLargeFileAssembly() throws Exception {
+        byte[] file = "abcdefgh".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/large.bin", exchange -> {
+            assertEquals("bytes=2-4", exchange.getRequestHeaders().getFirst("Range"));
+            byte[] part = java.util.Arrays.copyOfRange(file, 2, 5);
+            exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
+            exchange.getResponseHeaders().set("Content-Range", "bytes 2-4/8");
+            exchange.getResponseHeaders().set("ETag", "\"stable\"");
+            exchange.sendResponseHeaders(206, part.length);
+            exchange.getResponseBody().write(part);
+            exchange.close();
+        });
+        server.start();
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.download");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of(
+                    "url", "http://127.0.0.1:" + server.getAddress().getPort() + "/large.bin",
+                    "offset", 2L, "maximumBytes", 3L)), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(result.canonicalPayload());
+            Map<?, ?> response = (Map<?, ?>) envelope.get("value");
+            assertEquals(206L, response.get("status"));
+            assertEquals(2L, response.get("offset"));
+            assertEquals(8L, response.get("totalBytes"));
+            assertEquals(false, response.get("complete"));
+            assertEquals("\"stable\"", response.get("validator"));
+            assertEquals(Base64.getEncoder().encodeToString(
+                    "cde".getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
+                    response.get("bodyBase64"));
+        } finally {
+            server.stop(0);
+        }
     }
 
     private Continuation.PersistedValue typed(Object value) {

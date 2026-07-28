@@ -1,0 +1,20 @@
+{
+  "namespace": "cilexec",
+  "name": "editor",
+  "version": "1.0.0",
+  "languageVersion": "fcl-1",
+  "modules": [
+    {"name": "main", "path": "main.fcl"}
+  ],
+  "resources": [],
+  "dependencies": [],
+  "entrypoints": [],
+  "exports": [
+    {"name": "open", "module": "main", "symbol": "open"}
+  ],
+  "capabilities": [
+    {"key": "vfs.read", "required": true, "rationale": "Open existing VFS text files"},
+    {"key": "vfs.write", "required": true, "rationale": "Save edited VFS text files"},
+    {"key": "terminal.raw_input", "required": true, "rationale": "Read interactive editor keys"}
+  ]
+}

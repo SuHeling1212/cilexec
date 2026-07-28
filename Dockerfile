@@ -13,6 +13,7 @@ RUN --mount=type=cache,target=/root/.m2 \
         dependency:go-offline
 
 COPY src ./src
+COPY market/sources ./market/sources
 RUN --mount=type=cache,target=/root/.m2 \
     mvn --batch-mode --no-transfer-progress \
         -Djava.net.preferIPv4Stack=true \
@@ -45,5 +46,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
     CMD ["/opt/cilexec/healthcheck.sh", "ready"]
 
-ENTRYPOINT ["java", "-XX:+ExitOnOutOfMemoryError", "-jar", "/opt/cilexec/cilexec-app.jar"]
+ENTRYPOINT ["java", "--enable-native-access=ALL-UNNAMED", "-XX:+ExitOnOutOfMemoryError", "-jar", "/opt/cilexec/cilexec-app.jar"]
 CMD ["terminal"]

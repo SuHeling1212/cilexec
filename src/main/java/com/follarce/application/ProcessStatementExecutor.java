@@ -22,6 +22,8 @@ import com.follarce.fcl.FclProgramLinker;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
+import com.follarce.extension.JavaExtensionCatalog;
+import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.scheduler.ClaimedProcessHandler;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 import com.follarce.persistence.sqlite.PackageDescriptor;
@@ -33,6 +35,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.ArrayList;
@@ -43,8 +46,10 @@ import java.util.Set;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Executes and durably commits exactly one FCL semantic step for a scheduler claim. */
+/** Executes one durable scheduler slice; interactive terminal slices may contain pure steps. */
 public final class ProcessStatementExecutor implements ClaimedProcessHandler {
+    private static final int MAX_TERMINAL_STEPS_PER_SLICE = 4_096;
+    private static final long MAX_TERMINAL_SLICE_NANOS = Duration.ofMillis(20).toNanos();
     private static final Set<String> BUILTIN_IMPORTS = Set.of(
             "math", "std.math", "util", "std.util", "path", "std.path", "term", "file",
             "io", "process", "user", "swapPool", "network", "socket", "package", "system");
@@ -53,17 +58,34 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private final FclProgramCodec programCodec;
     private final FclPersistenceBridge continuationBridge;
     private final Clock clock;
+    private final JavaExtensionCatalog extensions;
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions) {
-        this(transactions, null, new FclProgramCodec(), new FclContinuationCodec(),
-                Clock.systemUTC());
+        this(transactions, SourceExtensionIndex.catalog(), null, new FclProgramCodec(),
+                new FclContinuationCodec(), Clock.systemUTC());
+    }
+
+    public ProcessStatementExecutor(UserTransactionExecutor transactions,
+                                    JavaExtensionCatalog extensions) {
+        this(transactions, extensions, null, new FclProgramCodec(),
+                new FclContinuationCodec(), Clock.systemUTC());
     }
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions, FclRuntime runtime,
                                     FclProgramCodec programCodec,
                                     FclContinuationCodec continuationCodec,
                                     Clock clock) {
+        this(transactions, SourceExtensionIndex.catalog(), runtime, programCodec,
+                continuationCodec, clock);
+    }
+
+    ProcessStatementExecutor(UserTransactionExecutor transactions,
+                             JavaExtensionCatalog extensions, FclRuntime runtime,
+                             FclProgramCodec programCodec,
+                             FclContinuationCodec continuationCodec,
+                             Clock clock) {
         this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.extensions = Objects.requireNonNull(extensions, "extensions");
         this.fixedRuntime = runtime;
         this.programCodec = Objects.requireNonNull(programCodec, "programCodec");
         this.continuationBridge = new FclPersistenceBridge(
@@ -102,19 +124,30 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
             FclRuntime statementRuntime = fixedRuntime != null ? fixedRuntime
                     : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program,
-                    continuation, now));
-            FclStepResult step = statementRuntime.executeOne(compiled, continuation);
+                    continuation, now, extensions));
+            FclStepResult step = null;
             Program committedProgram = program;
             Continuation previousForPersistence = current.continuation();
-            ExecutionReplacement replacement = resolveExecutionReplacement(transaction,
-                    continuation);
-            if (replacement != null) {
-                committedProgram = replacement.program();
-                continuation = replacement.continuation();
-                previousForPersistence = initialContinuation(committedProgram);
+            int stepLimit = terminalProcess ? MAX_TERMINAL_STEPS_PER_SLICE : 1;
+            long sliceStarted = System.nanoTime();
+            for (int executed = 0; executed < stepLimit; executed++) {
+                step = statementRuntime.executeOne(compiled, continuation);
+                ExecutionReplacement replacement = resolveExecutionReplacement(transaction,
+                        continuation);
+                if (replacement != null) {
+                    committedProgram = replacement.program();
+                    continuation = replacement.continuation();
+                    previousForPersistence = initialContinuation(committedProgram);
+                    break;
+                }
+                resolveDirective(transaction, current, continuation, now);
+                deliverPendingTerminalInput(transaction, current, continuation, now);
+                if (terminalSliceBoundary(step, continuation)
+                        || System.nanoTime() - sliceStarted >= MAX_TERMINAL_SLICE_NANOS) {
+                    break;
+                }
             }
-            resolveDirective(transaction, current, continuation, now);
-            deliverPendingTerminalInput(transaction, current, continuation, now);
+            if (step == null) throw new IllegalStateException("Runtime slice executed no steps");
             Continuation persisted = continuationBridge.persist(current.identity().processUid(),
                     committedProgram, previousForPersistence, continuation.snapshot());
             persisted = withPackageBindings(persisted,
@@ -137,6 +170,16 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
             return null;
             });
+    }
+
+    private static boolean terminalSliceBoundary(FclStepResult step,
+                                                  FclContinuation continuation) {
+        if (step.status() == FclStepResult.Status.COMPLETED
+                || step.status() == FclStepResult.Status.FAILED
+                || step.status() == FclStepResult.Status.DIRECTIVE) {
+            return true;
+        }
+        return continuation.waitState().kind() != FclContinuation.WaitKind.NONE;
     }
 
     private FclProgram loadProgram(com.follarce.domain.port.TransactionContext transaction,
@@ -170,7 +213,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         return decoded;
     }
 
-    private static FclProgram linkPackages(
+    private FclProgram linkPackages(
             com.follarce.domain.port.TransactionContext transaction,
             CilProcess process,
             FclProgram base,
@@ -340,7 +383,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 });
     }
 
-    private static void resolveDirective(
+    private void resolveDirective(
             com.follarce.domain.port.TransactionContext transaction,
             CilProcess process,
             FclContinuation continuation,
@@ -416,8 +459,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 ? target.substring(0, target.length() - 2) : target;
     }
 
-    private static boolean isBuiltinImport(String target) {
-        return BUILTIN_IMPORTS.contains(target);
+    private boolean isBuiltinImport(String target) {
+        return BUILTIN_IMPORTS.contains(target) || extensions.namespaces().contains(target);
     }
 
     private static ExecutionReplacement resolveExecutionReplacement(

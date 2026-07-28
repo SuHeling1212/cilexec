@@ -446,10 +446,26 @@ public final class EffectWorkerService implements AutoCloseable {
     @Override
     public synchronized void close() {
         running.set(false);
-        workers.forEach(Thread::interrupt);
+        // Wake idle workers without interrupting an in-flight JDBC operation. Interrupting a
+        // PostgreSQL query closes its socket and makes an otherwise clean shutdown look like a
+        // broken database connection.
+        workers.forEach(LockSupport::unpark);
+        Instant gracefulDeadline = Instant.now().plus(Duration.ofSeconds(5));
         for (Thread worker : workers) {
             try {
-                worker.join(Duration.ofSeconds(5));
+                Duration remaining = Duration.between(Instant.now(), gracefulDeadline);
+                if (remaining.isPositive()) worker.join(remaining);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        // A genuinely stuck database or external call must not block shutdown forever.
+        workers.stream().filter(Thread::isAlive).forEach(Thread::interrupt);
+        for (Thread worker : workers) {
+            if (!worker.isAlive()) continue;
+            try {
+                worker.join(Duration.ofSeconds(1));
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 break;

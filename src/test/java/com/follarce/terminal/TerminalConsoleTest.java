@@ -31,6 +31,8 @@ class TerminalConsoleTest {
         assertInstanceOf(ShellCommand.Exit.class, control.commands.get(1));
         assertEquals(List.of("func twice(value) {\nreturn value * 2\n}", "twice(21)"),
                 control.sources);
+        assertEquals(List.of(":pwd", "func twice(value) {\nreturn value * 2\n}",
+                "twice(21)", ":exit"), control.remembered);
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("...> "));
     }
 
@@ -47,6 +49,8 @@ class TerminalConsoleTest {
                 control).run();
 
         assertEquals(List.of("hello from terminal"), control.attachedInputs);
+        assertEquals(List.of(":exit"), control.remembered,
+                "attached process input must not enter command history");
     }
 
     @Test
@@ -82,11 +86,29 @@ class TerminalConsoleTest {
         assertEquals(List.of(new ShellCommand.Exit()), control.commands);
     }
 
+    @Test
+    void forwardsNormalizedRawKeysWithoutPrintingAReplPrompt() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+        control.keyMode = true;
+        String input = "\u001b[A:exit\n";
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        assertEquals(List.of("UP"), control.attachedInputs);
+        assertEquals(List.of(new ShellCommand.Exit()), control.commands);
+    }
+
     private static final class RecordingControl implements TerminalControl {
         final List<ShellCommand> commands = new ArrayList<>();
         final List<String> sources = new ArrayList<>();
         final List<String> attachedInputs = new ArrayList<>();
+        final List<String> remembered = new ArrayList<>();
         boolean waiting;
+        boolean keyMode;
 
         @Override public String execute(ShellCommand command) {
             commands.add(command);
@@ -100,12 +122,26 @@ class TerminalConsoleTest {
 
         @Override public String submitAttachedInput(String input) {
             waiting = false;
+            keyMode = false;
             attachedInputs.add(input);
             return "accepted";
         }
 
         @Override public boolean awaitingAttachedInput() {
             return waiting;
+        }
+
+        @Override public AttachedInputMode attachedInputMode() {
+            if (keyMode) return AttachedInputMode.KEY;
+            return TerminalControl.super.attachedInputMode();
+        }
+
+        @Override public List<String> commandHistory() {
+            return List.of("persisted before restart");
+        }
+
+        @Override public void rememberCommand(String command) {
+            remembered.add(command);
         }
     }
 }

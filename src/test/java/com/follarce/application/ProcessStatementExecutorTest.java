@@ -19,6 +19,10 @@ import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
+import com.follarce.extension.JavaExtensionCatalog;
+import com.follarce.extension.api.CilExecExtension;
+import com.follarce.extension.api.ExtensionDescriptor;
+import com.follarce.extension.api.ExtensionRegistrar;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageEnvironments;
 import com.follarce.package_manager.PackageManifest;
@@ -101,6 +105,26 @@ class ProcessStatementExecutorTest {
         assertTrue(failure.halted());
         assertTrue(failure.failed());
         assertFalse(failure.exceptionStack().isEmpty());
+    }
+
+    @Test
+    void resolvesACompiledJavaExtensionNamespaceAsASystemImport() {
+        JavaExtensionCatalog extensions = JavaExtensionCatalog.compile(List.of(
+                new CilExecExtension() {
+                    @Override public ExtensionDescriptor descriptor() {
+                        return new ExtensionDescriptor("test.greeting", "1.0.0", "test");
+                    }
+
+                    @Override public void register(ExtensionRegistrar registrar) {
+                        registrar.function("greeting", "hello", context -> "hello");
+                    }
+                }));
+        Fixture fixture = new Fixture("import \"greeting\"\n", extensions);
+
+        fixture.executor.executeOne(fixture.claim);
+
+        assertEquals(CilProcess.Status.READY, fixture.persistence.processes.current.status());
+        assertTrue(fixture.persistence.processes.current.continuation().waitState().isEmpty());
     }
 
     @Test
@@ -345,13 +369,21 @@ class ProcessStatementExecutorTest {
                 new ProgramServiceTest.TestPersistence();
         final UUID ownerId = UUID.randomUUID();
         final UUID processUid = UUID.randomUUID();
-        final ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence,
-                new FclRuntime(FclBuiltins.pureRegistry()), new FclProgramCodec(),
-                new FclContinuationCodec(), CLOCK);
+        final ProcessStatementExecutor executor;
         SchedulerClaim claim;
         final Program program;
 
         Fixture(String source) {
+            this(source, null);
+        }
+
+        Fixture(String source, JavaExtensionCatalog extensions) {
+            executor = extensions == null
+                    ? new ProcessStatementExecutor(persistence,
+                    new FclRuntime(FclBuiltins.pureRegistry()), new FclProgramCodec(),
+                    new FclContinuationCodec(), CLOCK)
+                    : new ProcessStatementExecutor(persistence, extensions, null,
+                    new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
             program = new ProgramService(persistence, new FclCompiler(),
                     new FclProgramCodec(), CLOCK, UUID::randomUUID).create(ownerId, source);
             persistence.runtimeTransactions = 0;

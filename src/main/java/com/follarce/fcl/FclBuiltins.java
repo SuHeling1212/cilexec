@@ -18,6 +18,7 @@ public final class FclBuiltins {
         FclFunctionRegistry registry = new FclFunctionRegistry();
         registerMath(registry);
         registerUtil(registry, new Gson());
+        registerText(registry);
         registerPath(registry);
         registerTerminal(registry);
         return registry;
@@ -158,6 +159,80 @@ public final class FclBuiltins {
                 });
     }
 
+    private static void registerText(FclFunctionRegistry registry) {
+        registry.register("text", "slice", args -> {
+                    if (args.size() < 2 || args.size() > 3) {
+                        throw new FclRuntimeException("slice expects text, start, and optional end");
+                    }
+                    String value = stringAt(args, 0, "slice");
+                    int start = textIndex(args.get(1), value.length(), "slice start");
+                    int end = args.size() == 3
+                            ? textIndex(args.get(2), value.length(), "slice end")
+                            : value.length();
+                    if (end < start) throw new FclRuntimeException(
+                            "slice end cannot precede start");
+                    return value.substring(start, end);
+                })
+                .register("text", "split", args -> {
+                    arity(args, 2, "split");
+                    String value = stringAt(args, 0, "split");
+                    String delimiter = stringAt(args, 1, "split");
+                    if (delimiter.isEmpty()) {
+                        return value.codePoints().mapToObj(codePoint ->
+                                new String(Character.toChars(codePoint))).toList();
+                    }
+                    return List.of(value.split(java.util.regex.Pattern.quote(delimiter), -1));
+                })
+                .register("text", "join", args -> {
+                    arity(args, 2, "join");
+                    if (!(args.getFirst() instanceof List<?> values)) {
+                        throw new FclRuntimeException("join requires an array as its first argument");
+                    }
+                    String delimiter = stringAt(args, 1, "join");
+                    return values.stream().map(FclValues::display)
+                            .collect(java.util.stream.Collectors.joining(delimiter));
+                })
+                .register("text", "indexOf", args -> {
+                    if (args.size() < 2 || args.size() > 3) {
+                        throw new FclRuntimeException(
+                                "indexOf expects text, search text, and optional start");
+                    }
+                    String value = stringAt(args, 0, "indexOf");
+                    String search = stringAt(args, 1, "indexOf");
+                    int start = args.size() == 3
+                            ? textIndex(args.get(2), value.length(), "indexOf start") : 0;
+                    return (long) value.indexOf(search, start);
+                })
+                .register("text", "lastIndexOf", args -> {
+                    if (args.size() < 2 || args.size() > 3) {
+                        throw new FclRuntimeException(
+                                "lastIndexOf expects text, search text, and optional start");
+                    }
+                    String value = stringAt(args, 0, "lastIndexOf");
+                    String search = stringAt(args, 1, "lastIndexOf");
+                    int start = args.size() == 3
+                            ? textIndex(args.get(2), value.length(), "lastIndexOf start")
+                            : value.length();
+                    return (long) value.lastIndexOf(search, start);
+                })
+                .register("text", "repeat", args -> {
+                    arity(args, 2, "repeat");
+                    String value = stringAt(args, 0, "repeat");
+                    long count = integral(args.get(1), "repeat count");
+                    if (count < 0 || count > 1_000_000) {
+                        throw new FclRuntimeException(
+                                "repeat count must be between 0 and 1000000");
+                    }
+                    return value.repeat((int) count);
+                })
+                .register("text", "replace", args -> {
+                    arity(args, 3, "replace");
+                    return stringAt(args, 0, "replace").replace(
+                            stringAt(args, 1, "replace"),
+                            stringAt(args, 2, "replace"));
+                });
+    }
+
     private static void registerTerminal(FclFunctionRegistry registry) {
         registry.register("term", "color", args -> {
                     arity(args, 2, "color");
@@ -177,6 +252,23 @@ public final class FclBuiltins {
                 .register("term", "eraseLine", args -> {
                     arity(args, 0, "eraseLine");
                     return "\u001b[2K\r";
+                })
+                .register("term", "inverse", args -> ansiWrap(args, "inverse", "7"))
+                .register("term", "hideCursor", args -> {
+                    arity(args, 0, "hideCursor");
+                    return "\u001b[?25l";
+                })
+                .register("term", "showCursor", args -> {
+                    arity(args, 0, "showCursor");
+                    return "\u001b[?25h";
+                })
+                .register("term", "cursorTo", args -> {
+                    arity(args, 2, "cursorTo");
+                    long row = integral(args.get(0), "cursorTo row");
+                    long column = integral(args.get(1), "cursorTo column");
+                    if (row < 1 || column < 1) throw new FclRuntimeException(
+                            "cursorTo requires positive row and column values");
+                    return "\u001b[" + row + ";" + column + "H";
                 })
                 .register("term", "cursorUp", args -> cursor(args, "cursorUp", "A"))
                 .register("term", "cursorDown", args -> cursor(args, "cursorDown", "B"))
@@ -264,6 +356,22 @@ public final class FclBuiltins {
             throw new FclRuntimeException(function + " requires string arguments");
         }
         return text;
+    }
+
+    private static int textIndex(Object value, int maximum, String description) {
+        long index = integral(value, description);
+        if (index < 0 || index > maximum) {
+            throw new FclRuntimeException(description + " must be between 0 and " + maximum);
+        }
+        return (int) index;
+    }
+
+    private static long integral(Object value, String description) {
+        if (!(value instanceof Number number)
+                || number.doubleValue() != number.longValue()) {
+            throw new FclRuntimeException(description + " requires an integer");
+        }
+        return number.longValue();
     }
 
     private static void arity(List<Object> args, int expected, String function) {

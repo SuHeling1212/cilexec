@@ -1,0 +1,3 @@
+downloaded = network.download("http://host.docker.internal:8787/packages/cilexec/editor/1.0.0/editor.db", "/editor.db")
+installed = package.install("/editor.db", "editor")
+import "editor"

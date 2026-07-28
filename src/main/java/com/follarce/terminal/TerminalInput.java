@@ -42,6 +42,25 @@ public interface TerminalInput {
 
     char[] readPassword() throws IOException;
 
+    /** Reads one normalized key token for an attached full-screen FCL application. */
+    default String readKey(PrintWriter output) throws IOException {
+        String line = readLine();
+        if (line == null) return null;
+        return line.isEmpty() ? "ENTER" : String.valueOf(line.charAt(0));
+    }
+
+    /** Leaves persistent raw-key mode before returning to normal line input. */
+    default void finishKeyMode() throws IOException {
+    }
+
+    /** Replaces the editable history without rendering it. */
+    default void replaceHistory(List<String> commands) {
+    }
+
+    /** Makes a completed command immediately available to arrow-key navigation. */
+    default void rememberHistory(String command) {
+    }
+
     static TerminalInput visible(BufferedReader reader) {
         java.util.Objects.requireNonNull(reader, "reader");
         return new TerminalInput() {
@@ -55,6 +74,11 @@ public interface TerminalInput {
                 String value = reader.readLine();
                 return value == null ? null : value.toCharArray();
             }
+
+            @Override
+            public String readKey(PrintWriter output) throws IOException {
+                return decodeKey(reader.read(), reader::read);
+            }
         };
     }
 
@@ -62,6 +86,7 @@ public interface TerminalInput {
         java.util.Objects.requireNonNull(stream, "stream");
         Console console = stream == System.in ? System.console() : null;
         if (console != null) {
+            TerminalDimensions.refresh();
             return new EditableTerminalInput(stream, console);
         }
         return visible(new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8)));
@@ -69,11 +94,12 @@ public interface TerminalInput {
 
     /** A small dependency-free line editor for a real TTY. */
     final class EditableTerminalInput implements TerminalInput {
-        private static final int HISTORY_LIMIT = 200;
+        private static final int HISTORY_LIMIT = TerminalService.COMMAND_HISTORY_LIMIT;
 
         private final InputStream stream;
         private final Console console;
         private final List<String> history = new ArrayList<>();
+        private RawMode keyMode;
 
         EditableTerminalInput(InputStream stream, Console console) {
             this.stream = stream;
@@ -82,7 +108,9 @@ public interface TerminalInput {
 
         @Override
         public String readLine() {
-            return console.readLine();
+            String line = console.readLine();
+            TerminalDimensions.refresh();
+            return line;
         }
 
         @Override
@@ -93,6 +121,7 @@ public interface TerminalInput {
         @Override
         public String readLine(PrintWriter output, String prompt, boolean remember)
                 throws IOException {
+            finishKeyMode();
             output.print(prompt);
             output.flush();
             RawMode mode;
@@ -103,7 +132,9 @@ public interface TerminalInput {
                 return console.readLine();
             }
             try {
-                return edit(output, prompt, remember);
+                String line = edit(output, prompt, remember);
+                TerminalDimensions.refresh();
+                return line;
             } finally {
                 try {
                     mode.close();
@@ -118,6 +149,7 @@ public interface TerminalInput {
         public String readSubmission(PrintWriter output, String prompt,
                                      String continuationPrompt, boolean remember,
                                      Predicate<String> complete) throws IOException {
+            finishKeyMode();
             RawMode mode;
             try {
                 mode = RawMode.enable();
@@ -128,7 +160,10 @@ public interface TerminalInput {
             try {
                 output.print(prompt);
                 output.flush();
-                return editSubmission(output, prompt, continuationPrompt, remember, complete);
+                String submission = editSubmission(output, prompt, continuationPrompt,
+                        remember, complete);
+                TerminalDimensions.refresh();
+                return submission;
             } finally {
                 try {
                     mode.close();
@@ -140,6 +175,50 @@ public interface TerminalInput {
 
         String edit(PrintWriter output, String prompt, boolean remember) throws IOException {
             return editSubmission(output, prompt, prompt, remember, _ -> true);
+        }
+
+        @Override
+        public String readKey(PrintWriter output) throws IOException {
+            if (keyMode == null) keyMode = RawMode.enable();
+            String key = decodeByteKey(stream.read());
+            TerminalDimensions.refresh();
+            return key;
+        }
+
+        @Override
+        public void finishKeyMode() throws IOException {
+            if (keyMode == null) return;
+            RawMode current = keyMode;
+            keyMode = null;
+            current.close();
+        }
+
+        @Override
+        public void replaceHistory(List<String> commands) {
+            history.clear();
+            if (commands == null || commands.isEmpty()) return;
+            int start = Math.max(0, commands.size() - HISTORY_LIMIT);
+            for (int index = start; index < commands.size(); index++) {
+                remember(commands.get(index));
+            }
+        }
+
+        @Override
+        public void rememberHistory(String command) {
+            if (command != null && !command.isBlank()) remember(command);
+        }
+
+        private String decodeByteKey(int first) throws IOException {
+            if (first < 0 || first < 128) return decodeKey(first, stream::read);
+            int length = first >= 0xF0 ? 4 : first >= 0xE0 ? 3 : 2;
+            byte[] bytes = new byte[length];
+            bytes[0] = (byte) first;
+            for (int index = 1; index < length; index++) {
+                int next = stream.read();
+                if (next < 0) return null;
+                bytes[index] = (byte) next;
+            }
+            return new String(bytes, StandardCharsets.UTF_8);
         }
 
         String editSubmission(PrintWriter output, String prompt, String continuationPrompt,
@@ -173,7 +252,9 @@ public interface TerminalInput {
                 }
                 if (character == 127 || character == 8) {
                     if (cursor > 0) {
-                        value.deleteCharAt(--cursor);
+                        int previous = value.offsetByCodePoints(cursor, -1);
+                        value.delete(previous, cursor);
+                        cursor = previous;
                         RenderState state = redraw(output, prompt, continuationPrompt, value,
                                 cursor, screenCursorLine, renderedLines);
                         screenCursorLine = state.cursorLine();
@@ -226,7 +307,7 @@ public interface TerminalInput {
                         }
                         case 'C' -> { // Right
                             if (cursor < value.length()) {
-                                cursor++;
+                                cursor = value.offsetByCodePoints(cursor, 1);
                                 RenderState state = redraw(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
@@ -234,7 +315,7 @@ public interface TerminalInput {
                         }
                         case 'D' -> { // Left
                             if (cursor > 0) {
-                                cursor--;
+                                cursor = value.offsetByCodePoints(cursor, -1);
                                 RenderState state = redraw(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
@@ -245,13 +326,33 @@ public interface TerminalInput {
                     continue;
                 }
                 if (character >= 32 && character != 127) {
-                    value.insert(cursor++, (char) character);
+                    String typed = decodeUtf8(character);
+                    value.insert(cursor, typed);
+                    cursor += typed.length();
                     RenderState state = redraw(output, prompt, continuationPrompt, value, cursor,
                             screenCursorLine, renderedLines);
                     screenCursorLine = state.cursorLine();
                     renderedLines = state.renderedLines();
                 }
             }
+        }
+
+        private String decodeUtf8(int first) throws IOException {
+            if (first < 0x80) return String.valueOf((char) first);
+            int length;
+            if ((first & 0xE0) == 0xC0) length = 2;
+            else if ((first & 0xF0) == 0xE0) length = 3;
+            else if ((first & 0xF8) == 0xF0) length = 4;
+            else return "\uFFFD";
+            byte[] encoded = new byte[length];
+            encoded[0] = (byte) first;
+            for (int index = 1; index < length; index++) {
+                int next = stream.read();
+                if (next < 0) return "\uFFFD";
+                if ((next & 0xC0) != 0x80) return "\uFFFD";
+                encoded[index] = (byte) next;
+            }
+            return new String(encoded, StandardCharsets.UTF_8);
         }
 
         private void remember(String value) {
@@ -286,12 +387,54 @@ public interface TerminalInput {
             int moveUp = paintedLines - 1 - position.line();
             if (moveUp > 0) output.print("\u001b[" + moveUp + "A");
             output.print("\r");
-            int promptWidth = position.line() == 0 ? prompt.length()
-                    : continuationPrompt.length();
-            int moveRight = promptWidth + position.column();
+            int promptWidth = visibleWidth(position.line() == 0 ? prompt
+                    : continuationPrompt);
+            int lineStart = cursor;
+            while (lineStart > 0 && value.charAt(lineStart - 1) != '\n') lineStart--;
+            int moveRight = promptWidth + visibleWidth(value.substring(lineStart, cursor));
             if (moveRight > 0) output.print("\u001b[" + moveRight + "C");
             output.flush();
             return new RenderState(position.line(), lines.length);
+        }
+
+        /** Returns terminal columns while ignoring ANSI CSI formatting sequences. */
+        private static int visibleWidth(String value) {
+            int width = 0;
+            for (int index = 0; index < value.length();) {
+                char character = value.charAt(index);
+                if (character == '\u001b' && index + 1 < value.length()
+                        && value.charAt(index + 1) == '[') {
+                    index += 2;
+                    while (index < value.length()) {
+                        char ansi = value.charAt(index++);
+                        if (ansi >= '@' && ansi <= '~') break;
+                    }
+                    continue;
+                }
+                int codePoint = value.codePointAt(index);
+                index += Character.charCount(codePoint);
+                width += codePointWidth(codePoint);
+            }
+            return width;
+        }
+
+        private static int codePointWidth(int codePoint) {
+            if (Character.isISOControl(codePoint)) return 0;
+            int type = Character.getType(codePoint);
+            if (type == Character.NON_SPACING_MARK
+                    || type == Character.ENCLOSING_MARK
+                    || type == Character.COMBINING_SPACING_MARK) return 0;
+            if (codePoint >= 0x1100 && (codePoint <= 0x115F
+                    || codePoint == 0x2329 || codePoint == 0x232A
+                    || codePoint >= 0x2E80 && codePoint <= 0xA4CF
+                    || codePoint >= 0xAC00 && codePoint <= 0xD7A3
+                    || codePoint >= 0xF900 && codePoint <= 0xFAFF
+                    || codePoint >= 0xFE10 && codePoint <= 0xFE6F
+                    || codePoint >= 0xFF00 && codePoint <= 0xFF60
+                    || codePoint >= 0xFFE0 && codePoint <= 0xFFE6
+                    || codePoint >= 0x1F300 && codePoint <= 0x1FAFF
+                    || codePoint >= 0x20000 && codePoint <= 0x3FFFD)) return 2;
+            return 1;
         }
 
         private static int moveVertical(StringBuilder value, int cursor, int direction) {
@@ -303,7 +446,9 @@ public interface TerminalInput {
             for (int line = 0; line < targetLine; line++) {
                 target += lines[line].length() + 1;
             }
-            return target + Math.min(current.column(), lines[targetLine].length());
+            int targetColumns = Math.min(current.column(),
+                    lines[targetLine].codePointCount(0, lines[targetLine].length()));
+            return target + lines[targetLine].offsetByCodePoints(0, targetColumns);
         }
 
         private static Position position(StringBuilder value, int cursor) {
@@ -315,7 +460,7 @@ public interface TerminalInput {
                     lineStart = index + 1;
                 }
             }
-            return new Position(line, cursor - lineStart);
+            return new Position(line, value.codePointCount(lineStart, cursor));
         }
 
         private static int lineCount(StringBuilder value) {
@@ -339,6 +484,44 @@ public interface TerminalInput {
         private record RenderState(int cursorLine, int renderedLines) { }
     }
 
+    @FunctionalInterface
+    interface KeyReader {
+        int read() throws IOException;
+    }
+
+    private static String decodeKey(int first, KeyReader input) throws IOException {
+        if (first < 0) return null;
+        if (first == '\r' || first == '\n') return "ENTER";
+        if (first == '\t') return "TAB";
+        if (first == 127 || first == 8) return "BACKSPACE";
+        if (first > 0 && first < 27) {
+            return "CTRL_" + (char) ('A' + first - 1);
+        }
+        if (first != 27) return String.valueOf((char) first);
+
+        int prefix = input.read();
+        if (prefix != '[' && prefix != 'O') return "ESCAPE";
+        int code = input.read();
+        return switch (code) {
+            case 'A' -> "UP";
+            case 'B' -> "DOWN";
+            case 'C' -> "RIGHT";
+            case 'D' -> "LEFT";
+            case 'H' -> "HOME";
+            case 'F' -> "END";
+            case '3', '5', '6' -> {
+                int suffix = input.read();
+                if (suffix != '~') yield "ESCAPE";
+                yield switch (code) {
+                    case '3' -> "DELETE";
+                    case '5' -> "PAGE_UP";
+                    default -> "PAGE_DOWN";
+                };
+            }
+            default -> "ESCAPE";
+        };
+    }
+
     /** Temporarily disables canonical input and echo, then restores the exact old TTY state. */
     final class RawMode implements AutoCloseable {
         private final String previous;
@@ -350,7 +533,7 @@ public interface TerminalInput {
         static RawMode enable() throws IOException {
             String previous = stty("-g").trim();
             if (previous.isEmpty()) throw new IOException("stty did not return terminal state");
-            stty("-icanon", "min", "1", "time", "0", "-echo");
+            stty("-icanon", "min", "1", "time", "0", "-echo", "-isig", "-ixon");
             return new RawMode(previous);
         }
 

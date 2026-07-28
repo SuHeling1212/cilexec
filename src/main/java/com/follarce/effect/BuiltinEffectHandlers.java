@@ -2,9 +2,11 @@ package com.follarce.effect;
 
 import com.follarce.domain.process.Continuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.follarce.terminal.TerminalOutputTracker;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.Socket;
 import java.net.ServerSocket;
@@ -15,6 +17,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -26,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 /** Production handlers for the external effects exposed by the built-in FCL namespaces. */
 public final class BuiltinEffectHandlers {
     private static final int MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024;
+    private static final int MAX_DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
     private static final int MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 
     private BuiltinEffectHandlers() {}
@@ -39,6 +43,7 @@ public final class BuiltinEffectHandlers {
         handlers.add(new OutputHandler());
         handlers.add(new HttpHandler("network.http-get", "GET"));
         handlers.add(new HttpHandler("network.http-post", "POST"));
+        handlers.add(new DownloadHandler());
         handlers.add(new CommandHandler(allowedExecutables));
         for (String operation : List.of("connect", "send", "receive", "close", "bind",
                 "accept")) {
@@ -97,6 +102,7 @@ public final class BuiltinEffectHandlers {
                 if (newline) System.out.println(text);
                 else System.out.print(text);
                 System.out.flush();
+                TerminalOutputTracker.printed(text, newline);
             }
             return null;
         }
@@ -146,6 +152,130 @@ public final class BuiltinEffectHandlers {
             result.put("headers", response.headers().map());
             return Map.copyOf(result);
         }
+    }
+
+    /** Downloads one bounded binary range without materializing a complete large file. */
+    private static final class DownloadHandler extends TypedHandler {
+        private final HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(15))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+
+        @Override
+        public String effectType() {
+            return "network.download";
+        }
+
+        @Override
+        protected Object executeValue(Object request, Optional<String> idempotencyKey)
+                throws Exception {
+            Map<?, ?> map = requestMap(request);
+            URI uri = URI.create(text(map, "url"));
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+            if (!scheme.equals("http") && !scheme.equals("https")) {
+                throw new IllegalArgumentException("Only HTTP and HTTPS URLs are supported");
+            }
+            long offset = map.containsKey("offset")
+                    ? nonNegativeLong(map.get("offset"), "download offset") : 0L;
+            int maximum = map.containsKey("maximumBytes")
+                    ? positiveInt(map.get("maximumBytes"), "download maximum bytes")
+                    : MAX_DOWNLOAD_CHUNK_BYTES;
+            if (maximum > MAX_DOWNLOAD_CHUNK_BYTES) {
+                throw new IllegalArgumentException("Download chunks cannot exceed 4 MiB");
+            }
+            HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                    .timeout(Duration.ofSeconds(30))
+                    .header("User-Agent", "CilExec-FCL/1")
+                    .header("Range", "bytes=" + offset + "-"
+                            + Math.addExact(offset, maximum - 1L));
+            Object validator = map.get("validator");
+            if (validator instanceof String value && !value.isBlank()) {
+                builder.header("If-Range", value);
+            }
+            HttpResponse<InputStream> response = client.send(builder.GET().build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
+            byte[] body;
+            try (InputStream input = response.body()) {
+                body = readBounded(input, maximum, response.statusCode());
+            }
+            Range range = range(response, offset, body.length);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", (long) response.statusCode());
+            result.put("bodyBase64", Base64.getEncoder().encodeToString(body));
+            result.put("bytes", (long) body.length);
+            result.put("offset", range.offset());
+            result.put("complete", range.complete());
+            if (range.totalBytes() >= 0) result.put("totalBytes", range.totalBytes());
+            result.put("mediaType", response.headers().firstValue("Content-Type")
+                    .map(value -> value.split(";", 2)[0].trim())
+                    .filter(value -> !value.isBlank())
+                    .orElse("application/octet-stream"));
+            response.headers().firstValue("ETag")
+                    .filter(value -> !value.startsWith("W/"))
+                    .or(() -> response.headers().firstValue("Last-Modified"))
+                    .ifPresent(value -> result.put("validator", value));
+            return Map.copyOf(result);
+        }
+
+        private static byte[] readBounded(InputStream input, int maximum, int status)
+                throws IOException {
+            byte[] bytes = input.readNBytes(maximum + 1);
+            if (bytes.length > maximum) {
+                throw new IOException(status == 200
+                        ? "Server ignored byte-range request for a large download"
+                        : "Downloaded range exceeds 4 MiB");
+            }
+            return bytes;
+        }
+
+        private static Range range(HttpResponse<?> response, long requestedOffset,
+                                   int bodyLength) throws IOException {
+            int status = response.statusCode();
+            if (status == 200) {
+                if (requestedOffset != 0) {
+                    throw new IOException("Remote file changed or server stopped honoring ranges");
+                }
+                return new Range(0, bodyLength, true);
+            }
+            String contentRange = response.headers().firstValue("Content-Range").orElse("");
+            if (status == 416) {
+                java.util.regex.Matcher end = java.util.regex.Pattern
+                        .compile("bytes \\*/([0-9]+)").matcher(contentRange);
+                long total = end.matches() ? Long.parseLong(end.group(1)) : -1L;
+                return new Range(requestedOffset, total, total == requestedOffset);
+            }
+            if (status != 206) return new Range(requestedOffset, -1, true);
+            java.util.regex.Matcher partial = java.util.regex.Pattern
+                    .compile("bytes ([0-9]+)-([0-9]+)/([0-9]+|\\*)")
+                    .matcher(contentRange);
+            if (!partial.matches()) throw new IOException("Invalid Content-Range response");
+            long start = Long.parseLong(partial.group(1));
+            long end = Long.parseLong(partial.group(2));
+            if (start != requestedOffset || end - start + 1 != bodyLength) {
+                throw new IOException("Downloaded range does not match the request");
+            }
+            long total = partial.group(3).equals("*")
+                    ? -1L : Long.parseLong(partial.group(3));
+            return new Range(start, total, total >= 0 && end + 1 >= total);
+        }
+
+        private static int positiveInt(Object value, String field) {
+            if (!(value instanceof Number number) || number.doubleValue() != number.intValue()
+                    || number.intValue() < 1) {
+                throw new IllegalArgumentException(field + " must be a positive integer");
+            }
+            return number.intValue();
+        }
+
+        private static long nonNegativeLong(Object value, String field) {
+            if (!(value instanceof Number number) || number.doubleValue() != number.longValue()
+                    || number.longValue() < 0) {
+                throw new IllegalArgumentException(field + " must be a non-negative integer");
+            }
+            return number.longValue();
+        }
+
+        private record Range(long offset, long totalBytes, boolean complete) { }
     }
 
     private static final class CommandHandler extends TypedHandler {

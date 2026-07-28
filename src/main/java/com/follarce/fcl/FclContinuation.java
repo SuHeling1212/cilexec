@@ -161,6 +161,11 @@ public final class FclContinuation {
         return scope;
     }
 
+    /** Durable outermost scope retained across function returns and terminal submissions. */
+    public FclScope globalScope() {
+        return callStack.isEmpty() ? scope : callStack.getFirst().callerScope();
+    }
+
     public List<CallFrame> callStack() {
         return List.copyOf(callStack);
     }
@@ -264,7 +269,7 @@ public final class FclContinuation {
             throw new IllegalStateException(
                     "Only a completed continuation can accept the next submission");
         }
-        FclScope global = callStack.isEmpty() ? scope : callStack.getFirst().callerScope();
+        FclScope global = globalScope();
         return new FclContinuation(formatVersion, 0, global, List.of(), List.of(),
                 List.of(), List.of(), WaitState.ready(), null, false, false, null);
     }

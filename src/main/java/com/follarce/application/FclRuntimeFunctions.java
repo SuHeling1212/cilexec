@@ -32,17 +32,22 @@ import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclScope;
 import com.follarce.fcl.FclSuspension;
+import com.follarce.extension.JavaExtensionCatalog;
+import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.package_manager.PackageCoordinateConflictException;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageEnvironments;
+import com.follarce.terminal.TerminalDimensions;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +58,8 @@ import java.util.UUID;
 /** Explicit application adapter that exposes durable CilExec services to one FCL statement. */
 public final class FclRuntimeFunctions {
     private static final String TEXT = "text/plain;charset=utf-8";
+    static final long MAX_FILE_BYTES = 1L * 1024 * 1024 * 1024;
+    private static final int DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
     private static final EffectRequest.Policy MANUAL_EFFECT = new EffectRequest.Policy(
             false, Optional.empty(), false, false, EffectRequest.UnknownAction.MANUAL);
 
@@ -72,22 +79,32 @@ public final class FclRuntimeFunctions {
     private final Program program;
     private final FclContinuation continuation;
     private final Instant now;
+    private final JavaExtensionCatalog extensions;
     private final FclContinuationCodec codec = new FclContinuationCodec();
     private final FclFunctionRegistry registry = FclBuiltins.pureRegistry();
 
     private FclRuntimeFunctions(TransactionContext transaction, CilProcess process, Program program,
-                                FclContinuation continuation, Instant now) {
+                                FclContinuation continuation, Instant now,
+                                JavaExtensionCatalog extensions) {
         this.transaction = java.util.Objects.requireNonNull(transaction, "transaction");
         this.process = java.util.Objects.requireNonNull(process, "process");
         this.program = java.util.Objects.requireNonNull(program, "program");
         this.continuation = java.util.Objects.requireNonNull(continuation, "continuation");
         this.now = java.util.Objects.requireNonNull(now, "now");
+        this.extensions = java.util.Objects.requireNonNull(extensions, "extensions");
     }
 
     static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
                                       Program program, FclContinuation continuation, Instant now) {
+        return create(transaction, process, program, continuation, now,
+                SourceExtensionIndex.catalog());
+    }
+
+    static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
+                                      Program program, FclContinuation continuation, Instant now,
+                                      JavaExtensionCatalog extensions) {
         FclRuntimeFunctions functions = new FclRuntimeFunctions(transaction, process, program,
-                continuation, now);
+                continuation, now, extensions);
         functions.register();
         return functions.registry;
     }
@@ -102,6 +119,7 @@ public final class FclRuntimeFunctions {
         registerPackages();
         registerSwapPool();
         registerSystem();
+        extensions.installFunctions(registry, transaction, process, continuation, now);
     }
 
     private void registerPathState() {
@@ -169,7 +187,13 @@ public final class FclRuntimeFunctions {
                     if (upper <= lower) throw new FclRuntimeException(
                             "math.random upper bound must exceed lower bound");
                     return java.util.concurrent.ThreadLocalRandom.current().nextLong(lower, upper);
-                });
+                })
+                .register("term", "getSize", args -> {
+                    arity(args, 0, "term.getSize");
+                    TerminalDimensions.Size size = TerminalDimensions.current();
+                    return Map.of("width", (long) size.width(),
+                            "height", (long) size.height());
+                }, "size");
 
         FclFunctionRegistry.ContextFunction print = (args, invocation) -> {
             arity(args, 1, "print");
@@ -199,7 +223,11 @@ public final class FclRuntimeFunctions {
                 .aliasQualified("io.input", "util", "input")
                 .registerContextual("io", "readChar", (args, invocation) -> {
                     arity(args, 0, "io.readChar");
-                    return terminalInput(invocation, true);
+                    return terminalInput(invocation, true, false);
+                })
+                .registerContextual("io", "readKey", (args, invocation) -> {
+                    arity(args, 0, "io.readKey");
+                    return terminalInput(invocation, false, true);
                 })
                 .registerContextual("util", "sleep", (args, invocation) -> {
                     arity(args, 1, "util.sleep");
@@ -565,7 +593,8 @@ public final class FclRuntimeFunctions {
                     return external(invocation, "network.http-post", Map.of(
                             "url", string(args.get(0), "network.httpPost url"),
                             "body", display(args.get(1))), MANUAL_EFFECT, true);
-                }, "webpost");
+                }, "webpost")
+                .registerContextual("network", "download", this::download);
         for (String name : List.of("connect", "send", "receive", "close", "bind", "accept")) {
             registry.registerContextual("socket", name, (args, invocation) ->
                     external(invocation, "socket." + name,
@@ -1079,17 +1108,30 @@ public final class FclRuntimeFunctions {
                     throw new FclRuntimeException(
                             "system.forceRemove expects path or target-user/node IDs");
                 })
+                .register("system", "extensions", args -> {
+                    arity(args, 0, "system.extensions");
+                    return extensions.descriptors().stream().map(descriptor -> Map.of(
+                            "id", descriptor.id(),
+                            "version", descriptor.version(),
+                            "description", descriptor.description())).toList();
+                })
                 .register("system", "reset", args -> unavailable("system.reset",
                         "runtime reset requires the administrator control plane"));
     }
 
     private Object terminalInput(FclFunctionRegistry.Invocation invocation, boolean oneCharacter) {
+        return terminalInput(invocation, oneCharacter, false);
+    }
+
+    private Object terminalInput(FclFunctionRegistry.Invocation invocation, boolean oneCharacter,
+                                 boolean rawKey) {
         FclContinuation continuation = invocation.continuation();
         if (continuation.scope().contains(ProcessInbox.TERMINAL_INPUT)) {
             String input = display(continuation.scope().remove(ProcessInbox.TERMINAL_INPUT));
             return oneCharacter ? (input.isEmpty() ? "" : input.substring(0, 1)) : input;
         }
-        continuation.waitFor("input", Map.of("readChar", oneCharacter));
+        continuation.waitFor(rawKey ? "input:key" : "input",
+                Map.of("readChar", oneCharacter, "rawKey", rawKey));
         throw FclSuspension.suspend();
     }
 
@@ -1112,6 +1154,129 @@ public final class FclRuntimeFunctions {
         continuation.waitFor("effect:" + effectId, Map.of("effectType", effectType));
         audit("effect.request", effectId, Map.of("effectType", effectType));
         throw FclSuspension.suspend();
+    }
+
+    private Object download(List<Object> args, FclFunctionRegistry.Invocation invocation) {
+        arity(args, 2, "network.download");
+        Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
+        String url = string(args.get(0), "network.download url");
+        String path = string(args.get(1), "network.download destination");
+        FclScope scope = invocation.continuation().scope();
+        String state = "cilexec.download." + invocation.expressionId() + ".";
+        long offset = scope.contains(state + "offset")
+                ? integer(scope.get(state + "offset"), "network.download offset") : 0L;
+        Optional<ObjectHash> currentHash = scope.contains(state + "hash")
+                ? Optional.of(new ObjectHash(string(scope.get(state + "hash"),
+                "network.download object hash"))) : Optional.empty();
+        String mediaType = scope.contains(state + "mediaType")
+                ? string(scope.get(state + "mediaType"), "network.download media type") : null;
+        if (offset < 0 || offset > MAX_FILE_BYTES) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("Download state exceeds the 1 GiB file limit");
+        }
+
+        int maximum = (int) Math.min(DOWNLOAD_CHUNK_BYTES,
+                MAX_FILE_BYTES - offset + 1L);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("url", url);
+        request.put("offset", offset);
+        request.put("maximumBytes", (long) maximum);
+        if (scope.contains(state + "validator")) {
+            request.put("validator", string(scope.get(state + "validator"),
+                    "network.download validator"));
+        }
+        Object delivered = external(invocation, "network.download", Map.copyOf(request),
+                idempotentPolicy(invocation, "DOWNLOAD:" + url + ":" + offset), true);
+        if (!(delivered instanceof Map<?, ?> response)) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download returned an invalid response");
+        }
+        long status = integer(response.get("status"), "network.download status");
+        long total = response.containsKey("totalBytes")
+                ? integer(response.get("totalBytes"), "network.download total bytes") : -1L;
+        boolean complete = Boolean.TRUE.equals(response.get("complete"));
+        if (total > MAX_FILE_BYTES) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("Downloaded file exceeds the 1 GiB limit");
+        }
+        if (status == 416 && complete && total == offset && currentHash.isPresent()) {
+            if (mediaType == null) mediaType = "application/octet-stream";
+            clearDownloadState(scope, state);
+            String nodeId = attachDownloadedObject(path, currentHash.orElseThrow(), mediaType,
+                    offset, "network.download");
+            return Map.of("nodeId", nodeId, "path", normalize(path), "url", url,
+                    "status", 206L, "bytes", offset, "mediaType", mediaType);
+        }
+        if (status < 200 || status >= 300) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download failed with HTTP status " + status);
+        }
+        long returnedOffset = integer(response.get("offset"), "network.download returned offset");
+        if (returnedOffset != offset) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download returned the wrong byte range");
+        }
+        String encoded = string(response.get("bodyBase64"), "network.download body");
+        byte[] bytes;
+        try {
+            bytes = Base64.getDecoder().decode(encoded);
+        } catch (IllegalArgumentException invalid) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download returned invalid binary data");
+        }
+        long reportedBytes = integer(response.get("bytes"), "network.download returned bytes");
+        if (reportedBytes != bytes.length || offset + bytes.length > MAX_FILE_BYTES) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("Downloaded file exceeds the 1 GiB limit");
+        }
+        if (bytes.length == 0 && !complete) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download returned an empty incomplete range");
+        }
+        if (mediaType == null) {
+            mediaType = response.get("mediaType") instanceof String value && !value.isBlank()
+                    ? value : "application/octet-stream";
+        }
+
+        ObjectHash nextHash;
+        if (currentHash.isEmpty()) {
+            StoredObject first = StoredObject.create(new BinaryContent(bytes), mediaType, now);
+            transaction.vfs().saveObject(first);
+            nextHash = first.objectHash();
+        } else if (bytes.length == 0) {
+            nextHash = currentHash.orElseThrow();
+        } else {
+            nextHash = transaction.vfs().appendChunkedObject(currentHash.orElseThrow(), bytes,
+                    mediaType, now).objectHash();
+        }
+        long downloaded = offset + bytes.length;
+        if (complete && total >= 0 && total != downloaded) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download completed at the wrong file size");
+        }
+        complete = complete || total == downloaded;
+        if (complete) {
+            clearDownloadState(scope, state);
+            String nodeId = attachDownloadedObject(path, nextHash, mediaType, downloaded,
+                    "network.download");
+            return Map.of("nodeId", nodeId, "path", normalize(path), "url", url,
+                    "status", status, "bytes", downloaded, "mediaType", mediaType);
+        }
+
+        scope.put(state + "offset", downloaded);
+        scope.put(state + "hash", nextHash.value());
+        scope.put(state + "mediaType", mediaType);
+        if (response.get("validator") instanceof String validator && !validator.isBlank()) {
+            scope.put(state + "validator", validator);
+        }
+        return download(args, invocation);
+    }
+
+    private static void clearDownloadState(FclScope scope, String prefix) {
+        for (String suffix : List.of("offset", "hash", "mediaType", "validator")) {
+            String key = prefix + suffix;
+            if (scope.contains(key)) scope.remove(key);
+        }
     }
 
     private EffectRequest.Policy idempotentPolicy(FclFunctionRegistry.Invocation invocation,
@@ -1223,6 +1388,10 @@ public final class FclRuntimeFunctions {
     }
 
     private String writeBinary(String source, byte[] bytes, String mediaType) {
+        return writeBinary(source, bytes, mediaType, "package.build");
+    }
+
+    private String writeBinary(String source, byte[] bytes, String mediaType, String operation) {
         Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
         String path = normalize(source);
         Optional<VfsNode> existing = resolve(path);
@@ -1231,19 +1400,50 @@ public final class FclRuntimeFunctions {
                     .nodeId().toString();
         }
         VfsNode current = existing.orElseThrow();
-        requireType(current, VfsNode.Type.FILE, "package.build");
+        requireType(current, VfsNode.Type.FILE, operation);
         StoredObject object = StoredObject.create(new BinaryContent(bytes), mediaType, now);
         transaction.vfs().saveObject(object);
         if (!transaction.vfs().replaceContent(current.nodeId(), current.currentObjectHash(),
                 object.objectHash(), now)) {
-            throw new FclRuntimeException("Concurrent package output update rejected: " + path);
+            throw new FclRuntimeException("Concurrent binary output update rejected: " + path);
         }
         if (current.revisionEnabled()) {
             transaction.vfs().appendRevision(UUID.randomUUID(), current.nodeId(),
                     process.ownerId(), object.objectHash(), process.ownerId(), now);
         }
-        audit("package.build.output", current.nodeId(), Map.of("path", path,
+        audit(operation + ".output", current.nodeId(), Map.of("path", path,
                 "bytes", Integer.toString(bytes.length)));
+        return current.nodeId().toString();
+    }
+
+    /** Publishes an already persisted logical object only after every download chunk arrived. */
+    private String attachDownloadedObject(String source, ObjectHash objectHash, String mediaType,
+                                          long byteSize, String operation) {
+        Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
+        String path = normalize(source);
+        Optional<VfsNode> existing = resolve(path);
+        if (existing.isEmpty()) {
+            ParentAndName parent = parentAndName(path, process.ownerId());
+            VfsNode node = new VfsNode(UUID.randomUUID(), Optional.of(parent.parent().nodeId()),
+                    process.ownerId(), parent.name(), VfsNode.Type.FILE,
+                    Optional.of(objectHash), Set.of(), false, now, now);
+            transaction.vfs().insertNode(node);
+            audit(operation + ".output", node.nodeId(), Map.of("path", path,
+                    "bytes", Long.toString(byteSize), "mediaType", mediaType));
+            return node.nodeId().toString();
+        }
+        VfsNode current = existing.orElseThrow();
+        requireType(current, VfsNode.Type.FILE, operation);
+        if (!transaction.vfs().replaceContent(current.nodeId(), current.currentObjectHash(),
+                objectHash, now)) {
+            throw new FclRuntimeException("Concurrent binary output update rejected: " + path);
+        }
+        if (current.revisionEnabled()) {
+            transaction.vfs().appendRevision(UUID.randomUUID(), current.nodeId(),
+                    process.ownerId(), objectHash, process.ownerId(), now);
+        }
+        audit(operation + ".output", current.nodeId(), Map.of("path", path,
+                "bytes", Long.toString(byteSize), "mediaType", mediaType));
         return current.nodeId().toString();
     }
 

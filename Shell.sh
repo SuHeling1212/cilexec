@@ -7,6 +7,13 @@ cd "$project_dir"
 project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
 export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
+image_name="cilexec:${CILEXEC_IMAGE_TAG:-local}"
+rebuild=false
+
+if [[ "${1:-}" == "--rebuild" ]]; then
+    rebuild=true
+    shift
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "Error: Docker not found. Please install and start Docker Desktop." >&2
@@ -42,17 +49,22 @@ create_internal_secret "$secret_dir/cilexec-readonly-password"
 
 compose=(docker compose -f compose.yml -f compose.persistent.yml)
 
-# Ensure postgres is running
+# Ensure postgres is running.
 if ! "${compose[@]}" ps postgres 2>/dev/null | grep -q 'Up'; then
     echo "Starting postgres..."
     "${compose[@]}" up -d postgres
 fi
 
-# Build image if source code is present (development mode)
-if [ -d "$project_dir/src" ]; then
-    echo "Image cilexec:local Building"
+if [[ "$rebuild" == true ]] || ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    if [[ ! -d "$project_dir/src" ]]; then
+        echo "Error: image $image_name is missing and this distribution has no source to build it." >&2
+        exit 1
+    fi
+    echo "Building image $image_name..."
     "${compose[@]}" build
-    echo "Image cilexec:local Built"
+    echo "Image $image_name built."
+else
+    echo "Reusing image $image_name (use --rebuild to rebuild it)."
 fi
 
 enter_program() {

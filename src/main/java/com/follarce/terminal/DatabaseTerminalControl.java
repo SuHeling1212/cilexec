@@ -79,6 +79,25 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     @Override
+    public AttachedInputMode attachedInputMode() {
+        return repl.active(user.userId(), sessionId)
+                .filter(snapshot -> snapshot.status() == CilProcess.Status.WAITING_INPUT)
+                .map(snapshot -> snapshot.keyInput()
+                        ? AttachedInputMode.KEY : AttachedInputMode.LINE)
+                .orElse(AttachedInputMode.NONE);
+    }
+
+    @Override
+    public List<String> commandHistory() {
+        return terminals.commandHistory(user.userId());
+    }
+
+    @Override
+    public void rememberCommand(String command) {
+        terminals.rememberCommand(user.userId(), command);
+    }
+
+    @Override
     public String prompt() {
         String usernameColor = isAdmin() ? "[31m" : "[32m";
         String reset = "[0m";
@@ -186,7 +205,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 return renderFinished(latest);
             }
             if (latest.status() == CilProcess.Status.WAITING_INPUT) {
-                return "PID " + pid + " is " + latest.status();
+                return "";
             }
             LockSupport.parkNanos(POLL_INTERVAL.toNanos());
             if (Thread.currentThread().isInterrupted()) {
@@ -200,7 +219,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
     private TerminalReplService.Snapshot snapshot(long pid) {
         CilProcess process = findProcess(pid);
         return new TerminalReplService.Snapshot(pid, process.status(), null, Map.of(),
-                process.status() == CilProcess.Status.FAILED, List.of());
+                process.status() == CilProcess.Status.FAILED, false, List.of());
     }
 
     private String renderFinished(TerminalReplService.Snapshot snapshot) {
@@ -209,8 +228,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
                     : String.join("\n", snapshot.errors());
             return "error in PID " + snapshot.pid() + ": " + detail;
         }
-        return snapshot.result() == null ? "ok (PID " + snapshot.pid() + ")"
-                : repl.render(snapshot.result());
+        return snapshot.result() == null ? "" : repl.render(snapshot.result());
     }
 
     private CilProcess findProcess(long pid) {
@@ -241,6 +259,15 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 Line editing:
                   Up/Down                        select earlier terminal commands
                   Left/Right                     move the cursor within the current line
+
+                FCL editor package (install it from the market first):
+                  network.download(url, "/editor.db")
+                                                  download the SQLite package into VFS
+                  package.install("/editor.db", "editor")
+                                                  install and bind the downloaded package
+                  import "editor"                 import the installed editor package once
+                  editor.open("notes.txt")         open or create a VFS text file
+                  Ctrl-O/Ctrl-S save, Ctrl-X exit, Ctrl-W search, Ctrl-K cut line, Ctrl-U paste
 
                 Process, file, package, user, effect, and system operations are FCL functions.
 

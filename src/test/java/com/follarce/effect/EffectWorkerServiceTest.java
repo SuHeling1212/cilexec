@@ -170,6 +170,25 @@ class EffectWorkerServiceTest {
         assertTrue(persistence.effects.attempts.isEmpty());
     }
 
+    @Test
+    void gracefulCloseDoesNotInterruptAnInFlightDatabaseOperation() throws Exception {
+        FakePersistence persistence = new FakePersistence(unknown(manualPolicy()));
+        BlockingTransactions blocking = new BlockingTransactions(persistence);
+        EffectWorkerService workers = new EffectWorkerService(blocking, persistence,
+                UUID.randomUUID(), new EffectHandlerRegistry(List.of(handler(request ->
+                value("text/plain", "unused")))), 1, Duration.ofMillis(1), CLOCK,
+                failure -> { });
+        workers.start();
+        assertTrue(blocking.entered.await(1, TimeUnit.SECONDS));
+
+        Thread closer = Thread.ofVirtual().start(workers::close);
+        Thread.sleep(50);
+        assertFalse(blocking.interrupted.get());
+        blocking.release.countDown();
+        assertTrue(closer.join(Duration.ofSeconds(1)));
+        assertFalse(blocking.interrupted.get());
+    }
+
     private static EffectWorkerService workers(FakePersistence persistence,
                                                 EffectHandler handler) {
         return new EffectWorkerService(persistence, persistence, UUID.randomUUID(),
@@ -256,6 +275,33 @@ class EffectWorkerServiceTest {
         @Override public void commit() { }
         @Override public void rollback() { }
         @Override public void close() { }
+    }
+
+    private static final class BlockingTransactions implements TransactionExecutor {
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicBoolean interrupted =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final TransactionExecutor delegate;
+
+        BlockingTransactions(TransactionExecutor delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public <T> T inTransaction(Isolation isolation, TransactionWork<T> work) {
+            entered.countDown();
+            try {
+                if (!release.await(1, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Timed out waiting to release test transaction");
+                }
+            } catch (InterruptedException failure) {
+                interrupted.set(true);
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Database operation was interrupted", failure);
+            }
+            return delegate.inTransaction(isolation, work);
+        }
     }
 
     private static final class FakeEffects implements EffectRepository {

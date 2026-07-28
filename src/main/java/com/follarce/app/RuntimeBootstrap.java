@@ -7,6 +7,7 @@ import com.follarce.effect.EffectHandler;
 import com.follarce.effect.EffectHandlerRegistry;
 import com.follarce.effect.EffectWorkerService;
 import com.follarce.effect.BuiltinEffectHandlers;
+import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.health.HealthServer;
 import com.follarce.health.HealthState;
 import com.follarce.persistence.postgres.connection.ControlLock;
@@ -48,14 +49,14 @@ public final class RuntimeBootstrap {
 
     public static RuntimeLifecycle assemble(CilExecConfig config, BuildInfo buildInfo) {
         return assemble(config, buildInfo, ProcessStatementExecutor::new,
-                BuiltinEffectHandlers.defaults());
+                productionEffectHandlers());
     }
 
     public static RuntimeLifecycle assembleTerminal(CilExecConfig config, BuildInfo buildInfo,
                                                     TerminalSettings settings,
                                                     InputStream input, OutputStream output) {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo,
-                ProcessStatementExecutor::new, BuiltinEffectHandlers.defaults(), settings,
+                ProcessStatementExecutor::new, productionEffectHandlers(), settings,
                 input, output);
         RuntimeLifecycle lifecycle = new RuntimeLifecycle(hooks, config.shutdownGrace());
         hooks.terminalShutdown = () -> lifecycle.shutdown("terminal closed");
@@ -71,6 +72,13 @@ public final class RuntimeBootstrap {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo, handlerFactory,
                 effectHandlers, null, null, null);
         return new RuntimeLifecycle(hooks, config.shutdownGrace());
+    }
+
+    private static List<? extends EffectHandler> productionEffectHandlers() {
+        List<EffectHandler> handlers = new java.util.ArrayList<>(
+                BuiltinEffectHandlers.defaults());
+        handlers.addAll(SourceExtensionIndex.catalog().effectHandlers());
+        return List.copyOf(handlers);
     }
 
     private static final class ProductionHooks implements RuntimeLifecycle.Hooks {
@@ -196,7 +204,7 @@ public final class RuntimeBootstrap {
                     new JdbcTransactionExecutor(effectDataSource);
             effectWorkers = new EffectWorkerService(effectTransactions, runtimeTransactions,
                     requireBoot().bootId(), new EffectHandlerRegistry(effectHandlers), config.effectWorkers(),
-                    config.heartbeatInterval(), Clock.systemUTC(), requireFence());
+                    config.effectIdlePoll(), Clock.systemUTC(), requireFence());
             effectWorkers.start();
         }
 

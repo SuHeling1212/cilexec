@@ -186,7 +186,7 @@ class PackageManagerTest {
             }
             @Override public void disablePrincipal(UUID id) { }
             @Override public Set<Capability> capabilities(UUID id) {
-                return Set.of(Capability.PACKAGE_IMPORT);
+                return Set.of(Capability.PACKAGE_IMPORT, Capability.PACKAGE_BIND);
             }
             @Override public void replaceCapabilities(UUID id, Set<Capability> capabilities) { }
         }; }
@@ -222,6 +222,8 @@ class PackageManagerTest {
         private final Map<PackageRelease.Hash, PackageRelease> byHash = new LinkedHashMap<>();
         private final Map<PackageRelease.Coordinate, PackageRelease> byCoordinate =
                 new LinkedHashMap<>();
+        private final Map<UUID, PackageEnvironment> environments = new LinkedHashMap<>();
+        private final Map<String, PackageBinding> bindings = new LinkedHashMap<>();
         private PackageIndex lastIndex;
 
         @Override public ReleaseWriteResult registerRelease(PackageIndex index) {
@@ -244,13 +246,16 @@ class PackageManagerTest {
             return Optional.ofNullable(byCoordinate.get(coordinate));
         }
         @Override public void saveEnvironment(PackageEnvironment environment) {
-            throw new UnsupportedOperationException();
+            environments.put(environment.environmentId(), environment);
+        }
+        @Override public Optional<PackageEnvironment> findEnvironment(UUID environmentId) {
+            return Optional.ofNullable(environments.get(environmentId));
         }
         @Override public void saveBinding(PackageBinding binding) {
-            throw new UnsupportedOperationException();
+            bindings.put(binding.environmentId() + "\u0000" + binding.binding(), binding);
         }
         @Override public Optional<PackageBinding> findBinding(UUID id, String binding) {
-            return Optional.empty();
+            return Optional.ofNullable(bindings.get(id + "\u0000" + binding));
         }
         @Override public void saveProcessBinding(ProcessPackageBinding binding) {
             throw new UnsupportedOperationException();

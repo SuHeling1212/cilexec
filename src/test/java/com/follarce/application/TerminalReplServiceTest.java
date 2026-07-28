@@ -76,6 +76,67 @@ class TerminalReplServiceTest {
         assertEquals(42L, repl.active(owner, sessionId).orElseThrow().result());
     }
 
+    @Test
+    void exposesRawKeyWaitModeForFullScreenFclPrograms() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        repl.submit(owner, sessionId, "io.readKey()");
+        CilProcess current = persistence.processes.current;
+        CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+        persistence.processes.current = claimed;
+        SchedulerClaim claim = new SchedulerClaim(claimed.identity().processUid(), owner,
+                UUID.randomUUID(), UUID.randomUUID(), claimed.executionEpoch(), NOW, NOW,
+                NOW.plus(Duration.ofMinutes(1)));
+        persistence.scheduler.lease = claim;
+        executor.executeOne(claim);
+
+        TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
+        assertEquals(CilProcess.Status.WAITING_INPUT, snapshot.status());
+        assertTrue(snapshot.keyInput());
+    }
+
+    @Test
+    void executesPureTerminalInstructionsInOneDurableSchedulerSlice() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        repl.submit(owner, sessionId, "first = 1\nsecond = first + 1");
+        CilProcess current = persistence.processes.current;
+        CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+        persistence.processes.current = claimed;
+        SchedulerClaim claim = new SchedulerClaim(claimed.identity().processUid(), owner,
+                UUID.randomUUID(), UUID.randomUUID(), claimed.executionEpoch(), NOW, NOW,
+                NOW.plus(Duration.ofMinutes(1)));
+        persistence.scheduler.lease = claim;
+
+        executor.executeOne(claim);
+
+        TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
+        assertEquals(CilProcess.Status.PAUSED, snapshot.status());
+        assertEquals(1L, snapshot.variables().get("first"));
+        assertEquals(2L, snapshot.variables().get("second"));
+        assertEquals(1, persistence.scheduler.releases);
+    }
+
     private static void run(ProgramServiceTest.TestPersistence persistence,
                             ProcessStatementExecutor executor, UUID owner) {
         int steps = 0;

@@ -16,6 +16,17 @@ class CilExecConfigTest {
         assertEquals(4, config.schedulerWorkers());
         assertEquals(8, config.runtimeDatabase().maximumPoolSize());
         assertEquals(Duration.ofMillis(25), config.schedulerIdlePoll());
+        assertEquals(Duration.ofMillis(25), config.effectIdlePoll());
+    }
+
+    @Test
+    void effectPollingIsConfiguredIndependentlyFromTheRuntimeHeartbeat() {
+        CilExecConfig config = CilExecConfig.load(Map.of(
+                "CILEXEC_HEARTBEAT_INTERVAL", "PT7S",
+                "CILEXEC_EFFECT_IDLE_POLL", "PT0.004S"));
+
+        assertEquals(Duration.ofSeconds(7), config.heartbeatInterval());
+        assertEquals(Duration.ofMillis(4), config.effectIdlePoll());
     }
 
     @Test

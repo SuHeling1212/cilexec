@@ -146,7 +146,10 @@ public final class TerminalReplService {
         variables.remove(TERMINAL_PROCESS_SCOPE_KEY);
         variables.remove(FclPath.SCOPE_KEY);
         return new Snapshot(process.identity().pid(), process.status(), runtime.result(),
-                Map.copyOf(variables), runtime.failed(), runtime.exceptionStack().stream()
+                Map.copyOf(variables), runtime.failed(),
+                runtime.waitState().kind() == FclContinuation.WaitKind.EXTERNAL
+                        && "input:key".equals(runtime.waitState().key()),
+                runtime.exceptionStack().stream()
                 .map(frame -> frame.type() + ": " + frame.message()).toList());
     }
 
@@ -249,7 +252,7 @@ public final class TerminalReplService {
     }
 
     public record Snapshot(long pid, CilProcess.Status status, Object result,
-                           Map<String, Object> variables, boolean failed,
+                           Map<String, Object> variables, boolean failed, boolean keyInput,
                            List<String> errors) {
         public Snapshot {
             variables = Map.copyOf(variables);

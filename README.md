@@ -52,7 +52,20 @@ On first use, the terminal asks you to choose and confirm the administrator pass
 eight characters). Afterwards choose `login`, then enter username `local` and that password.
 Set `CILEXEC_TERMINAL_USERNAME` before starting if the deployment administrator should have a
 different name. The launcher uses the persistent Compose profile; the database volume is retained
-for the next run.
+for the next run. Existing images, the PostgreSQL container, and the stopped terminal container
+are reused, so normal starts do not rebuild or download the application image. After changing the
+source code, explicitly rebuild and recreate the terminal container with:
+
+```bash
+./Install.sh --rebuild
+```
+
+The editor is distributed by the host-side local package market, not embedded in the Runtime
+image. Start the market in a second host terminal before installing market packages:
+
+```bash
+./market/start.sh
+```
 
 The manual deployment procedure is below.
 
@@ -115,6 +128,21 @@ process `PAUSED`, and the next input is installed atomically only while it remai
 working directory, variables, imports, and function declarations live in that process and survive
 logout/login and Runtime restarts.
 Relative VFS paths in REPL submissions resolve against the terminal's durable working directory.
+The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.0`) served by
+the host market. Download and install it once for the current user, then import it into the durable
+terminal context:
+
+```fcl
+network.download("http://host.docker.internal:8787/packages/cilexec/editor/1.0.0/editor.db", "/editor.db")
+package.install("/editor.db", "editor")
+import "editor"
+editor.open("notes.txt")
+```
+
+The package supports cursor movement, multiline insertion/deletion, save, guarded exit, search,
+line cut/paste, Home/End, paging, and an in-editor help screen. `Ctrl-O` (nano style) and `Ctrl-S`
+both save; `Ctrl-X` exits. The Runtime image contains neither the editor source nor its package
+database; the package is independently built and published under `market/repository/`.
 Use `:help` for the command list. The explicit
 `runtime` command remains a headless operations mode for deployments that deliberately provide
 another terminal transport.
@@ -151,6 +179,12 @@ separate `pg_dump` disaster-recovery backup.
 Complete user-facing signatures, aliases, permission scope, terminal commands, and examples are
 in [the FCL function reference](docs/fcl-function-reference.md).
 
+Java developers can add compile-time-only FCL functions and external-effect handlers through the
+explicit source extension index. There is no runtime JAR loading, directory scanning, install,
+uninstall, or hot update path; changing the sealed extension set requires rebuilding CilExec.
+The complete API, persistence rules, example, recovery policies, and release checklist are in
+[the Java source extension guide](docs/java-extension-development.md).
+
 The runtime registry exposes `math`, `util`, `path`, `term`, `file`, `io`, `process`, `user`,
 `swapPool`, `network`, `socket`, `package`, and `system` namespaces. Local database operations
 commit with the FCL statement. Input, timers, HTTP, terminal output, one-shot sockets, and
@@ -168,6 +202,8 @@ All calls still execute under the caller's stable PostgreSQL LOGIN role and forc
 executable in the comma-separated `CILEXEC_FCL_EXEC_ALLOWLIST`; the default allowlist is empty.
 Arbitrary JVM reflection, live socket handles, in-place identity switching, and destructive host
 filesystem reset are intentionally not exposed because they violate the durable/RLS boundary.
+`system.extensions()` reports the immutable Java extension descriptors embedded in the current
+build; `system.ls()` includes their registered functions.
 
 ## Build, install, import, and run packages
 
@@ -211,8 +247,8 @@ The first successful import writes an immutable `(process, import name) -> packa
 On every later statement and after a crash, the Runtime reloads the exact SQLite package bytes,
 checks module hashes, deterministically links the exported functions, and resumes the same
 continuation. `package.run(binding, entrypoint)` creates a normal durable child process and returns
-its PID/process identity. Remote stores and dependency solving are intentionally outside this
-local package workflow.
+its PID/process identity. The host-side market provides a versioned JSON index and immutable
+package downloads. Dependency solving and cryptographic publisher trust remain future work.
 
 ## Backup and disaster recovery
 

@@ -15,11 +15,14 @@ import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /** Persists complete terminal inputs, attachments, and process interrupts. */
 public final class TerminalService {
+    public static final int COMMAND_HISTORY_LIMIT = 200;
+
     private final UserTransactionExecutor transactions;
     private final Clock clock;
 
@@ -52,6 +55,25 @@ public final class TerminalService {
                 transaction.audit().append(audit(ownerId, "terminal.open", session.sessionId(), now));
                 return session;
             });
+        });
+    }
+
+    /** Loads only this user's durable commands; it never includes passwords or process input. */
+    public List<String> commandHistory(UUID ownerId) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
+            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+            return transaction.terminal().findCommandHistory(ownerId, COMMAND_HISTORY_LIMIT);
+        });
+    }
+
+    public void rememberCommand(UUID ownerId, String command) {
+        if (command == null || command.isBlank()) return;
+        Instant now = clock.instant();
+        transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
+            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+            transaction.terminal().appendCommandHistory(ownerId, command, now,
+                    COMMAND_HISTORY_LIMIT);
+            return null;
         });
     }
 

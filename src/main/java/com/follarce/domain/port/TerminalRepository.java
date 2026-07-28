@@ -5,6 +5,7 @@ import com.follarce.domain.terminal.TerminalSession;
 import java.util.Optional;
 import java.util.UUID;
 import java.time.Instant;
+import java.util.List;
 
 public interface TerminalRepository {
     void saveSession(TerminalSession session);
@@ -24,6 +25,17 @@ public interface TerminalRepository {
     default boolean changeWorkingDirectory(UUID sessionId, String expected,
                                            String replacement, Instant at) {
         throw new UnsupportedOperationException("Working-directory changes are not implemented");
+    }
+
+    /** Complete REPL and colon-command history, ordered from oldest to newest. */
+    default List<String> findCommandHistory(UUID ownerId, int limit) {
+        return List.of();
+    }
+
+    /** Adds one user command and prunes older rows beyond {@code limit}. */
+    default void appendCommandHistory(UUID ownerId, String command, Instant submittedAt,
+                                      int limit) {
+        throw new UnsupportedOperationException("Terminal command history is not implemented");
     }
 
     void appendInput(TerminalSession.Input input);

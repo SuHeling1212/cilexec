@@ -93,6 +93,13 @@ class FclCodecAndRegistryTest {
 
         assertEquals(3.0d, second.invoke("sqrt", List.of(9L)));
         assertEquals("/a/c", second.invoke("path.normalize", List.of("/a/b/../c")));
+        assertEquals("bc", second.invoke("text.slice", List.of("abcd", 1L, 3L)));
+        assertEquals(List.of("a", "", "b"),
+                second.invoke("text.split", List.of("a\n\nb", "\n")));
+        assertEquals("a/b", second.invoke("text.join", List.of(List.of("a", "b"), "/")));
+        assertEquals(2L, second.invoke("text.indexOf", List.of("abcd", "c")));
+        assertEquals("xxx", second.invoke("text.repeat", List.of("x", 3L)));
+        assertEquals("\u001b[2;4H", second.invoke("term.cursorTo", List.of(2L, 4L)));
     }
 
     private static void runToCompletion(FclRuntime runtime, FclProgram program,

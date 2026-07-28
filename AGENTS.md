@@ -26,17 +26,6 @@ windows ./build/run.bat
 
 **Note:** JUnit 5 process, lifecycle, and crash-recovery tests are available under `src/test/`. Run them with `mvn test`.
 
-## Completion Notification
-
-After completing a task, run the appropriate script before sending the final response so the user hears a sound:
-
-- **Sub-agent (completing its own delegated task):** uses Blow sound
-  - macOS / Linux: `./build/when_users_listen_to_this_they_will_not_come_like_a_cat.sh`
-  - Windows: `build\when_users_listen_to_this_they_will_not_come_like_a_cat.bat`
-- **Main agent (completing all tasks in the current conversation):** uses Glass sound
-  - macOS / Linux: `./build/when_users_listen_to_this_they_will_come_like_a_dog.sh`
-  - Windows: `build\when_users_listen_to_this_they_will_come_like_a_dog.bat`
-
 ## High-Level Architecture
 
 Cilexec is a **process management & scripting engine** that runs FCL (Follarce CilExec Language) scripts. It simulates an OS-like process environment on top of the host filesystem.
@@ -53,10 +42,10 @@ The system has **no in-memory runtime state that survives crashes**. Everything 
 | `com.follarce.Constants` | All system constants (tick rates, priorities, VFS paths, permissions, defaults) |
 | `com.follarce.process` | **Scheduler**, **ProcessRunner**, **StateManager**, **ProcessLauncher**, **ProcessFileAllocator**, **IpcHandler**, and FCL execution helpers |
 | `com.follarce.script` | **Lexer/Parser/AstNode/NodeEvaluator** (expression evaluation), **StatementParser** (statement splitting), **Token/TokenType/NodeType** (types), **FunctionDef/Instruction/InstructionType** (compilation units), **StringEscape** |
-| `com.follarce.kernel.api.function` | Stable in-binary function extension contracts: **FunctionProvider**, **FunctionContext**, and effect policy types |
-| `com.follarce.kernel.function` | Kernel-side **FunctionRegistry** for built-in providers and process-local user functions |
-| `com.follarce.extension.builtin` | Compile-time built-in providers across `file`, `io`, `util`, `user`, `process`, `swapPool`, `network`, `socket`, `math`, `path`, `package`, `system` namespaces |
-| `com.follarce.bootstrap` | Explicit compile-time assembly index; no classpath plugin discovery |
+| `com.follarce.extension.api` | Stable source-extension contracts for FCL functions, durable state, transaction access, and journaled external effects |
+| `com.follarce.extension` | Immutable compile-time extension catalog and the single explicit `SourceExtensionIndex`; no runtime/classpath discovery |
+| `com.follarce.fcl` | FCL compiler, interpreter, continuation codec, pure built-ins, and function registry |
+| `com.follarce.application.FclRuntimeFunctions` | Database-aware built-in FCL functions and binding of the sealed Java extension catalog |
 | `com.follarce.shell` | Host-only Java control plane: command parser, disk-backed control service, and interactive console; never an FCL process |
 | `com.follarce.kernel.terminal` | Owns host standard-input routing so FCL input cannot consume Shell commands |
 | `com.follarce.util` | **FileUtil** (VFS — metadata+body format, permissions, locks, symlinks, 787 lines), **UserUtil** (user CRUD, ThreadLocal auth), **PathUtil** (path resolution, `.proc` path conversion), **JsonUtil** (Gson wrapper), **NetworkUtil** / **SocketUtil** |
@@ -89,10 +78,12 @@ Two modes controlled by `Constants.USE_VIRTUAL_THREADS` (default: `true`):
 
 ### Adding New Functionality
 
-To add a new built-in namespace of FCL functions:
-1. Add a provider under `com.follarce.extension.builtin`
-2. Add it to `BuiltinProviderIndex`; providers are fixed at compile time and shipped in the single JAR
-3. Follow the existing provider patterns for permissions and recoverable effects
+To add a source-only Java extension:
+1. Implement `CilExecExtension` under the developer's own Java package.
+2. Register functions/effect handlers through `ExtensionRegistrar`.
+3. Add exactly one constructor to `SourceExtensionIndex.sourceExtensions()`.
+4. Follow `docs/java-extension-development.md`, especially the persistence/effect rules.
+5. Run `mvn clean test` and rebuild the JAR/image. There is intentionally no runtime Java-plugin install path.
 
 ## Important Design Details
 

@@ -7,6 +7,8 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -106,6 +108,64 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
             return statement.executeUpdate() == 1;
         } catch (SQLException exception) {
             throw failure("terminal.changeWorkingDirectory", exception);
+        }
+    }
+
+    @Override
+    public List<String> findCommandHistory(UUID ownerId, int limit) {
+        if (limit <= 0) throw new IllegalArgumentException("History limit must be positive");
+        String sql = "SELECT command_text FROM (SELECT history_id,command_text "
+                + "FROM terminal.command_history WHERE owner_id=? "
+                + "ORDER BY history_id DESC LIMIT ?) AS recent ORDER BY history_id";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            statement.setInt(2, limit);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<String> history = new ArrayList<>();
+                while (rows.next()) history.add(rows.getString(1));
+                return List.copyOf(history);
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.findCommandHistory", exception);
+        }
+    }
+
+    @Override
+    public void appendCommandHistory(UUID ownerId, String command,
+                                     java.time.Instant submittedAt, int limit) {
+        if (limit <= 0) throw new IllegalArgumentException("History limit must be positive");
+        String latest = "SELECT command_text FROM terminal.command_history "
+                + "WHERE owner_id=? ORDER BY history_id DESC LIMIT 1";
+        try (PreparedStatement statement = connection.prepareStatement(latest)) {
+            statement.setObject(1, ownerId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (rows.next() && command.equals(rows.getString(1))) return;
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.findLatestCommand", exception);
+        }
+
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO terminal.command_history(owner_id,command_text,submitted_at) "
+                        + "VALUES (?,?,?)")) {
+            statement.setObject(1, ownerId);
+            statement.setString(2, command);
+            statement.setTimestamp(3, java.sql.Timestamp.from(submittedAt));
+            requireOne("terminal.appendCommandHistory", statement.executeUpdate());
+        } catch (SQLException exception) {
+            throw failure("terminal.appendCommandHistory", exception);
+        }
+
+        String prune = "DELETE FROM terminal.command_history WHERE owner_id=? "
+                + "AND history_id NOT IN (SELECT history_id FROM terminal.command_history "
+                + "WHERE owner_id=? ORDER BY history_id DESC LIMIT ?)";
+        try (PreparedStatement statement = connection.prepareStatement(prune)) {
+            statement.setObject(1, ownerId);
+            statement.setObject(2, ownerId);
+            statement.setInt(3, limit);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("terminal.pruneCommandHistory", exception);
         }
     }
 
