@@ -2,6 +2,8 @@ package com.follarce.effect;
 
 import com.follarce.domain.effect.EffectAttempt;
 import com.follarce.domain.effect.EffectRequest;
+import com.follarce.domain.auth.Capability;
+import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.domain.port.AuthRepository;
 import com.follarce.domain.port.EffectRepository;
@@ -19,6 +21,8 @@ import com.follarce.domain.port.TransactionWork;
 import com.follarce.domain.port.VfsRepository;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
+import com.follarce.domain.process.ProcessIdentity;
+import com.follarce.domain.vfs.ObjectHash;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -28,6 +32,8 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -189,6 +195,22 @@ class EffectWorkerServiceTest {
         assertFalse(blocking.interrupted.get());
     }
 
+    @Test
+    void idleEffectWorkerDoesNotRepeatedlyQueryUntilNotified() throws Exception {
+        FakePersistence persistence = new FakePersistence(unknown(manualPolicy()));
+        try (EffectWorkerService workers = workers(persistence, handler(request ->
+                value("text/plain", "unused")))) {
+            workers.start();
+            assertTrue(persistence.effects.initialClaim.await(1, TimeUnit.SECONDS));
+            assertFalse(persistence.effects.notifiedClaim.await(150, TimeUnit.MILLISECONDS));
+            assertEquals(1, persistence.effects.claimCycles.get());
+
+            workers.wake();
+            assertTrue(persistence.effects.notifiedClaim.await(1, TimeUnit.SECONDS));
+            assertEquals(2, persistence.effects.claimCycles.get());
+        }
+    }
+
     private static EffectWorkerService workers(FakePersistence persistence,
                                                 EffectHandler handler) {
         return new EffectWorkerService(persistence, persistence, UUID.randomUUID(),
@@ -250,10 +272,12 @@ class EffectWorkerServiceTest {
     private static final class FakePersistence implements TransactionExecutor, TransactionContext {
         final FakeEffects effects;
         final CountDownLatch completed = new CountDownLatch(1);
-        final ProcessRepository processes = new EmptyProcesses();
+        final ProcessRepository processes;
+        final AuthRepository auth = new AllowEffectsAuth();
 
         FakePersistence(EffectRequest effect) {
             effects = new FakeEffects(effect, completed);
+            processes = new OneProcess(effect.processUid());
         }
 
         @Override
@@ -269,7 +293,7 @@ class EffectWorkerServiceTest {
         @Override public VfsRepository vfs() { return null; }
         @Override public PackageRepository packages() { return null; }
         @Override public EffectRepository effects() { return effects; }
-        @Override public AuthRepository auth() { return null; }
+        @Override public AuthRepository auth() { return auth; }
         @Override public AuditRepository audit() { return null; }
         @Override public TerminalRepository terminal() { return null; }
         @Override public void commit() { }
@@ -308,6 +332,9 @@ class EffectWorkerServiceTest {
         EffectRequest effect;
         final List<EffectAttempt> attempts = new ArrayList<>();
         final CountDownLatch completed;
+        final CountDownLatch initialClaim = new CountDownLatch(1);
+        final CountDownLatch notifiedClaim = new CountDownLatch(2);
+        final AtomicInteger claimCycles = new AtomicInteger();
         UUID bootId;
 
         FakeEffects(EffectRequest effect, CountDownLatch completed) {
@@ -329,6 +356,9 @@ class EffectWorkerServiceTest {
 
         @Override
         public List<EffectRequest> claimPending(UUID workerId, Instant now, int limit) {
+            claimCycles.incrementAndGet();
+            initialClaim.countDown();
+            notifiedClaim.countDown();
             if (effect.status() != EffectRequest.Status.PREPARED) return List.of();
             effect = effect.claim(workerId, now);
             return List.of(effect);
@@ -381,10 +411,27 @@ class EffectWorkerServiceTest {
         }
     }
 
-    private static final class EmptyProcesses implements ProcessRepository {
+    private static final class OneProcess implements ProcessRepository {
+        private final CilProcess process;
+
+        private OneProcess(UUID processUid) {
+            UUID ownerId = UUID.randomUUID();
+            Continuation continuation = new Continuation(UUID.randomUUID(),
+                    new ObjectHash("0".repeat(64)), 0, List.of(), List.of(), List.of(),
+                    List.of(), Optional.empty(), Map.of(), Map.of(), "1", "1");
+            process = new CilProcess(new ProcessIdentity(processUid, 1), ownerId,
+                    CilProcess.Status.WAITING_EFFECT, 0, 0, continuation, Optional.empty(),
+                    NOW, NOW);
+        }
+
         @Override public long allocatePid() { throw new UnsupportedOperationException(); }
-        @Override public Optional<CilProcess> findByUid(UUID processUid) { return Optional.empty(); }
-        @Override public Optional<CilProcess> findByPid(long pid) { return Optional.empty(); }
+        @Override public Optional<CilProcess> findByUid(UUID processUid) {
+            return process.identity().processUid().equals(processUid)
+                    ? Optional.of(process) : Optional.empty();
+        }
+        @Override public Optional<CilProcess> findByPid(long pid) {
+            return process.identity().pid() == pid ? Optional.of(process) : Optional.empty();
+        }
         @Override public void insert(CilProcess process) { throw new UnsupportedOperationException(); }
         @Override public UpdateResult update(CilProcess process, long state, long epoch) {
             throw new UnsupportedOperationException();
@@ -393,5 +440,19 @@ class EffectWorkerServiceTest {
                 com.follarce.domain.scheduler.SchedulerClaim claim) {
             throw new UnsupportedOperationException();
         }
+    }
+
+    private static final class AllowEffectsAuth implements AuthRepository {
+        @Override public Optional<UserAccount> findUser(UUID userId) { return Optional.empty(); }
+        @Override public Optional<UserAccount> findUser(String username) { return Optional.empty(); }
+        @Override public void saveUser(UserAccount user) { }
+        @Override public String provisionPrincipal(UUID userId, char[] password) {
+            return UserAccount.roleNameFor(userId);
+        }
+        @Override public void disablePrincipal(UUID userId) { }
+        @Override public Set<Capability> capabilities(UUID userId) {
+            return Set.of(Capability.EFFECT_REQUEST, Capability.SYSTEM_ADMIN);
+        }
+        @Override public void replaceCapabilities(UUID userId, Set<Capability> capabilities) { }
     }
 }

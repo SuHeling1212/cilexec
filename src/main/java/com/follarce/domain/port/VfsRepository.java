@@ -6,6 +6,7 @@ import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsMount;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.domain.vfs.BinaryContent;
+import com.follarce.domain.vfs.VfsFileLimits;
 
 import java.time.Instant;
 import java.util.List;
@@ -41,6 +42,7 @@ public interface VfsRepository {
                                              String mediaType, Instant at) {
         StoredObject current = findObject(currentObjectHash).orElseThrow(() ->
                 new IllegalArgumentException("Unknown object"));
+        VfsFileLimits.checkedAppendSize(current.byteSize(), tail.length);
         byte[] original = current.content().bytes();
         byte[] combined = Arrays.copyOf(original, Math.addExact(original.length, tail.length));
         System.arraycopy(tail, 0, combined, original.length, tail.length);

@@ -7,6 +7,7 @@ import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsMount;
 import com.follarce.domain.vfs.VfsNode;
+import com.follarce.domain.vfs.VfsFileLimits;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import com.follarce.persistence.postgres.mapper.JsonCodec;
 import com.google.gson.reflect.TypeToken;
@@ -34,6 +35,7 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
 
     @Override
     public void saveObject(StoredObject object) {
+        VfsFileLimits.requireWithinLimit(object.byteSize());
         String sql = "SELECT object_store.put_object(?,?,?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setBytes(1, JdbcValues.hash(object.objectHash()));
@@ -88,7 +90,7 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
 
     @Override
     public byte[] readObjectRange(ObjectHash objectHash, long offset, int maximumBytes) {
-        if (offset < 0 || maximumBytes < 0 || maximumBytes > 64 * 1024 * 1024) {
+        if (offset < 0 || maximumBytes < 0 || maximumBytes > 4 * 1024 * 1024) {
             throw new IllegalArgumentException("Invalid bounded object range");
         }
         try (PreparedStatement statement = connection.prepareStatement(
@@ -112,7 +114,8 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
                                             String mediaType, Instant at) {
         StoredObject chunk = StoredObject.create(new BinaryContent(tail), mediaType, at);
         saveObject(chunk);
-        long total = Math.addExact(logicalObjectSize(currentObjectHash), tail.length);
+        long total = VfsFileLimits.checkedAppendSize(logicalObjectSize(currentObjectHash),
+                tail.length);
         String descriptor = "CILEXEC-CHUNK-MANIFEST-V1\n" + currentObjectHash.value() + "\n"
                 + chunk.objectHash().value() + "\n" + total + "\n";
         StoredObject manifest = StoredObject.create(new BinaryContent(
@@ -329,6 +332,7 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
 
     @Override
     public void saveObjectByAdministrator(StoredObject object, UUID administratorId) {
+        VfsFileLimits.requireWithinLimit(object.byteSize());
         String insert = "INSERT INTO object_store.object(object_hash,byte_size,media_type,content,"
                 + "created_by,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT (object_hash) DO NOTHING";
         try (PreparedStatement statement = connection.prepareStatement(insert)) {
@@ -354,6 +358,7 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     public VfsNode replaceContentByAdministrator(UUID administratorId, UUID ownerId,
                                                  UUID nodeId, StoredObject object,
                                                  UUID revisionId, UUID auditEventId, Instant at) {
+        VfsFileLimits.requireWithinLimit(object.byteSize());
         String sql = "SELECT * FROM vfs.admin_replace_file(?,?,?,?,?,?,?,?,?)";
         return administratorNode("vfs.replaceContentByAdministrator", sql, statement -> {
             statement.setObject(1, administratorId);
@@ -389,6 +394,7 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
                                              UUID nodeId, UUID parentNodeId, String name,
                                              StoredObject object, boolean revisionEnabled,
                                              UUID revisionId, UUID auditEventId, Instant at) {
+        VfsFileLimits.requireWithinLimit(object.byteSize());
         String sql = "SELECT * FROM vfs.admin_create_file(?,?,?,?,?,?,?,?,?,?,?,?)";
         return administratorNode("vfs.createFileByAdministrator", sql, statement -> {
             statement.setObject(1, administratorId);

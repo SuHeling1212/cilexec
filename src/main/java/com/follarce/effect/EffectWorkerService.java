@@ -3,6 +3,7 @@ package com.follarce.effect;
 import com.follarce.domain.effect.EffectAttempt;
 import com.follarce.domain.effect.EffectPayload;
 import com.follarce.domain.effect.EffectRequest;
+import com.follarce.domain.auth.Capability;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.port.TransactionExecutor;
@@ -22,6 +23,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
@@ -31,20 +33,21 @@ public final class EffectWorkerService implements AutoCloseable {
     private final TransactionExecutor runtimeTransactions;
     private final EffectHandlerRegistry handlers;
     private final int workerCount;
-    private final Duration idlePoll;
+    private final Duration errorBackoff;
     private final Clock clock;
     private final Consumer<Throwable> fatalFailure;
     private final Optional<UUID> bootId;
     private final AtomicBoolean running = new AtomicBoolean();
+    private final Semaphore workAvailable = new Semaphore(0);
     private final List<Thread> workers = new ArrayList<>();
 
     public EffectWorkerService(TransactionExecutor transactions,
                                EffectHandlerRegistry handlers,
                                int workerCount,
-                               Duration idlePoll,
+                               Duration errorBackoff,
                                Clock clock,
                                Consumer<Throwable> fatalFailure) {
-        this(transactions, transactions, handlers, workerCount, idlePoll, clock, fatalFailure,
+        this(transactions, transactions, handlers, workerCount, errorBackoff, clock, fatalFailure,
                 Optional.empty());
     }
 
@@ -52,10 +55,10 @@ public final class EffectWorkerService implements AutoCloseable {
                                TransactionExecutor runtimeTransactions,
                                EffectHandlerRegistry handlers,
                                int workerCount,
-                               Duration idlePoll,
+                               Duration errorBackoff,
                                Clock clock,
                                Consumer<Throwable> fatalFailure) {
-        this(effectTransactions, runtimeTransactions, handlers, workerCount, idlePoll, clock,
+        this(effectTransactions, runtimeTransactions, handlers, workerCount, errorBackoff, clock,
                 fatalFailure, Optional.empty());
     }
 
@@ -65,10 +68,10 @@ public final class EffectWorkerService implements AutoCloseable {
                                UUID bootId,
                                EffectHandlerRegistry handlers,
                                int workerCount,
-                               Duration idlePoll,
+                               Duration errorBackoff,
                                Clock clock,
                                Consumer<Throwable> fatalFailure) {
-        this(effectTransactions, runtimeTransactions, handlers, workerCount, idlePoll, clock,
+        this(effectTransactions, runtimeTransactions, handlers, workerCount, errorBackoff, clock,
                 fatalFailure, Optional.of(java.util.Objects.requireNonNull(bootId, "bootId")));
     }
 
@@ -76,7 +79,7 @@ public final class EffectWorkerService implements AutoCloseable {
                                 TransactionExecutor runtimeTransactions,
                                 EffectHandlerRegistry handlers,
                                 int workerCount,
-                                Duration idlePoll,
+                                Duration errorBackoff,
                                 Clock clock,
                                 Consumer<Throwable> fatalFailure,
                                 Optional<UUID> bootId) {
@@ -87,9 +90,9 @@ public final class EffectWorkerService implements AutoCloseable {
         this.handlers = java.util.Objects.requireNonNull(handlers, "handlers");
         if (workerCount < 1) throw new IllegalArgumentException("workerCount must be positive");
         this.workerCount = workerCount;
-        this.idlePoll = java.util.Objects.requireNonNull(idlePoll, "idlePoll");
-        if (idlePoll.isZero() || idlePoll.isNegative()) {
-            throw new IllegalArgumentException("idlePoll must be positive");
+        this.errorBackoff = java.util.Objects.requireNonNull(errorBackoff, "errorBackoff");
+        if (errorBackoff.isZero() || errorBackoff.isNegative()) {
+            throw new IllegalArgumentException("errorBackoff must be positive");
         }
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
         this.fatalFailure = java.util.Objects.requireNonNull(fatalFailure, "fatalFailure");
@@ -142,7 +145,7 @@ public final class EffectWorkerService implements AutoCloseable {
                 }
                 Optional<EffectRequest> recovered = claimRecoverableUnknown(workerId);
                 if (recovered.isEmpty()) {
-                    LockSupport.parkNanos(idlePoll.toNanos());
+                    awaitWork();
                     continue;
                 }
                 resolveRecoveredUnknown(recovered.orElseThrow());
@@ -153,8 +156,23 @@ public final class EffectWorkerService implements AutoCloseable {
                     fatalFailure.accept(failure);
                     return;
                 }
-                LockSupport.parkNanos(idlePoll.toNanos());
+                LockSupport.parkNanos(errorBackoff.toNanos());
             }
+        }
+    }
+
+    /** Wakes one worker; it continues claiming until both durable effect queues are empty. */
+    public void wake() {
+        if (running.get() && workAvailable.availablePermits() < workerCount) {
+            workAvailable.release();
+        }
+    }
+
+    private void awaitWork() {
+        try {
+            workAvailable.acquire();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -185,6 +203,11 @@ public final class EffectWorkerService implements AutoCloseable {
     }
 
     private void resolveRecoveredUnknown(EffectRequest effect) {
+        Optional<String> denial = authorizationFailure(effect);
+        if (denial.isPresent()) {
+            retainRecoveredUnknown(effect, denial.orElseThrow());
+            return;
+        }
         EffectHandler handler;
         try {
             handler = handlers.require(effect.effectType());
@@ -268,6 +291,11 @@ public final class EffectWorkerService implements AutoCloseable {
 
     private void executeOutsideTransaction(ClaimedWork work) {
         EffectRequest effect = work.effect();
+        Optional<String> denial = authorizationFailure(effect);
+        if (denial.isPresent()) {
+            persistFailure(work, "EFFECT_NOT_AUTHORIZED", denial.orElseThrow(), false);
+            return;
+        }
         EffectHandler handler;
         try {
             handler = handlers.require(effect.effectType());
@@ -284,6 +312,31 @@ public final class EffectWorkerService implements AutoCloseable {
         } catch (Exception failure) {
             persistFailure(work, "EXECUTION_FAILED", safeMessage(failure), false);
         }
+    }
+
+    /**
+     * Re-authorizes every durable request immediately before external execution. This is a
+     * deliberate second boundary: a forged or stale effect row must never inherit the authority
+     * of the worker service role.
+     */
+    private Optional<String> authorizationFailure(EffectRequest effect) {
+        return runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
+            Optional<CilProcess> process = transaction.processes().findByUid(effect.processUid());
+            if (process.isEmpty()) return Optional.of("Owning process no longer exists");
+            UUID ownerId = process.orElseThrow().ownerId();
+            if (!transaction.auth().hasCapabilityByAdministrator(
+                    ownerId, Capability.EFFECT_REQUEST)) {
+                return Optional.of("Owner is not allowed to request external effects");
+            }
+            if ((effect.effectType().equals("system.exec")
+                    || effect.effectType().equals("socket.bind")
+                    || effect.effectType().equals("socket.accept"))
+                    && !transaction.auth().hasCapabilityByAdministrator(
+                    ownerId, Capability.SYSTEM_ADMIN)) {
+                return Optional.of("Effect requires administrator authority");
+            }
+            return Optional.empty();
+        });
     }
 
     private void resolveUnknown(EffectHandler handler, ClaimedWork work,
@@ -418,7 +471,8 @@ public final class EffectWorkerService implements AutoCloseable {
     }
 
     private static boolean isFatal(Throwable failure) {
-        return failure instanceof PersistenceFailure persistence
+        return failure instanceof Error
+                || failure instanceof PersistenceFailure persistence
                 && (persistence.kind() == PersistenceFailure.Kind.DATABASE_UNAVAILABLE
                 || persistence.kind() == PersistenceFailure.Kind.RUNTIME_FENCED);
     }
@@ -449,7 +503,7 @@ public final class EffectWorkerService implements AutoCloseable {
         // Wake idle workers without interrupting an in-flight JDBC operation. Interrupting a
         // PostgreSQL query closes its socket and makes an otherwise clean shutdown look like a
         // broken database connection.
-        workers.forEach(LockSupport::unpark);
+        workAvailable.release(workerCount);
         Instant gracefulDeadline = Instant.now().plus(Duration.ofSeconds(5));
         for (Thread worker : workers) {
             try {

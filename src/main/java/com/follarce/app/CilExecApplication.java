@@ -6,6 +6,8 @@ import com.follarce.exporter.LogicalExportService;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.FlywayMigrator;
 import com.follarce.package_manager.PackageBuilder;
+import com.follarce.host.HostVfsImportService;
+import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -112,6 +114,12 @@ public final class CilExecApplication {
                         ApplicationCommand.packageOutputPath(arguments));
                 yield 0;
             }
+            case HOST_MOVE -> {
+                runHostMove(config(), ApplicationCommand.hostSourcePath(arguments),
+                        ApplicationCommand.hostTargetPath(arguments),
+                        ApplicationCommand.hostUsername(arguments));
+                yield 0;
+            }
         };
     }
 
@@ -125,7 +133,7 @@ public final class CilExecApplication {
 
     private static int runTerminal(CilExecConfig config, BuildInfo buildInfo) {
         return runLifecycle(RuntimeBootstrap.assembleTerminal(config, buildInfo,
-                com.follarce.terminal.TerminalSettings.load(), System.in, System.out));
+                com.follarce.terminal.TerminalSettings.load()));
     }
 
     private static int runLifecycle(RuntimeLifecycle lifecycle) {
@@ -172,6 +180,16 @@ public final class CilExecApplication {
         System.out.printf("Built package %s at %s (package hash %s, file hash %s)%n",
                 descriptor.coordinate(), output.toAbsolutePath(), descriptor.packageHash(),
                 descriptor.databaseFileHash());
+    }
+
+    private static void runHostMove(CilExecConfig config, Path source, String target,
+                                    String username) {
+        try (HikariDataSource dataSource = DataSourceFactory.create(config.runtimeDatabase())) {
+            var report = new HostVfsImportService(new JdbcTransactionExecutor(dataSource),
+                    Clock.systemUTC()).importFile(source, target, username);
+            System.out.printf("Imported %d bytes for %s into VFS %s (node %s)%n",
+                    report.bytes(), report.username(), report.vfsPath(), report.nodeId());
+        }
     }
 
     @FunctionalInterface

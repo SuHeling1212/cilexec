@@ -49,6 +49,23 @@ public final class TerminalBootstrap {
             new VfsService(transactions, clock).createDirectory(account.userId(), Optional.empty(),
                     "/", Set.of());
         }
+        ensureUsersDirectory(account);
         return Optional.of(account);
+    }
+
+    private void ensureUsersDirectory(UserAccount account) {
+        transactions.inUserTransaction(account.userId(), Isolation.SERIALIZABLE, transaction -> {
+            var root = transaction.vfs().findChild(account.userId(), Optional.empty(), "/")
+                    .orElseThrow(() -> new IllegalStateException("VFS root is missing"));
+            if (transaction.vfs().findChild(account.userId(), Optional.of(root.nodeId()),
+                    "Users").isEmpty()) {
+                var now = clock.instant();
+                transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
+                        java.util.UUID.randomUUID(), Optional.of(root.nodeId()), account.userId(),
+                        "Users", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                        Optional.empty(), Set.of(), false, now, now));
+            }
+            return null;
+        });
     }
 }

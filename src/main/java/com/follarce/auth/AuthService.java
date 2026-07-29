@@ -25,15 +25,16 @@ public final class AuthService {
     }
 
     public UserAccount create(String username, char[] password, Set<Capability> capabilities) {
+        String normalizedUsername = UsernamePolicy.normalize(username);
         PasswordPolicy.require(password);
         char[] secret = password.clone();
         try {
             Instant now = clock.instant();
             return transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
-                if (transaction.auth().findUser(username).isPresent()) {
+                if (transaction.auth().findUser(normalizedUsername).isPresent()) {
                     throw new IllegalArgumentException("Username already exists");
                 }
-                UserAccount account = UserAccount.active(UUID.randomUUID(), username, now);
+                UserAccount account = UserAccount.active(UUID.randomUUID(), normalizedUsername, now);
                 transaction.auth().saveUser(account);
                 String role = transaction.auth().provisionPrincipal(account.userId(), secret);
                 if (!role.equals(account.postgresRoleName())) {
@@ -41,10 +42,17 @@ public final class AuthService {
                 }
                 transaction.auth().replaceCapabilities(account.userId(), Set.copyOf(capabilities));
                 if (transaction.vfs().findChild(account.userId(), Optional.empty(), "/").isEmpty()) {
-                    transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
+                    var root = new com.follarce.domain.vfs.VfsNode(
                             UUID.randomUUID(), Optional.empty(), account.userId(), "/",
                             com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
-                            Set.of(), false, now, now));
+                            Set.of(), false, now, now);
+                    transaction.vfs().insertNode(root);
+                    if (account.username().equals("local")) {
+                        transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
+                                UUID.randomUUID(), Optional.of(root.nodeId()), account.userId(),
+                                "Users", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                                Optional.empty(), Set.of(), false, now, now));
+                    }
                 }
                 transaction.audit().append(audit("auth.user.create", account, now));
                 return account;

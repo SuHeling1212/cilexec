@@ -155,7 +155,7 @@ final class ExtensionFunctionInvocation implements ExtensionFunctionContext {
         }
 
         private String name(String key) {
-            if (key == null || !STATE_KEY.matcher(key).matches()) {
+            if (key == null || key.length() > 128 || !STATE_KEY.matcher(key).matches()) {
                 throw new IllegalArgumentException("Invalid extension state key: " + key);
             }
             return prefix + key;

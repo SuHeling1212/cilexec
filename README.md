@@ -52,9 +52,9 @@ On first use, the terminal asks you to choose and confirm the administrator pass
 eight characters). Afterwards choose `login`, then enter username `local` and that password.
 Set `CILEXEC_TERMINAL_USERNAME` before starting if the deployment administrator should have a
 different name. The launcher uses the persistent Compose profile; the database volume is retained
-for the next run. Existing images, the PostgreSQL container, and the stopped terminal container
+for the next run. Existing images and the PostgreSQL container
 are reused, so normal starts do not rebuild or download the application image. After changing the
-source code, explicitly rebuild and recreate the terminal container with:
+source code, explicitly rebuild the shared application image with:
 
 ```bash
 ./Install.sh --rebuild
@@ -83,18 +83,19 @@ cilexec-readonly-password
 Disposable database:
 
 ```bash
-docker compose -f compose.yml -f compose.ephemeral.yml up --build
+docker compose -f compose.yml -f docker/compose/ephemeral.yml up --build
 ```
 
 Persistent named volume (the volume is not a backup):
 
 ```bash
-docker compose -f compose.yml -f compose.persistent.yml up --build
+docker compose -f compose.yml -f docker/compose/persistent.yml up --build
 ```
 
 For an externally managed database, bootstrap the service roles once using
 `docker/postgres/init/00-cilexec-bootstrap.sh` or equivalent DBA SQL, then use
-`compose.external.yml` and set `CILEXEC_DATABASE_URL`. External servers older than
+`docker/compose/external.yml` with `--project-directory .` and set
+`CILEXEC_DATABASE_URL`. External servers older than
 PostgreSQL 17.1 are rejected.
 
 The migration container receives only the migrator secret. The terminal Runtime receives its
@@ -119,23 +120,39 @@ administrator. Real TTY password entry has
 echo disabled. `:logout` returns to the access prompt and preserves the durable REPL context for
 the next login.
 
-Compose exposes this terminal as the user interface (`stdin_open` plus TTY); the health endpoint
-remains internal to the container. The deliberately small colon-command surface is `:help`,
-`:cd`, `:pwd`, `:ls`, `:logout`, and `:exit`; process, file, package, user, effect, and system
+Compose runs one persistent Runtime JVM with bounded shared scheduler/effect worker pools. Each
+`./Install.sh` invocation opens a lightweight raw terminal connection inside that JVM; it does not
+start another JVM, worker pool, or database pool. Connections authenticate independently, and
+closing one connection does not stop Runtime or background processes. When Runtime is already
+running, the launcher also skips the one-shot migration JVM. The health endpoint remains
+internal to the container. The deliberately small colon-command surface is `:help`,
+`:cd`, `:pwd`, `:ls`, `:logout`, `:exit`, and administrator-only `:shutdown`; process, file, package, user, effect, and system
 operations use FCL functions. Every other complete input is compiled and run as FCL with the full
 function registry. A terminal owns one permanent process and PID: each completed input leaves that
 process `PAUSED`, and the next input is installed atomically only while it remains suspended. Its
 working directory, variables, imports, and function declarations live in that process and survive
 logout/login and Runtime restarts.
+Runnable processes beyond the configured worker count remain in the durable FIFO queue. Idle
+scheduler and effect workers block in memory instead of polling PostgreSQL. Queue, effect, timer,
+lease, and retention changes use transaction-commit notifications to wake the shared workers;
+when no work or deadline exists, no recurring database query is issued. A terminal
+process yields after at most 4,096 pure FCL steps or 20 ms, whichever occurs first; its continuation
+is committed before it is made READY again. Non-terminal processes execute one durable instruction
+per scheduling slice. The defaults are ten scheduler workers and six effect workers for the whole
+server, not per user.
 Relative VFS paths in REPL submissions resolve against the terminal's durable working directory.
-The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.0`) served by
+Each ordinary user sees their private VFS root as `/`. The `local` administrator additionally
+sees `/Users/<username>` as a live view of that user's root. This is a virtual mapping rather than
+a copy; `:cd`, `:ls`, and FCL file paths all address the same stored nodes. Ordinary users cannot
+list or address another user's root through `/Users`.
+The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.4`) served by
 the host market. Download and install it once for the current user, then import it into the durable
 terminal context:
 
 ```fcl
-network.download("http://host.docker.internal:8787/packages/cilexec/editor/1.0.0/editor.db", "/editor.db")
+network.download("http://host.docker.internal:8787/market/v1/28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008", "/editor.db")
 package.install("/editor.db", "editor")
-import "editor"
+import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "editor"
 editor.open("notes.txt")
 ```
 
@@ -144,13 +161,16 @@ line cut/paste, Home/End, paging, and an in-editor help screen. `Ctrl-O` (nano s
 both save; `Ctrl-X` exits. The Runtime image contains neither the editor source nor its package
 database; the package is independently built and published under `market/repository/`.
 Use `:help` for the command list. The explicit
-`runtime` command remains a headless operations mode for deployments that deliberately provide
+Package imports accept only the exact installed `.db` SHA-256. An alias is optional; without one,
+the complete SHA-256 itself is the function namespace. The `runtime` command remains a headless operations mode for deployments that deliberately provide
 another terminal transport.
 
 `package build` is an offline command and does not read database configuration or secrets. It
 reads `package.json` plus the explicitly declared module/resource files, validates every FCL
 module and exported symbol, builds an immutable SQLite `package.db`, validates the completed
 database through the production package reader, and refuses to replace an existing output.
+Packages have no signature or trust-status subsystem; immutable database bytes and logical package
+contents are identified and rechecked by SHA-256.
 
 The export command refuses to replace an existing path. It reads PostgreSQL in a
 `SERIALIZABLE READ ONLY DEFERRABLE` transaction, verifies SQLite `integrity_check`, every
@@ -211,12 +231,18 @@ A source package is a directory containing `package.json` and its declared conte
 modules are libraries: their top level may contain function declarations only. Entrypoints must
 be zero-argument functions; exported functions may accept ordinary FCL arguments.
 
+`kind` is mandatory. An `application` must publish the universal zero-argument `run` entrypoint;
+a `library` is intended for import/dependency use and is exempt from that entrypoint requirement.
+Every declared dependency is stored in `package_dependency` with namespace, name, version
+constraint, and optional status. `package.info(...)` exposes these lists without opening SQLite.
+
 ```json
 {
   "namespace": "demo",
   "name": "hello",
   "version": "1.0.0",
   "languageVersion": "fcl-1",
+  "kind": "application",
   "modules": [{"name": "main", "path": "main.fcl"}],
   "resources": ["assets/message.txt"],
   "entrypoints": [{"name": "run", "module": "main", "function": "run"}],
@@ -232,7 +258,7 @@ Build on the host with the command shown above, or build entirely inside the Cil
 built = package.build("/src/hello/package.json", "/packages/hello.db")
 installed = package.install("/packages/hello.db", "hello")
 
-import "hello" as hello
+import "<package-db-sha256>" as "hello"
 message = hello.greet("CilExec")
 
 child = package.run("hello", "run")
@@ -295,7 +321,7 @@ com.follarce.audit / health        operational boundaries
 ```
 
 The normative design and completion criteria are in
-[`theLastFileBeforeNewVersion.md`](theLastFileBeforeNewVersion.md).
+[`docs/architecture-baseline.md`](docs/architecture-baseline.md).
 
 ## License
 

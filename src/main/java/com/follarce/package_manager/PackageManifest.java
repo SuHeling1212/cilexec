@@ -1,5 +1,7 @@
 package com.follarce.package_manager;
 
+import com.follarce.domain.packageinfo.PackageKind;
+
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -11,6 +13,7 @@ public record PackageManifest(
         String name,
         String version,
         String languageVersion,
+        PackageKind kind,
         List<Module> modules,
         List<String> resources,
         List<Dependency> dependencies,
@@ -21,8 +24,9 @@ public record PackageManifest(
     public PackageManifest {
         namespace = component(namespace, "namespace");
         name = component(name, "name");
-        version = text(version, "version");
-        languageVersion = text(languageVersion, "languageVersion");
+        version = version(version, "version");
+        languageVersion = boundedText(languageVersion, "languageVersion", 128);
+        kind = Objects.requireNonNull(kind, "package kind is required");
         modules = copy(modules);
         resources = copy(resources).stream()
                 .map(path -> canonicalPath(path, "resource"))
@@ -46,6 +50,20 @@ public record PackageManifest(
         entrypoints.forEach(entrypoint -> requireModule(moduleNames, entrypoint.module(),
                 "entrypoint"));
         exports.forEach(export -> requireModule(moduleNames, export.module(), "export"));
+        if (kind == PackageKind.APPLICATION && entrypoints.stream()
+                .noneMatch(entrypoint -> entrypoint.name().equals("run"))) {
+            throw new IllegalArgumentException(
+                    "Application packages must declare the universal run entrypoint");
+        }
+    }
+
+    /** Source compatibility for Java callers; JSON manifests must explicitly declare kind. */
+    public PackageManifest(String namespace, String name, String version, String languageVersion,
+                           List<Module> modules, List<String> resources,
+                           List<Dependency> dependencies, List<Entrypoint> entrypoints,
+                           List<Export> exports, List<Capability> capabilities) {
+        this(namespace, name, version, languageVersion, PackageKind.APPLICATION, modules,
+                resources, dependencies, entrypoints, exports, capabilities);
     }
 
     public List<String> contentPaths() {
@@ -66,7 +84,7 @@ public record PackageManifest(
         public Dependency {
             namespace = component(namespace, "dependency namespace");
             name = component(name, "dependency name");
-            version = text(version, "dependency version");
+            version = boundedText(version, "dependency version", 128);
         }
     }
 
@@ -89,10 +107,14 @@ public record PackageManifest(
     public record Capability(String key, boolean required, String rationale) {
         public Capability {
             key = text(key, "capability key");
-            if (!key.matches("[a-z][a-z0-9_.:-]*")) {
+            if (!key.matches("[a-z][a-z0-9_.:-]{0,127}")) {
                 throw new IllegalArgumentException("Unsupported capability key: " + key);
             }
             rationale = Objects.requireNonNullElse(rationale, "");
+            if (rationale.length() > 4096
+                    || rationale.chars().anyMatch(Character::isISOControl)) {
+                throw new IllegalArgumentException("Capability rationale is invalid");
+            }
         }
     }
 
@@ -115,6 +137,20 @@ public record PackageManifest(
         return value;
     }
 
+    private static String version(String value, String name) {
+        value = text(value, name);
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._+\\-]{0,127}")) {
+            throw new IllegalArgumentException("Unsupported " + name + ": " + value);
+        }
+        return value;
+    }
+
+    private static String boundedText(String value, String name, int maximum) {
+        value = text(value, name);
+        if (value.length() > maximum) throw new IllegalArgumentException(name + " is too long");
+        return value;
+    }
+
     private static String identifier(String value, String name) {
         value = text(value, name);
         if (!value.matches("[A-Za-z_][A-Za-z0-9_.-]{0,127}")) {
@@ -125,11 +161,15 @@ public record PackageManifest(
 
     private static String canonicalPath(String value, String name) {
         value = text(value, name).replace('\\', '/');
+        if (value.length() > 1024) {
+            throw new IllegalArgumentException(name + " is too long");
+        }
         if (value.startsWith("/") || value.endsWith("/")) {
             throw new IllegalArgumentException(name + " must be package-relative: " + value);
         }
         for (String part : value.split("/", -1)) {
-            if (part.isBlank() || part.equals(".") || part.equals("..")) {
+            if (part.isBlank() || part.equals(".") || part.equals("..")
+                    || part.length() > 255) {
                 throw new IllegalArgumentException(name + " is not canonical: " + value);
             }
         }

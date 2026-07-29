@@ -102,13 +102,89 @@ class TerminalConsoleTest {
         assertEquals(List.of(new ShellCommand.Exit()), control.commands);
     }
 
-    private static final class RecordingControl implements TerminalControl {
+    @Test
+    void readsShutdownPasswordWithoutPassingItAsACommand() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+        String input = ":shutdown\nadministrator-password\n";
+
+        TerminalConsole.Outcome outcome = new TerminalConsole(new BufferedReader(
+                new InputStreamReader(new ByteArrayInputStream(
+                        input.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8)),
+                new PrintWriter(output, true, StandardCharsets.UTF_8), control).runSession();
+
+        assertEquals(TerminalConsole.Outcome.EXIT, outcome);
+        assertTrue(control.shutdownRequested);
+        assertEquals("administrator-password", control.shutdownPassword);
+        assertEquals(List.of(":shutdown"), control.remembered);
+        assertTrue(output.toString(StandardCharsets.UTF_8)
+                .contains("administrator password> "));
+    }
+
+    @Test
+    void rejectsShutdownBeforePromptingAnOrdinaryUserForAPassword() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+        control.shutdownAllowed = false;
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(":shutdown\n:exit\n".getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        String transcript = output.toString(StandardCharsets.UTF_8);
+        assertTrue(transcript.contains("Administrator permission is required"), transcript);
+        assertTrue(!transcript.contains("administrator password> "), transcript);
+        assertTrue(!control.shutdownRequested);
+    }
+
+    @Test
+    void exportBoundaryCommandsAreNotIncludedInTheCapture() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(":exp-start /history.fcl\nio.println(1)\n"
+                        .concat(":exp-end\n:exit\n")
+                        .getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8)),
+                new PrintWriter(output, true, StandardCharsets.UTF_8), control).run();
+
+        assertInstanceOf(ShellCommand.StartExport.class, control.commands.getFirst());
+        assertInstanceOf(ShellCommand.EndExport.class, control.commands.get(1));
+        assertEquals(List.of("io.println(1)", ":exit"), control.remembered,
+                "capture boundary commands must not enter the exported interval");
+    }
+
+    @Test
+    void stopsInsteadOfSpinningWhenTerminalControlKeepsThrowingWithoutAMessage() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl() {
+            @Override public AttachedInputMode attachedInputMode() {
+                throw new NullPointerException();
+            }
+        };
+
+        TerminalConsole.Outcome outcome = new TerminalConsole(new BufferedReader(
+                new InputStreamReader(new ByteArrayInputStream(new byte[0]), StandardCharsets.UTF_8)),
+                new PrintWriter(output, true, StandardCharsets.UTF_8), control).runSession();
+
+        String transcript = output.toString(StandardCharsets.UTF_8);
+        assertEquals(TerminalConsole.Outcome.END_OF_INPUT, outcome);
+        assertTrue(transcript.contains("error: NullPointerException"), transcript);
+        assertTrue(transcript.contains("terminal stopped after repeated control failures"),
+                transcript);
+    }
+
+    private static class RecordingControl implements TerminalControl {
         final List<ShellCommand> commands = new ArrayList<>();
         final List<String> sources = new ArrayList<>();
         final List<String> attachedInputs = new ArrayList<>();
         final List<String> remembered = new ArrayList<>();
         boolean waiting;
         boolean keyMode;
+        boolean shutdownRequested;
+        boolean shutdownAllowed = true;
+        String shutdownPassword;
 
         @Override public String execute(ShellCommand command) {
             commands.add(command);
@@ -142,6 +218,15 @@ class TerminalConsoleTest {
 
         @Override public void rememberCommand(String command) {
             remembered.add(command);
+        }
+
+        @Override public void shutdown(char[] password) {
+            shutdownRequested = true;
+            shutdownPassword = new String(password);
+        }
+
+        @Override public boolean canShutdown() {
+            return shutdownAllowed;
         }
     }
 }

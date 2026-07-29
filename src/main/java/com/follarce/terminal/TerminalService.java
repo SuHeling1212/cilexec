@@ -8,6 +8,7 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.port.ProcessRepository;
+import com.follarce.domain.port.TerminalRepository;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
@@ -25,10 +26,19 @@ public final class TerminalService {
 
     private final UserTransactionExecutor transactions;
     private final Clock clock;
+    private final Runnable schedulerWake;
+    private final Runnable interruptWake;
 
     public TerminalService(UserTransactionExecutor transactions, Clock clock) {
+        this(transactions, clock, () -> { }, () -> { });
+    }
+
+    public TerminalService(UserTransactionExecutor transactions, Clock clock,
+                           Runnable schedulerWake, Runnable interruptWake) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
+        this.schedulerWake = java.util.Objects.requireNonNull(schedulerWake, "schedulerWake");
+        this.interruptWake = java.util.Objects.requireNonNull(interruptWake, "interruptWake");
     }
 
     public TerminalSession open(UUID ownerId) {
@@ -73,13 +83,46 @@ public final class TerminalService {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
             transaction.terminal().appendCommandHistory(ownerId, command, now,
                     COMMAND_HISTORY_LIMIT);
+            transaction.terminal().appendCapturedOperation(ownerId, command, now);
             return null;
         });
     }
 
+    public void startExportCapture(UUID ownerId, String targetPath) {
+        Instant now = clock.instant();
+        boolean started = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
+                transaction -> {
+                    Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+                    return transaction.terminal().startExportCapture(UUID.randomUUID(), ownerId,
+                            targetPath, now);
+                });
+        if (!started) throw new IllegalStateException("An export capture is already active");
+    }
+
+    public TerminalRepository.ExportCapture beginExportFinalization(UUID ownerId) {
+        return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
+            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+            return transaction.terminal().beginExportFinalization(ownerId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "No export capture is active; run :exp-start first"));
+        });
+    }
+
+    public void completeExportCapture(UUID ownerId, UUID captureId) {
+        boolean completed = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
+                transaction -> transaction.terminal().completeExportCapture(ownerId, captureId));
+        if (!completed) throw new IllegalStateException("Export capture changed concurrently");
+    }
+
+    public void resumeExportCapture(UUID ownerId, UUID captureId) {
+        transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
+                transaction -> transaction.terminal().resumeExportCapture(ownerId, captureId));
+    }
+
     public TerminalSession.Input submit(UUID ownerId, UUID sessionId, String completeInput) {
         Instant now = clock.instant();
-        return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
+        TerminalSession.Input submitted = transactions.inUserTransaction(ownerId,
+                Isolation.SERIALIZABLE, transaction -> {
             TerminalSession current = transaction.terminal().findSession(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
             TerminalSession.Input input = current.commitInput(completeInput, now);
@@ -108,6 +151,8 @@ public final class TerminalService {
             transaction.terminal().saveSession(current.advanceAfter(input));
             return input;
         });
+        schedulerWake.run();
+        return submitted;
     }
 
     public TerminalSession.Attachment attach(UUID ownerId, UUID sessionId, long pid) {
@@ -132,7 +177,8 @@ public final class TerminalService {
 
     public boolean interrupt(UUID ownerId, long pid) {
         Instant now = clock.instant();
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
+        boolean requested = transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
             Optional<CilProcess> process = transaction.processes().findByPid(pid);
             if (process.isEmpty() || process.get().isTerminal()) return false;
@@ -158,6 +204,33 @@ public final class TerminalService {
                     Map.of("pid", Long.toString(pid)), now));
             return true;
         });
+        if (requested) interruptWake.run();
+        return requested;
+    }
+
+    /** Requests cancellation of an attached terminal REPL submission while keeping its PID alive. */
+    public boolean interruptTerminal(UUID ownerId, long pid) {
+        Instant now = clock.instant();
+        boolean requested = transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> {
+            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+            Optional<CilProcess> process = transaction.processes().findByPid(pid);
+            if (process.isEmpty() || !process.orElseThrow().ownerId().equals(ownerId)) return false;
+            CilProcess current = process.orElseThrow();
+            transaction.terminal().requestInterrupt(new TerminalSession.Interrupt(
+                    current.identity().processUid(), now, Optional.empty()));
+            if (isBlocked(current.status())) {
+                CilProcess ready = current.commitStatement(current.continuation().withoutWait(),
+                        CilProcess.Status.READY, current.stateVersion(), current.executionEpoch(), now);
+                requireUpdated(transaction.processes().update(ready, current.stateVersion(),
+                        current.executionEpoch()));
+                transaction.scheduler().enqueue(new SchedulerQueueEntry(current.identity().processUid(),
+                        now, now, SchedulerQueueEntry.Status.READY));
+            }
+            return true;
+        });
+        if (requested) interruptWake.run();
+        return requested;
     }
 
     public TerminalSession close(UUID ownerId, UUID sessionId) {

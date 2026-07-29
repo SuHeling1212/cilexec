@@ -29,6 +29,7 @@ public final class ProgramService {
     private final UserTransactionExecutor transactions;
     private final FclCompiler compiler;
     private final FclProgramCodec programCodec;
+    private final FclSourceIncludes includes = new FclSourceIncludes();
     private final Clock clock;
     private final Supplier<UUID> identifiers;
 
@@ -52,9 +53,33 @@ public final class ProgramService {
      * Compilation happens before opening the short database transaction.
      */
     public Program create(UUID ownerId, String source) {
+        return create(ownerId, source, "/");
+    }
+
+    public Program create(UUID ownerId, String source, String workingDirectory) {
         Objects.requireNonNull(ownerId, "ownerId");
         Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(workingDirectory, "workingDirectory");
 
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                compileAndSave(transaction, includes.expand(transaction, ownerId, source,
+                        workingDirectory)));
+    }
+
+    String expandIncludes(UUID ownerId, String source, String workingDirectory) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                includes.expand(transaction, ownerId, source, workingDirectory));
+    }
+
+    Program createExpanded(UUID ownerId, String expandedSource) {
+        Objects.requireNonNull(ownerId, "ownerId");
+        Objects.requireNonNull(expandedSource, "expandedSource");
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> compileAndSave(transaction, expandedSource));
+    }
+
+    private Program compileAndSave(com.follarce.domain.port.TransactionContext transaction,
+                                   String source) {
         FclProgram compiled = compiler.compile(source);
         StoredObject sourceObject = object(source.getBytes(StandardCharsets.UTF_8),
                 SOURCE_MEDIA_TYPE);
@@ -70,11 +95,9 @@ public final class ProgramService {
                 Optional.of(compiledObject.objectHash()), semanticStatementCount(compiled),
                 sourceObject.createdAt());
 
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            transaction.vfs().saveObject(sourceObject);
-            transaction.vfs().saveObject(compiledObject);
-            return transaction.programs().saveIfAbsent(candidate);
-        });
+        transaction.vfs().saveObject(sourceObject);
+        transaction.vfs().saveObject(compiledObject);
+        return transaction.programs().saveIfAbsent(candidate);
     }
 
     private StoredObject object(byte[] bytes, String mediaType) {

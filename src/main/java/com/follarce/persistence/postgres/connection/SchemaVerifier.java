@@ -39,6 +39,10 @@ public final class SchemaVerifier {
                 throw new IllegalStateException("Database schema " + version
                         + " is outside supported range " + minimum + ".." + maximum);
             }
+            try (PreparedStatement invariants = connection.prepareStatement(
+                    "SELECT meta.assert_security_invariants()")) {
+                invariants.execute();
+            }
             return version;
         } catch (SQLException exception) {
             throw SqlStateClassifier.classify("schema.verify", exception);

@@ -1,27 +1,35 @@
 package com.follarce.terminal;
 
 import java.io.PrintWriter;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
-/** Tracks whether FCL output left the shared terminal cursor in the middle of a line. */
+/** Tracks unfinished FCL output independently for every connected terminal writer. */
 public final class TerminalOutputTracker {
-    private static boolean lineOpen;
+    private static final Set<PrintWriter> OPEN_LINES = ConcurrentHashMap.newKeySet();
 
     private TerminalOutputTracker() {}
 
-    public static synchronized void printed(String text, boolean newline) {
+    public static void printed(PrintWriter output, String text, boolean newline) {
+        java.util.Objects.requireNonNull(output, "output");
         if (newline) {
-            lineOpen = false;
+            OPEN_LINES.remove(output);
             return;
         }
         if (text == null || text.isEmpty()) return;
         char last = text.charAt(text.length() - 1);
-        lineOpen = last != '\n' && last != '\r';
+        if (last == '\n' || last == '\r') OPEN_LINES.remove(output);
+        else OPEN_LINES.add(output);
     }
 
-    public static synchronized void finishLine(PrintWriter output) {
-        if (!lineOpen) return;
+    public static void finishLine(PrintWriter output) {
+        java.util.Objects.requireNonNull(output, "output");
+        if (!OPEN_LINES.remove(output)) return;
         output.println();
         output.flush();
-        lineOpen = false;
+    }
+
+    public static void discard(PrintWriter output) {
+        if (output != null) OPEN_LINES.remove(output);
     }
 }

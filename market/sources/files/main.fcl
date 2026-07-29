@@ -1,0 +1,178 @@
+# CilFiles: a terminal-adaptive VFS browser, distributed as an FCL package.
+
+func fv_min(a, b) {
+    if a < b { return a }
+    return b
+}
+
+func fv_max(a, b) {
+    if a > b { return a }
+    return b
+}
+
+func fv_fit(value, width) {
+    visible = term.sanitize(value)
+    if #visible > width { return text.slice(visible, 0, width) }
+    return visible + text.repeat(" ", width - #visible)
+}
+
+func fv_width() {
+    size = term.getSize()
+    return fv_max(30, size["width"])
+}
+
+func fv_height() {
+    size = term.getSize()
+    # title, column header and footer occupy three rows.
+    return fv_max(1, size["height"] - 3)
+}
+
+func fv_path(directory, name) {
+    if directory == "/" { return "/" + name }
+    return directory + "/" + name
+}
+
+func fv_reload(state) {
+    state["entries"] = file.listdir(state["directory"])
+    if state["selected"] >= #state["entries"] { state["selected"] = #state["entries"] - 1 }
+    if state["selected"] < 0 { state["selected"] = 0 }
+    if state["selected"] < state["top"] { state["top"] = state["selected"] }
+    if state["top"] < 0 { state["top"] = 0 }
+    state["message"] = ""
+    return fv_fix(state)
+}
+
+func fv_fix(state) {
+    height = fv_height()
+    if state["selected"] < state["top"] { state["top"] = state["selected"] }
+    if state["selected"] >= state["top"] + height {
+        state["top"] = state["selected"] - height + 1
+    }
+    if state["top"] < 0 { state["top"] = 0 }
+    return state
+}
+
+func fv_selected_path(state) {
+    if #state["entries"] == 0 { return "" }
+    entry = state["entries"][state["selected"]]
+    return fv_path(state["directory"], entry["name"])
+}
+
+func fv_preview(state, width, height) {
+    if #state["entries"] == 0 { return ["Empty directory"] }
+    entry = state["entries"][state["selected"]]
+    result = [entry["type"] + "  " + entry["name"], "updated " + entry["updatedAt"], ""]
+    if entry["type"] == "DIRECTORY" {
+        return result + ["Enter: open directory", "Backspace: parent directory"]
+    }
+    preview = file.readChunk(fv_selected_path(state), 0, 8192)
+    lines = text.split(preview, "\n")
+    index = 0
+    while index < #lines and #result < height {
+        result = result + [lines[index]]
+        index = index + 1
+    }
+    if #preview == 8192 { result = result + ["… preview limited to 8 KiB"] }
+    return result
+}
+
+func fv_render(state) {
+    width = fv_width()
+    height = fv_height()
+    left = fv_max(18, width / 2)
+    right = width - left - 1
+    preview = fv_preview(state, right, height)
+    screen = term.hideCursor() + term.clear()
+    title = " CilFiles  " + state["directory"] + "  (" + util.toString(#state["entries"]) + ")"
+    screen = screen + term.inverse(fv_fit(title, width)) + "\r\n"
+    screen = screen + term.inverse(fv_fit(" Files" + text.repeat(" ", left - 6) + "│ Preview", width)) + "\r\n"
+    row = 0
+    while row < height {
+        item = ""
+        if state["top"] + row < #state["entries"] {
+            entry = state["entries"][state["top"] + row]
+            marker = " "
+            if state["top"] + row == state["selected"] { marker = ">" }
+            suffix = ""
+            if entry["type"] == "DIRECTORY" { suffix = "/" }
+            item = marker + " " + entry["name"] + suffix
+        }
+        detail = ""
+        if row < #preview { detail = preview[row] }
+        screen = screen + fv_fit(item, left) + "│" + fv_fit(detail, right) + "\r\n"
+        row = row + 1
+    }
+    footer = "↑↓ move  Enter open  Backspace parent  R refresh  Q quit"
+    if #state["message"] > 0 { footer = state["message"] }
+    return screen + term.inverse(fv_fit(footer, width)) + term.cursorTo(1, 1) + term.showCursor()
+}
+
+func fv_key(state, key) {
+    count = #state["entries"]
+    if key == "q" or key == "Q" or key == "CTRL_C" {
+        state["running"] = false
+        return state
+    }
+    if key == "r" or key == "R" { return fv_reload(state) }
+    if key == "UP" {
+        state["selected"] = fv_max(0, state["selected"] - 1)
+        return fv_fix(state)
+    }
+    if key == "DOWN" {
+        state["selected"] = fv_min(count - 1, state["selected"] + 1)
+        return fv_fix(state)
+    }
+    if key == "PAGE_UP" {
+        state["selected"] = fv_max(0, state["selected"] - fv_height())
+        return fv_fix(state)
+    }
+    if key == "PAGE_DOWN" {
+        state["selected"] = fv_min(count - 1, state["selected"] + fv_height())
+        return fv_fix(state)
+    }
+    if key == "BACKSPACE" or key == "LEFT" {
+        state["directory"] = state["directory"] + "/.."
+        state["selected"] = 0
+        state["top"] = 0
+        return fv_reload(state)
+    }
+    if key == "ENTER" or key == "RIGHT" {
+        if count == 0 { return state }
+        entry = state["entries"][state["selected"]]
+        if entry["type"] == "DIRECTORY" {
+            state["directory"] = fv_selected_path(state)
+            state["selected"] = 0
+            state["top"] = 0
+            return fv_reload(state)
+        }
+        state["message"] = "Previewing " + entry["name"]
+        return state
+    }
+    return state
+}
+
+func open(startPath) {
+    startPath = term.sanitize(startPath)
+    browserState = {
+        directory: startPath,
+        entries: [],
+        selected: 0,
+        top: 0,
+        running: true,
+        message: ""
+    }
+    browserState = fv_reload(browserState)
+    io.print(fv_render(browserState))
+    while browserState["running"] {
+        browserKey = io.readKey()
+        browserState = fv_key(browserState, browserKey)
+        if browserState["running"] { io.print(fv_render(browserState)) }
+    }
+    io.print(term.showCursor() + term.clear())
+    return null
+}
+
+# Universal zero-argument application entrypoint used by package.run("files").
+func run() {
+    return open(".")
+}

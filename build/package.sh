@@ -8,7 +8,7 @@ version="${1:-$(date +%Y%m%d)}"
 output="$project_dir/build/cilexec-${version}.sh"
 
 echo "=== Building image ==="
-docker compose -f compose.yml -f compose.persistent.yml build
+docker compose -f compose.yml -f docker/compose/persistent.yml build
 
 echo
 echo "=== Generating standalone installer ==="
@@ -90,7 +90,6 @@ cp Install.sh "$temp_dir/"
 cp Uninstall.sh "$temp_dir/"
 cp Shell.sh "$temp_dir/"
 cp compose.yml "$temp_dir/"
-cp compose.persistent.yml "$temp_dir/"
 cp Dockerfile "$temp_dir/"
 cp .dockerignore "$temp_dir/"
 cp -r docker "$temp_dir/docker"

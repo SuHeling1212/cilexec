@@ -147,7 +147,8 @@ class RuntimeCrashRecoveryIT {
             try (PreparedStatement statement = connection.prepareStatement(
                     "SELECT auth.provision_principal(?,?)")) {
                 statement.setObject(1, ownerId);
-                statement.setString(2, PASSWORD);
+                statement.setString(2, com.follarce.auth.PasswordPolicy.hash(
+                        PASSWORD.toCharArray()));
                 statement.execute();
             }
         }
@@ -215,7 +216,6 @@ class RuntimeCrashRecoveryIT {
         environment.put("CILEXEC_RUNTIME_POOL_MIN_IDLE", "1");
         environment.put("CILEXEC_EFFECT_POOL_MAX", "2");
         environment.put("CILEXEC_EFFECT_POOL_MIN_IDLE", "1");
-        environment.put("CILEXEC_HEARTBEAT_INTERVAL", "PT0.1S");
         environment.put("CILEXEC_LEASE_DURATION", "PT2S");
         environment.put("CILEXEC_SHUTDOWN_GRACE", "PT5S");
         environment.put("CILEXEC_HEALTH_PORT", Integer.toString(availablePort()));

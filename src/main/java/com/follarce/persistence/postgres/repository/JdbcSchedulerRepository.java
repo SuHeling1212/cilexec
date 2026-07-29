@@ -30,6 +30,8 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
             statement.setTimestamp(4, java.sql.Timestamp.from(entry.enqueuedAt()));
             statement.setObject(5, entry.processUid());
             requireOne("scheduler.enqueue", statement.executeUpdate());
+            notifyWork("cilexec_scheduler_work", "scheduler.notify");
+            notifyWork("cilexec_timer_work", "scheduler.deadline.notify");
         } catch (SQLException exception) {
             throw failure("scheduler.enqueue", exception);
         }
@@ -38,10 +40,23 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
     @Override
     public Optional<SchedulerClaim> claimNext(UUID runnerId, UUID bootId, Instant now,
                                               Duration leaseDuration) {
+        return claim(runnerId, bootId, now, leaseDuration, false);
+    }
+
+    @Override
+    public Optional<SchedulerClaim> claimInterrupted(UUID runnerId, UUID bootId, Instant now,
+                                                     Duration leaseDuration) {
+        return claim(runnerId, bootId, now, leaseDuration, true);
+    }
+
+    private Optional<SchedulerClaim> claim(UUID runnerId, UUID bootId, Instant now,
+                                           Duration leaseDuration, boolean interrupted) {
         String select = "SELECT queue.process_uid, queue.owner_id FROM scheduler.queue AS queue "
                 + "JOIN process.process AS process ON process.process_uid=queue.process_uid "
                 + "WHERE queue.queue_state='READY' AND queue.ready_at<=? AND process.status='READY' "
-                + "ORDER BY queue.enqueued_at, queue.process_uid FOR UPDATE OF queue SKIP LOCKED LIMIT 1";
+                + "AND process.interrupt_requested=" + interrupted + " "
+                + "ORDER BY queue.enqueued_at, queue.process_uid "
+                + "FOR UPDATE OF queue, process SKIP LOCKED LIMIT 1";
         try {
             ensureRunner(runnerId, bootId, now);
             try (PreparedStatement statement = connection.prepareStatement(select)) {
@@ -52,16 +67,18 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
                     }
                     UUID processUid = rows.getObject("process_uid", UUID.class);
                     UUID ownerId = rows.getObject("owner_id", UUID.class);
-                    long epoch = claimProcess(processUid, now);
+                    long epoch = claimProcess(processUid, now, interrupted);
                     markQueueClaimed(processUid, runnerId, now);
                     Instant expires = now.plus(leaseDuration);
                     insertLease(processUid, ownerId, runnerId, bootId, epoch, now, expires);
+                    notifyWork("cilexec_timer_work", "scheduler.lease.notify");
                     return Optional.of(new SchedulerClaim(processUid, ownerId, runnerId, bootId, epoch,
                             now, now, expires));
                 }
             }
         } catch (SQLException exception) {
-            throw failure("process.claimNext", exception);
+            throw failure(interrupted ? "process.claimInterrupted" : "process.claimNext",
+                    exception);
         }
     }
 
@@ -86,12 +103,22 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
 
     @Override
     public void release(UUID processUid, long executionEpoch) {
-        String release = "SELECT scheduler.release_process(?,?)";
+        String release = "WITH released AS MATERIALIZED ("
+                + "SELECT scheduler.release_process(?,?) AS done), "
+                + "notified AS (SELECT pg_notify('cilexec_interrupt_work','') FROM released "
+                + "JOIN process.process ON process_uid=? AND status='READY' "
+                + "AND interrupt_requested) "
+                + "SELECT (SELECT count(*) FROM released),"
+                + "(SELECT count(*) FROM notified)";
         try (PreparedStatement statement = connection.prepareStatement(release)) {
             statement.setObject(1, processUid);
             statement.setLong(2, executionEpoch);
-            try (ResultSet ignored = statement.executeQuery()) {
-                // PostgreSQL executes the release before returning the void row.
+            statement.setObject(3, processUid);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getInt(1) != 1) {
+                    throw new SQLException("Scheduler release function was not evaluated",
+                            "40001");
+                }
             }
         } catch (SQLException exception) {
             throw failure("scheduler.release", exception);
@@ -123,6 +150,33 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
         }
     }
 
+    @Override
+    public Optional<Instant> nextLeaseExpiry() {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT min(expires_at) FROM scheduler.lease");
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next() || rows.getTimestamp(1) == null) return Optional.empty();
+            return Optional.of(rows.getTimestamp(1).toInstant());
+        } catch (SQLException exception) {
+            throw failure("scheduler.nextLeaseExpiry", exception);
+        }
+    }
+
+    @Override
+    public Optional<Instant> nextReadyAt() {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT min(queue.ready_at) FROM scheduler.queue queue "
+                        + "JOIN process.process process ON process.process_uid=queue.process_uid "
+                        + "WHERE queue.queue_state='READY' AND process.status='READY' "
+                        + "AND queue.ready_at>clock_timestamp()");
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next() || rows.getTimestamp(1) == null) return Optional.empty();
+            return Optional.of(rows.getTimestamp(1).toInstant());
+        } catch (SQLException exception) {
+            throw failure("scheduler.nextReadyAt", exception);
+        }
+    }
+
     private void ensureRunner(UUID runnerId, UUID bootId, Instant now) throws SQLException {
         String sql = "INSERT INTO scheduler.runner(runner_id,boot_id,runner_kind,status,started_at,heartbeat_at) "
                 + "VALUES (?,?,'SCHEDULER','ACTIVE',?,?) ON CONFLICT (runner_id) DO UPDATE "
@@ -136,13 +190,16 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
         }
     }
 
-    private long claimProcess(UUID processUid, Instant now) throws SQLException {
+    private long claimProcess(UUID processUid, Instant now, boolean interrupted)
+            throws SQLException {
         String sql = "UPDATE process.process SET status='RUNNING',execution_epoch=execution_epoch+1,"
                 + "state_version=state_version+1,updated_at=? WHERE process_uid=? AND status='READY' "
+                + "AND interrupt_requested=? "
                 + "RETURNING execution_epoch";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setTimestamp(1, java.sql.Timestamp.from(now));
             statement.setObject(2, processUid);
+            statement.setBoolean(3, interrupted);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) {
                     throw new SQLException("Claimed queue row lost READY process", "40001");

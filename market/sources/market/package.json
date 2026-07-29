@@ -1,0 +1,33 @@
+{
+  "namespace": "cilexec",
+  "name": "market",
+  "version": "1.0.3",
+  "languageVersion": "fcl-1",
+  "kind": "application",
+  "modules": [
+    {"name": "main", "path": "main.fcl"}
+  ],
+  "resources": [],
+  "dependencies": [],
+  "entrypoints": [
+    {"name": "run", "module": "main", "function": "run"}
+  ],
+  "exports": [
+    {"name": "search", "module": "main", "symbol": "search"},
+    {"name": "install", "module": "main", "symbol": "install"},
+    {"name": "help", "module": "main", "symbol": "help"},
+    {"name": "info", "module": "main", "symbol": "info"},
+    {"name": "list", "module": "main", "symbol": "list"},
+    {"name": "update", "module": "main", "symbol": "update"},
+    {"name": "upgrade", "module": "main", "symbol": "upgrade"},
+    {"name": "uninstall", "module": "main", "symbol": "uninstall"},
+    {"name": "download", "module": "main", "symbol": "download"}
+  ],
+  "capabilities": [
+    {"key": "network.http", "required": true, "rationale": "Fetch the market index and package databases"},
+    {"key": "vfs.read", "required": true, "rationale": "Search the cached market index and installation receipts"},
+    {"key": "vfs.write", "required": true, "rationale": "Persist the index and downloaded package databases"},
+    {"key": "terminal.raw_input", "required": true, "rationale": "Prompt the user to configure the market mirror"},
+    {"key": "package.manage", "required": true, "rationale": "Install, upgrade, and unbind packages selected by the user"}
+  ]
+}

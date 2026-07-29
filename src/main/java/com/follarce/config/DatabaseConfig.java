@@ -16,15 +16,12 @@ public record DatabaseConfig(
         String applicationName
 ) {
     public DatabaseConfig {
-        jdbcUrl = requireText(jdbcUrl, "jdbcUrl");
+        jdbcUrl = requireJdbcUrl(jdbcUrl);
         username = requireText(username, "username");
         passwordFile = Objects.requireNonNull(passwordFile, "passwordFile");
         applicationName = requireText(applicationName, "applicationName");
         connectionTimeout = Objects.requireNonNull(connectionTimeout, "connectionTimeout");
         validationTimeout = Objects.requireNonNull(validationTimeout, "validationTimeout");
-        if (!jdbcUrl.startsWith("jdbc:postgresql:")) {
-            throw new ConfigException("Only PostgreSQL JDBC URLs are accepted");
-        }
         if (maximumPoolSize < 1 || minimumIdle < 0 || minimumIdle > maximumPoolSize) {
             throw new ConfigException("Invalid connection-pool bounds");
         }
@@ -39,5 +36,13 @@ public record DatabaseConfig(
             throw new ConfigException(name + " must not be blank");
         }
         return value.trim();
+    }
+
+    private static String requireJdbcUrl(String value) {
+        try {
+            return JdbcUrlPolicy.requirePostgreSql(requireText(value, "jdbcUrl"));
+        } catch (IllegalArgumentException invalid) {
+            throw new ConfigException(invalid.getMessage(), invalid);
+        }
     }
 }

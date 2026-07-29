@@ -57,6 +57,29 @@ class TerminalAccessConsoleTest {
                 .allMatch(value -> value.length > 0 && allZero(value)));
     }
 
+    @Test
+    void rejectsAShortPasswordBeforeAskingForAdministratorPrivileges() {
+        String source = "123456\n123456\n"
+                + "create\nbob\n12345\n12345\n"
+                + "disconnect\n";
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        RecordingAccess access = new RecordingAccess();
+        TerminalInput input = TerminalInput.visible(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(source.getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)));
+
+        new TerminalAccessConsole(input,
+                new PrintWriter(bytes, true, StandardCharsets.UTF_8), access,
+                account -> command -> "ok", "operator").run();
+
+        String transcript = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(transcript.contains("new password (6+ characters)>"), transcript);
+        assertTrue(transcript.contains("error: Password must contain 6 to 1024 characters"),
+                transcript);
+        assertTrue(!transcript.contains("Create as administrator?"), transcript);
+        assertEquals(0, access.registrations);
+    }
+
     private static boolean allZero(char[] value) {
         for (char character : value) if (character != '\0') return false;
         return true;

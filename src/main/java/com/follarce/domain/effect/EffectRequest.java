@@ -40,7 +40,7 @@ public record EffectRequest(
         executionStartedAt = Invariant.required(executionStartedAt, "executionStartedAt");
         resultPayload = Invariant.required(resultPayload, "resultPayload");
         failureReason = Invariant.required(failureReason, "failureReason")
-                .map(value -> Invariant.text(value, "failureReason"));
+                .map(value -> boundedText(value, "failureReason", 4096));
         Invariant.required(createdAt, "createdAt");
         Invariant.required(updatedAt, "updatedAt");
         Invariant.check(!updatedAt.isBefore(createdAt), "updatedAt must not precede createdAt");
@@ -300,7 +300,7 @@ public record EffectRequest(
     ) {
         public Policy {
             idempotencyKey = Invariant.required(idempotencyKey, "idempotencyKey")
-                    .map(value -> Invariant.text(value, "idempotencyKey"));
+                    .map(value -> boundedText(value, "idempotencyKey", 512));
             Invariant.required(unknownAction, "unknownAction");
             Invariant.check(idempotent == idempotencyKey.isPresent(),
                     "idempotent policy requires exactly one idempotency key");
@@ -315,6 +315,14 @@ public record EffectRequest(
                         "retry handling requires a retryable idempotent effect");
             }
         }
+    }
+
+    private static String boundedText(String value, String name, int maximum) {
+        value = Invariant.text(value, name);
+        Invariant.check(value.length() <= maximum, name + " is too long");
+        Invariant.check(value.chars().noneMatch(Character::isISOControl),
+                name + " contains control characters");
+        return value;
     }
 
     public enum UnknownAction {

@@ -6,13 +6,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PackageVfsContractMigrationTest {
-    private static final String MIGRATION =
-            "db/migration/V018__package_and_vfs_contract_hardening.sql";
-
     @Test
     void packageBundleEnforcesTheJavaIndexShapesBeforePublishing() throws IOException {
         String sql = migration();
@@ -39,7 +35,9 @@ class PackageVfsContractMigrationTest {
         assertTrue(sql.contains("max(revision.revision_number), 0) + 1"));
         assertTrue(sql.contains("p_object_hash, actor, clock_timestamp()"));
         assertTrue(sql.contains("REVOKE INSERT ON vfs.file_revision"));
-        assertFalse(sql.contains("GRANT SELECT, INSERT ON vfs.file_revision TO %I"));
+        assertTrue(sql.lastIndexOf("REVOKE INSERT ON vfs.file_revision")
+                > sql.lastIndexOf("GRANT SELECT, INSERT ON vfs.file_revision TO %I"),
+                "the baseline must finish with direct revision inserts revoked");
     }
 
     @Test
@@ -55,10 +53,6 @@ class PackageVfsContractMigrationTest {
     }
 
     private static String migration() throws IOException {
-        ClassLoader loader = PackageVfsContractMigrationTest.class.getClassLoader();
-        try (InputStream input = loader.getResourceAsStream(MIGRATION)) {
-            if (input == null) throw new IOException("Missing migration " + MIGRATION);
-            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        return BaselineSql.load();
     }
 }

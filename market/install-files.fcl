@@ -1,0 +1,4 @@
+downloaded = network.download("http://host.docker.internal:8787/market/v1/bea34cbd21e7cb55fbbf27c913f13c864485fa7e4643411fb8e038661e9983a4", "/files.db")
+installed = package.install("/files.db", "files")
+import "bea34cbd21e7cb55fbbf27c913f13c864485fa7e4643411fb8e038661e9983a4" as "files"
+files.open(".")

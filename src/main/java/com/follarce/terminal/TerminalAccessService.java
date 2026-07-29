@@ -1,23 +1,26 @@
 package com.follarce.terminal;
 
 import com.follarce.auth.AuthService;
+import com.follarce.auth.UsernamePolicy;
+import com.follarce.config.JdbcUrlPolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.follarce.vfs.VfsService;
-import org.postgresql.ds.PGSimpleDataSource;
-
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
 import java.time.Clock;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.locks.LockSupport;
 
-/** Authenticates terminal users against their stable PostgreSQL LOGIN roles. */
+/** Authenticates terminal users against application-owned credential verifiers. */
 public final class TerminalAccessService implements TerminalAccess {
+    private static final int MAX_CONCURRENT_CREDENTIAL_CHECKS = 8;
+    private static final String UNKNOWN_PRINCIPAL = "<unknown>";
+    private static final String DUMMY_CREDENTIAL = com.follarce.auth.PasswordPolicy.hash(
+            "invalid-terminal-credential".toCharArray());
     public static final Set<Capability> USER_CAPABILITIES = Set.of(
             Capability.PROCESS_CREATE,
             Capability.PROCESS_CONTROL_OWN,
@@ -37,9 +40,14 @@ public final class TerminalAccessService implements TerminalAccess {
     }
 
     private final JdbcTransactionExecutor transactions;
-    private final String jdbcUrl;
     private final Clock clock;
     private final String administratorUsername;
+    private final AuthService auth;
+    private final VfsService vfs;
+    private final ConcurrentHashMap<String, LoginFailure> loginFailures =
+            new ConcurrentHashMap<>();
+    private final Semaphore credentialChecks = new Semaphore(
+            MAX_CONCURRENT_CREDENTIAL_CHECKS, true);
 
     public TerminalAccessService(JdbcTransactionExecutor transactions, String jdbcUrl,
                                  Clock clock) {
@@ -49,28 +57,46 @@ public final class TerminalAccessService implements TerminalAccess {
     public TerminalAccessService(JdbcTransactionExecutor transactions, String jdbcUrl,
                                  Clock clock, String administratorUsername) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
-        this.jdbcUrl = requireJdbcUrl(jdbcUrl);
+        JdbcUrlPolicy.requirePostgreSql(jdbcUrl);
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
-        this.administratorUsername = normalizeUsername(administratorUsername);
+        this.administratorUsername = UsernamePolicy.normalize(administratorUsername);
+        this.auth = new AuthService(transactions, clock);
+        this.vfs = new VfsService(transactions, clock);
     }
 
     @Override
     public Optional<UserAccount> login(String username, char[] password) {
         if (username == null || username.isBlank() || password == null) return Optional.empty();
-        Optional<UserAccount> account = transactions.inTransaction(Isolation.READ_COMMITTED,
-                transaction -> transaction.auth().findUser(username.trim()));
-        if (account.isEmpty() || account.orElseThrow().status() != UserAccount.Status.ACTIVE) {
+        final String normalized;
+        try {
+            normalized = UsernamePolicy.normalize(username);
+        } catch (IllegalArgumentException invalid) {
+            applyLoginDelay(UNKNOWN_PRINCIPAL);
+            verifyDummyCredential(password);
+            recordLoginFailure(UNKNOWN_PRINCIPAL);
             return Optional.empty();
         }
-        if (!principalAccepts(account.orElseThrow(), password)) return Optional.empty();
+        Optional<UserAccount> account = transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser(normalized));
+        if (account.isEmpty() || account.orElseThrow().status() != UserAccount.Status.ACTIVE) {
+            applyLoginDelay(UNKNOWN_PRINCIPAL);
+            verifyDummyCredential(password);
+            recordLoginFailure(UNKNOWN_PRINCIPAL);
+            return Optional.empty();
+        }
+        applyLoginDelay(normalized);
+        if (!principalAccepts(account.orElseThrow(), password)) {
+            recordLoginFailure(normalized);
+            return Optional.empty();
+        }
+        loginFailures.remove(normalized);
         ensureRoot(account.orElseThrow());
         return account;
     }
 
     @Override
     public UserAccount register(String username, char[] password) {
-        return new AuthService(transactions, clock).create(
-                normalizeUsername(username), password, USER_CAPABILITIES);
+        return auth.create(UsernamePolicy.normalize(username), password, USER_CAPABILITIES);
     }
 
     @Override
@@ -81,8 +107,7 @@ public final class TerminalAccessService implements TerminalAccess {
         if (!verifyAdministratorPassword(adminPassword)) {
             throw new IllegalArgumentException("Invalid administrator password");
         }
-        return new AuthService(transactions, clock).create(
-                normalizeUsername(username), password, ADMIN_CAPABILITIES);
+        return auth.create(UsernamePolicy.normalize(username), password, ADMIN_CAPABILITIES);
     }
 
     @Override
@@ -93,8 +118,7 @@ public final class TerminalAccessService implements TerminalAccess {
 
     @Override
     public UserAccount bootstrap(String username, char[] password) {
-        return new AuthService(transactions, clock).create(
-                normalizeUsername(username), password, ADMIN_CAPABILITIES);
+        return auth.create(UsernamePolicy.normalize(username), password, ADMIN_CAPABILITIES);
     }
 
     private boolean verifyAdministratorPassword(char[] password) {
@@ -105,57 +129,77 @@ public final class TerminalAccessService implements TerminalAccess {
     }
 
     private boolean principalAccepts(UserAccount account, char[] password) {
-        if (databaseAccepts(account, com.follarce.auth.PasswordPolicy.sha512Hex(password))) {
-            return true;
+        credentialChecks.acquireUninterruptibly();
+        try {
+            return transactions.inTransaction(Isolation.READ_COMMITTED,
+                    transaction -> transaction.auth().credentialMatches(
+                            account.userId(), password));
+        } finally {
+            credentialChecks.release();
         }
-        // Releases before the password-hashing change stored the human password directly in
-        // the PostgreSQL LOGIN role. Accept it once, then atomically rotate that role to the
-        // current digest representation so upgrades do not lock out existing accounts.
-        if (!databaseAccepts(account, new String(password))) return false;
-        new AuthService(transactions, clock).rotateCredential(account.userId(), password);
-        return true;
     }
 
-    private boolean databaseAccepts(UserAccount account, String databasePassword) {
-        PGSimpleDataSource source = new PGSimpleDataSource();
-        source.setURL(jdbcUrl);
-        source.setUser(account.postgresRoleName());
-        source.setPassword(databasePassword);
-        try (Connection connection = source.getConnection();
-             Statement statement = connection.createStatement();
-             ResultSet row = statement.executeQuery("SELECT session_user")) {
-            return row.next() && account.postgresRoleName().equals(row.getString(1));
-        } catch (SQLException denied) {
-            return false;
+    private void verifyDummyCredential(char[] password) {
+        credentialChecks.acquireUninterruptibly();
+        try {
+            dummyVerify(password);
+        } finally {
+            credentialChecks.release();
         }
     }
+
+    private static void dummyVerify(char[] password) {
+        com.follarce.auth.PasswordPolicy.matches(password, DUMMY_CREDENTIAL);
+    }
+
+    private void applyLoginDelay(String username) {
+        LoginFailure failure = loginFailures.get(username);
+        if (failure == null) return;
+        long delayMillis = Math.min(10_000L, 250L << Math.min(5, failure.count() - 1));
+        long elapsed = java.time.Duration.between(failure.at(), clock.instant()).toMillis();
+        if (elapsed < delayMillis) {
+            LockSupport.parkNanos(java.time.Duration.ofMillis(delayMillis - elapsed).toNanos());
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("Login was interrupted");
+            }
+        }
+    }
+
+    private void recordLoginFailure(String username) {
+        java.time.Instant now = clock.instant();
+        loginFailures.compute(username, (ignored, previous) -> new LoginFailure(
+                previous == null || java.time.Duration.between(previous.at(), now)
+                        .toMinutes() >= 10 ? 1 : Math.min(32, previous.count() + 1), now));
+    }
+
+    private record LoginFailure(int count, java.time.Instant at) { }
 
     private void ensureRoot(UserAccount account) {
         boolean exists = transactions.inUserTransaction(account.userId(),
                 Isolation.READ_COMMITTED, transaction -> transaction.vfs()
                         .findChild(account.userId(), Optional.empty(), "/").isPresent());
         if (!exists) {
-            new VfsService(transactions, clock).createDirectory(account.userId(), Optional.empty(),
-                    "/", Set.of());
+            vfs.createDirectory(account.userId(), Optional.empty(), "/", Set.of());
+        }
+        if (account.username().equals(administratorUsername)) {
+            ensureUsersDirectory(account);
         }
     }
 
-    private static String normalizeUsername(String username) {
-        if (username == null || username.isBlank()) {
-            throw new IllegalArgumentException("Username is required");
-        }
-        String normalized = username.trim();
-        if (normalized.length() > 128
-                || normalized.chars().anyMatch(Character::isISOControl)) {
-            throw new IllegalArgumentException("Username is invalid");
-        }
-        return normalized;
+    /** The administrator gets a stable entry point for the virtual per-user home mounts. */
+    private void ensureUsersDirectory(UserAccount account) {
+        transactions.inUserTransaction(account.userId(), Isolation.SERIALIZABLE, transaction -> {
+            var root = transaction.vfs().findChild(account.userId(), Optional.empty(), "/")
+                    .orElseThrow(() -> new IllegalStateException("VFS root is missing"));
+            if (transaction.vfs().findChild(account.userId(), Optional.of(root.nodeId()),
+                    "Users").isEmpty()) {
+                transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
+                        java.util.UUID.randomUUID(), Optional.of(root.nodeId()), account.userId(),
+                        "Users", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                        Optional.empty(), Set.of(), false, clock.instant(), clock.instant()));
+            }
+            return null;
+        });
     }
 
-    private static String requireJdbcUrl(String value) {
-        if (value == null || !value.startsWith("jdbc:postgresql:")) {
-            throw new IllegalArgumentException("A PostgreSQL JDBC URL is required");
-        }
-        return value;
-    }
 }

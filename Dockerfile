@@ -25,8 +25,13 @@ FROM ${RUNTIME_IMAGE} AS runtime
 
 LABEL com.follarce.cilexec=true
 
+COPY docker/terminal-client.c /tmp/cilexec-terminal-client.c
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl \
+    && apt-get install --yes --no-install-recommends ca-certificates curl gcc libc6-dev \
+    && gcc -O2 -s -o /opt/cilexec-terminal-client /tmp/cilexec-terminal-client.c \
+    && apt-get purge --yes --auto-remove gcc libc6-dev \
+    && mv /opt/cilexec-terminal-client /usr/local/bin/cilexec-terminal-client \
+    && rm -f /tmp/cilexec-terminal-client.c \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 cilexec \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \

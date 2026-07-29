@@ -62,6 +62,8 @@ public record PackageIndex(
         public Module {
             name = key(name, "moduleName");
             objectPath = Invariant.text(objectPath, "moduleObjectPath");
+            Invariant.check(objectPath.length() <= 1024,
+                    "moduleObjectPath is too long");
             Invariant.check(!objectPath.startsWith("/") && !objectPath.endsWith("/")
                             && objectPath.indexOf('\\') < 0,
                     "moduleObjectPath must be a canonical package-relative path");
@@ -69,7 +71,7 @@ public record PackageIndex(
                     "moduleObjectPath contains control characters");
             for (String pathPart : objectPath.split("/", -1)) {
                 Invariant.check(!pathPart.isBlank() && !pathPart.equals(".")
-                                && !pathPart.equals(".."),
+                                && !pathPart.equals("..") && pathPart.length() <= 255,
                         "moduleObjectPath must be traversal-free");
             }
             Invariant.required(hash, "moduleHash");
@@ -86,6 +88,8 @@ public record PackageIndex(
             namespace = component(namespace, "dependencyNamespace");
             name = component(name, "dependencyName");
             versionConstraint = Invariant.text(versionConstraint, "versionConstraint");
+            Invariant.check(versionConstraint.length() <= 128,
+                    "versionConstraint is too long");
             Invariant.check(versionConstraint.chars().noneMatch(Character::isISOControl),
                     "versionConstraint contains control characters");
         }
@@ -114,9 +118,13 @@ public record PackageIndex(
     public record CapabilityRequirement(String key, boolean required, String rationale) {
         public CapabilityRequirement {
             key = Invariant.text(key, "capabilityKey");
-            Invariant.check(key.matches("[a-z][a-z0-9_.:-]*"),
+            Invariant.check(key.matches("[a-z][a-z0-9_.:-]{0,127}"),
                     "capabilityKey contains unsupported characters");
             rationale = Invariant.required(rationale, "rationale");
+            Invariant.check(rationale.length() <= 4096,
+                    "capability rationale is too long");
+            Invariant.check(rationale.chars().noneMatch(Character::isISOControl),
+                    "capability rationale contains control characters");
         }
     }
 }

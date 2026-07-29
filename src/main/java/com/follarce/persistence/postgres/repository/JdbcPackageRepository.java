@@ -21,7 +21,7 @@ import java.util.UUID;
 public final class JdbcPackageRepository extends JdbcRepositorySupport implements PackageRepository {
     private static final String RELEASE_COLUMNS = "release.package_hash,release.namespace,release.package_name,"
             + "release.package_version,release.database_object_hash,release.database_file_hash,"
-            + "signature.signature_status,release.created_at";
+            + "release.created_at";
     private final JsonCodec json;
 
     public JdbcPackageRepository(Connection connection) {
@@ -36,11 +36,7 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     @Override
     public ReleaseWriteResult registerRelease(PackageIndex packageIndex) {
         PackageRelease release = packageIndex.release();
-        if (release.signatureStatus() != PackageRelease.SignatureStatus.UNSIGNED) {
-            throw new SecurityException(
-                    "Package bundle requires UNSIGNED until a verifier supplies evidence");
-        }
-        String sql = "SELECT package.register_release_bundle(?,?,?,?,?,?,?,?,"
+        String sql = "SELECT package.register_release_bundle(?,?,?,?,?,?,?,"
                 + "?::jsonb,?::jsonb,?::jsonb,?::jsonb,?::jsonb,?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setBytes(1, JdbcValues.hash(release.packageHash().value()));
@@ -50,13 +46,12 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
             statement.setBytes(5, JdbcValues.hash(release.databaseObjectHash()));
             statement.setBytes(6, JdbcValues.hash(release.databaseFileHash()));
             statement.setInt(7, 1);
-            statement.setString(8, release.signatureStatus().name());
-            statement.setString(9, json.write(moduleJson(packageIndex.modules())));
-            statement.setString(10, json.write(dependencyJson(packageIndex.dependencies())));
-            statement.setString(11, json.write(entrypointJson(packageIndex.entrypoints())));
-            statement.setString(12, json.write(exportJson(packageIndex.exports())));
-            statement.setString(13, json.write(capabilityJson(packageIndex.capabilities())));
-            statement.setTimestamp(14, java.sql.Timestamp.from(release.importedAt()));
+            statement.setString(8, json.write(moduleJson(packageIndex.modules())));
+            statement.setString(9, json.write(dependencyJson(packageIndex.dependencies())));
+            statement.setString(10, json.write(entrypointJson(packageIndex.entrypoints())));
+            statement.setString(11, json.write(exportJson(packageIndex.exports())));
+            statement.setString(12, json.write(capabilityJson(packageIndex.capabilities())));
+            statement.setTimestamp(13, java.sql.Timestamp.from(release.importedAt()));
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) {
                     throw new IllegalStateException(
@@ -92,9 +87,16 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     }
 
     @Override
+    public Optional<PackageRelease> findReleaseByDatabaseFileHash(
+            com.follarce.domain.vfs.ObjectHash databaseFileHash) {
+        return findRelease("package.findByDatabaseFileHash",
+                "WHERE release.database_file_hash=?",
+                statement -> statement.setBytes(1, JdbcValues.hash(databaseFileHash)));
+    }
+
+    @Override
     public List<PackageRelease> findReleases() {
-        String sql = "SELECT " + RELEASE_COLUMNS + " FROM package.release AS release LEFT JOIN "
-                + "package.signature AS signature USING (package_hash) "
+        String sql = "SELECT " + RELEASE_COLUMNS + " FROM package.release AS release "
                 + "ORDER BY release.namespace,release.package_name,release.package_version";
         try (PreparedStatement statement = connection.prepareStatement(sql);
              ResultSet rows = statement.executeQuery()) {
@@ -297,8 +299,8 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     }
 
     private Optional<PackageRelease> findRelease(String operation, String condition, Binder binder) {
-        String sql = "SELECT " + RELEASE_COLUMNS + " FROM package.release AS release LEFT JOIN "
-                + "package.signature AS signature USING (package_hash) " + condition;
+        String sql = "SELECT " + RELEASE_COLUMNS + " FROM package.release AS release "
+                + condition;
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             binder.bind(statement);
             try (ResultSet rows = statement.executeQuery()) {
@@ -311,15 +313,12 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     }
 
     private static PackageRelease mapRelease(ResultSet rows) throws SQLException {
-        String signature = rows.getString("signature_status");
         return new PackageRelease(
                 new PackageRelease.Coordinate(rows.getString("namespace"),
                         rows.getString("package_name"), rows.getString("package_version")),
                 new PackageRelease.Hash(JdbcValues.hash(rows.getBytes("package_hash"))),
                 JdbcValues.hash(rows.getBytes("database_object_hash")),
                 JdbcValues.hash(rows.getBytes("database_file_hash")),
-                signature == null ? PackageRelease.SignatureStatus.UNSIGNED
-                        : PackageRelease.SignatureStatus.valueOf(signature),
                 rows.getTimestamp("created_at").toInstant()
         );
     }

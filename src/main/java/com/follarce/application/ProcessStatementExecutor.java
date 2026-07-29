@@ -2,7 +2,6 @@ package com.follarce.application;
 
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.ProcessRepository;
-import com.follarce.domain.packageinfo.PackageBinding;
 import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
@@ -42,7 +41,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -50,9 +48,6 @@ import java.util.UUID;
 public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private static final int MAX_TERMINAL_STEPS_PER_SLICE = 4_096;
     private static final long MAX_TERMINAL_SLICE_NANOS = Duration.ofMillis(20).toNanos();
-    private static final Set<String> BUILTIN_IMPORTS = Set.of(
-            "math", "std.math", "util", "std.util", "path", "std.path", "term", "file",
-            "io", "process", "user", "swapPool", "network", "socket", "package", "system");
     private final UserTransactionExecutor transactions;
     private final FclRuntime fixedRuntime;
     private final FclProgramCodec programCodec;
@@ -108,17 +103,20 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             CilProcess current = transaction.processes().findByUid(claim.processUid())
                     .orElseThrow(() -> new StaleClaimException("Claimed process no longer exists"));
             validateClaim(current, claim);
-            if (transaction.terminal().consumeInterrupt(current.identity().processUid())) {
-                terminateAtSafePoint(transaction, current, claim, now);
-                return null;
-            }
-
             Program program = transaction.programs()
                     .findById(current.continuation().programId())
                     .orElseThrow(() -> new IllegalStateException("Process program no longer exists"));
             FclPersistenceBridge.ensureProgramIdentity(program, current.continuation());
             FclContinuation continuation = continuationBridge.restore(current.continuation());
             boolean terminalProcess = TerminalReplService.isTerminalProcess(continuation);
+            if (transaction.terminal().consumeInterrupt(current.identity().processUid())) {
+                if (terminalProcess) {
+                    cancelTerminalSubmission(transaction, current, claim, program, continuation, now);
+                    return null;
+                }
+                terminateAtSafePoint(transaction, current, claim, now);
+                return null;
+            }
             FclProgram compiled = loadProgram(transaction, program);
             compiled = linkPackages(transaction, current, compiled, program);
 
@@ -222,7 +220,6 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         List<ImportSpec> imports = base.instructions().stream()
                 .filter(FclInstruction.Import.class::isInstance)
                 .map(FclInstruction.Import.class::cast)
-                .filter(value -> !isBuiltinImport(normalizeImport(value.target())))
                 .map(value -> new ImportSpec(normalizeImport(value.target()), value.alias(),
                         value.wildcard()))
                 .toList();
@@ -241,6 +238,9 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
                     .orElseThrow(() -> new IllegalStateException("Pinned package database is missing"));
             PackageDescriptor descriptor = reader.inspect(database.content().bytes());
+            com.follarce.package_manager.PackageCapabilityPolicy.inspect(
+                    database.content().bytes(), descriptor).requireUserCapabilities(
+                    transaction.auth().capabilities(process.ownerId()));
             if (!descriptor.languageVersion().equals(program.languageVersion())) {
                 throw new IllegalStateException("Package language version does not match program: "
                         + descriptor.coordinate());
@@ -364,6 +364,26 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
     }
 
+    private void cancelTerminalSubmission(
+            com.follarce.domain.port.TransactionContext transaction,
+            CilProcess current,
+            SchedulerClaim claim,
+            Program program,
+            FclContinuation continuation,
+            Instant now
+    ) {
+        Continuation cancelled = continuationBridge.persist(current.identity().processUid(), program,
+                current.continuation(), continuation.cancelSubmission());
+        CilProcess paused = current.commitStatement(cancelled, CilProcess.Status.PAUSED,
+                current.stateVersion(), claim.executionEpoch(), now);
+        ProcessRepository.UpdateResult result = transaction.processes().updateClaimed(paused,
+                current.stateVersion(), claim);
+        if (result != ProcessRepository.UpdateResult.UPDATED) {
+            throw new StaleClaimException("Terminal interrupt was fenced: " + result);
+        }
+        transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
+    }
+
     private static void deliverPendingTerminalInput(
             com.follarce.domain.port.TransactionContext transaction,
             CilProcess process,
@@ -398,8 +418,10 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     "include requires a compiled source dependency; unresolved include: " + target);
             return;
         }
-        if (isBuiltinImport(target)) {
-            continuation.clearWait();
+        if (!isSha256(target)) {
+            continuation.rejectDirective(
+                    "Package import requires the installed package database SHA-256; "
+                            + "name and coordinate imports are not supported: " + target);
             return;
         }
         Optional<ProcessPackageBinding> pinned = transaction.packages().findProcessBinding(
@@ -407,24 +429,14 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         if (pinned.isEmpty()) {
             var environment = PackageEnvironments.ensureDefault(transaction.packages(),
                     process.ownerId(), now);
-            Optional<PackageBinding> declared = transaction.packages().findBinding(
-                    environment.environmentId(), target);
-            if (declared.isEmpty()) {
-                Optional<PackageRelease> direct = directRelease(transaction, target);
-                if (direct.isPresent()) {
-                    PackageBinding binding = new PackageBinding(environment.environmentId(), target,
-                            direct.orElseThrow().packageHash(), now);
-                    transaction.packages().saveBinding(binding);
-                    declared = Optional.of(binding);
-                }
-            }
-            if (declared.isEmpty()) {
+            Optional<PackageRelease> direct = directRelease(transaction, target);
+            if (direct.isEmpty()) {
                 continuation.rejectDirective("Unresolved package import: " + target);
                 return;
             }
             ProcessPackageBinding resolved = new ProcessPackageBinding(
                     process.identity().processUid(), target, environment.environmentId(),
-                    declared.orElseThrow().packageHash(), now);
+                    direct.orElseThrow().packageHash(), now);
             transaction.packages().saveProcessBinding(resolved);
         }
         continuation.clearWait();
@@ -432,14 +444,13 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     private static Optional<PackageRelease> directRelease(
             com.follarce.domain.port.TransactionContext transaction, String target) {
-        String[] coordinate = target.split("/", 3);
-        if (coordinate.length != 3) return Optional.empty();
-        try {
-            return transaction.packages().findRelease(new PackageRelease.Coordinate(
-                    coordinate[0], coordinate[1], coordinate[2]));
-        } catch (IllegalArgumentException invalid) {
-            return Optional.empty();
-        }
+        if (!isSha256(target)) return Optional.empty();
+        return transaction.packages().findReleaseByDatabaseFileHash(new ObjectHash(
+                target.toLowerCase(java.util.Locale.ROOT)));
+    }
+
+    private static boolean isSha256(String target) {
+        return target != null && target.matches("(?i)[0-9a-f]{64}");
     }
 
     private static Continuation withPackageBindings(Continuation continuation,
@@ -457,10 +468,6 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private static String normalizeImport(String target) {
         return target != null && target.endsWith(".*")
                 ? target.substring(0, target.length() - 2) : target;
-    }
-
-    private boolean isBuiltinImport(String target) {
-        return BUILTIN_IMPORTS.contains(target) || extensions.namespaces().contains(target);
     }
 
     private static ExecutionReplacement resolveExecutionReplacement(

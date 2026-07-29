@@ -47,6 +47,9 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
             statement.setObject(10, JdbcValues.json(json.write(timer.payload().orElse(null))));
             statement.setObject(11, timer.processUid());
             requireOne("timer.save", statement.executeUpdate());
+            if (timer.status() == ProcessTimer.Status.SCHEDULED) {
+                notifyWork("cilexec_timer_work", "timer.notify");
+            }
         } catch (SQLException exception) {
             throw failure("timer.save", exception);
         }
@@ -83,6 +86,18 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
             }
         } catch (SQLException exception) {
             throw failure("timer.claimDue", exception);
+        }
+    }
+
+    @Override
+    public Optional<Instant> nextScheduledWakeAt() {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT min(wake_at) FROM process.timer WHERE status='SCHEDULED'");
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next() || rows.getTimestamp(1) == null) return Optional.empty();
+            return Optional.of(rows.getTimestamp(1).toInstant());
+        } catch (SQLException exception) {
+            throw failure("timer.nextScheduledWakeAt", exception);
         }
     }
 

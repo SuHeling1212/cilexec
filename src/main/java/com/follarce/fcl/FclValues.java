@@ -107,7 +107,7 @@ final class FclValues {
             return;
         }
         if (target instanceof Map<?, ?> rawMap) {
-            ((Map<Object, Object>) rawMap).put(finalIndex, deepCopy(value));
+            ((Map<Object, Object>) rawMap).put(deepCopy(finalIndex), deepCopy(value));
             return;
         }
         throw new FclRuntimeException("Value is not assignable by index: " + typeOf(target));
@@ -196,7 +196,7 @@ final class FclValues {
 
     private static boolean equal(Object left, Object right) {
         if (left instanceof Number a && right instanceof Number b) {
-            return Double.compare(a.doubleValue(), b.doubleValue()) == 0;
+            return compareNumbers(a, b) == 0;
         }
         return Objects.equals(left, right);
     }
@@ -204,7 +204,7 @@ final class FclValues {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static int compare(Object left, Object right) {
         if (left instanceof Number a && right instanceof Number b) {
-            return Double.compare(a.doubleValue(), b.doubleValue());
+            return compareNumbers(a, b);
         }
         if (left == null || right == null) {
             throw new FclRuntimeException("null cannot be ordered");
@@ -240,5 +240,23 @@ final class FclValues {
     private static boolean isIntegral(Number number) {
         return number instanceof Byte || number instanceof Short || number instanceof Integer
                 || number instanceof Long;
+    }
+
+    private static int compareNumbers(Number left, Number right) {
+        if (isIntegral(left) && isIntegral(right)) {
+            return Long.compare(left.longValue(), right.longValue());
+        }
+        double leftValue = left.doubleValue();
+        double rightValue = right.doubleValue();
+        if (!Double.isFinite(leftValue) || !Double.isFinite(rightValue)) {
+            return Double.compare(leftValue, rightValue);
+        }
+        java.math.BigDecimal exactLeft = isIntegral(left)
+                ? java.math.BigDecimal.valueOf(left.longValue())
+                : java.math.BigDecimal.valueOf(leftValue);
+        java.math.BigDecimal exactRight = isIntegral(right)
+                ? java.math.BigDecimal.valueOf(right.longValue())
+                : java.math.BigDecimal.valueOf(rightValue);
+        return exactLeft.compareTo(exactRight);
     }
 }

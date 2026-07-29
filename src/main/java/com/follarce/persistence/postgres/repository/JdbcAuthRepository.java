@@ -77,7 +77,7 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
                     .map(capability -> capability.name().toLowerCase(java.util.Locale.ROOT))
                     .sorted().toArray(String[]::new);
             capabilityArray = connection.createArrayOf("text", keys);
-            String hashed = PasswordPolicy.sha512Hex(copy);
+            String hashed = PasswordPolicy.hash(copy);
             statement.setObject(1, administratorId);
             statement.setObject(2, userId);
             statement.setString(3, username);
@@ -148,7 +148,7 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     @Override
     public String provisionPrincipal(UUID userId, char[] password) {
         PasswordPolicy.require(password);
-        String hashed = PasswordPolicy.sha512Hex(password);
+        String hashed = PasswordPolicy.hash(password);
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT auth.provision_principal(?,?)")) {
             statement.setObject(1, userId);
@@ -159,6 +159,22 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
             }
         } catch (SQLException exception) {
             throw failure("auth.provisionPrincipal", exception);
+        }
+    }
+
+    @Override
+    public boolean credentialMatches(UUID userId, char[] password) {
+        if (password == null) return false;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT credential.password_hash FROM auth.user_credential credential "
+                        + "JOIN auth.user_account account USING (user_id) "
+                        + "WHERE credential.user_id=? AND account.status='ACTIVE'")) {
+            statement.setObject(1, userId);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() && PasswordPolicy.matches(password, rows.getString(1));
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.credentialMatches", exception);
         }
     }
 
@@ -195,16 +211,21 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
 
     @Override
     public boolean hasCapabilityByAdministrator(UUID userId, Capability capability) {
-        String sql = "SELECT EXISTS(SELECT 1 FROM auth.user_capability assignment "
+        String sql = "SELECT EXISTS(SELECT 1 FROM auth.user_account account "
+                + "JOIN auth.user_capability assignment USING (user_id) "
                 + "JOIN auth.capability capability USING (capability_id) "
-                + "WHERE assignment.user_id=? AND capability.capability_key=? "
+                + "WHERE account.user_id=? AND account.status='ACTIVE' "
+                + "AND capability.capability_key IN (?, 'system_admin') "
                 + "AND (assignment.expires_at IS NULL OR assignment.expires_at>clock_timestamp()) "
-                + "UNION ALL SELECT 1 FROM auth.group_member member "
+                + "UNION ALL SELECT 1 FROM auth.user_account account "
+                + "JOIN auth.group_member member ON member.member_user_id=account.user_id "
                 + "JOIN auth.group_account group_account USING (group_id,owner_id) "
                 + "JOIN auth.group_capability assignment USING (group_id,owner_id) "
                 + "JOIN auth.capability capability USING (capability_id) "
-                + "WHERE member.member_user_id=? AND group_account.status='ACTIVE' "
-                + "AND capability.capability_key=? AND (assignment.expires_at IS NULL "
+                + "WHERE account.user_id=? AND account.status='ACTIVE' "
+                + "AND group_account.status='ACTIVE' "
+                + "AND capability.capability_key IN (?, 'system_admin') "
+                + "AND (assignment.expires_at IS NULL "
                 + "OR assignment.expires_at>clock_timestamp()))";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             String key = capability.name().toLowerCase(java.util.Locale.ROOT);

@@ -1,0 +1,12 @@
+{
+  "cilexec/editor/1.0.4": {
+    "summary": "自适应终端文本编辑器",
+    "description": "具有保存、搜索、剪切、粘贴等 nano 级功能的 CilExec FCL 文本编辑器。",
+    "tags": ["editor", "text", "tui", "编辑器", "文本"]
+  },
+  "cilexec/market/1.0.3": {
+    "summary": "CilExec 软件包市场客户端",
+    "description": "获取完整仓库索引，在本地搜索包，并通过 SHA-256 下载、安装、升级或卸载软件包。",
+    "tags": ["market", "package", "search", "市场", "软件包", "搜索"]
+  }
+}

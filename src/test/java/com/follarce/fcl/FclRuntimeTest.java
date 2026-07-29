@@ -74,6 +74,42 @@ class FclRuntimeTest {
         assertTrue(continuation.branchState().isEmpty());
     }
 
+    @Test
+    void turnsInvalidUserCallArityIntoADurableFailure() {
+        FclProgram program = compiler.compile("""
+                func identity(value) { return value }
+                identity()
+                """);
+        FclContinuation continuation = new FclContinuation();
+
+        assertEquals(FclStepResult.Status.ADVANCED,
+                runtime.executeOne(program, continuation).status());
+        FclStepResult failed = runtime.executeOne(program, continuation);
+
+        assertEquals(FclStepResult.Status.FAILED, failed.status());
+        assertTrue(continuation.halted());
+        assertTrue(continuation.failed());
+        assertTrue(String.valueOf(failed.value()).contains("expects 1 arguments"));
+    }
+
+    @Test
+    void doesNotAccumulateBranchFramesAcrossInfiniteLoopIterations() {
+        FclProgram program = compiler.compile("""
+                while true {
+                    if true { value = 1 }
+                }
+                """);
+        FclContinuation continuation = new FclContinuation();
+
+        for (int step = 0; step < 2_000; step++) {
+            FclStepResult result = runtime.executeOne(program, continuation);
+            assertFalse(result.status() == FclStepResult.Status.FAILED,
+                    () -> String.valueOf(result.value()));
+            assertTrue(continuation.branchState().size() <= 1,
+                    "loop iterations must reclaim completed branch state");
+        }
+    }
+
     private void runToCompletion(FclProgram program, FclContinuation continuation) {
         int steps = 0;
         while (!continuation.halted() && steps++ < 200) {

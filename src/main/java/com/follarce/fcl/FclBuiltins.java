@@ -11,6 +11,8 @@ import java.util.Map;
 
 /** Factory for deterministic, side-effect-free built-ins. */
 public final class FclBuiltins {
+    private static final int MAX_TEXT_RESULT_CHARS = 16 * 1024 * 1024;
+
     private FclBuiltins() {}
 
     /** Returns a new registry on every call; no process-global catalog is retained. */
@@ -42,6 +44,9 @@ public final class FclBuiltins {
                     Number value = numericArgument(args, 0, 1, "abs");
                     if (value instanceof Byte || value instanceof Short
                             || value instanceof Integer || value instanceof Long) {
+                        if (value.longValue() == Long.MIN_VALUE) {
+                            throw new FclRuntimeException("abs result exceeds the integer range");
+                        }
                         return Math.abs(value.longValue());
                     }
                     return Math.abs(value.doubleValue());
@@ -82,6 +87,7 @@ public final class FclBuiltins {
                     if (!(source instanceof String text)) {
                         throw new FclRuntimeException("fromJson requires a string");
                     }
+                    requireTextSize(text.length(), "fromJson input");
                     try {
                         return gson.fromJson(text, Object.class);
                     } catch (JsonSyntaxException failure) {
@@ -189,8 +195,16 @@ public final class FclBuiltins {
                         throw new FclRuntimeException("join requires an array as its first argument");
                     }
                     String delimiter = stringAt(args, 1, "join");
-                    return values.stream().map(FclValues::display)
-                            .collect(java.util.stream.Collectors.joining(delimiter));
+                    StringBuilder result = new StringBuilder();
+                    for (int index = 0; index < values.size(); index++) {
+                        String item = FclValues.display(values.get(index));
+                        long nextLength = (long) result.length() + item.length()
+                                + (index == 0 ? 0 : delimiter.length());
+                        requireTextSize(nextLength, "join result");
+                        if (index != 0) result.append(delimiter);
+                        result.append(item);
+                    }
+                    return result.toString();
                 })
                 .register("text", "indexOf", args -> {
                     if (args.size() < 2 || args.size() > 3) {
@@ -223,13 +237,17 @@ public final class FclBuiltins {
                         throw new FclRuntimeException(
                                 "repeat count must be between 0 and 1000000");
                     }
+                    requireTextSize((long) value.length() * count, "repeat result");
                     return value.repeat((int) count);
                 })
                 .register("text", "replace", args -> {
                     arity(args, 3, "replace");
-                    return stringAt(args, 0, "replace").replace(
-                            stringAt(args, 1, "replace"),
-                            stringAt(args, 2, "replace"));
+                    String value = stringAt(args, 0, "replace");
+                    String target = stringAt(args, 1, "replace");
+                    String replacement = stringAt(args, 2, "replace");
+                    requireTextSize(replacedLength(value, target, replacement),
+                            "replace result");
+                    return value.replace(target, replacement);
                 });
     }
 
@@ -290,11 +308,11 @@ public final class FclBuiltins {
 
     private static String cursor(List<Object> args, String function, String suffix) {
         arity(args, 1, function);
-        Object value = args.getFirst();
-        if (!(value instanceof Number number) || number.longValue() < 1) {
+        long count = integral(args.getFirst(), function + " count");
+        if (count < 1 || count > 1_000_000) {
             throw new FclRuntimeException(function + " requires a positive count");
         }
-        return "\u001b[" + number.longValue() + suffix;
+        return "\u001b[" + count + suffix;
     }
 
     private static String ansiColor(String name) {
@@ -372,6 +390,28 @@ public final class FclBuiltins {
             throw new FclRuntimeException(description + " requires an integer");
         }
         return number.longValue();
+    }
+
+    private static long replacedLength(String value, String target, String replacement) {
+        if (target.isEmpty()) {
+            return (long) value.length() + (long) (value.length() + 1) * replacement.length();
+        }
+        long occurrences = 0;
+        int from = 0;
+        while (true) {
+            int match = value.indexOf(target, from);
+            if (match < 0) break;
+            occurrences++;
+            from = match + target.length();
+        }
+        return (long) value.length()
+                + occurrences * ((long) replacement.length() - target.length());
+    }
+
+    private static void requireTextSize(long length, String description) {
+        if (length > MAX_TEXT_RESULT_CHARS) {
+            throw new FclRuntimeException(description + " exceeds the 16 Mi-character limit");
+        }
     }
 
     private static void arity(List<Object> args, int expected, String function) {

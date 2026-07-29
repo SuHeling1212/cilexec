@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd)"
+project_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$project_dir"
 
 project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
@@ -24,30 +24,9 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 1
 fi
 
-# Ensure secrets exist (same as Install.sh)
-secret_dir="$project_dir/docker/secrets"
-mkdir -p "$secret_dir"
+bash "$project_dir/docker/create-secrets.sh" >/dev/null
 
-create_internal_secret() {
-    local destination="$1"
-    if [[ -s "$destination" ]]; then
-        return
-    fi
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 32 > "$destination"
-    else
-        printf 'cilexec-internal-%s-%s-%s\n' "$RANDOM" "$RANDOM" "$RANDOM" > "$destination"
-    fi
-    chmod 600 "$destination"
-}
-
-create_internal_secret "$secret_dir/postgres-admin-password"
-create_internal_secret "$secret_dir/cilexec-migrator-password"
-create_internal_secret "$secret_dir/cilexec-runtime-password"
-create_internal_secret "$secret_dir/cilexec-effect-worker-password"
-create_internal_secret "$secret_dir/cilexec-readonly-password"
-
-compose=(docker compose -f compose.yml -f compose.persistent.yml)
+compose=(docker compose -f compose.yml -f docker/compose/persistent.yml)
 
 # Ensure postgres is running.
 if ! "${compose[@]}" ps postgres 2>/dev/null | grep -q 'Up'; then

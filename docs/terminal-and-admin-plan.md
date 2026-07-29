@@ -455,10 +455,10 @@ startupStep(hooks::startTerminal);
 
 ## 6. 数据库变更
 
-### 6.1 migration V021：新增 system_admin capability
+### 6.1 数据库基线：加入 system_admin capability
 
 ```sql
--- V021__system_admin_capability.sql
+-- db/baseline/administrator_storage.sql 中的管理员能力部分
 SET ROLE cilexec_owner;
 
 INSERT INTO auth.capability (capability_id, capability_key, description, system_capability)
@@ -493,7 +493,8 @@ RESET ROLE;
 | **修改** | `terminal/ShellCommandParser.java` |
 | **修改** | `app/RuntimeBootstrap.java` |
 | **新建** | `terminal/CilExecShell.java` |
-| **新建** | `src/main/resources/db/migration/V021__system_admin_capability.sql` |
+| **数据库基线入口** | `src/main/java/db/migration/V001__CilexecBaseline.java` |
+| **数据库基线模块** | `src/main/resources/db/baseline/*.sql` |
 
 ---
 

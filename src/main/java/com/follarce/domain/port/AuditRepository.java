@@ -5,6 +5,7 @@ import com.follarce.domain.audit.AuditRetentionPolicy;
 
 import java.util.List;
 import java.util.Optional;
+import java.time.Instant;
 
 public interface AuditRepository {
     void append(AuditEvent event);
@@ -16,4 +17,8 @@ public interface AuditRepository {
     Optional<AuditRetentionPolicy> findRetentionPolicy(String eventType);
 
     int purgeExpired(int limit);
+
+    default Optional<Instant> nextRetentionExpiry() {
+        return Optional.empty();
+    }
 }

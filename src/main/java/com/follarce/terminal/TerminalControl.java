@@ -1,6 +1,8 @@
 package com.follarce.terminal;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 /** Application boundary used by host terminal transports. */
 @FunctionalInterface
@@ -38,5 +40,24 @@ public interface TerminalControl {
     }
 
     default void rememberCommand(String command) {
+    }
+
+    default boolean canShutdown() {
+        return false;
+    }
+
+    /** Stops the shared Runtime after administrator capability and credential verification. */
+    default void shutdown(char[] password) {
+        throw new UnsupportedOperationException("Runtime shutdown is not available");
+    }
+
+    /** Cancels the currently executing FCL submission without discarding REPL context. */
+    default boolean interruptForeground() {
+        return false;
+    }
+
+    /** Unique route for output belonging to this authenticated terminal session. */
+    default Optional<UUID> outputRouteId() {
+        return Optional.empty();
     }
 }

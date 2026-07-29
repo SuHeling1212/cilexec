@@ -213,7 +213,7 @@ public final class JavaExtensionCatalog {
 
 
     private static void validateName(String value, String kind) {
-        if (value == null || !NAME.matcher(value).matches()) {
+        if (value == null || value.length() > 128 || !NAME.matcher(value).matches()) {
             throw new IllegalArgumentException("Invalid " + kind + " name: " + value);
         }
     }

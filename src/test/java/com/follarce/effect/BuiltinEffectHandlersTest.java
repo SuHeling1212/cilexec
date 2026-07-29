@@ -4,6 +4,7 @@ import com.follarce.domain.process.Continuation;
 import com.follarce.fcl.FclContinuationCodec;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -19,6 +20,40 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BuiltinEffectHandlersTest {
     private final FclContinuationCodec codec = new FclContinuationCodec();
+
+    @BeforeAll
+    static void allowOnlyTheLoopbackTestServer() {
+        System.setProperty("cilexec.networkAllowPrivateHosts", "127.0.0.1,localhost");
+    }
+
+    @Test
+    void pinnedHttpKeepsTheOriginalVirtualHost() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> host =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/host", exchange -> {
+            host.set(exchange.getRequestHeaders().getFirst("Host"));
+            byte[] body = "ok".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.http-get");
+            handler.execute(typed(Map.of("url", "http://localhost:" + port + "/host")),
+                    Optional.empty());
+            assertEquals("localhost:" + port, host.get());
+            NetworkTargetPolicy.ResolvedHttpTarget target =
+                    NetworkTargetPolicy.resolveHttpTarget(java.net.URI.create(
+                            "http://localhost:" + port + "/host"));
+            assertEquals(target.address().getHostAddress(), target.pinnedUri().getHost());
+        } finally {
+            server.stop(0);
+        }
+    }
 
     @Test
     void assemblesEveryExternalNamespaceAndKeepsHostExecDenyByDefault() throws Exception {

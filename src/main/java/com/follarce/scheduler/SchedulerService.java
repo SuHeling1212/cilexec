@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
@@ -23,20 +24,23 @@ public final class SchedulerService implements AutoCloseable {
     private final UUID bootId;
     private final int workerCount;
     private final Duration leaseDuration;
-    private final Duration idlePoll;
+    private final Duration errorBackoff;
     private final Consumer<Throwable> fatalFailure;
     private final AtomicBoolean running = new AtomicBoolean();
+    private final Semaphore workAvailable = new Semaphore(0);
+    private final Semaphore interruptAvailable = new Semaphore(0);
     private final List<Thread> workers = new ArrayList<>();
+    private Thread interruptWorker;
 
     public SchedulerService(TransactionExecutor transactions, ClaimedProcessHandler handler,
                             UUID bootId, int workerCount, Duration leaseDuration,
-                            Duration idlePoll, Consumer<Throwable> fatalFailure) {
+                            Duration errorBackoff, Consumer<Throwable> fatalFailure) {
         this.transactions = transactions;
         this.handler = handler;
         this.bootId = bootId;
         this.workerCount = workerCount;
         this.leaseDuration = leaseDuration;
-        this.idlePoll = idlePoll;
+        this.errorBackoff = errorBackoff;
         this.fatalFailure = fatalFailure;
     }
 
@@ -49,10 +53,43 @@ public final class SchedulerService implements AutoCloseable {
             workers.add(Thread.ofVirtual().name("cilexec-scheduler-" + index)
                     .start(() -> workerLoop(runnerId)));
         }
+        UUID interruptRunnerId = UUID.randomUUID();
+        interruptWorker = Thread.ofVirtual().name("cilexec-interrupt-worker")
+                .start(() -> interruptLoop(interruptRunnerId));
     }
 
     public boolean isRunning() {
-        return running.get() && workers.stream().allMatch(Thread::isAlive);
+        Thread interrupt = interruptWorker;
+        return running.get() && interrupt != null && interrupt.isAlive()
+                && workers.stream().allMatch(Thread::isAlive);
+    }
+
+    /** A dedicated worker consumes Ctrl+C claims; normal workers never claim those rows. */
+    private void interruptLoop(UUID runnerId) {
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            try {
+                Instant now = Instant.now();
+                Optional<SchedulerClaim> claim = transactions.inTransaction(
+                        Isolation.READ_COMMITTED,
+                        transaction -> transaction.scheduler().claimInterrupted(
+                                runnerId, bootId, now, leaseDuration));
+                if (claim.isEmpty()) {
+                    await(interruptAvailable);
+                    continue;
+                }
+                handler.executeOne(claim.orElseThrow());
+            } catch (Throwable failure) {
+                if (!running.get()) return;
+                if (isFatal(failure)) {
+                    running.set(false);
+                    fatalFailure.accept(failure);
+                    return;
+                }
+                LOG.warn("Interrupt worker {} rejected a cancellation cycle", runnerId,
+                        failure);
+                LockSupport.parkNanos(errorBackoff.toNanos());
+            }
+        }
     }
 
     private void workerLoop(UUID runnerId) {
@@ -63,7 +100,7 @@ public final class SchedulerService implements AutoCloseable {
                         transaction -> transaction.scheduler().claimNext(
                                 runnerId, bootId, now, leaseDuration));
                 if (claim.isEmpty()) {
-                    LockSupport.parkNanos(idlePoll.toNanos());
+                    awaitWork();
                     continue;
                 }
                 handler.executeOne(claim.get());
@@ -75,8 +112,34 @@ public final class SchedulerService implements AutoCloseable {
                     return;
                 }
                 LOG.warn("Scheduler worker {} rejected a claim cycle", runnerId, failure);
-                LockSupport.parkNanos(idlePoll.toNanos());
+                LockSupport.parkNanos(errorBackoff.toNanos());
             }
+        }
+    }
+
+    /** Wakes one worker; that worker drains claims until the durable queue is empty. */
+    public void wake() {
+        if (running.get() && workAvailable.availablePermits() < workerCount) {
+            workAvailable.release();
+        }
+    }
+
+    /** Wakes the cancellation worker without waking the normal execution pool. */
+    public void wakeInterrupt() {
+        if (running.get() && interruptAvailable.availablePermits() == 0) {
+            interruptAvailable.release();
+        }
+    }
+
+    private void awaitWork() {
+        await(workAvailable);
+    }
+
+    private static void await(Semaphore signal) {
+        try {
+            signal.acquire();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -89,10 +152,12 @@ public final class SchedulerService implements AutoCloseable {
     @Override
     public synchronized void close() {
         running.set(false);
+        workAvailable.release(workerCount);
+        interruptAvailable.release();
         // Give workers a brief window to finish their current transaction cleanly.
         for (Thread worker : workers) {
             try {
-                worker.join(idlePoll.toMillis() * 2);
+                worker.join(errorBackoff.toMillis() * 2);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return;
@@ -102,6 +167,8 @@ public final class SchedulerService implements AutoCloseable {
         for (Thread worker : workers) {
             if (worker.isAlive()) worker.interrupt();
         }
+        Thread interrupt = interruptWorker;
+        if (interrupt != null && interrupt.isAlive()) interrupt.interrupt();
         for (Thread worker : workers) {
             try {
                 worker.join(Duration.ofSeconds(5));
@@ -110,6 +177,15 @@ public final class SchedulerService implements AutoCloseable {
                 return;
             }
         }
+        if (interrupt != null) {
+            try {
+                interrupt.join(Duration.ofSeconds(5));
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
         workers.clear();
+        interruptWorker = null;
     }
 }

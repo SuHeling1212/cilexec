@@ -22,7 +22,7 @@ class TimerLoopTest {
             calls.incrementAndGet();
             fired.countDown();
             return 1;
-        }, Duration.ofSeconds(30), failure -> { });
+        }, () -> java.util.Optional.empty(), failure -> { });
 
         loop.start();
         assertTrue(fired.await(1, TimeUnit.SECONDS));
@@ -39,7 +39,7 @@ class TimerLoopTest {
         CountDownLatch fatal = new CountDownLatch(1);
         TimerLoop loop = new TimerLoop(() -> {
             throw failure;
-        }, Duration.ofSeconds(1), actual -> {
+        }, () -> java.util.Optional.empty(), actual -> {
             reported.set(actual);
             fatal.countDown();
         });
@@ -50,5 +50,28 @@ class TimerLoopTest {
 
         assertSame(failure, reported.get());
         assertFalse(loop.isRunning());
+    }
+
+    @Test
+    void staysBlockedWithoutADeadlineUntilExplicitlyWoken() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch firstCall = new CountDownLatch(1);
+        CountDownLatch secondCall = new CountDownLatch(2);
+        TimerLoop loop = new TimerLoop(() -> {
+            calls.incrementAndGet();
+            firstCall.countDown();
+            secondCall.countDown();
+            return 0;
+        }, java.util.Optional::empty, failure -> { });
+
+        loop.start();
+        assertTrue(firstCall.await(1, TimeUnit.SECONDS));
+        assertFalse(secondCall.await(150, TimeUnit.MILLISECONDS));
+        assertEquals(1, calls.get());
+
+        loop.wake();
+        assertTrue(secondCall.await(1, TimeUnit.SECONDS));
+        loop.close();
+        assertEquals(2, calls.get());
     }
 }

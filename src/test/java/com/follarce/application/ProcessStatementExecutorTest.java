@@ -76,25 +76,14 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void resolvesPureImportsAndFailsUnknownDirectivesWithoutPermanentWaits() {
-        Fixture directive = new Fixture("import \"std.math\"\nvalue = 1\n");
-        directive.executor.executeOne(directive.claim);
-        CilProcess imported = directive.persistence.processes.current;
-        assertEquals(CilProcess.Status.READY, imported.status());
-        assertTrue(imported.continuation().waitState().isEmpty());
-        assertEquals(1, directive.persistence.scheduler.releases);
-
-        Fixture unresolved = new Fixture("import \"missing.package\"\nvalue = 1\n");
+    void failsAnUnknownHashImportWithoutPermanentWaits() {
+        Fixture unresolved = new Fixture("import \"" + "f".repeat(64)
+                + "\"\nvalue = 1\n");
         unresolved.executor.executeOne(unresolved.claim);
         assertEquals(CilProcess.Status.FAILED,
                 unresolved.persistence.processes.current.status());
         assertTrue(new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(unresolved.persistence.processes.current.continuation()).failed());
-
-        Fixture include = new Fixture("include \"/lib/source.fcl\"\nvalue = 1\n");
-        include.executor.executeOne(include.claim);
-        assertEquals(CilProcess.Status.FAILED,
-                include.persistence.processes.current.status());
 
         Fixture failed = new Fixture("value = 1 / 0\n");
         failed.executor.executeOne(failed.claim);
@@ -108,7 +97,7 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void resolvesACompiledJavaExtensionNamespaceAsASystemImport() {
+    void compiledJavaExtensionsAreAlreadyRegisteredWithoutImport() {
         JavaExtensionCatalog extensions = JavaExtensionCatalog.compile(List.of(
                 new CilExecExtension() {
                     @Override public ExtensionDescriptor descriptor() {
@@ -119,20 +108,15 @@ class ProcessStatementExecutorTest {
                         registrar.function("greeting", "hello", context -> "hello");
                     }
                 }));
-        Fixture fixture = new Fixture("import \"greeting\"\n", extensions);
+        Fixture fixture = new Fixture("message = greeting.hello()\n", extensions);
 
         fixture.executor.executeOne(fixture.claim);
 
         assertEquals(CilProcess.Status.READY, fixture.persistence.processes.current.status());
-        assertTrue(fixture.persistence.processes.current.continuation().waitState().isEmpty());
     }
 
     @Test
     void linksPinnedPackageExportsAndPersistsTheExactHash() {
-        Fixture fixture = new Fixture("""
-                import "hello" as hello
-                result = hello.greet("CilExec")
-                """);
         PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
@@ -143,19 +127,17 @@ class ProcessStatementExecutorTest {
                 func run() { return greet("package") }
                 """.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         var descriptor = new SqlitePackageReader().inspect(database);
+        Fixture fixture = new Fixture("import \"" + descriptor.databaseFileHash()
+                + "\"\nresult = " + descriptor.databaseFileHash()
+                + ".greet(\"CilExec\")\n");
         StoredObject object = StoredObject.create(new BinaryContent(database),
                 "application/vnd.sqlite3", NOW);
         fixture.persistence.vfs.saveObject(object);
         PackageRelease release = new PackageRelease(new PackageRelease.Coordinate("demo", "hello",
                 "1.0.0"), new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
-                object.objectHash(), object.objectHash(), PackageRelease.SignatureStatus.UNSIGNED,
+                object.objectHash(), object.objectHash(),
                 NOW);
         fixture.persistence.packages.releases.put(release.packageHash(), release);
-        var environment = PackageEnvironments.ensureDefault(fixture.persistence.packages,
-                fixture.ownerId, NOW);
-        fixture.persistence.packages.saveBinding(new com.follarce.domain.packageinfo.PackageBinding(
-                environment.environmentId(), "hello", release.packageHash(), NOW));
-
         int steps = 0;
         while (!fixture.persistence.processes.current.isTerminal() && steps++ < 30) {
             if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
@@ -175,7 +157,59 @@ class ProcessStatementExecutorTest {
                 .restore(fixture.persistence.processes.current.continuation());
         assertEquals("Hello, CilExec", restored.scope().get("result"));
         assertEquals(release.packageHash().value(), fixture.persistence.processes.current
-                .continuation().packageBindings().get("hello"));
+                .continuation().packageBindings().get(descriptor.databaseFileHash()));
+    }
+
+    @Test
+    void resolvesAnInstalledPackageByDatabaseFileSha256WithOptionalAlias() {
+        ObjectHash fileHash = new ObjectHash("a".repeat(64));
+        PackageRelease release = new PackageRelease(
+                new PackageRelease.Coordinate("demo", "same-name", "2.0.0"),
+                new PackageRelease.Hash(new ObjectHash("b".repeat(64))),
+                fileHash, fileHash, NOW);
+
+        Fixture aliased = new Fixture("import \"" + fileHash.value() + "\" as \"chosen\"\n");
+        aliased.persistence.packages.releases.put(release.packageHash(), release);
+        aliased.executor.executeOne(aliased.claim);
+        assertEquals(CilProcess.Status.READY, aliased.persistence.processes.current.status());
+        assertTrue(aliased.persistence.packages.findProcessBinding(
+                aliased.processUid, fileHash.value()).isPresent());
+
+        Fixture unaliased = new Fixture("import \"" + fileHash.value() + "\"\n");
+        unaliased.persistence.packages.releases.put(release.packageHash(), release);
+        unaliased.executor.executeOne(unaliased.claim);
+        assertEquals(CilProcess.Status.READY,
+                unaliased.persistence.processes.current.status());
+    }
+
+    @Test
+    void persistsAndResolvesCaseInsensitiveFclEnvironmentVariables() {
+        Fixture fixture = new Fixture("""
+                env.set("market_origin", "https://example.test")
+                configured = env.get("MARKET_ORIGIN")
+                visible = env.list()
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        int steps = 0;
+        while (!fixture.persistence.processes.current.isTerminal() && steps++ < 20) {
+            if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = fixture.persistence.processes.current.claim(
+                        fixture.persistence.processes.current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                        claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+            fixture.executor.executeOne(fixture.claim);
+        }
+
+        assertEquals("https://example.test", fixture.persistence.environment
+                .findUser(fixture.ownerId, "MARKET_ORIGIN").orElseThrow());
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals("https://example.test", restored.scope().get("configured"));
+        assertTrue(restored.scope().get("visible") instanceof Map<?, ?> values
+                && "https://example.test".equals(values.get("MARKET_ORIGIN")));
     }
 
     @Test
@@ -297,6 +331,21 @@ class ProcessStatementExecutorTest {
                 persisted.languageVersion(), persisted.runtimeFormatVersion());
 
         assertEquals(99L, bridge.restore(normalized).scope().get("value"));
+    }
+
+    @Test
+    void restoresNullVariablesFromNormalizedScopeProjection() {
+        Fixture fixture = new Fixture("value = null\n");
+        FclPersistenceBridge bridge = new FclPersistenceBridge(new FclContinuationCodec());
+        FclContinuation runtime = new FclContinuation();
+        runtime.scope().put("value", null);
+
+        Continuation persisted = bridge.persist(fixture.processUid, fixture.program,
+                initial(fixture.program), runtime);
+        FclContinuation restored = bridge.restore(persisted);
+
+        assertTrue(restored.scope().contains("value"));
+        assertEquals(null, restored.scope().get("value"));
     }
 
     @Test

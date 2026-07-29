@@ -1,6 +1,7 @@
 package com.follarce.persistence.sqlite;
 
 import com.follarce.domain.packageinfo.PackageIndex;
+import com.follarce.domain.packageinfo.PackageKind;
 import com.follarce.domain.vfs.ObjectHash;
 
 import java.io.ByteArrayOutputStream;
@@ -27,6 +28,8 @@ import java.util.Set;
 
 /** Opens package bytes through an immutable, query-only SQLite cache file. */
 public final class SqlitePackageReader {
+    public static final int MAX_PACKAGE_DATABASE_BYTES = 64 * 1024 * 1024;
+    public static final int MAX_PACKAGE_RESOURCE_BYTES = 16 * 1024 * 1024;
     private static final List<String> REQUIRED_TABLES = List.of(
             "package_metadata",
             "package_file",
@@ -34,8 +37,7 @@ public final class SqlitePackageReader {
             "package_dependency",
             "package_entrypoint",
             "package_export",
-            "package_capability",
-            "package_signature"
+            "package_capability"
     );
     private static final Set<String> LIFECYCLE_KEYS = Set.of(
             "pre_install", "post_install", "pre_upgrade", "post_upgrade",
@@ -43,9 +45,7 @@ public final class SqlitePackageReader {
     );
 
     public PackageDescriptor inspect(byte[] databaseBytes) {
-        if (databaseBytes == null || databaseBytes.length < 100) {
-            throw new PackageDatabaseException("Package database is empty or truncated");
-        }
+        validateDatabaseBytes(databaseBytes);
         Path cache = null;
         try {
             cache = Files.createTempFile("cilexec-package-", ".db");
@@ -54,18 +54,27 @@ public final class SqlitePackageReader {
                 validateSchema(connection);
                 Map<String, String> metadata = readMetadata(connection);
                 rejectLifecycleHooks(metadata);
+                validateFileIndex(connection);
                 List<PackageIndex.Module> modules = readModules(connection);
                 validateModuleContent(connection, modules);
+                PackageKind kind = PackageKind.parse(required(metadata, "package_kind"));
+                List<PackageIndex.Entrypoint> entrypoints = readEntrypoints(connection);
+                if (kind == PackageKind.APPLICATION && entrypoints.stream()
+                        .noneMatch(entrypoint -> entrypoint.name().equals("run"))) {
+                    throw new PackageDatabaseException(
+                            "Application package is missing the universal run entrypoint");
+                }
                 return new PackageDescriptor(
                         required(metadata, "namespace"),
                         required(metadata, "name"),
                         required(metadata, "version"),
                         required(metadata, "language_version"),
+                        kind,
                         logicalHash(connection),
                         hash(databaseBytes),
                         modules,
                         readDependencies(connection),
-                        readEntrypoints(connection),
+                        entrypoints,
                         readExports(connection),
                         readCapabilities(connection)
                 );
@@ -87,16 +96,20 @@ public final class SqlitePackageReader {
 
     /** Reads one exact package resource through the same immutable/query-only SQLite boundary. */
     public byte[] readResource(byte[] databaseBytes, String resourcePath) {
-        if (databaseBytes == null || databaseBytes.length < 100) {
-            throw new PackageDatabaseException("Package database is empty or truncated");
+        return readResources(databaseBytes, List.of(resourcePath)).get(resourcePath).clone();
+    }
+
+    /** Reads several exact resources while opening and validating the immutable database once. */
+    public Map<String, byte[]> readResources(byte[] databaseBytes, List<String> resourcePaths) {
+        validateDatabaseBytes(databaseBytes);
+        if (resourcePaths == null || resourcePaths.size() > 1024) {
+            throw new PackageDatabaseException("Too many package resources were requested");
         }
-        if (resourcePath == null || resourcePath.isBlank() || resourcePath.startsWith("/")
-                || resourcePath.indexOf('\\') >= 0) {
-            throw new PackageDatabaseException("Package resource path must be relative");
-        }
-        for (String part : resourcePath.split("/", -1)) {
-            if (part.isBlank() || part.equals(".") || part.equals("..")) {
-                throw new PackageDatabaseException("Package resource path is not canonical");
+        LinkedHashSet<String> requested = new LinkedHashSet<>();
+        for (String path : resourcePaths) {
+            validateResourcePath(path);
+            if (!requested.add(path)) {
+                throw new PackageDatabaseException("Duplicate requested package resource: " + path);
             }
         }
         Path cache = null;
@@ -105,18 +118,27 @@ public final class SqlitePackageReader {
             Files.write(cache, databaseBytes);
             try (Connection connection = openImmutable(cache)) {
                 validateSchema(connection);
+                Map<String, byte[]> result = new LinkedHashMap<>();
                 try (PreparedStatement statement = connection.prepareStatement(
                         "SELECT content FROM package_file WHERE file_path=?")) {
-                    statement.setString(1, resourcePath);
-                    try (ResultSet rows = statement.executeQuery()) {
-                        if (!rows.next()) throw new PackageDatabaseException(
-                                "Unknown package resource: " + resourcePath);
-                        byte[] content = rows.getBytes(1);
-                        if (rows.next()) throw new PackageDatabaseException(
-                                "Duplicate package resource: " + resourcePath);
-                        return content == null ? new byte[0] : content.clone();
+                    for (String resourcePath : requested) {
+                        statement.setString(1, resourcePath);
+                        try (ResultSet rows = statement.executeQuery()) {
+                            if (!rows.next()) throw new PackageDatabaseException(
+                                    "Unknown package resource: " + resourcePath);
+                            byte[] content = rows.getBytes(1);
+                            if (content != null && content.length > MAX_PACKAGE_RESOURCE_BYTES) {
+                                throw new PackageDatabaseException(
+                                        "Package resource exceeds the 16 MiB in-memory limit");
+                            }
+                            if (rows.next()) throw new PackageDatabaseException(
+                                    "Duplicate package resource: " + resourcePath);
+                            result.put(resourcePath,
+                                    content == null ? new byte[0] : content.clone());
+                        }
                     }
                 }
+                return Map.copyOf(result);
             }
         } catch (PackageDatabaseException exception) {
             throw exception;
@@ -130,6 +152,31 @@ public final class SqlitePackageReader {
                     cache.toFile().deleteOnExit();
                 }
             }
+        }
+    }
+
+    private static void validateResourcePath(String resourcePath) {
+        if (resourcePath == null || resourcePath.isBlank() || resourcePath.startsWith("/")
+                || resourcePath.endsWith("/") || resourcePath.indexOf('\\') >= 0
+                || resourcePath.length() > 1024
+                || resourcePath.chars().anyMatch(Character::isISOControl)) {
+            throw new PackageDatabaseException("Package resource path must be relative");
+        }
+        for (String part : resourcePath.split("/", -1)) {
+            if (part.isBlank() || part.equals(".") || part.equals("..")
+                    || part.length() > 255) {
+                throw new PackageDatabaseException("Package resource path is not canonical");
+            }
+        }
+    }
+
+    private static void validateDatabaseBytes(byte[] databaseBytes) {
+        if (databaseBytes == null || databaseBytes.length < 100) {
+            throw new PackageDatabaseException("Package database is empty or truncated");
+        }
+        if (databaseBytes.length > MAX_PACKAGE_DATABASE_BYTES) {
+            throw new PackageDatabaseException(
+                    "Package database exceeds the 64 MiB installation limit");
         }
     }
 
@@ -242,6 +289,25 @@ public final class SqlitePackageReader {
         for (String key : LIFECYCLE_KEYS) {
             if (metadata.containsKey(key)) {
                 throw new PackageDatabaseException("Package lifecycle hooks are forbidden: " + key);
+            }
+        }
+    }
+
+    private static void validateFileIndex(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT file_path,length(content) FROM package_file ORDER BY file_path")) {
+            int count = 0;
+            while (rows.next()) {
+                if (++count > 10_000) {
+                    throw new PackageDatabaseException("Package contains too many files");
+                }
+                validateResourcePath(rows.getString(1));
+                long length = rows.getLong(2);
+                if (rows.wasNull() || length < 0 || length > MAX_PACKAGE_RESOURCE_BYTES) {
+                    throw new PackageDatabaseException(
+                            "Package resource exceeds the 16 MiB in-memory limit");
+                }
             }
         }
     }
@@ -416,9 +482,6 @@ public final class SqlitePackageReader {
     private static String logicalHash(Connection connection) throws SQLException {
         MessageDigest digest = digest();
         for (String table : REQUIRED_TABLES) {
-            if ("package_signature".equals(table)) {
-                continue;
-            }
             digest.update(table.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             List<byte[]> rows = canonicalRows(connection, table);
             rows.sort(SqlitePackageReader::compareUnsigned);
@@ -439,7 +502,7 @@ public final class SqlitePackageReader {
                     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
                     DataOutputStream output = new DataOutputStream(bytes);
                     for (int index = 1; index <= columns.getColumnCount(); index++) {
-                        output.writeUTF(columns.getColumnName(index));
+                        writeString(output, columns.getColumnName(index));
                         Object value = rows.getObject(index);
                         if (value == null) {
                             output.writeByte(0);
@@ -449,18 +512,25 @@ public final class SqlitePackageReader {
                             output.write(blob);
                         } else {
                             output.writeByte(2);
-                            output.writeUTF(value.getClass().getName());
-                            output.writeUTF(String.valueOf(value));
+                            writeString(output, value.getClass().getName());
+                            writeString(output, String.valueOf(value));
                         }
                     }
                     output.flush();
                     canonical.add(bytes.toByteArray());
-                } catch (IOException impossible) {
-                    throw new AssertionError(impossible);
+                } catch (IOException invalid) {
+                    throw new PackageDatabaseException(
+                            "Cannot canonicalize package metadata", invalid);
                 }
             }
         }
         return canonical;
+    }
+
+    private static void writeString(DataOutputStream output, String value) throws IOException {
+        byte[] encoded = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        output.writeInt(encoded.length);
+        output.write(encoded);
     }
 
     private static int compareUnsigned(byte[] left, byte[] right) {

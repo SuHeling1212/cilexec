@@ -72,18 +72,16 @@ class VfsPackageDomainTest {
     @Test
     void packageReleaseSeparatesLogicalIdentityFromOriginalDatabaseBytes() {
         ObjectHash databaseHash = hash("sqlite-database-bytes");
-        PackageRelease first = release("1.0.0", hash("logical-content"), databaseHash,
-                PackageRelease.SignatureStatus.UNSIGNED);
-        PackageRelease signed = release("1.0.0", first.packageHash().value(), databaseHash,
-                PackageRelease.SignatureStatus.VALID_TRUSTED);
+        PackageRelease first = release("1.0.0", hash("logical-content"), databaseHash);
+        PackageRelease same = release("1.0.0", first.packageHash().value(), databaseHash);
 
         assertEquals("std/network/1.0.0", first.coordinate().key());
-        assertEquals(first.packageHash(), signed.packageHash());
+        assertEquals(first.packageHash(), same.packageHash());
         assertEquals(first.databaseObjectHash(), first.databaseFileHash());
         assertNotEquals(first.packageHash().value(), first.databaseFileHash());
         assertThrows(IllegalArgumentException.class, () -> new PackageRelease(
                 first.coordinate(), first.packageHash(), databaseHash, hash("other-bytes"),
-                PackageRelease.SignatureStatus.UNSIGNED, T0));
+                T0));
     }
 
     @Test
@@ -97,15 +95,20 @@ class VfsPackageDomainTest {
         PackageBinding current = new PackageBinding(environmentId, "network", versionOne, T0);
         ProcessPackageBinding pinned = new ProcessPackageBinding(UUID.randomUUID(), "network",
                 environmentId, current.packageHash(), T0);
+        ProcessPackageBinding hashImported = new ProcessPackageBinding(UUID.randomUUID(),
+                "a".repeat(64), environmentId, current.packageHash(), T0);
         PackageBinding upgraded = new PackageBinding(environmentId, "network", versionTwo,
                 T0.plusSeconds(1));
 
         assertEquals(PackageEnvironment.Status.ACTIVE, environment.status());
         assertEquals(versionOne, pinned.packageHash());
+        assertEquals("a".repeat(64), hashImported.importName());
         assertNotEquals(upgraded.packageHash(), pinned.packageHash(),
                 "environment changes cannot mutate a running process binding");
         assertThrows(IllegalArgumentException.class, () -> new PackageBinding(
                 environmentId, "bad-binding", versionOne, T0));
+        assertThrows(IllegalArgumentException.class, () -> new ProcessPackageBinding(
+                UUID.randomUUID(), "0" + "A".repeat(63), environmentId, versionOne, T0));
     }
 
     @Test
@@ -119,11 +122,10 @@ class VfsPackageDomainTest {
     private static PackageRelease release(
             String version,
             ObjectHash logicalHash,
-            ObjectHash databaseHash,
-            PackageRelease.SignatureStatus status
+            ObjectHash databaseHash
     ) {
         return new PackageRelease(new PackageRelease.Coordinate("std", "network", version),
-                new PackageRelease.Hash(logicalHash), databaseHash, databaseHash, status, T0);
+                new PackageRelease.Hash(logicalHash), databaseHash, databaseHash, T0);
     }
 
     private static ObjectHash hash(String value) {

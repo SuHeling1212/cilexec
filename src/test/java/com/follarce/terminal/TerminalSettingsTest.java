@@ -16,5 +16,12 @@ class TerminalSettingsTest {
     @Test
     void defaultsAdministratorUsernameToLocal() {
         assertEquals("local", TerminalSettings.load(Map.of()).username());
+        assertEquals(8022, TerminalSettings.load(Map.of()).port());
+    }
+
+    @Test
+    void acceptsConfiguredTerminalPort() {
+        assertEquals(9123, TerminalSettings.load(Map.of(
+                "CILEXEC_TERMINAL_PORT", "9123")).port());
     }
 }

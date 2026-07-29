@@ -8,7 +8,9 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.fcl.FclPath;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
+import com.follarce.vfs.VfsService;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,27 +19,39 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Predicate;
 
 /** Database-backed terminal control plane plus a durable, full-function FCL REPL. */
 public final class DatabaseTerminalControl implements TerminalControl {
-    private static final Duration FOREGROUND_WAIT = Duration.ofSeconds(30);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(25);
 
     private final JdbcTransactionExecutor transactions;
     private final UserAccount user;
     private final TerminalService terminals;
     private final TerminalReplService repl;
+    private final VfsService vfs;
     private final Runnable shutdown;
+    private final Predicate<char[]> passwordVerifier;
     private UUID sessionId;
     private volatile Boolean isAdmin;
 
     public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
-                                   Runnable shutdown) {
+                                   Runnable shutdown, Predicate<char[]> passwordVerifier) {
+        this(transactions, user, shutdown, passwordVerifier, () -> { }, () -> { });
+    }
+
+    public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
+                                   Runnable shutdown, Predicate<char[]> passwordVerifier,
+                                   Runnable schedulerWake, Runnable interruptWake) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.user = java.util.Objects.requireNonNull(user, "user");
         this.shutdown = java.util.Objects.requireNonNull(shutdown, "shutdown");
-        this.terminals = new TerminalService(transactions, Clock.systemUTC());
-        this.repl = new TerminalReplService(transactions);
+        this.passwordVerifier = java.util.Objects.requireNonNull(passwordVerifier,
+                "passwordVerifier");
+        this.terminals = new TerminalService(transactions, Clock.systemUTC(), schedulerWake,
+                interruptWake);
+        this.repl = new TerminalReplService(transactions, schedulerWake);
+        this.vfs = new VfsService(transactions, Clock.systemUTC());
         this.sessionId = terminals.openOrResume(user.userId()).sessionId();
     }
 
@@ -49,9 +63,36 @@ public final class DatabaseTerminalControl implements TerminalControl {
             case ShellCommand.ChangeDirectory cd -> changeDirectory(cd.path());
             case ShellCommand.WorkingDirectory ignored -> workingDirectory();
             case ShellCommand.ListDirectory ls -> listDirectory(ls.path());
+            case ShellCommand.StartExport start -> startExport(start.path());
+            case ShellCommand.EndExport ignored -> endExport();
+            case ShellCommand.Clear ignored -> "\033[?25h\033[2J\033[H";
             case ShellCommand.Logout ignored -> "logout requested";
-            case ShellCommand.Exit ignored -> stop("terminal exited");
+            case ShellCommand.Exit ignored -> stop("");
+            case ShellCommand.Shutdown ignored -> throw new IllegalArgumentException(
+                    "shutdown requires interactive password verification");
         };
+    }
+
+    @Override
+    public boolean canShutdown() {
+        return isAdmin();
+    }
+
+    @Override
+    public Optional<UUID> outputRouteId() {
+        return Optional.of(sessionId);
+    }
+
+    @Override
+    public void shutdown(char[] password) {
+        java.util.Objects.requireNonNull(password, "password");
+        if (!isAdmin()) {
+            throw new IllegalArgumentException("Administrator permission is required");
+        }
+        if (!passwordVerifier.test(password)) {
+            throw new IllegalArgumentException("Invalid administrator password");
+        }
+        shutdown.run();
     }
 
     @Override
@@ -85,6 +126,18 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 .map(snapshot -> snapshot.keyInput()
                         ? AttachedInputMode.KEY : AttachedInputMode.LINE)
                 .orElse(AttachedInputMode.NONE);
+    }
+
+    @Override
+    public boolean interruptForeground() {
+        Optional<TerminalReplService.Snapshot> active = repl.active(user.userId(), sessionId)
+                .filter(snapshot -> snapshot.status() != CilProcess.Status.PAUSED)
+                .filter(snapshot -> !terminal(snapshot.status()));
+        if (active.isEmpty()) return false;
+        long pid = active.orElseThrow().pid();
+        if (!terminals.interruptTerminal(user.userId(), pid)) return false;
+        await(pid);
+        return true;
     }
 
     @Override
@@ -142,7 +195,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
                     replacement, Instant.now())) {
                 throw new IllegalStateException("Working directory changed concurrently");
             }
-            return replacement;
+            return "";
         });
     }
 
@@ -155,11 +208,18 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 transaction -> {
                     String current = transaction.terminal().workingDirectory(sessionId);
                     String requested = FclPath.resolve(current, path.orElse("."));
-                    VfsNode directory = resolve(transaction, requested);
+                    if (requested.equals("/Users") && isLocalAdministrator()) {
+                        return transaction.auth().findUsersByAdministrator(user.userId()).stream()
+                                .map(UserAccount::username).sorted(String.CASE_INSENSITIVE_ORDER)
+                                .map(name -> name + "/")
+                                .collect(java.util.stream.Collectors.joining("\n"));
+                    }
+                    ResolvedPath routed = route(transaction, requested);
+                    VfsNode directory = resolve(transaction, routed.ownerId(), routed.path());
                     if (directory.type() != VfsNode.Type.DIRECTORY) {
                         throw new IllegalArgumentException("Not a directory: " + requested);
                     }
-                    List<VfsNode> children = transaction.vfs().findChildren(user.userId(),
+                    List<VfsNode> children = transaction.vfs().findChildren(routed.ownerId(),
                             Optional.of(directory.nodeId()));
                     if (children.isEmpty()) return "";
                     return children.stream().map(node -> node.name()
@@ -168,8 +228,86 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 });
     }
 
+    private String startExport(Optional<String> path) {
+        String absolutePath = FclPath.resolve(workingDirectory(),
+                path.orElse("terminal-export.fcl"));
+        locateExportTarget(absolutePath);
+        terminals.startExportCapture(user.userId(), absolutePath);
+        return "";
+    }
+
+    private String endExport() {
+        com.follarce.domain.port.TerminalRepository.ExportCapture capture =
+                terminals.beginExportFinalization(user.userId());
+        try {
+            writeExport(capture.targetPath(), capture.operations());
+            terminals.completeExportCapture(user.userId(), capture.captureId());
+            return "";
+        } catch (RuntimeException failure) {
+            try {
+                terminals.resumeExportCapture(user.userId(), capture.captureId());
+            } catch (RuntimeException resumeFailure) {
+                failure.addSuppressed(resumeFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private void writeExport(String absolutePath, List<String> operations) {
+        ExportTarget target = locateExportTarget(absolutePath);
+        byte[] content = TerminalOperationScript.render(operations)
+                .getBytes(StandardCharsets.UTF_8);
+        if (target.existing().isEmpty()) {
+            vfs.createFile(user.userId(), target.parentId(), target.name(), content,
+                    "text/x-fcl;charset=utf-8", java.util.Set.of(), true);
+        } else {
+            VfsNode existing = target.existing().orElseThrow();
+            vfs.replaceContent(user.userId(), existing.nodeId(),
+                    existing.currentObjectHash().orElseThrow(), content,
+                    "text/x-fcl;charset=utf-8");
+        }
+    }
+
+    private ExportTarget locateExportTarget(String absolutePath) {
+        if (absolutePath.equals("/")) {
+            throw new IllegalArgumentException("Export path must name a file");
+        }
+        int slash = absolutePath.lastIndexOf('/');
+        String parentPath = slash == 0 ? "/" : absolutePath.substring(0, slash);
+        String name = absolutePath.substring(slash + 1);
+        if (name.isBlank()) throw new IllegalArgumentException("Export path must name a file");
+
+        return transactions.inUserTransaction(user.userId(),
+                Isolation.READ_COMMITTED, transaction -> {
+                    ResolvedPath routed = route(transaction, parentPath);
+                    if (!routed.ownerId().equals(user.userId())) {
+                        throw new IllegalArgumentException(
+                                "Operation history can only be exported into your own VFS");
+                    }
+                    VfsNode parent = resolve(transaction, routed.ownerId(), routed.path());
+                    if (parent.type() != VfsNode.Type.DIRECTORY) {
+                        throw new IllegalArgumentException("Not a directory: " + parentPath);
+                    }
+                    Optional<VfsNode> existing = transaction.vfs().findChild(routed.ownerId(),
+                            Optional.of(parent.nodeId()), name);
+                    existing.ifPresent(node -> {
+                        if (node.type() != VfsNode.Type.FILE) {
+                            throw new IllegalArgumentException("Not a file: " + absolutePath);
+                        }
+                    });
+                    return new ExportTarget(parent.nodeId(), name, existing);
+                });
+    }
+
+    private record ExportTarget(UUID parentId, String name, Optional<VfsNode> existing) {}
+
     private VfsNode resolve(TransactionContext transaction, String absolutePath) {
-        Optional<VfsNode> current = transaction.vfs().findChild(user.userId(),
+        ResolvedPath routed = route(transaction, absolutePath);
+        return resolve(transaction, routed.ownerId(), routed.path());
+    }
+
+    private VfsNode resolve(TransactionContext transaction, UUID ownerId, String absolutePath) {
+        Optional<VfsNode> current = transaction.vfs().findChild(ownerId,
                 Optional.empty(), "/");
         if (absolutePath.equals("/")) {
             return current.orElseThrow(() -> new IllegalStateException("VFS root is missing"));
@@ -180,11 +318,32 @@ public final class DatabaseTerminalControl implements TerminalControl {
             if (parent.type() != VfsNode.Type.DIRECTORY) {
                 throw new IllegalArgumentException("Not a directory in path: " + absolutePath);
             }
-            current = transaction.vfs().findChild(user.userId(),
+            current = transaction.vfs().findChild(ownerId,
                     Optional.of(parent.nodeId()), part);
         }
         return current.orElseThrow(() ->
                 new IllegalArgumentException("Unknown VFS path: " + absolutePath));
+    }
+
+    private ResolvedPath route(TransactionContext transaction, String absolutePath) {
+        if (!isLocalAdministrator() || !absolutePath.startsWith("/Users/")) {
+            return new ResolvedPath(user.userId(), absolutePath);
+        }
+        String remainder = absolutePath.substring("/Users/".length());
+        int slash = remainder.indexOf('/');
+        String username = slash < 0 ? remainder : remainder.substring(0, slash);
+        String userPath = slash < 0 ? "/" : remainder.substring(slash);
+        UserAccount target = transaction.auth().findUsersByAdministrator(user.userId()).stream()
+                .filter(candidate -> candidate.username().equalsIgnoreCase(username))
+                .findFirst().orElseThrow(() ->
+                        new IllegalArgumentException("Unknown VFS path: " + absolutePath));
+        return new ResolvedPath(target.userId(), userPath);
+    }
+
+    private record ResolvedPath(UUID ownerId, String path) {}
+
+    private boolean isLocalAdministrator() {
+        return user.username().equals("local") && isAdmin();
     }
 
     private String stop(String message) {
@@ -193,12 +352,8 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     private String await(long pid) {
-        Instant deadline = Instant.now().plus(FOREGROUND_WAIT);
-        TerminalReplService.Snapshot latest;
-        int polls = 0;
-        do {
-            polls++;
-            latest = repl.active(user.userId(), sessionId)
+        while (true) {
+            TerminalReplService.Snapshot latest = repl.active(user.userId(), sessionId)
                     .filter(value -> value.pid() == pid)
                     .orElseGet(() -> snapshot(pid));
             if (terminal(latest.status()) || latest.status() == CilProcess.Status.PAUSED) {
@@ -212,8 +367,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 Thread.currentThread().interrupt();
                 return "PID " + pid + " continues in background (terminal interrupted)";
             }
-        } while (Instant.now().isBefore(deadline));
-        return "PID " + pid + " continues in background (" + latest.status() + ")";
+        }
     }
 
     private TerminalReplService.Snapshot snapshot(long pid) {
@@ -253,8 +407,12 @@ public final class DatabaseTerminalControl implements TerminalControl {
                   :cd <vfs-path>                 change the durable working directory
                   :pwd                           print the working directory
                   :ls [vfs-path]                 list a directory
+                  :exp-start [vfs-path]          start a durable operation capture
+                  :exp-end                       export the capture and discard its temporary log
+                  :clear                         clear the terminal screen
                   :logout                        return to login without losing REPL state
-                  :exit                          close the terminal and runtime
+                  :exit                          close only this terminal connection
+                  :shutdown                      stop the shared Runtime (admin password required)
 
                 Line editing:
                   Up/Down                        select earlier terminal commands
@@ -265,7 +423,8 @@ public final class DatabaseTerminalControl implements TerminalControl {
                                                   download the SQLite package into VFS
                   package.install("/editor.db", "editor")
                                                   install and bind the downloaded package
-                  import "editor"                 import the installed editor package once
+                  import "<package-db-sha256>" as "editor"
+                                                  import an exact package with an explicit alias
                   editor.open("notes.txt")         open or create a VFS text file
                   Ctrl-O/Ctrl-S save, Ctrl-X exit, Ctrl-W search, Ctrl-K cut line, Ctrl-U paste
 

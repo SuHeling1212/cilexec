@@ -5,6 +5,7 @@ import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
+import com.follarce.domain.vfs.ObjectHash;
 
 import java.util.Optional;
 import java.util.List;
@@ -16,6 +17,13 @@ public interface PackageRepository {
     Optional<PackageRelease> findRelease(PackageRelease.Hash packageHash);
 
     Optional<PackageRelease> findRelease(PackageRelease.Coordinate coordinate);
+
+    /** Resolves the SHA-256 of the exact distributed .db file. */
+    default Optional<PackageRelease> findReleaseByDatabaseFileHash(ObjectHash databaseFileHash) {
+        return findReleases().stream()
+                .filter(release -> release.databaseFileHash().equals(databaseFileHash))
+                .findFirst();
+    }
 
     default List<PackageRelease> findReleases() {
         throw new UnsupportedOperationException("Package release listing is not implemented");

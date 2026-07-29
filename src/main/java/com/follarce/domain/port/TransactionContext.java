@@ -27,6 +27,10 @@ public interface TransactionContext extends AutoCloseable {
 
     TerminalRepository terminal();
 
+    default EnvironmentRepository environment() {
+        throw new UnsupportedOperationException("Environment repository is not implemented");
+    }
+
     void commit();
 
     void rollback();

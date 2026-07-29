@@ -7,12 +7,15 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.UUID;
 
-/** Process-wide snapshot of the one attached terminal's current character dimensions. */
+/** Per-user terminal sizes supplied by lightweight clients, with a local-console fallback. */
 public final class TerminalDimensions {
     private static final int DEFAULT_WIDTH = 80;
     private static final int DEFAULT_HEIGHT = 24;
     private static final AtomicReference<Size> CURRENT = new AtomicReference<>(environment());
+    private static final ConcurrentHashMap<UUID, Size> BY_USER = new ConcurrentHashMap<>();
     private static final AtomicLong LAST_REFRESH_NANOS = new AtomicLong(Long.MIN_VALUE);
     private static final long REFRESH_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
@@ -21,6 +24,16 @@ public final class TerminalDimensions {
 
     public static Size current() {
         return CURRENT.get();
+    }
+
+    public static Size current(UUID ownerId) {
+        return BY_USER.getOrDefault(java.util.Objects.requireNonNull(ownerId, "ownerId"),
+                current());
+    }
+
+    public static void update(UUID ownerId, Size size) {
+        BY_USER.put(java.util.Objects.requireNonNull(ownerId, "ownerId"),
+                java.util.Objects.requireNonNull(size, "size"));
     }
 
     /** Refreshes from the attached TTY; unsupported or detached terminals retain the last size. */

@@ -9,33 +9,34 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EditableTerminalInputTest {
     @Test
     void ansiFormattingInPromptDoesNotShiftThePhysicalCursor() throws Exception {
-        byte[] source = "a\n".getBytes(StandardCharsets.UTF_8);
+        byte[] source = "ab\u001b[DX\n".getBytes(StandardCharsets.UTF_8);
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
                 new ByteArrayInputStream(source), null);
         ByteArrayOutputStream rendered = new ByteArrayOutputStream();
         PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
 
-        assertEquals("a", input.edit(output, "\u001b[32mlocal\u001b[0m> ", true));
+        assertEquals("aXb", input.edit(output, "\u001b[32mlocal\u001b[0m> ", true));
 
         String terminalOutput = rendered.toString(StandardCharsets.UTF_8);
-        assertTrue(terminalOutput.contains("\r\u001b[8C"),
-                "seven visible prompt columns plus one input column must position the cursor");
+        assertTrue(terminalOutput.contains("\r\u001b[9C"),
+                "seven visible prompt columns plus two input columns must position the cursor");
     }
 
     @Test
     void decodesUtf8InputAndUsesItsTerminalColumnWidth() throws Exception {
-        byte[] source = "中文\n".getBytes(StandardCharsets.UTF_8);
+        byte[] source = "中文\u001b[D好\n".getBytes(StandardCharsets.UTF_8);
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
                 new ByteArrayInputStream(source), null);
         ByteArrayOutputStream rendered = new ByteArrayOutputStream();
         PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
 
-        assertEquals("中文", input.edit(output, "test> ", true));
+        assertEquals("中好文", input.edit(output, "test> ", true));
 
         String terminalOutput = rendered.toString(StandardCharsets.UTF_8);
         assertTrue(terminalOutput.contains("\r\u001b[10C"),
@@ -96,6 +97,93 @@ class EditableTerminalInputTest {
     }
 
     @Test
+    void doesNotRenderOrAcceptInlineHistorySuggestions() throws Exception {
+        byte[] source = "io.\u001b[C\n".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        input.replaceHistory(List.of("io.print(1)", "io.println(1)"));
+        ByteArrayOutputStream rendered = new ByteArrayOutputStream();
+        PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
+
+        assertEquals("io.", input.edit(output, "test> ", true));
+        assertFalse(rendered.toString(StandardCharsets.UTF_8).contains("\u001b[2;37m"));
+    }
+
+    @Test
+    void tabDoesNotCompleteOrAlterTheSubmission() throws Exception {
+        byte[] source = ":pw\t\n".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals(":pw", input.editSubmission(output, "test> ", "...> ", true,
+                _ -> true));
+    }
+
+    @Test
+    void redrawMovesToTheTopOfAWidthWrappedLine() throws Exception {
+        byte[] source = "abcdefgh\u001b[DX\n".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null, () -> 12);
+        ByteArrayOutputStream rendered = new ByteArrayOutputStream();
+        PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
+
+        assertEquals("abcdefgXh", input.edit(output, "test> ", true));
+
+        String terminalOutput = rendered.toString(StandardCharsets.UTF_8);
+        assertTrue(terminalOutput.contains("\r\u001b[1A\r"), terminalOutput);
+        assertEquals(2, occurrences(terminalOutput, "test> "),
+                "the cursor move and insertion each repaint one prompt, not one per soft row");
+    }
+
+    @Test
+    void finishingFromTheFirstPhysicalRowMovesBelowTheWholeWrappedSubmission() throws Exception {
+        byte[] source = "abcdefgh\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D\n"
+                .getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null, () -> 12);
+        ByteArrayOutputStream rendered = new ByteArrayOutputStream();
+        PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
+
+        assertEquals("abcdefgh", input.edit(output, "test> ", true));
+        assertTrue(rendered.toString(StandardCharsets.UTF_8).endsWith("\u001b[1B\r\n"));
+    }
+
+    @Test
+    void longPasteProducesLinearOutputInsteadOfRepaintingTheWholePrefix() throws Exception {
+        String command = "x".repeat(5_000);
+        byte[] source = (command + "\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null, () -> 20);
+        ByteArrayOutputStream rendered = new ByteArrayOutputStream();
+        PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
+
+        assertEquals(command, input.edit(output, "test> ", true));
+        assertTrue(rendered.size() < command.length() * 2,
+                "pasting at the end must not produce quadratic terminal output");
+    }
+
+    @Test
+    void widthIsScopedToEachEditableTerminalConnection() throws Exception {
+        byte[] source = "abcdefgh\u001b[DX\n".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream narrowOutput = new ByteArrayOutputStream();
+        ByteArrayOutputStream wideOutput = new ByteArrayOutputStream();
+        TerminalInput.EditableTerminalInput narrow = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null, () -> 12);
+        TerminalInput.EditableTerminalInput wide = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null, () -> 40);
+
+        assertEquals("abcdefgXh", narrow.edit(new PrintWriter(narrowOutput, true,
+                StandardCharsets.UTF_8), "test> ", true));
+        assertEquals("abcdefgXh", wide.edit(new PrintWriter(wideOutput, true,
+                StandardCharsets.UTF_8), "test> ", true));
+
+        assertTrue(narrowOutput.toString(StandardCharsets.UTF_8).contains("\u001b[1A"));
+        assertFalse(wideOutput.toString(StandardCharsets.UTF_8).contains("\u001b[1A"));
+    }
+
+    @Test
     void backspaceAtStartOfContinuationLineMergesWithPreviousLine() throws Exception {
         byte[] source = ("ab{\ncd\b\b\b}\n").getBytes(StandardCharsets.UTF_8);
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
@@ -131,5 +219,15 @@ class EditableTerminalInputTest {
 
         assertEquals("ab{\nX}cd", input.editSubmission(output, "test> ", "...> ", true,
                 FclInputBuffer::complete));
+    }
+
+    private static int occurrences(String value, String token) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(token, offset)) >= 0) {
+            count++;
+            offset += token.length();
+        }
+        return count;
     }
 }

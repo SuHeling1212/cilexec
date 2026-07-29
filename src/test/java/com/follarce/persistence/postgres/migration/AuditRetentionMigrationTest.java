@@ -10,8 +10,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AuditRetentionMigrationTest {
-    private static final String MIGRATION = "db/migration/V016__audit_retention.sql";
-
     @Test
     void detailsJsonIsAStringValuedObjectAtTheDatabaseBoundary() throws IOException {
         String sql = migration();
@@ -39,10 +37,6 @@ class AuditRetentionMigrationTest {
     }
 
     private static String migration() throws IOException {
-        ClassLoader loader = AuditRetentionMigrationTest.class.getClassLoader();
-        try (InputStream input = loader.getResourceAsStream(MIGRATION)) {
-            if (input == null) throw new IOException("Missing migration " + MIGRATION);
-            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        return BaselineSql.load();
     }
 }

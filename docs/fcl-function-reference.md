@@ -27,23 +27,37 @@ package.run("demo")
 | `:cd <路径>` | 切换并持久化当前 VFS 工作目录。目标必须是目录。 |
 | `:pwd` | 显示当前工作目录。 |
 | `:ls [路径]` | 列出当前目录或指定目录的子项；目录名带 `/`。 |
+| `:exp-start [路径]` | 开始录制后续终端操作；默认目标是当前目录的 `terminal-export.fcl`。录制状态可跨断线和 Runtime 重启。 |
+| `:exp-end` | 停止录制，将区间内的操作写成 FCL 脚本，然后删除临时录制数据。已有目标文件会原子覆盖并保留修订历史。 |
 | `:logout` | 回到登录界面，保留该用户的终端状态和工作目录。 |
-| `:exit` | 退出终端和 Runtime。 |
+| `:exit` | 断开当前终端连接；共享 Runtime 和后台进程继续运行。 |
+| `:shutdown` | 输入当前管理员密码并关闭共享 Runtime；仅拥有 `SYSTEM_ADMIN` 权限的用户可用。 |
 
-在真实交互终端中，`↑` / `↓` 选取当前用户先前输入的 FCL 或冒号指令，`←` / `→` 在当前输入行内移动光标。历史记录按用户持久化，重新登录、重启 Runtime 或重启容器后仍可用；启动时不会主动显示，只有按方向键时才会调出。用户名、密码和 `io.input()` 的原始输入不会进入历史记录。
+在真实交互终端中，`↑` / `↓` 选取当前用户先前输入的 FCL 或冒号指令，`←` / `→` 在当前输入行内移动光标。历史记录按用户持久化，重新登录、重启 Runtime 或重启容器后仍可用。用户名、密码和 `io.input()` 的原始输入不会进入历史记录。
+
+只有 `:exp-start` 与 `:exp-end` 之间的操作会进入临时录制。FCL 输入按原样写入；`:cd`、`:ls` 等终端指令以注释保存，因为它们不是 FCL 语法。两个边界指令、用户名、密码及 `io.input()` 输入都不会写入脚本。成功导出后，数据库会级联删除该录制及其中的操作，因此系统不会为了导出而永久保存全部历史；方向键历史仍独立保留最近 200 条。
+
+所有在线用户共享一个 Runtime JVM、一个数据库连接池以及有上限的 worker 池。默认有 4
+个 scheduler worker 和 2 个 effect worker。超过 worker 数量的进程留在持久化 FIFO
+队列中；终端进程每个时间片最多执行 4096 个纯步骤或 20 ms，随后持久化并重新排队。
+另有 1 个事件驱动的 Ctrl+C 中断 worker；它只在 PostgreSQL 中断通知到达时唤醒，
+不轮询。已设置持久中断标志的进程会被普通 scheduler worker 排除，只能由该
+中断 worker 领取并在安全点取消。
 
 编辑器不是冒号指令，也不内置在 Runtime 中。它是宿主机本地市场发布的 SQLite FCL
 包。第一次使用时先下载和安装，之后可以在持久终端上下文中直接调用：
 
 ```fcl
-network.download("http://host.docker.internal:8787/packages/cilexec/editor/1.0.0/editor.db", "/editor.db")
+network.download("http://host.docker.internal:8787/market/v1/28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008", "/editor.db")
 package.install("/editor.db", "editor")
-import "editor"
+import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "editor"
 editor.open("notes.txt")
 ```
 
-其包坐标为 `cilexec/editor/1.0.0`，绑定名为 `editor`，公开函数为
-`editor.open(path)`。
+其包坐标为 `cilexec/editor/1.0.4`，绑定名为 `editor`，公开函数为
+`editor.open(path)`。包导入只接受已安装 `.db` 文件的 64 位 SHA-256，不接受包名或
+`namespace/name/version` 坐标；不写别名时，完整 SHA-256 本身就是函数命名空间，调用
+形式为 `<完整SHA256>.函数(...)`。
 
 ## 通用数据与权限规则
 
@@ -55,6 +69,7 @@ editor.open("notes.txt")
 | 路径 | 相对路径以 `:pwd` 的结果为基准；`/` 开头是绝对 VFS 路径。 |
 | 管理员 | `local` 初始账户拥有 `SYSTEM_ADMIN`。函数会以当前登录用户身份授权。 |
 | 外部操作 | 输入、打印、HTTP、Socket、系统命令会暂停 FCL 进程，完成后自动恢复。 |
+| 释放变量 | `memory.destroy("name")` 立即递归清空数组/对象容器并删除当前作用域的变量绑定；本语句提交后该值不再出现在持久化 continuation 中。返回 `true` 表示实际删除，变量不存在时返回 `false`。FCL 值赋值时会深拷贝，不存在共享对象别名；它不会删除 VFS 文件或包。 |
 | 查看实际名称 | `system.ls()` 返回本次 Runtime 可调用的全部限定函数名和别名。 |
 | 查看 Java 扩展 | `system.extensions()` 返回构建时封装进系统的固定扩展清单。 |
 
@@ -87,6 +102,7 @@ editor.open("notes.txt")
 | `util.toString(value)` | 转为 FCL 显示文本。别名：`util.string(value)`。 |
 | `util.length(value)` | 返回字符串、数组、对象等的长度；也可使用一元 `#`。 |
 | `util.getTime()` | 当前 Runtime 时间，Unix 毫秒时间戳。 |
+| `util.which(functionName)` | 查询函数来源。Runtime 内置和编译期 Java 扩展返回 `0`；已导入的外部 FCL 包函数返回包 `.db` 文件的 64 位 SHA-256；未知或当前源码函数返回 `null`。 |
 | `util.print(value)` / `util.println(value)` | 输出到终端，不换行 / 换行。等价于 `io.print` / `io.println`。 |
 | `util.input([prompt])` | 可选地显示提示并等待一行用户输入。等价于 `io.input`。 |
 | `util.sleep(milliseconds)` | 暂停当前进程指定毫秒后恢复。 |
@@ -104,11 +120,28 @@ editor.open("notes.txt")
 | `path.getParentPath(path)` | 取父路径。别名：`path.getParent(path)`。 |
 | `path.isAbsolute(path)` | 判断是否以 `/` 开头。 |
 | `path.join(part1, part2, ...)` | 拼接并规范化多个路径段；无参数返回 `/`。 |
-| `path.getEnvVar(name)` | 读取 `PWD`、`USER`、`USER_ID` 或 `PID`；其他名称返回 `null`。 |
+| `path.getEnvVar(name)` | 读取进程固有值 `PWD`、`USER`、`USER_ID`、`PID`；其他名称返回 `null`。用户配置使用 `env`。 |
 | `path.setAlias(name, path)` | 在当前 FCL 上下文保存路径别名。 |
 | `path.removeAlias(name)` | 删除别名，返回是否删除成功。 |
 | `path.getAlias(name)` | 读取别名，未找到时返回 `null`。 |
 | `path.listAliases()` | 返回全部当前 FCL 别名。 |
+
+## 持久环境变量：`env`
+
+变量名不区分大小写，保存时统一转为大写。用户变量优先于同名共享变量，值最大 64 KiB。
+普通用户只能管理自己；管理员可把用户名或用户 UUID 作为最后一个参数，查看、设置或删除
+任意用户的变量。
+
+| 调用 | 作用 |
+| --- | --- |
+| `env.get(name [, targetUser])` | 读取用户变量；没有用户值时读取共享默认值。 |
+| `env.set(name, value [, targetUser])` | 持久设置用户变量。 |
+| `env.remove(name [, targetUser])` | 删除用户变量。 |
+| `env.list([targetUser])` | 返回用户值覆盖共享默认值后的完整环境。 |
+| `env.getShared(name)` / `env.listShared()` | 读取共享变量，所有用户可用。 |
+| `env.setShared(name, value)` / `env.removeShared(name)` | 管理共享变量，仅管理员可用。 |
+| `env.getSharedPolicy()` | 查看共享变量名策略。 |
+| `env.setSharedPolicy(mode, names)` | 设置 `ALLOWLIST` 或 `DENYLIST`，仅管理员可用。 |
 
 ## 终端样式：`term`
 
@@ -126,7 +159,7 @@ editor.open("notes.txt")
 | `term.cursorTo(row, column)` | 返回绝对光标定位控制序列，行列从 1 开始。 |
 | `term.inverse(value)` | 使用反显样式包裹文本。 |
 | `term.hideCursor()` / `term.showCursor()` | 隐藏 / 显示终端光标。 |
-| `term.getSize()` | 返回当前终端字符尺寸，例如 `{"width":120,"height":40}`。别名：`term.size()`。输入层检查尺寸变化，刷新频率最多每秒一次。 |
+| `term.getSize()` | 返回当前终端字符尺寸，例如 `{"width":120,"height":40}`。别名：`term.size()`。全屏 TUI 等待按键时每 100ms 刷新一次，因此尺寸变化会在下一次重绘中体现。 |
 
 ## 文本处理：`text`
 
@@ -159,7 +192,7 @@ editor.open("notes.txt")
 | 调用 | 作用 |
 | --- | --- |
 | `file.read(path [, targetUser])` | 读取 UTF-8 文件文本。单次 FCL 字符串超过 JVM 上限时使用 `file.readChunk`。 |
-| `file.readChunk(path, offset, maximumBytes [, targetUser])` | 读取 UTF-8 区间；`offset` 非负，单次最多 64 MiB。 |
+| `file.readChunk(path, offset, maximumBytes [, targetUser])` | 读取 UTF-8 区间；`offset` 非负，单次最多 4 MiB。 |
 | `file.size(path [, targetUser])` | 返回逻辑文件字节数。 |
 | `file.exists(path [, targetUser])` | 判断路径是否存在。 |
 | `file.listdir([path [, targetUser]])` | 返回目录子项的元数据数组；无路径时列当前目录。 |
@@ -227,13 +260,18 @@ editor.open("notes.txt")
 ## 包：`package`
 
 包是不可变 SQLite `package.db` 文件。推荐流程：`package.build` → `package.install` → `import` 或 `package.run`。
+`import` 只导入包，并且目标必须是已安装包数据库文件的 SHA-256；别名可选。普通
+FCL 源文件使用 `include "path.fcl"`，会在编译前原样插入到该位置，不能用 `import`。
+`package.json` 必须声明 `kind`。`application` 必须提供零参数的通用 `run` 入口；
+`library` 用作导入或依赖，可以没有入口。依赖清单完整保存在包内，包含命名空间、名称、
+版本约束和是否可选。
 
-宿主机市场的默认索引是 `http://127.0.0.1:8787/v1/index.json`；容器内使用
-`http://host.docker.internal:8787/`。完整方案见 `docs/package-market.md`。
+宿主机市场的默认索引是 `http://127.0.0.1:8787/market/v1/index.json`；容器内使用
+`http://host.docker.internal:8787/market/v1/index.json`。完整方案见 `docs/package-market.md`。
 
 | 调用 | 作用 |
 | --- | --- |
-| `package.info(coordinateOrHash)` | 查询包。参数可以是 `namespace/name/version` 或 64 位包哈希；也可传 `(namespace, name, version)` 三个参数。 |
+| `package.info(coordinateOrHash)` | 查询包及其 `kind`、依赖、入口、导出和能力列表。参数可以是 `namespace/name/version` 或 64 位包哈希；也可传 `(namespace, name, version)` 三个参数。 |
 | `package.list()` | 返回已登记的包发行版。 |
 | `package.install(vfsPath [, binding])` | 从 VFS 的 `.db` 文件安装到当前用户默认环境。 |
 | `package.install(vfsPath, environmentUuid, binding)` | 安装并绑定到指定环境。 |
@@ -241,7 +279,7 @@ editor.open("notes.txt")
 | `package.run(binding [, entrypoint])` | 创建子进程运行已绑定包入口；默认入口为 `run`，返回 PID 等信息。 |
 | `package.createEnvironment(name)` | 创建当前用户的包环境。 |
 | `package.environments()` | 列出当前用户包环境。 |
-| `package.verify(coordinateOrHash)` | 校验包对象哈希和签名状态。也支持三段坐标参数。 |
+| `package.verify(coordinateOrHash)` | 校验包数据库对象是否仍与安装时的 SHA-256 哈希一致。也支持三段坐标参数。 |
 | `package.resource(coordinateOrHash, resourcePath)` | 读取包中声明的文本资源。 |
 | `package.pin(environmentUuid, binding, coordinateOrHash)` | 将环境绑定固定到发行版。也可将坐标拆为后三个参数。 |
 | `package.unpin(environmentUuid, binding)` | 删除一个环境绑定。 |

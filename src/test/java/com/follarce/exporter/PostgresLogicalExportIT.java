@@ -74,7 +74,7 @@ class PostgresLogicalExportIT {
 
         assertTrue(report.tableCount() > 30);
         assertTrue(report.rowCount() > 1);
-        assertEquals("30", scalar(database, "SELECT metadata_value FROM export_metadata "
+        assertEquals("1", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='database.schema.version'"));
         assertEquals(0, number(database, "SELECT count(*) FROM export_table WHERE table_name IN "
                 + "('meta.kernel_instance','scheduler.runner','scheduler.lease')"));

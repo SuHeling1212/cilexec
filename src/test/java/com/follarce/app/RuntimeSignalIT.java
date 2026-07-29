@@ -9,7 +9,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -92,7 +94,6 @@ class RuntimeSignalIT {
         environment.put("CILEXEC_RUNTIME_POOL_MIN_IDLE", "1");
         environment.put("CILEXEC_EFFECT_POOL_MAX", "2");
         environment.put("CILEXEC_EFFECT_POOL_MIN_IDLE", "1");
-        environment.put("CILEXEC_HEARTBEAT_INTERVAL", "PT0.2S");
         environment.put("CILEXEC_LEASE_DURATION", "PT2S");
         environment.put("CILEXEC_SHUTDOWN_GRACE", "PT5S");
         environment.put("CILEXEC_HEALTH_PORT", Integer.toString(healthPort));
@@ -130,35 +131,36 @@ class RuntimeSignalIT {
     }
 
     @Test
-    void defaultEntryPointRunsThePersistentFclTerminalAndShutsDownOnExit() throws Exception {
+    void defaultEntryPointServesThePersistentFclTerminalAndShutsDownOnCommand() throws Exception {
         Path secret = temporaryDirectory.resolve("terminal.password");
         Files.writeString(secret, PASSWORD);
         Path output = temporaryDirectory.resolve("terminal.log");
         ProcessBuilder builder = new ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-cp", System.getProperty("java.class.path"), "com.follarce.Main");
+        int terminalPort = availablePort();
         configure(builder.environment(), secret, availablePort(), "signal-test",
                 "4411099817001");
         builder.environment().put("CILEXEC_TERMINAL_USERNAME", "local");
+        builder.environment().put("CILEXEC_TERMINAL_PORT", Integer.toString(terminalPort));
         builder.redirectErrorStream(true).redirectOutput(output.toFile());
 
         Process terminal = builder.start();
         try {
             String alicePassword = "alice123";
-            terminal.getOutputStream().write((PASSWORD + "\n" + PASSWORD + "\n"
+            String commands = PASSWORD + "\n" + PASSWORD + "\n"
                     + "login\nlocal\nwrong-password-value\n"
                     + "login\nlocal\n" + PASSWORD + "\n"
                     + "answer = 40 + 2\n:logout\n"
                     + "login\nlocal\n" + PASSWORD + "\nanswer + 1\n{\"answer\": answer}\n:logout\n"
                     + "create\nalice\n" + alicePassword + "\n" + alicePassword + "\n"
                     + "n\nuser.isLocal()\n:logout\nlogin\nalice\n" + alicePassword + "\n"
-                    + "user.isLocal()\n:exit\n").getBytes(StandardCharsets.UTF_8));
-            terminal.getOutputStream().flush();
-            terminal.getOutputStream().close();
+                    + "user.isLocal()\n:logout\nlogin\nlocal\n" + PASSWORD + "\n"
+                    + ":shutdown\n" + PASSWORD + "\n";
+            String transcript = terminalSession(terminal, terminalPort, commands);
 
             assertTrue(terminal.waitFor(25, TimeUnit.SECONDS), diagnostic(output));
             assertEquals(0, terminal.exitValue(), diagnostic(output));
-            String transcript = Files.readString(output);
             assertTrue(transcript.contains("CilExec access"), transcript);
             assertTrue(transcript.contains("invalid username or password"), transcript);
             assertTrue(transcript.contains("authenticated as local"), transcript);
@@ -192,6 +194,26 @@ class RuntimeSignalIT {
         }
     }
 
+    private static String terminalSession(Process runtime, int port, String commands)
+            throws Exception {
+        Instant deadline = Instant.now().plusSeconds(15);
+        while (true) {
+            try (Socket socket = new Socket("127.0.0.1", port)) {
+                socket.setSoTimeout(20_000);
+                socket.getOutputStream().write(commands.getBytes(StandardCharsets.UTF_8));
+                socket.shutdownOutput();
+                ByteArrayOutputStream transcript = new ByteArrayOutputStream();
+                socket.getInputStream().transferTo(transcript);
+                return transcript.toString(StandardCharsets.UTF_8);
+            } catch (java.net.ConnectException unavailable) {
+                if (!runtime.isAlive() || Instant.now().isAfter(deadline)) {
+                    throw new AssertionError("Terminal server did not start", unavailable);
+                }
+                Thread.sleep(50);
+            }
+        }
+    }
+
     private static int count(String sql) throws Exception {
         try (Connection connection = adminConnection(); Statement statement =
                 connection.createStatement(); ResultSet result = statement.executeQuery(sql)) {
@@ -217,7 +239,6 @@ class RuntimeSignalIT {
         environment.put("CILEXEC_RUNTIME_POOL_MIN_IDLE", "1");
         environment.put("CILEXEC_EFFECT_POOL_MAX", "2");
         environment.put("CILEXEC_EFFECT_POOL_MIN_IDLE", "1");
-        environment.put("CILEXEC_HEARTBEAT_INTERVAL", "PT0.2S");
         environment.put("CILEXEC_LEASE_DURATION", "PT2S");
         environment.put("CILEXEC_SHUTDOWN_GRACE", "PT5S");
         environment.put("CILEXEC_HEALTH_PORT", Integer.toString(healthPort));

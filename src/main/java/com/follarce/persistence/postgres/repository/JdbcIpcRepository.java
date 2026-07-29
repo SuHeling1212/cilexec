@@ -358,11 +358,13 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
         String sql = "SELECT value.pool_id,value.value_type,value.value_payload,"
                 + "value.retention_mode,value.remaining_reads,value.changed "
                 + "FROM ipc.swap_value value JOIN ipc.swap_pool pool USING (pool_id,owner_id) "
-                + "WHERE value.owner_id=? AND pool.pool_name=? AND value.variable_name=? FOR UPDATE";
+                + "WHERE value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
+                + "AND (value.lock_process_uid IS NULL OR value.lease_until<=?) FOR UPDATE";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, ownerId);
             statement.setString(2, poolName);
             statement.setString(3, variableName);
+            statement.setTimestamp(4, java.sql.Timestamp.from(at));
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) return Optional.empty();
                 String mode = rows.getString("retention_mode");

@@ -8,6 +8,7 @@ import com.follarce.fcl.FclContinuationCodec;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -211,7 +212,9 @@ final class FclPersistenceBridge {
                 }
                 values.put(name, decoded);
             });
-            scopes.add(Map.copyOf(values));
+            // FCL permits null variables. Map.copyOf rejects null keys and values, which
+            // made any suspended program with a null local value impossible to resume.
+            scopes.add(Collections.unmodifiableMap(values));
         }
         runtime.restoreProjectedScopes(scopes);
     }

@@ -1,0 +1,344 @@
+# CilExec package market client. The repository is the only host-facing HTTP service.
+
+func mkt_configured_origin() {
+    configured = env.get("MARKET_ORIGIN")
+    if configured == null or !mkt_valid_origin(configured) { return null }
+    return configured
+}
+
+func mkt_valid_origin(origin) {
+    if !util.isString(origin) { return false }
+    authorityStart = 0
+    if text.indexOf(origin, "http://") == 0 { authorityStart = 7 }
+    if text.indexOf(origin, "https://") == 0 { authorityStart = 8 }
+    if authorityStart == 0 or #origin <= authorityStart { return false }
+    authority = text.slice(origin, authorityStart)
+    if text.indexOf(authority, "/") >= 0 or text.indexOf(authority, "?") >= 0 { return false }
+    if text.indexOf(authority, "#") >= 0 or text.indexOf(authority, "@") >= 0 { return false }
+    if text.indexOf(authority, " ") >= 0 or text.indexOf(authority, "\\") >= 0 { return false }
+    return true
+}
+
+func mkt_configure_origin() {
+    io.println("Market mirror is not configured.")
+    io.println("Development example: http://host.docker.internal:8787")
+    origin = io.input("Please enter the mirror source address> ")
+    while #origin > 0 and text.slice(origin, #origin - 1, #origin) == "/" {
+        origin = text.slice(origin, 0, #origin - 1)
+    }
+    if !mkt_valid_origin(origin) {
+        io.println("Invalid market mirror: enter an http:// or https:// origin.")
+        return {"ok": false, "error": "mirror origin must start with http:// or https://"}
+    }
+    env.set("MARKET_ORIGIN", origin)
+    return {"ok": true, "origin": origin}
+}
+
+func mkt_require_origin() {
+    configured = mkt_configured_origin()
+    if configured != null { return configured }
+    result = mkt_configure_origin()
+    if !result["ok"] { return null }
+    return result["origin"]
+}
+
+func mkt_origin() {
+    return mkt_require_origin()
+}
+
+func mkt_index_url() {
+    return mkt_origin() + "/market/v1/index.json"
+}
+
+func mkt_root() {
+    return "/market"
+}
+
+func mkt_index_path() {
+    return mkt_root() + "/index.json"
+}
+
+func mkt_receipts_path() {
+    return mkt_root() + "/installed.json"
+}
+
+func mkt_ensure_storage() {
+    if !file.exists(mkt_root()) { file.createDir(mkt_root()) }
+    packages = mkt_root() + "/packages"
+    if !file.exists(packages) { file.createDir(packages) }
+    if !file.exists(mkt_receipts_path()) { file.write(mkt_receipts_path(), "[]") }
+    return true
+}
+
+func mkt_validate_index(index) {
+    if !util.isMap(index) { return false }
+    if index["apiVersion"] != "cilexec.market/v1" { return false }
+    if !util.isArray(index["packages"]) { return false }
+    packages = index["packages"]
+    if #packages > 10000 { return false }
+    position = 0
+    while position < #packages {
+        if !mkt_valid_record(packages[position]) { return false }
+        position = position + 1
+    }
+    return true
+}
+
+func mkt_valid_sha256(value) {
+    if !util.isString(value) or #value != 64 { return false }
+    position = 0
+    while position < #value {
+        if text.indexOf("0123456789abcdef", text.slice(value, position, position + 1)) < 0 {
+            return false
+        }
+        position = position + 1
+    }
+    return true
+}
+
+func mkt_valid_record(record) {
+    if !util.isMap(record) { return false }
+    packageId = record["sha256"]
+    if !mkt_valid_sha256(packageId) { return false }
+    if !util.isString(record["namespace"]) or #record["namespace"] == 0 { return false }
+    if !util.isString(record["name"]) or #record["name"] == 0 { return false }
+    if !util.isString(record["version"]) or #record["version"] == 0 { return false }
+    expectedCoordinate = record["namespace"] + "/" + record["name"] + "/" + record["version"]
+    if record["coordinate"] != expectedCoordinate { return false }
+    if record["download"] != "/market/v1/" + packageId { return false }
+    if !util.isNumber(record["bytes"]) or record["bytes"] < 1 or record["bytes"] > 67108864 {
+        return false
+    }
+    return true
+}
+
+func update() {
+    if mkt_require_origin() == null {
+        return {"ok": false, "error": "market mirror is not configured"}
+    }
+    mkt_ensure_storage()
+    response = network.httpGet(mkt_index_url())
+    if response["status"] != 200 {
+        return {"ok": false, "status": response["status"], "error": "market index request failed"}
+    }
+    index = util.fromJson(response["body"])
+    if !mkt_validate_index(index) {
+        return {"ok": false, "status": response["status"], "error": "invalid market index"}
+    }
+    file.write(mkt_index_path(), response["body"])
+    return {"ok": true, "packages": #index["packages"], "path": mkt_index_path()}
+}
+
+func mkt_index() {
+    mkt_ensure_storage()
+    if !file.exists(mkt_index_path()) {
+        refreshed = update()
+        if !refreshed["ok"] { return null }
+    }
+    index = util.fromJson(file.read(mkt_index_path()))
+    if !mkt_validate_index(index) { return null }
+    return index
+}
+
+func mkt_find(packageId) {
+    if !mkt_valid_sha256(packageId) { return null }
+    index = mkt_index()
+    if index == null { return null }
+    packages = index["packages"]
+    position = 0
+    while position < #packages {
+        if packages[position]["sha256"] == packageId { return packages[position] }
+        position = position + 1
+    }
+    return null
+}
+
+func mkt_matches(record, query) {
+    if #query == 0 { return true }
+    searchable = util.toJson(record)
+    words = text.split(query, " ")
+    position = 0
+    while position < #words {
+        word = words[position]
+        if #word > 0 and text.indexOf(searchable, word) < 0 { return false }
+        position = position + 1
+    }
+    return true
+}
+
+func search(query) {
+    if mkt_require_origin() == null { return [] }
+    if !util.isString(query) { return [] }
+    index = mkt_index()
+    if index == null { return [] }
+    matches = []
+    packages = index["packages"]
+    position = 0
+    while position < #packages {
+        if mkt_matches(packages[position], query) {
+            matches = matches + [packages[position]]
+        }
+        position = position + 1
+    }
+    return matches
+}
+
+func info(packageId) {
+    if mkt_require_origin() == null { return null }
+    return mkt_find(packageId)
+}
+
+func mkt_download_url(record) {
+    return mkt_origin() + record["download"]
+}
+
+func mkt_download_path(packageId) {
+    return mkt_root() + "/packages/" + packageId + ".db"
+}
+
+func download(packageId) {
+    if mkt_require_origin() == null {
+        return {"ok": false, "error": "market mirror is not configured"}
+    }
+    record = mkt_find(packageId)
+    if record == null { return {"ok": false, "error": "unknown package ID"} }
+    mkt_ensure_storage()
+    result = network.download(mkt_download_url(record), mkt_download_path(packageId))
+    return {"ok": true, "package": record, "download": result, "path": mkt_download_path(packageId)}
+}
+
+func mkt_receipts() {
+    mkt_ensure_storage()
+    receipts = util.fromJson(file.read(mkt_receipts_path()))
+    if !util.isArray(receipts) { return [] }
+    return receipts
+}
+
+func mkt_save_receipt(receipt) {
+    receipts = mkt_receipts()
+    updated = []
+    position = 0
+    while position < #receipts {
+        if receipts[position]["binding"] != receipt["binding"] {
+            updated = updated + [receipts[position]]
+        }
+        position = position + 1
+    }
+    updated = updated + [receipt]
+    file.write(mkt_receipts_path(), util.toJson(updated))
+    return receipt
+}
+
+func list() {
+    if mkt_require_origin() == null { return [] }
+    packages = package.list()
+    installed = []
+    position = 0
+    while position < #packages {
+        installedPackage = packages[position]
+        installed = installed + [{
+            "name": installedPackage["name"],
+            "sha256": installedPackage["sha256"]
+        }]
+        position = position + 1
+    }
+    return installed
+}
+
+func install(packageId) {
+    if mkt_require_origin() == null {
+        return {"ok": false, "error": "market mirror is not configured"}
+    }
+    fetched = download(packageId)
+    if !fetched["ok"] { return fetched }
+    record = fetched["package"]
+    installed = package.install(fetched["path"], record["name"])
+    if installed["sha256"] != packageId or installed["coordinate"] != record["coordinate"] {
+        package.remove(installed["environmentId"], installed["binding"])
+        file.removeFile(fetched["path"])
+        return {"ok": false, "error": "downloaded package does not match its market SHA-256 and coordinate"}
+    }
+    receipt = {
+        "sha256": packageId,
+        "coordinate": record["coordinate"],
+        "namespace": record["namespace"],
+        "name": record["name"],
+        "version": record["version"],
+        "binding": installed["binding"],
+        "environmentId": installed["environmentId"],
+        "packageHash": installed["hash"]
+    }
+    mkt_save_receipt(receipt)
+    return {"ok": true, "package": record, "installed": installed}
+}
+
+func uninstall(packageId) {
+    if mkt_require_origin() == null { return false }
+    receipts = mkt_receipts()
+    retained = []
+    removed = false
+    position = 0
+    while position < #receipts {
+        receipt = receipts[position]
+        if receipt["sha256"] == packageId {
+            removed = package.remove(receipt["environmentId"], receipt["binding"])
+        } else {
+            retained = retained + [receipt]
+        }
+        position = position + 1
+    }
+    if removed { file.write(mkt_receipts_path(), util.toJson(retained)) }
+    return removed
+}
+
+func mkt_latest(namespace, name) {
+    index = mkt_index()
+    if index == null { return null }
+    packages = index["packages"]
+    position = 0
+    while position < #packages {
+        record = packages[position]
+        if record["namespace"] == namespace and record["name"] == name and record["latest"] {
+            return record
+        }
+        position = position + 1
+    }
+    return null
+}
+
+func upgrade() {
+    if mkt_require_origin() == null {
+        return {"ok": false, "error": "market mirror is not configured"}
+    }
+    refreshed = update()
+    if !refreshed["ok"] { return refreshed }
+    receipts = mkt_receipts()
+    upgraded = []
+    position = 0
+    while position < #receipts {
+        receipt = receipts[position]
+        latest = mkt_latest(receipt["namespace"], receipt["name"])
+        if latest != null and latest["sha256"] != receipt["sha256"] {
+            upgraded = upgraded + [install(latest["sha256"])]
+        }
+        position = position + 1
+    }
+    return {"ok": true, "upgraded": upgraded}
+}
+
+func mkt_show_help() {
+    io.println("mkt.search(text)               Search the local package index\nmkt.info(sha256)              Show package information\nmkt.list()                     List installed package names and SHA-256 IDs\nmkt.download(sha256)          Download a package database\nmkt.install(sha256)           Download and install a package\nmkt.update()                   Refresh the complete package index\nmkt.upgrade()                  Upgrade market-managed packages\nmkt.uninstall(sha256)         Remove a market-managed binding\nmkt.help()                     Show this help\nmkt.run()                      Show Market version and help without configuring a mirror")
+    return true
+}
+
+func help() {
+    if mkt_require_origin() == null {
+        return {"ok": false, "error": "market mirror is not configured"}
+    }
+    return mkt_show_help()
+}
+
+func run() {
+    io.println("CilExec Market 1.0.3")
+    return mkt_show_help()
+}

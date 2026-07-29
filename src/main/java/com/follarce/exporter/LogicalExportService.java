@@ -17,9 +17,7 @@ import java.util.Set;
 /** Creates, verifies, hardens, and atomically publishes one logical export. */
 public final class LogicalExportService {
     private static final Set<PosixFilePermission> READ_ONLY_PERMISSIONS = Set.of(
-            PosixFilePermission.OWNER_READ,
-            PosixFilePermission.GROUP_READ,
-            PosixFilePermission.OTHERS_READ);
+            PosixFilePermission.OWNER_READ);
 
     private final LogicalSnapshotProducer snapshot;
     private final SqliteLogicalExportVerifier verifier;
@@ -39,10 +37,12 @@ public final class LogicalExportService {
     public LogicalExportReport export(Path requestedTarget, BuildInfo buildInfo) {
         Objects.requireNonNull(buildInfo, "buildInfo");
         Path target = validateTarget(requestedTarget);
+        Path parent = Objects.requireNonNull(target.getParent(), "validated target parent");
+        Path fileName = Objects.requireNonNull(target.getFileName(), "validated target name");
         Path temporary = null;
         try {
-            temporary = Files.createTempFile(target.getParent(),
-                    "." + target.getFileName() + "-", ".tmp");
+            temporary = Files.createTempFile(parent,
+                    "." + fileName + "-", ".tmp");
             try (SqliteLogicalExportWriter writer = new SqliteLogicalExportWriter(temporary)) {
                 snapshot.writeSnapshot(writer, buildInfo, clock.instant());
             }
@@ -68,7 +68,8 @@ public final class LogicalExportService {
             throw new IllegalArgumentException("Export output path is required");
         }
         Path target = requestedTarget.toAbsolutePath().normalize();
-        if (target.getFileName() == null || !target.getFileName().toString().endsWith(".db")) {
+        Path fileName = target.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(".db")) {
             throw new IllegalArgumentException("Export output path must end in .db");
         }
         Path parent = target.getParent();

@@ -2,25 +2,21 @@ package com.follarce.effect;
 
 import com.follarce.domain.process.Continuation;
 import com.follarce.fcl.FclContinuationCodec;
-import com.follarce.terminal.TerminalOutputTracker;
+import com.follarce.terminal.TerminalOutputRouter;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.net.ServerSocket;
 import java.net.InetSocketAddress;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -98,12 +94,12 @@ public final class BuiltinEffectHandlers {
             Map<?, ?> map = requestMap(request);
             String text = text(map, "text");
             boolean newline = Boolean.TRUE.equals(map.get("newline"));
-            synchronized (System.out) {
-                if (newline) System.out.println(text);
-                else System.out.print(text);
-                System.out.flush();
-                TerminalOutputTracker.printed(text, newline);
-            }
+            Object route = map.get("routeId");
+            boolean delivered = route instanceof String routeText
+                    && TerminalOutputRouter.publish(java.util.UUID.fromString(routeText), text,
+                    newline);
+            // Detached process output remains in the durable effect result; never leak user
+            // content into a different session or the container log.
             return null;
         }
     }
@@ -111,11 +107,6 @@ public final class BuiltinEffectHandlers {
     private static final class HttpHandler extends TypedHandler {
         private final String type;
         private final String method;
-        private final HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(15))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-
         private HttpHandler(String type, String method) {
             this.type = type;
             this.method = method;
@@ -131,36 +122,28 @@ public final class BuiltinEffectHandlers {
                 throws Exception {
             Map<?, ?> map = requestMap(request);
             URI uri = URI.create(text(map, "url"));
-            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-            if (!scheme.equals("http") && !scheme.equals("https")) {
-                throw new IllegalArgumentException("Only HTTP and HTTPS URLs are supported");
-            }
-            HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(30))
-                    .header("User-Agent", "CilExec-FCL/1");
-            if (method.equals("GET")) builder.GET();
-            else builder.POST(HttpRequest.BodyPublishers.ofString(text(map, "body"),
-                    StandardCharsets.UTF_8));
-            HttpResponse<byte[]> response = client.send(builder.build(),
-                    HttpResponse.BodyHandlers.ofByteArray());
-            if (response.body().length > MAX_HTTP_BODY_BYTES) {
-                throw new IOException("HTTP response exceeds 4 MiB");
+            Optional<String> body = method.equals("POST")
+                    ? Optional.of(text(map, "body")) : Optional.empty();
+            PinnedHttpClient.Response response = PinnedHttpClient.send(uri, method, body,
+                    Map.of("User-Agent", "CilExec-FCL/1"));
+            requireNoRedirect(response.statusCode());
+            byte[] responseBody;
+            try (InputStream input = response.body()) {
+                responseBody = input.readNBytes(MAX_HTTP_BODY_BYTES + 1);
+                if (responseBody.length > MAX_HTTP_BODY_BYTES) {
+                    throw new IOException("HTTP response exceeds 4 MiB");
+                }
             }
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", (long) response.statusCode());
-            result.put("body", new String(response.body(), StandardCharsets.UTF_8));
-            result.put("headers", response.headers().map());
+            result.put("body", new String(responseBody, StandardCharsets.UTF_8));
+            result.put("headers", response.headers());
             return Map.copyOf(result);
         }
     }
 
     /** Downloads one bounded binary range without materializing a complete large file. */
     private static final class DownloadHandler extends TypedHandler {
-        private final HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(15))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-
         @Override
         public String effectType() {
             return "network.download";
@@ -171,10 +154,6 @@ public final class BuiltinEffectHandlers {
                 throws Exception {
             Map<?, ?> map = requestMap(request);
             URI uri = URI.create(text(map, "url"));
-            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-            if (!scheme.equals("http") && !scheme.equals("https")) {
-                throw new IllegalArgumentException("Only HTTP and HTTPS URLs are supported");
-            }
             long offset = map.containsKey("offset")
                     ? nonNegativeLong(map.get("offset"), "download offset") : 0L;
             int maximum = map.containsKey("maximumBytes")
@@ -183,22 +162,25 @@ public final class BuiltinEffectHandlers {
             if (maximum > MAX_DOWNLOAD_CHUNK_BYTES) {
                 throw new IllegalArgumentException("Download chunks cannot exceed 4 MiB");
             }
-            HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                    .timeout(Duration.ofSeconds(30))
-                    .header("User-Agent", "CilExec-FCL/1")
-                    .header("Range", "bytes=" + offset + "-"
-                            + Math.addExact(offset, maximum - 1L));
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "CilExec-FCL/1");
+            headers.put("Range", "bytes=" + offset + "-"
+                    + Math.addExact(offset, maximum - 1L));
             Object validator = map.get("validator");
             if (validator instanceof String value && !value.isBlank()) {
-                builder.header("If-Range", value);
+                headers.put("If-Range", value);
             }
-            HttpResponse<InputStream> response = client.send(builder.GET().build(),
-                    HttpResponse.BodyHandlers.ofInputStream());
+            PinnedHttpClient.Response response = PinnedHttpClient.send(uri, "GET",
+                    Optional.empty(), headers);
+            requireNoRedirect(response.statusCode());
+            requireDownloadStatus(response.statusCode());
             byte[] body;
             try (InputStream input = response.body()) {
                 body = readBounded(input, maximum, response.statusCode());
             }
             Range range = range(response, offset, body.length);
+            // A 416 at the exact end of the object is a successful EOF probe, not file data.
+            if (response.statusCode() == 416) body = new byte[0];
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("status", (long) response.statusCode());
             result.put("bodyBase64", Base64.getEncoder().encodeToString(body));
@@ -206,20 +188,35 @@ public final class BuiltinEffectHandlers {
             result.put("offset", range.offset());
             result.put("complete", range.complete());
             if (range.totalBytes() >= 0) result.put("totalBytes", range.totalBytes());
-            result.put("mediaType", response.headers().firstValue("Content-Type")
+            result.put("mediaType", response.firstHeader("Content-Type")
                     .map(value -> value.split(";", 2)[0].trim())
                     .filter(value -> !value.isBlank())
                     .orElse("application/octet-stream"));
-            response.headers().firstValue("ETag")
+            response.firstHeader("ETag")
                     .filter(value -> !value.startsWith("W/"))
-                    .or(() -> response.headers().firstValue("Last-Modified"))
+                    .or(() -> response.firstHeader("Last-Modified"))
                     .ifPresent(value -> result.put("validator", value));
             return Map.copyOf(result);
         }
 
         private static byte[] readBounded(InputStream input, int maximum, int status)
                 throws IOException {
-            byte[] bytes = input.readNBytes(maximum + 1);
+            ByteArrayOutputStream output = new ByteArrayOutputStream(
+                    Math.min(maximum, 64 * 1024));
+            byte[] buffer = new byte[Math.min(8192, maximum + 1)];
+            while (output.size() <= maximum) {
+                int count = input.read(buffer, 0,
+                        Math.min(buffer.length, maximum + 1 - output.size()));
+                if (count < 0) break;
+                if (count == 0) {
+                    int single = input.read();
+                    if (single < 0) break;
+                    output.write(single);
+                    continue;
+                }
+                output.write(buffer, 0, count);
+            }
+            byte[] bytes = output.toByteArray();
             if (bytes.length > maximum) {
                 throw new IOException(status == 200
                         ? "Server ignored byte-range request for a large download"
@@ -228,7 +225,7 @@ public final class BuiltinEffectHandlers {
             return bytes;
         }
 
-        private static Range range(HttpResponse<?> response, long requestedOffset,
+        private static Range range(PinnedHttpClient.Response response, long requestedOffset,
                                    int bodyLength) throws IOException {
             int status = response.statusCode();
             if (status == 200) {
@@ -237,26 +234,46 @@ public final class BuiltinEffectHandlers {
                 }
                 return new Range(0, bodyLength, true);
             }
-            String contentRange = response.headers().firstValue("Content-Range").orElse("");
+            String contentRange = response.firstHeader("Content-Range").orElse("");
             if (status == 416) {
                 java.util.regex.Matcher end = java.util.regex.Pattern
                         .compile("bytes \\*/([0-9]+)").matcher(contentRange);
-                long total = end.matches() ? Long.parseLong(end.group(1)) : -1L;
-                return new Range(requestedOffset, total, total == requestedOffset);
+                if (!end.matches()) throw new IOException("Invalid Content-Range response");
+                long total = parseRangeLong(end.group(1));
+                if (total != requestedOffset) {
+                    throw new IOException("Remote range is inconsistent with the download offset");
+                }
+                return new Range(requestedOffset, total, true);
             }
-            if (status != 206) return new Range(requestedOffset, -1, true);
             java.util.regex.Matcher partial = java.util.regex.Pattern
                     .compile("bytes ([0-9]+)-([0-9]+)/([0-9]+|\\*)")
                     .matcher(contentRange);
             if (!partial.matches()) throw new IOException("Invalid Content-Range response");
-            long start = Long.parseLong(partial.group(1));
-            long end = Long.parseLong(partial.group(2));
-            if (start != requestedOffset || end - start + 1 != bodyLength) {
+            long start = parseRangeLong(partial.group(1));
+            long end = parseRangeLong(partial.group(2));
+            long rangeLength;
+            try {
+                rangeLength = Math.addExact(Math.subtractExact(end, start), 1L);
+            } catch (ArithmeticException invalid) {
+                throw new IOException("Invalid Content-Range response", invalid);
+            }
+            if (end < start || start != requestedOffset || rangeLength != bodyLength) {
                 throw new IOException("Downloaded range does not match the request");
             }
             long total = partial.group(3).equals("*")
-                    ? -1L : Long.parseLong(partial.group(3));
-            return new Range(start, total, total >= 0 && end + 1 >= total);
+                    ? -1L : parseRangeLong(partial.group(3));
+            if (total >= 0 && end >= total) {
+                throw new IOException("Content-Range exceeds the reported object size");
+            }
+            return new Range(start, total, total >= 0 && end == total - 1L);
+        }
+
+        private static long parseRangeLong(String value) throws IOException {
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException invalid) {
+                throw new IOException("Invalid Content-Range response", invalid);
+            }
         }
 
         private static int positiveInt(Object value, String field) {
@@ -282,7 +299,27 @@ public final class BuiltinEffectHandlers {
         private final Set<String> allowedExecutables;
 
         private CommandHandler(Set<String> allowedExecutables) {
-            this.allowedExecutables = Set.copyOf(allowedExecutables);
+            java.util.LinkedHashSet<String> canonical = new java.util.LinkedHashSet<>();
+            for (String executable : allowedExecutables) {
+                try {
+                    java.nio.file.Path path = java.nio.file.Path.of(executable);
+                    if (!path.isAbsolute()) {
+                        throw new IllegalArgumentException(
+                                "Command allowlist entries must be absolute paths: " + executable);
+                    }
+                    java.nio.file.Path real = path.toRealPath();
+                    if (!java.nio.file.Files.isRegularFile(real)
+                            || !java.nio.file.Files.isExecutable(real)) {
+                        throw new IllegalArgumentException(
+                                "Command allowlist entry is not executable: " + executable);
+                    }
+                    canonical.add(real.toString());
+                } catch (IOException invalid) {
+                    throw new IllegalArgumentException(
+                            "Cannot resolve command allowlist entry: " + executable, invalid);
+                }
+            }
+            this.allowedExecutables = Set.copyOf(canonical);
         }
 
         @Override
@@ -294,34 +331,58 @@ public final class BuiltinEffectHandlers {
         protected Object executeValue(Object request, Optional<String> idempotencyKey)
                 throws Exception {
             Map<?, ?> map = requestMap(request);
-            List<String> command = command(map.get("command"));
-            String executable = command.getFirst();
-            String fileName = java.nio.file.Path.of(executable).getFileName().toString();
-            if (!allowedExecutables.contains(executable)
-                    && !allowedExecutables.contains(fileName)) {
-                throw new SecurityException("Executable is not in CILEXEC_FCL_EXEC_ALLOWLIST: "
-                        + fileName);
+            List<String> supplied = command(map.get("command"));
+            java.nio.file.Path executablePath = java.nio.file.Path.of(supplied.getFirst());
+            if (!executablePath.isAbsolute()) {
+                throw new SecurityException("Command executable must be an absolute path");
             }
+            String executable = executablePath.toRealPath().toString();
+            if (!allowedExecutables.contains(executable)) {
+                throw new SecurityException(
+                        "Executable is not in CILEXEC_FCL_EXEC_ALLOWLIST: " + executable);
+            }
+            List<String> command = new ArrayList<>(supplied);
+            command.set(0, executable);
             Process child = new ProcessBuilder(command).redirectErrorStream(true).start();
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            try (var input = child.getInputStream()) {
-                byte[] buffer = new byte[8192];
-                while (output.size() <= MAX_COMMAND_OUTPUT_BYTES) {
-                    int count = input.read(buffer, 0,
-                            Math.min(buffer.length, MAX_COMMAND_OUTPUT_BYTES + 1 - output.size()));
-                    if (count < 0) break;
-                    output.write(buffer, 0, count);
+            java.util.concurrent.FutureTask<byte[]> reader = new java.util.concurrent.FutureTask<>(
+                    () -> readCommandOutput(child));
+            Thread.ofVirtual().name("cilexec-command-output").start(reader);
+            try {
+                if (!child.waitFor(30, TimeUnit.SECONDS)) {
+                    destroyProcessTree(child);
+                    throw new IOException("Command timed out after 30 seconds");
                 }
+                byte[] output = reader.get(2, TimeUnit.SECONDS);
+                return Map.of("exitCode", (long) child.exitValue(), "output",
+                        new String(output, StandardCharsets.UTF_8));
+            } catch (java.util.concurrent.ExecutionException failedRead) {
+                destroyProcessTree(child);
+                Throwable cause = failedRead.getCause();
+                if (cause instanceof Exception exception) throw exception;
+                throw new IOException("Command output reader failed", cause);
+            } catch (java.util.concurrent.TimeoutException failedRead) {
+                destroyProcessTree(child);
+                throw new IOException("Command output reader did not finish", failedRead);
+            } finally {
+                if (child.isAlive()) destroyProcessTree(child);
+                reader.cancel(true);
             }
-            if (!child.waitFor(30, TimeUnit.SECONDS)) {
-                child.destroyForcibly();
-                throw new IOException("Command timed out after 30 seconds");
+        }
+
+        private static byte[] readCommandOutput(Process child) throws IOException {
+            try (InputStream input = child.getInputStream()) {
+                byte[] output = input.readNBytes(MAX_COMMAND_OUTPUT_BYTES + 1);
+                if (output.length > MAX_COMMAND_OUTPUT_BYTES) {
+                    destroyProcessTree(child);
+                    throw new IOException("Command output exceeds 1 MiB");
+                }
+                return output;
             }
-            if (output.size() > MAX_COMMAND_OUTPUT_BYTES) {
-                throw new IOException("Command output exceeds 1 MiB");
-            }
-            return Map.of("exitCode", (long) child.exitValue(), "output",
-                    output.toString(StandardCharsets.UTF_8));
+        }
+
+        private static void destroyProcessTree(Process child) {
+            child.descendants().forEach(ProcessHandle::destroyForcibly);
+            child.destroyForcibly();
         }
 
         private static List<String> command(Object value) {
@@ -379,8 +440,9 @@ public final class BuiltinEffectHandlers {
 
         private static Object connect(List<?> arguments) throws IOException {
             Endpoint endpoint = endpoint(arguments, 0);
+            InetAddress address = NetworkTargetPolicy.requirePublicAddress(endpoint.host());
             try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(endpoint.host(), endpoint.port()), 10_000);
+                socket.connect(new InetSocketAddress(address, endpoint.port()), 10_000);
             }
             return endpointMap(endpoint);
         }
@@ -397,9 +459,17 @@ public final class BuiltinEffectHandlers {
             }
             if (arguments.size() <= dataIndex) throw new IllegalArgumentException(
                     "socket.send requires endpoint and data");
-            byte[] data = String.valueOf(arguments.get(dataIndex)).getBytes(StandardCharsets.UTF_8);
+            Object rawData = arguments.get(dataIndex);
+            if (!(rawData instanceof String text)) {
+                throw new IllegalArgumentException("socket.send data must be a string");
+            }
+            byte[] data = text.getBytes(StandardCharsets.UTF_8);
+            if (data.length > MAX_COMMAND_OUTPUT_BYTES) {
+                throw new IllegalArgumentException("Socket payload cannot exceed 1 MiB");
+            }
+            InetAddress address = NetworkTargetPolicy.requirePublicAddress(endpoint.host());
             try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(endpoint.host(), endpoint.port()), 10_000);
+                socket.connect(new InetSocketAddress(address, endpoint.port()), 10_000);
                 socket.setSoTimeout(30_000);
                 socket.getOutputStream().write(data);
                 socket.getOutputStream().flush();
@@ -411,8 +481,10 @@ public final class BuiltinEffectHandlers {
             Endpoint endpoint = endpoint(arguments, 0);
             int maximum = arguments.size() > 2 ? positiveInt(arguments.get(2), "maximum bytes")
                     : MAX_COMMAND_OUTPUT_BYTES;
+            requireBoundedPayload(maximum);
+            InetAddress address = NetworkTargetPolicy.requirePublicAddress(endpoint.host());
             try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(endpoint.host(), endpoint.port()), 10_000);
+                socket.connect(new InetSocketAddress(address, endpoint.port()), 10_000);
                 socket.setSoTimeout(30_000);
                 return read(socket.getInputStream(), maximum);
             }
@@ -421,8 +493,8 @@ public final class BuiltinEffectHandlers {
         private static Object bind(List<?> arguments) throws IOException {
             int port = arguments.isEmpty() ? 0 : port(arguments.getFirst());
             try (ServerSocket server = new ServerSocket()) {
-                server.bind(new InetSocketAddress(port));
-                return Map.of("host", "0.0.0.0", "port", (long) server.getLocalPort(),
+                server.bind(new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port));
+                return Map.of("host", "127.0.0.1", "port", (long) server.getLocalPort(),
                         "oneShot", true);
             }
         }
@@ -433,9 +505,10 @@ public final class BuiltinEffectHandlers {
             int port = port(arguments.getFirst());
             int maximum = arguments.size() > 1
                     ? positiveInt(arguments.get(1), "maximum bytes") : MAX_COMMAND_OUTPUT_BYTES;
+            requireBoundedPayload(maximum);
             try (ServerSocket server = new ServerSocket()) {
                 server.setSoTimeout(30_000);
-                server.bind(new InetSocketAddress(port));
+                server.bind(new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port));
                 try (Socket socket = server.accept()) {
                     socket.setSoTimeout(30_000);
                     return Map.of("remote", socket.getRemoteSocketAddress().toString(),
@@ -445,12 +518,18 @@ public final class BuiltinEffectHandlers {
         }
 
         private static String read(java.io.InputStream input, int maximum) throws IOException {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maximum, 64 * 1024));
             byte[] buffer = new byte[8192];
             while (output.size() <= maximum) {
                 int count = input.read(buffer, 0,
                         Math.min(buffer.length, maximum + 1 - output.size()));
                 if (count < 0) break;
+                if (count == 0) {
+                    int single = input.read();
+                    if (single < 0) break;
+                    output.write(single);
+                    continue;
+                }
                 output.write(buffer, 0, count);
             }
             if (output.size() > maximum) throw new IOException("Socket payload exceeds limit");
@@ -460,8 +539,11 @@ public final class BuiltinEffectHandlers {
         private static Endpoint endpoint(List<?> arguments, int offset) {
             if (arguments.size() <= offset + 1) throw new IllegalArgumentException(
                     "Socket endpoint requires host and port");
-            return new Endpoint(String.valueOf(arguments.get(offset)),
-                    port(arguments.get(offset + 1)));
+            Object rawHost = arguments.get(offset);
+            if (!(rawHost instanceof String host) || host.isBlank()) {
+                throw new IllegalArgumentException("Socket endpoint host must be a string");
+            }
+            return new Endpoint(host, port(arguments.get(offset + 1)));
         }
 
         private static Endpoint endpoint(Map<?, ?> map) {
@@ -486,6 +568,12 @@ public final class BuiltinEffectHandlers {
             return number.intValue();
         }
 
+        private static void requireBoundedPayload(int maximum) {
+            if (maximum > MAX_COMMAND_OUTPUT_BYTES) {
+                throw new IllegalArgumentException("Socket payload cannot exceed 1 MiB");
+            }
+        }
+
         private static Map<String, Object> endpointMap(Endpoint endpoint) {
             return Map.of("host", endpoint.host(), "port", (long) endpoint.port(),
                     "oneShot", true);
@@ -503,5 +591,17 @@ public final class BuiltinEffectHandlers {
             if (!trimmed.isEmpty()) values.add(trimmed);
         }
         return Set.copyOf(values);
+    }
+
+    private static void requireNoRedirect(int status) throws IOException {
+        if (status >= 300 && status < 400) {
+            throw new IOException("HTTP redirects are blocked; use the validated final URL");
+        }
+    }
+
+    private static void requireDownloadStatus(int status) throws IOException {
+        if (status != 200 && status != 206 && status != 416) {
+            throw new IOException("Download failed with HTTP status " + status);
+        }
     }
 }

@@ -274,6 +274,13 @@ public final class FclContinuation {
                 List.of(), List.of(), WaitState.ready(), null, false, false, null);
     }
 
+    /** Cancels the current terminal submission while retaining only its durable global scope. */
+    public FclContinuation cancelSubmission() {
+        FclScope global = globalScope();
+        return new FclContinuation(formatVersion, 0, global, List.of(), List.of(),
+                List.of(), List.of(), WaitState.ready(), null, true, false, null);
+    }
+
     static FclContinuation restore(int formatVersion, int programCounter, FclScope scope,
                                    List<CallFrame> callStack,
                                    List<ExceptionFrame> exceptionStack,

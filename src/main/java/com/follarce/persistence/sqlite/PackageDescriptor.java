@@ -1,6 +1,8 @@
 package com.follarce.persistence.sqlite;
 
 import com.follarce.domain.packageinfo.PackageIndex;
+import com.follarce.domain.packageinfo.PackageKind;
+import com.follarce.domain.packageinfo.PackageRelease;
 
 import java.util.List;
 import java.util.Objects;
@@ -11,6 +13,7 @@ public record PackageDescriptor(
         String name,
         String version,
         String languageVersion,
+        PackageKind kind,
         String packageHash,
         String databaseFileHash,
         List<PackageIndex.Module> moduleIndex,
@@ -24,6 +27,20 @@ public record PackageDescriptor(
         name = require(name, "name");
         version = require(version, "version");
         languageVersion = require(languageVersion, "languageVersion");
+        try {
+            PackageRelease.Coordinate coordinate = new PackageRelease.Coordinate(
+                    namespace, name, version);
+            namespace = coordinate.namespace();
+            name = coordinate.name();
+            version = coordinate.version();
+        } catch (IllegalArgumentException invalid) {
+            throw new PackageDatabaseException("Package coordinate is invalid", invalid);
+        }
+        if (languageVersion.length() > 128
+                || languageVersion.chars().anyMatch(Character::isISOControl)) {
+            throw new PackageDatabaseException("languageVersion is invalid");
+        }
+        kind = Objects.requireNonNull(kind, "kind");
         packageHash = requireHash(packageHash, "packageHash");
         databaseFileHash = requireHash(databaseFileHash, "databaseFileHash");
         moduleIndex = List.copyOf(Objects.requireNonNull(moduleIndex, "moduleIndex"));

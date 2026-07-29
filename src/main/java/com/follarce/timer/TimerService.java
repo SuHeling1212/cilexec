@@ -98,6 +98,11 @@ public final class TimerService {
         });
     }
 
+    public Optional<Instant> nextWakeAt() {
+        return runtimeTransactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.timers().nextScheduledWakeAt());
+    }
+
     public boolean cancel(UUID ownerId, UUID timerId) {
         Instant now = clock.instant();
         return userTransactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {

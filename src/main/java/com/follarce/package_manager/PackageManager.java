@@ -10,6 +10,7 @@ import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.PackageRepository;
+import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
@@ -42,18 +43,6 @@ public final class PackageManager {
             UUID ownerId,
             byte[] databaseBytes
     ) {
-        return importDatabase(ownerId, databaseBytes, PackageRelease.SignatureStatus.UNSIGNED);
-    }
-
-    public PackageRelease importDatabase(
-            UUID ownerId,
-            byte[] databaseBytes,
-            PackageRelease.SignatureStatus signatureStatus
-    ) {
-        if (signatureStatus != PackageRelease.SignatureStatus.UNSIGNED) {
-            throw new SecurityException(
-                    "Package signature trust cannot be supplied by an import caller");
-        }
         PackageDescriptor descriptor = packageReader.inspect(databaseBytes);
         Instant now = clock.instant();
         ObjectHash fileHash = new ObjectHash(descriptor.databaseFileHash());
@@ -65,7 +54,6 @@ public final class PackageManager {
                 new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
                 fileHash,
                 fileHash,
-                signatureStatus,
                 now
         );
         PackageIndex packageIndex = new PackageIndex(release, descriptor.moduleIndex(),
@@ -73,6 +61,8 @@ public final class PackageManager {
                 descriptor.capabilityIndex());
         return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PACKAGE_IMPORT);
+            PackageCapabilityPolicy.inspect(databaseBytes, descriptor)
+                    .requireUserCapabilities(transaction.auth().capabilities(ownerId));
             transaction.vfs().saveObject(object);
             PackageRepository.ReleaseWriteResult result =
                     transaction.packages().registerRelease(packageIndex);
@@ -101,6 +91,8 @@ public final class PackageManager {
                 parentEnvironmentId, PackageEnvironment.Status.ACTIVE, now);
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PACKAGE_BIND);
+            parentEnvironmentId.ifPresent(parentId -> requireActiveEnvironment(
+                    transaction.packages(), ownerId, parentId));
             transaction.packages().saveEnvironment(environment);
             transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
                     ownerId.toString(), "package.environment.create", "package.environment",
@@ -120,6 +112,7 @@ public final class PackageManager {
         PackageBinding binding = new PackageBinding(environmentId, bindingName, packageHash, now);
         return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PACKAGE_BIND);
+            requireActiveEnvironment(transaction.packages(), ownerId, environmentId);
             transaction.packages().findRelease(packageHash)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown package hash"));
             transaction.packages().saveBinding(binding);
@@ -142,10 +135,24 @@ public final class PackageManager {
         Instant now = clock.instant();
         return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PACKAGE_BIND);
+            CilProcess process = transaction.processes().findByUid(processUid)
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown process"));
+            if (!process.ownerId().equals(ownerId)) {
+                throw new SecurityException("Process belongs to another user");
+            }
+            if (process.isTerminal()) {
+                throw new IllegalStateException("A terminal process cannot import packages");
+            }
+            requireActiveEnvironment(transaction.packages(), ownerId, environmentId);
             Optional<ProcessPackageBinding> existing =
                     transaction.packages().findProcessBinding(processUid, importName);
             if (existing.isPresent()) {
-                return existing.get();
+                ProcessPackageBinding pinned = existing.orElseThrow();
+                if (!pinned.environmentId().equals(environmentId)) {
+                    throw new IllegalStateException(
+                            "Process import is already pinned to another environment");
+                }
+                return pinned;
             }
             PackageBinding declared = transaction.packages().findBinding(environmentId, importName)
                     .orElseThrow(() -> new IllegalArgumentException("Package binding is not declared"));
@@ -154,6 +161,20 @@ public final class PackageManager {
             transaction.packages().saveProcessBinding(resolved);
             return resolved;
         });
+    }
+
+    private static PackageEnvironment requireActiveEnvironment(PackageRepository packages,
+                                                               UUID ownerId,
+                                                               UUID environmentId) {
+        PackageEnvironment environment = packages.findEnvironment(environmentId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown package environment"));
+        if (!environment.ownerId().equals(ownerId)) {
+            throw new SecurityException("Package environment belongs to another user");
+        }
+        if (environment.status() != PackageEnvironment.Status.ACTIVE) {
+            throw new IllegalStateException("Package environment is archived");
+        }
+        return environment;
     }
 
     private static AuditEvent audit(UUID ownerId, String action, PackageRelease release,

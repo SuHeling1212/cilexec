@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Testcontainers(disabledWithoutDocker = true)
 class JdbcTerminalCommandHistoryIT {
@@ -59,6 +60,16 @@ class JdbcTerminalCommandHistoryIT {
             repository.appendCommandHistory(firstOwner, "third", Instant.now(), 3);
             repository.appendCommandHistory(firstOwner, "fourth", Instant.now(), 3);
             repository.appendCommandHistory(secondOwner, "private", Instant.now(), 3);
+            assertTrue(repository.startExportCapture(UUID.randomUUID(), firstOwner,
+                    "/history.fcl", Instant.now()));
+            repository.appendCapturedOperation(firstOwner, "first", Instant.now());
+            repository.appendCapturedOperation(firstOwner, "first", Instant.now());
+            repository.appendCapturedOperation(firstOwner, "second", Instant.now());
+            repository.appendCapturedOperation(firstOwner, "third", Instant.now());
+            repository.appendCapturedOperation(firstOwner, "fourth", Instant.now());
+            assertTrue(repository.startExportCapture(UUID.randomUUID(), secondOwner,
+                    "/private.fcl", Instant.now()));
+            repository.appendCapturedOperation(secondOwner, "private", Instant.now());
             connection.commit();
         }
 
@@ -67,6 +78,13 @@ class JdbcTerminalCommandHistoryIT {
             assertEquals(List.of("second", "third", "fourth"),
                     restarted.findCommandHistory(firstOwner, 200));
             assertEquals(List.of("private"), restarted.findCommandHistory(secondOwner, 200));
+            var firstCapture = restarted.beginExportFinalization(firstOwner).orElseThrow();
+            assertEquals("/history.fcl", firstCapture.targetPath());
+            assertEquals(List.of("first", "first", "second", "third", "fourth"),
+                    firstCapture.operations());
+            assertTrue(restarted.completeExportCapture(firstOwner, firstCapture.captureId()));
+            var secondCapture = restarted.beginExportFinalization(secondOwner).orElseThrow();
+            assertEquals(List.of("private"), secondCapture.operations());
         }
     }
 

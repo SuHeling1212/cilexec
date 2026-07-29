@@ -18,25 +18,42 @@ read_secret() {
 }
 
 database_name="${CILEXEC_DATABASE_NAME:-cilexec}"
+case "$database_name" in
+    ''|[0-9]*|*[!A-Za-z0-9_-]*)
+        echo "CILEXEC_DATABASE_NAME must start with a letter or underscore and contain only letters, digits, underscores, or hyphens" >&2
+        exit 78
+        ;;
+esac
+if [ "${#database_name}" -gt 63 ]; then
+    echo "CILEXEC_DATABASE_NAME must contain at most 63 characters" >&2
+    exit 78
+fi
 migrator_password=$(read_secret "${CILEXEC_MIGRATOR_PASSWORD_FILE:-/run/secrets/cilexec_migrator_password}")
 runtime_password=$(read_secret "${CILEXEC_RUNTIME_PASSWORD_FILE:-/run/secrets/cilexec_runtime_password}")
 effect_password=$(read_secret "${CILEXEC_EFFECT_PASSWORD_FILE:-/run/secrets/cilexec_effect_worker_password}")
 readonly_password=$(read_secret "${CILEXEC_READONLY_PASSWORD_FILE:-/run/secrets/cilexec_readonly_password}")
 
 for service_password in "$migrator_password" "$runtime_password" "$effect_password" "$readonly_password"; do
-    if [ "${#service_password}" -lt 16 ]; then
-        echo "CilExec database service passwords must contain at least 16 characters" >&2
+    case "$service_password" in
+        *[!0-9a-f]*|'')
+            echo "CilExec database service secrets must contain exactly 64 lowercase hexadecimal characters" >&2
+            exit 78
+            ;;
+    esac
+    if [ "${#service_password}" -ne 64 ]; then
+        echo "CilExec database service secrets must contain exactly 64 lowercase hexadecimal characters" >&2
         exit 78
     fi
 done
 unset service_password
 
-psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1 \
-    --set database_name="$database_name" \
-    --set migrator_password="$migrator_password" \
-    --set runtime_password="$runtime_password" \
-    --set effect_password="$effect_password" \
-    --set readonly_password="$readonly_password" <<'SQL'
+{
+printf "\\set database_name '%s'\n" "$database_name"
+printf "\\set migrator_password '%s'\n" "$migrator_password"
+printf "\\set runtime_password '%s'\n" "$runtime_password"
+printf "\\set effect_password '%s'\n" "$effect_password"
+printf "\\set readonly_password '%s'\n" "$readonly_password"
+cat <<'SQL'
 SELECT 'CREATE ROLE cilexec_owner NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cilexec_owner') \gexec
 
@@ -71,6 +88,7 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = :'databas
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'database_name') \gexec
 SELECT format('GRANT CONNECT ON DATABASE %I TO cilexec_migrator, cilexec_runtime, cilexec_effect_worker, cilexec_readonly', :'database_name') \gexec
 SQL
+} | psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1
 
 psql --username "$POSTGRES_USER" --dbname "$database_name" --set ON_ERROR_STOP=1 <<'SQL'
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

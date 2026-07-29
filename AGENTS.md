@@ -85,6 +85,11 @@ To add a source-only Java extension:
 4. Follow `docs/java-extension-development.md`, especially the persistence/effect rules.
 5. Run `mvn clean test` and rebuild the JAR/image. There is intentionally no runtime Java-plugin install path.
 
+Host-to-VFS transfer is deliberately a host tool rather than an FCL function. `HostMove.sh` mounts
+one explicitly named regular file read-only into a disposable tool container; the `host move`
+application command streams it into PostgreSQL and creates the VFS node while retaining the host
+source. Never mount the Docker Socket or a broad host directory for this feature.
+
 ## Important Design Details
 
 - **VFS metadata format:** Files use `#<META>\n{JSON}\n<META>#\n{content}` — metadata stores owner, permissions, timestamps, lock state, symlink target

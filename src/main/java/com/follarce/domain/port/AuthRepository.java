@@ -42,6 +42,11 @@ public interface AuthRepository {
     /** Provisions or rotates the stable PostgreSQL LOGIN role in this same transaction. */
     String provisionPrincipal(UUID userId, char[] password);
 
+    /** Verifies a terminal credential without exposing a database LOGIN principal. */
+    default boolean credentialMatches(UUID userId, char[] password) {
+        throw new UnsupportedOperationException("Credential verification is not implemented");
+    }
+
     /** Makes the stable PostgreSQL role unable to log in in this same transaction. */
     void disablePrincipal(UUID userId);
 
@@ -49,7 +54,8 @@ public interface AuthRepository {
 
     /** Trusted runtime lookup used after entering an explicitly audited administrator path. */
     default boolean hasCapabilityByAdministrator(UUID userId, Capability capability) {
-        return capabilities(userId).contains(capability);
+        Set<Capability> available = capabilities(userId);
+        return available.contains(Capability.SYSTEM_ADMIN) || available.contains(capability);
     }
 
     void replaceCapabilities(UUID userId, Set<Capability> capabilities);

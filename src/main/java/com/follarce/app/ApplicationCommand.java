@@ -9,7 +9,8 @@ public enum ApplicationCommand {
     RUNTIME,
     MIGRATE,
     EXPORT,
-    PACKAGE_BUILD;
+    PACKAGE_BUILD,
+    HOST_MOVE;
 
     public static ApplicationCommand parse(String[] arguments) {
         if (arguments == null || arguments.length == 0) return TERMINAL;
@@ -27,6 +28,12 @@ public enum ApplicationCommand {
                 packageOutputPath(arguments);
                 yield PACKAGE_BUILD;
             }
+            case "host" -> {
+                hostSourcePath(arguments);
+                hostTargetPath(arguments);
+                hostUsername(arguments);
+                yield HOST_MOVE;
+            }
             default -> throw usage();
         };
     }
@@ -39,7 +46,8 @@ public enum ApplicationCommand {
         }
         try {
             Path path = Path.of(arguments[1]);
-            if (path.getFileName() == null || !path.getFileName().toString().endsWith(".db")) {
+            Path fileName = path.getFileName();
+            if (fileName == null || !fileName.toString().endsWith(".db")) {
                 throw usage();
             }
             return path;
@@ -56,10 +64,40 @@ public enum ApplicationCommand {
     public static Path packageOutputPath(String[] arguments) {
         packageArguments(arguments);
         Path path = safePath(arguments[3]);
-        if (path.getFileName() == null || !path.getFileName().toString().endsWith(".db")) {
+        Path fileName = path.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(".db")) {
             throw usage();
         }
         return path;
+    }
+
+    public static Path hostSourcePath(String[] arguments) {
+        hostArguments(arguments);
+        return safePath(arguments[2]);
+    }
+
+    public static String hostTargetPath(String[] arguments) {
+        hostArguments(arguments);
+        String target = arguments[3].trim();
+        if (!target.startsWith("/") || target.equals("/")) throw usage();
+        return target;
+    }
+
+    public static String hostUsername(String[] arguments) {
+        hostArguments(arguments);
+        return arguments.length == 5 ? arguments[4].trim() : "local";
+    }
+
+    private static void hostArguments(String[] arguments) {
+        if (arguments == null || (arguments.length != 4 && arguments.length != 5)
+                || arguments[0] == null || !"host".equalsIgnoreCase(arguments[0])
+                || arguments[1] == null || !"move".equalsIgnoreCase(arguments[1])
+                || arguments[2] == null || arguments[2].isBlank()
+                || arguments[3] == null || arguments[3].isBlank()
+                || (arguments.length == 5
+                && (arguments[4] == null || arguments[4].isBlank()))) {
+            throw usage();
+        }
     }
 
     private static void packageArguments(String[] arguments) {
@@ -86,6 +124,6 @@ public enum ApplicationCommand {
 
     private static IllegalArgumentException usage() {
         return new IllegalArgumentException(
-                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>]");
+                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|host move <source-file> <absolute-vfs-path> [username]]");
     }
 }

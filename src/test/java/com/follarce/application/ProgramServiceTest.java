@@ -3,6 +3,7 @@ package com.follarce.application;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.domain.port.AuthRepository;
 import com.follarce.domain.port.EffectRepository;
+import com.follarce.domain.port.EnvironmentRepository;
 import com.follarce.domain.port.IpcRepository;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.PackageRepository;
@@ -59,6 +60,8 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProgramServiceTest {
@@ -120,6 +123,57 @@ class ProgramServiceTest {
         assertEquals(2, persistence.vfs.objects.size());
     }
 
+    @Test
+    void expandsVfsFilesAtTheIncludeLocationBeforePersistingAndCompiling() {
+        TestPersistence persistence = new TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        VfsNode root = directory(ownerId, Optional.empty(), "/");
+        VfsNode library = directory(ownerId, Optional.of(root.nodeId()), "lib");
+        StoredObject source = StoredObject.create(new com.follarce.domain.vfs.BinaryContent(
+                "func twice(value) { return value * 2 }\n".getBytes(StandardCharsets.UTF_8)),
+                "text/x-fcl; charset=utf-8", NOW);
+        VfsNode file = new VfsNode(UUID.randomUUID(), Optional.of(library.nodeId()), ownerId,
+                "math.fcl", VfsNode.Type.FILE, Optional.of(source.objectHash()), Set.of(),
+                false, NOW, NOW);
+        persistence.vfs.saveObject(source);
+        persistence.vfs.insertNode(root);
+        persistence.vfs.insertNode(library);
+        persistence.vfs.insertNode(file);
+
+        Program program = new ProgramService(persistence).create(ownerId,
+                "before = 1\ninclude \"lib/math.fcl\"\nafter = twice(before)\n", "/");
+        String persisted = new String(persistence.vfs.objects.get(program.sourceObjectHash())
+                .content().bytes(), StandardCharsets.UTF_8);
+
+        assertFalse(persisted.contains("include"));
+        assertTrue(persisted.indexOf("before = 1") < persisted.indexOf("func twice"));
+        assertTrue(persisted.indexOf("func twice") < persisted.indexOf("after = twice"));
+    }
+
+    @Test
+    void includeRejectsPackageDatabaseFiles() {
+        TestPersistence persistence = new TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        VfsNode root = directory(ownerId, Optional.empty(), "/");
+        StoredObject database = StoredObject.create(new com.follarce.domain.vfs.BinaryContent(
+                "SQLite format 3".getBytes(StandardCharsets.UTF_8)),
+                "application/vnd.sqlite3", NOW);
+        persistence.vfs.saveObject(database);
+        persistence.vfs.insertNode(root);
+        persistence.vfs.insertNode(new VfsNode(UUID.randomUUID(), Optional.of(root.nodeId()),
+                ownerId, "package.db", VfsNode.Type.FILE,
+                Optional.of(database.objectHash()), Set.of(), false, NOW, NOW));
+
+        assertThrows(com.follarce.fcl.FclRuntimeException.class,
+                () -> new ProgramService(persistence).create(ownerId,
+                        "include \"/package.db\"\n", "/"));
+    }
+
+    private static VfsNode directory(UUID ownerId, Optional<UUID> parent, String name) {
+        return new VfsNode(UUID.randomUUID(), parent, ownerId, name,
+                VfsNode.Type.DIRECTORY, Optional.empty(), Set.of(), false, NOW, NOW);
+    }
+
     static final class TestPersistence implements TransactionExecutor, UserTransactionExecutor,
             TransactionContext {
         final MemoryProgramRepository programs = new MemoryProgramRepository();
@@ -130,6 +184,7 @@ class ProgramServiceTest {
         final MemoryIpcRepository ipc = new MemoryIpcRepository();
         final MemoryPackageRepository packages = new MemoryPackageRepository();
         final MemoryAuthRepository auth = new MemoryAuthRepository();
+        final MemoryEnvironmentRepository environment = new MemoryEnvironmentRepository();
         final MemoryAuditRepository audit = new MemoryAuditRepository();
         int runtimeTransactions;
         int userTransactions;
@@ -163,6 +218,7 @@ class ProgramServiceTest {
         @Override public AuthRepository auth() { return auth; }
         @Override public AuditRepository audit() { return audit; }
         @Override public TerminalRepository terminal() { return terminal; }
+        @Override public EnvironmentRepository environment() { return environment; }
         @Override public void commit() { }
         @Override public void rollback() { }
         @Override public void close() { }
@@ -197,6 +253,7 @@ class ProgramServiceTest {
 
     static final class MemoryVfsRepository implements VfsRepository {
         final Map<ObjectHash, StoredObject> objects = new LinkedHashMap<>();
+        final Map<UUID, VfsNode> nodes = new LinkedHashMap<>();
 
         @Override public void saveObject(StoredObject object) {
             objects.putIfAbsent(object.objectHash(), object);
@@ -204,12 +261,16 @@ class ProgramServiceTest {
         @Override public Optional<StoredObject> findObject(ObjectHash hash) {
             return Optional.ofNullable(objects.get(hash));
         }
-        @Override public Optional<VfsNode> findNode(UUID nodeId) { return Optional.empty(); }
+        @Override public Optional<VfsNode> findNode(UUID nodeId) {
+            return Optional.ofNullable(nodes.get(nodeId));
+        }
         @Override public Optional<VfsNode> findChild(UUID ownerId, Optional<UUID> parentNodeId,
                                                      String name) {
-            return Optional.empty();
+            return nodes.values().stream().filter(node -> node.ownerId().equals(ownerId))
+                    .filter(node -> node.parentNodeId().equals(parentNodeId))
+                    .filter(node -> node.name().equals(name)).findFirst();
         }
-        @Override public void insertNode(VfsNode node) { throw new UnsupportedOperationException(); }
+        @Override public void insertNode(VfsNode node) { nodes.put(node.nodeId(), node); }
         @Override public boolean replaceContent(UUID nodeId, Optional<ObjectHash> expected,
                                                 ObjectHash replacement, Instant at) {
             throw new UnsupportedOperationException();
@@ -404,6 +465,9 @@ class ProgramServiceTest {
                 PackageRelease.Coordinate coordinate) {
             return Optional.empty();
         }
+        @Override public List<PackageRelease> findReleases() {
+            return List.copyOf(releases.values());
+        }
         @Override public void saveEnvironment(PackageEnvironment environment) {
             environments.put(environment.environmentId(), environment);
         }
@@ -443,6 +507,37 @@ class ProgramServiceTest {
             return Set.copyOf(java.util.EnumSet.allOf(Capability.class));
         }
         @Override public void replaceCapabilities(UUID userId, Set<Capability> capabilities) { }
+    }
+
+    static final class MemoryEnvironmentRepository implements EnvironmentRepository {
+        final Map<UUID, Map<String, String>> users = new LinkedHashMap<>();
+        final Map<String, String> shared = new LinkedHashMap<>();
+        SharedPolicy policy = new SharedPolicy(SharedPolicy.Mode.DENYLIST, Set.of());
+        @Override public Optional<String> findUser(UUID ownerId, String name) {
+            return Optional.ofNullable(users.getOrDefault(ownerId, Map.of()).get(name));
+        }
+        @Override public Map<String, String> findUsers(UUID ownerId) {
+            return Map.copyOf(users.getOrDefault(ownerId, Map.of()));
+        }
+        @Override public void saveUser(UUID ownerId, String name, String value, Instant at) {
+            users.computeIfAbsent(ownerId, ignored -> new LinkedHashMap<>()).put(name, value);
+        }
+        @Override public boolean deleteUser(UUID ownerId, String name) {
+            Map<String, String> values = users.get(ownerId);
+            return values != null && values.remove(name) != null;
+        }
+        @Override public Optional<String> findShared(String name) {
+            return Optional.ofNullable(shared.get(name));
+        }
+        @Override public Map<String, String> findShared() { return Map.copyOf(shared); }
+        @Override public void saveShared(String name, String value, UUID actorId, Instant at) {
+            shared.put(name, value);
+        }
+        @Override public boolean deleteShared(String name) { return shared.remove(name) != null; }
+        @Override public SharedPolicy sharedPolicy() { return policy; }
+        @Override public void saveSharedPolicy(SharedPolicy policy, UUID actorId, Instant at) {
+            this.policy = policy;
+        }
     }
 
     static final class MemoryAuditRepository implements AuditRepository {

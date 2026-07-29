@@ -8,6 +8,8 @@ import java.util.Objects;
 
 /** Statement-at-a-time FCL interpreter. */
 public final class FclRuntime {
+    /** Keeps a recursive FCL program from exhausting heap through persisted call frames. */
+    static final int MAX_CALL_DEPTH = 256;
     private final FclFunctionRegistry functions;
 
     public FclRuntime(FclFunctionRegistry functions) {
@@ -44,7 +46,15 @@ public final class FclRuntime {
             ensurePending(continuation, pointer);
             return executeInstruction(program, continuation, instruction, pointer);
         } catch (FclExpressionEvaluator.UserCallSignal call) {
-            return enterCall(program, continuation, initialPointer, call.call());
+            // Exceptions raised while validating/entering a user call happen from inside this
+            // catch block and therefore are not handled by the RuntimeException catch below.
+            // Convert them to an ordinary durable FCL failure instead of letting the scheduler
+            // roll the transaction back and retry the same broken statement forever.
+            try {
+                return enterCall(program, continuation, initialPointer, call.call());
+            } catch (RuntimeException failure) {
+                return fail(program, continuation, initialPointer, failure);
+            }
         } catch (FclSuspension suspension) {
             if (continuation.waitState().kind() == FclContinuation.WaitKind.NONE) {
                 return fail(program, continuation, initialPointer,
@@ -94,6 +104,13 @@ public final class FclRuntime {
                     conditional.line(), taken);
         }
         if (instruction instanceof FclInstruction.Loop loop) {
+            // A backwards compiler jump reaches this header before pruneState sees the branch
+            // end pointer. Without this cleanup, an if inside an infinite while leaked one
+            // persisted BranchFrame per iteration and made every later commit progressively
+            // larger and slower.
+            continuation.mutableBranchState().removeIf(frame ->
+                    frame.callDepth() == continuation.callDepth()
+                            && frame.endPointer() <= loop.endTarget());
             boolean taken = FclValues.truthy(evaluator.evaluate(loop.condition()));
             if (taken) {
                 if (!hasLoop(continuation, pointer, continuation.callDepth())) {
@@ -174,6 +191,10 @@ public final class FclRuntime {
         if (call.arguments().size() != function.parameters().size()) {
             throw new FclRuntimeException("Function " + call.name() + " expects "
                     + function.parameters().size() + " arguments, got " + call.arguments().size());
+        }
+        if (continuation.callDepth() >= MAX_CALL_DEPTH) {
+            throw new FclRuntimeException("Maximum function call depth of "
+                    + MAX_CALL_DEPTH + " exceeded");
         }
         int returnPointer = continuation.programCounter();
         FclContinuation.PendingStatement callerPending = continuation.pendingStatement();

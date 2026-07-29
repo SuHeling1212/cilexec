@@ -81,10 +81,10 @@ private static List<CilExecExtension> sourceExtensions() {
 }
 ```
 
-重新构建后即可在 FCL 中使用：
+重新构建后函数已经注册到 Runtime，可直接在 FCL 中使用；`import` 专用于按
+`.db` 文件 SHA-256 导入 FCL 包，不能用于 Java 扩展：
 
 ```fcl
-import "greeting"
 message = greeting.hello("CilExec")
 shortMessage = greeting.hi("developer")
 ```

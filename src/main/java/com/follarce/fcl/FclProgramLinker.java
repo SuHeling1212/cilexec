@@ -277,7 +277,10 @@ public final class FclProgramLinker {
     }
 
     private static void validatePublicName(String name) {
-        if (name == null || !name.matches("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?")) {
+        String identifier = "[A-Za-z_][A-Za-z0-9_]*";
+        String namespace = "(?:" + identifier + "|[0-9A-Fa-f]{64})";
+        if (name == null || !(name.matches(identifier)
+                || name.matches(namespace + "\\." + identifier))) {
             throw new FclRuntimeException("Invalid imported function name: " + name);
         }
     }

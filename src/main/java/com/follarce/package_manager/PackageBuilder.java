@@ -35,12 +35,16 @@ import java.util.function.Function;
 /** Builds one immutable SQLite package from an explicit manifest and exact input bytes. */
 public final class PackageBuilder {
     public static final String MANIFEST_FILE = "package.json";
+    private static final int MAX_MANIFEST_BYTES = 1024 * 1024;
     private final Gson gson = new GsonBuilder().disableHtmlEscaping().create();
     private final FclCompiler compiler = new FclCompiler();
     private final SqlitePackageReader reader = new SqlitePackageReader();
 
     public PackageManifest parseManifest(byte[] bytes) {
         Objects.requireNonNull(bytes, "bytes");
+        if (bytes.length > MAX_MANIFEST_BYTES) {
+            throw new IllegalArgumentException("package.json exceeds the 1 MiB limit");
+        }
         String json = utf8(bytes, "package manifest");
         PackageManifest manifest;
         try {
@@ -101,7 +105,8 @@ public final class PackageBuilder {
         byte[] database = build(manifestBytes,
                 path -> readRegularFile(root, root.resolve(path), path));
         Path absolute = outputDatabase.toAbsolutePath().normalize();
-        if (!absolute.getFileName().toString().endsWith(".db")) {
+        Path fileName = absolute.getFileName();
+        if (fileName == null || !fileName.toString().endsWith(".db")) {
             throw new IllegalArgumentException("Package output must end with .db");
         }
         if (Files.exists(absolute)) throw new IllegalArgumentException("Package output already exists: " + absolute);
@@ -136,11 +141,23 @@ public final class PackageBuilder {
     private Map<String, byte[]> loadContent(PackageManifest manifest,
                                             Function<String, byte[]> contentLoader) {
         Map<String, byte[]> content = new LinkedHashMap<>();
+        long totalBytes = 0;
         manifest.contentPaths().stream().sorted().forEach(path -> {
             byte[] bytes = Objects.requireNonNull(contentLoader.apply(path),
                     "Package content loader returned null for " + path);
+            if (bytes.length > SqlitePackageReader.MAX_PACKAGE_RESOURCE_BYTES) {
+                throw new IllegalArgumentException(
+                        "Package resource exceeds the 16 MiB limit: " + path);
+            }
             content.put(path, bytes.clone());
         });
+        for (byte[] bytes : content.values()) {
+            totalBytes += bytes.length;
+            if (totalBytes > SqlitePackageReader.MAX_PACKAGE_DATABASE_BYTES) {
+                throw new IllegalArgumentException(
+                        "Package content exceeds the 64 MiB package limit");
+            }
+        }
         return Map.copyOf(content);
     }
 
@@ -192,7 +209,6 @@ public final class PackageBuilder {
                 statement.execute("CREATE TABLE package_entrypoint(entrypoint_name TEXT PRIMARY KEY, module_name TEXT NOT NULL, function_name TEXT NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_export(export_name TEXT PRIMARY KEY, module_name TEXT NOT NULL, symbol_name TEXT NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_capability(capability_key TEXT PRIMARY KEY, required INTEGER NOT NULL, rationale TEXT NOT NULL) WITHOUT ROWID");
-                statement.execute("CREATE TABLE package_signature(signature BLOB)");
             }
             insertMetadata(connection, manifest);
             insertFiles(connection, content);
@@ -217,7 +233,8 @@ public final class PackageBuilder {
                 "INSERT INTO package_metadata(metadata_key,metadata_value) VALUES (?,?)")) {
             Map<String, String> values = Map.of("namespace", manifest.namespace(),
                     "name", manifest.name(), "version", manifest.version(),
-                    "language_version", manifest.languageVersion());
+                    "language_version", manifest.languageVersion(),
+                    "package_kind", manifest.kind().wireName());
             for (Map.Entry<String, String> entry : values.entrySet().stream()
                     .sorted(Map.Entry.comparingByKey()).toList()) {
                 statement.setString(1, entry.getKey());
@@ -321,6 +338,13 @@ public final class PackageBuilder {
             Path real = candidate.toRealPath();
             if (!real.startsWith(root) || !Files.isRegularFile(real)) {
                 throw new IllegalArgumentException("Package content escapes the source directory: "
+                        + logicalPath);
+            }
+            long size = Files.size(real);
+            int limit = MANIFEST_FILE.equals(logicalPath) ? MAX_MANIFEST_BYTES
+                    : SqlitePackageReader.MAX_PACKAGE_RESOURCE_BYTES;
+            if (size > limit) {
+                throw new IllegalArgumentException("Package content exceeds its size limit: "
                         + logicalPath);
             }
             return Files.readAllBytes(real);

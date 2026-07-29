@@ -15,6 +15,11 @@ public record ExtensionEffectPolicy(
         idempotencyKey = Objects.requireNonNull(idempotencyKey, "idempotencyKey")
                 .map(String::trim)
                 .filter(value -> !value.isEmpty());
+        idempotencyKey.ifPresent(value -> {
+            if (value.length() > 512 || value.chars().anyMatch(Character::isISOControl)) {
+                throw new IllegalArgumentException("Invalid extension effect idempotency key");
+            }
+        });
         Objects.requireNonNull(recovery, "recovery");
         if (idempotent != idempotencyKey.isPresent()) {
             throw new IllegalArgumentException(

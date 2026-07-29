@@ -62,19 +62,6 @@ class PackageManagerTest {
     Path temporaryDirectory;
 
     @Test
-    void callerCannotForgeAnySignatureVerificationStatus() {
-        MemoryPersistence persistence = new MemoryPersistence();
-        PackageManager manager = manager(persistence);
-
-        for (PackageRelease.SignatureStatus status : PackageRelease.SignatureStatus.values()) {
-            if (status == PackageRelease.SignatureStatus.UNSIGNED) continue;
-            assertThrows(SecurityException.class, () -> manager.importDatabase(
-                    UUID.randomUUID(), new byte[]{1, 2, 3}, status), status.name());
-        }
-        assertEquals(0, persistence.transactions);
-    }
-
-    @Test
     void importsReleaseAndAllDerivedIndexesInOneRepositoryBundle() throws Exception {
         MemoryPersistence persistence = new MemoryPersistence();
         PackageManager manager = manager(persistence);
@@ -82,7 +69,6 @@ class PackageManagerTest {
 
         PackageRelease imported = manager.importDatabase(UUID.randomUUID(), database);
 
-        assertEquals(PackageRelease.SignatureStatus.UNSIGNED, imported.signatureStatus());
         assertNotNull(persistence.packages.lastIndex);
         PackageIndex index = persistence.packages.lastIndex;
         assertEquals(List.of("main"), index.modules().stream()
@@ -119,6 +105,10 @@ class PackageManagerTest {
 
     private Path packageDatabase(String moduleHash) throws SQLException {
         Path database = temporaryDirectory.resolve(UUID.randomUUID() + ".db");
+        byte[] moduleSource = ("func api() { return \"" + moduleHash
+                + "\" }\nfunc main() { return null }\n")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String moduleHex = java.util.HexFormat.of().formatHex(moduleSource);
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              Statement statement = connection.createStatement()) {
             statement.execute("CREATE TABLE package_metadata(metadata_key TEXT, metadata_value TEXT)");
@@ -133,15 +123,13 @@ class PackageManagerTest {
                     + "module_name TEXT, symbol_name TEXT)");
             statement.execute("CREATE TABLE package_capability(capability_key TEXT, "
                     + "required INTEGER, rationale TEXT)");
-            statement.execute("CREATE TABLE package_signature(signature BLOB)");
             statement.execute("INSERT INTO package_metadata VALUES "
                     + "('namespace','std'),('name','example'),('version','1.2.3'),"
-                    + "('language_version','1')");
+                    + "('language_version','1'),('package_kind','application')");
             statement.execute("INSERT INTO package_module VALUES "
-                    + "('main','modules/main.fcl','" + sha256(java.util.HexFormat.of()
-                    .parseHex(moduleHash)) + "')");
+                    + "('main','modules/main.fcl','" + sha256(moduleSource) + "')");
             statement.execute("INSERT INTO package_file VALUES "
-                    + "('modules/main.fcl',X'" + moduleHash + "')");
+                    + "('modules/main.fcl',X'" + moduleHex + "')");
             statement.execute("INSERT INTO package_dependency VALUES "
                     + "('std','base','1.0.0',0)");
             statement.execute("INSERT INTO package_entrypoint VALUES ('run','main','main')");
@@ -186,7 +174,8 @@ class PackageManagerTest {
             }
             @Override public void disablePrincipal(UUID id) { }
             @Override public Set<Capability> capabilities(UUID id) {
-                return Set.of(Capability.PACKAGE_IMPORT, Capability.PACKAGE_BIND);
+                return Set.of(Capability.PACKAGE_IMPORT, Capability.PACKAGE_BIND,
+                        Capability.VFS_READ);
             }
             @Override public void replaceCapabilities(UUID id, Set<Capability> capabilities) { }
         }; }

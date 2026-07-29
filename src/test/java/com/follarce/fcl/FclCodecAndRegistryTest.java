@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -51,7 +52,7 @@ class FclCodecAndRegistryTest {
     @Test
     void persistsImportAndIncludeAsWaitableDirectives() {
         FclProgram program = new FclCompiler().compile("""
-                import "std.math" as numbers
+                import "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as "numbers"
                 include "lib/util.fcl"
                 value = 1
                 """);
@@ -72,6 +73,34 @@ class FclCodecAndRegistryTest {
         assertEquals(FclStepResult.Status.DIRECTIVE,
                 runtime.executeOne(program, continuation).status());
         assertEquals(FclContinuation.WaitKind.INCLUDE, continuation.waitState().kind());
+    }
+
+    @Test
+    void requiresQuotedImportAliases() {
+        assertThrows(FclCompileException.class,
+                () -> new FclCompiler().compile("import \""
+                        + "a".repeat(64) + "\" as numbers"));
+        assertThrows(FclCompileException.class,
+                () -> new FclCompiler().compile("import \"editor\""));
+        assertDoesNotThrow(() -> new FclCompiler().compile(
+                "value = " + "2".repeat(64) + ".open(\"a.txt\")"));
+        assertThrows(FclCompileException.class, () -> new FclCompiler().compile(
+                "import \"" + "a".repeat(64) + "\" as \"bad alias\""));
+        assertThrows(FclCompileException.class, () -> new FclCompiler().compile(
+                "import \"" + "a".repeat(64) + "\" as \"\""));
+    }
+
+    @Test
+    void reservesQualifiedAndLiteralNamesFromUserAssignments() {
+        FclCompiler compiler = new FclCompiler();
+        assertThrows(FclCompileException.class,
+                () -> compiler.compile("effect.result = 1"));
+        assertThrows(FclCompileException.class,
+                () -> compiler.compile("true = 1"));
+        assertThrows(FclCompileException.class,
+                () -> compiler.compile("func null() { return 1 }"));
+        assertThrows(FclCompileException.class,
+                () -> compiler.compile("func f(io.value) { return io.value }"));
     }
 
     @Test

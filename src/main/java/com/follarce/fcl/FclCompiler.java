@@ -8,6 +8,10 @@ import java.util.Objects;
 
 /** Compiles structured FCL source into statement-addressable instructions. */
 public final class FclCompiler {
+    private static final int MAX_SYNTACTIC_NESTING = 256;
+    private static final int MAX_OPERATOR_CHAIN = 256;
+    private static final java.util.regex.Pattern SIMPLE_IDENTIFIER =
+            java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     public FclProgram compile(String source) {
         Objects.requireNonNull(source, "source");
         return new Parser(source, new Lexer(source).scan()).compile();
@@ -33,6 +37,7 @@ public final class FclCompiler {
         private int line = 1;
         private int column = 1;
         private int startColumn = 1;
+        private int delimiterDepth;
 
         private Lexer(String source) {
             this.source = source;
@@ -110,6 +115,10 @@ public final class FclCompiler {
         }
 
         private void number() {
+            if (qualifiedHashIdentifier()) {
+                add(Type.IDENTIFIER);
+                return;
+            }
             while (digit(peek())) advance();
             boolean decimal = false;
             if (peek() == '.' && digit(peekNext())) {
@@ -124,6 +133,25 @@ public final class FclCompiler {
             } catch (NumberFormatException failure) {
                 error("Invalid number '" + text + "'");
             }
+        }
+
+        private boolean qualifiedHashIdentifier() {
+            int hashEnd = start + 64;
+            if (hashEnd + 1 >= source.length() || source.charAt(hashEnd) != '.'
+                    || !identifierStart(source.charAt(hashEnd + 1))) return false;
+            for (int index = start; index < hashEnd; index++) {
+                char value = source.charAt(index);
+                if (!(digit(value) || value >= 'a' && value <= 'f'
+                        || value >= 'A' && value <= 'F')) return false;
+            }
+            while (current < hashEnd) advance();
+            advance();
+            while (identifierPart(peek())) advance();
+            while (peek() == '.' && identifierStart(peekNext())) {
+                advance();
+                while (identifierPart(peek())) advance();
+            }
+            return true;
         }
 
         private void string() {
@@ -193,6 +221,15 @@ public final class FclCompiler {
         }
 
         private void add(Type type, Object literal) {
+            if (type == Type.LEFT_PAREN || type == Type.LEFT_BRACKET
+                    || type == Type.LEFT_BRACE) {
+                if (++delimiterDepth > MAX_SYNTACTIC_NESTING) {
+                    error("FCL nesting exceeds " + MAX_SYNTACTIC_NESTING + " levels");
+                }
+            } else if ((type == Type.RIGHT_PAREN || type == Type.RIGHT_BRACKET
+                    || type == Type.RIGHT_BRACE) && delimiterDepth > 0) {
+                delimiterDepth--;
+            }
             tokens.add(new Token(type, source.substring(start, current), literal,
                     line, startColumn));
         }
@@ -286,6 +323,7 @@ public final class FclCompiler {
 
         private void function(Token start) {
             Token name = consume(Type.IDENTIFIER, "Expected function name");
+            requireBindableIdentifier(name, "Function name");
             if (functions.containsKey(name.text())) {
                 fail(name, "Function is already declared: " + name.text());
             }
@@ -293,8 +331,10 @@ public final class FclCompiler {
             List<String> parameters = new ArrayList<>();
             if (!check(Type.RIGHT_PAREN)) {
                 do {
-                    String parameter = consume(Type.IDENTIFIER,
-                            "Expected parameter name").text();
+                    Token parameterToken = consume(Type.IDENTIFIER,
+                            "Expected parameter name");
+                    requireBindableIdentifier(parameterToken, "Parameter name");
+                    String parameter = parameterToken.text();
                     if (parameters.contains(parameter)) {
                         fail(previous(), "Duplicate parameter: " + parameter);
                     }
@@ -380,11 +420,20 @@ public final class FclCompiler {
         }
 
         private void importInstruction(Token start) {
-            String target = directiveTarget("import target");
+            String target = String.valueOf(consume(Type.STRING,
+                    "Expected quoted package database SHA-256 after import").literal());
+            String identity = target.endsWith(".*")
+                    ? target.substring(0, target.length() - 2) : target;
+            if (!identity.matches("(?i)[0-9a-f]{64}")) {
+                fail(previous(), "Import target must be a 64-character package database SHA-256");
+            }
             String alias = null;
             if (word("as")) {
-                alias = consume(Type.IDENTIFIER, "Expected import alias").text();
-                if (alias.contains(".")) fail(previous(), "Import alias must be a simple identifier");
+                alias = String.valueOf(consume(Type.STRING,
+                        "Expected quoted import alias, for example: as \"editor\"").literal());
+                if (!simpleBindableIdentifier(alias)) {
+                    fail(previous(), "Import alias must be a simple identifier");
+                }
             }
             instructions.add(new FclInstruction.Import(start.line(), target, alias,
                     target.endsWith(".*")));
@@ -418,6 +467,7 @@ public final class FclCompiler {
                     consume(Type.RIGHT_BRACKET, "Expected ']' after assignment index");
                 }
                 if (match(Type.EQUAL)) {
+                    requireBindableIdentifier(variable, "Assignment target");
                     FclExpression value = expression();
                     instructions.add(new FclInstruction.Assignment(start.line(), variable.text(),
                             indices, value));
@@ -437,7 +487,9 @@ public final class FclCompiler {
 
         private FclExpression or() {
             FclExpression expression = and();
+            int operators = 0;
             while (match(Type.OR) || word("or")) {
+                requireOperatorDepth(++operators);
                 expression = new FclExpression.Binary(nextId(), "or", expression, and());
             }
             return expression;
@@ -445,7 +497,9 @@ public final class FclCompiler {
 
         private FclExpression and() {
             FclExpression expression = equality();
+            int operators = 0;
             while (match(Type.AND) || word("and")) {
+                requireOperatorDepth(++operators);
                 expression = new FclExpression.Binary(nextId(), "and", expression, equality());
             }
             return expression;
@@ -453,7 +507,9 @@ public final class FclCompiler {
 
         private FclExpression equality() {
             FclExpression expression = comparison();
+            int operators = 0;
             while (match(Type.EQUAL_EQUAL, Type.BANG_EQUAL)) {
+                requireOperatorDepth(++operators);
                 String operator = previous().text();
                 expression = new FclExpression.Binary(nextId(), operator, expression,
                         comparison());
@@ -463,7 +519,9 @@ public final class FclCompiler {
 
         private FclExpression comparison() {
             FclExpression expression = term();
+            int operators = 0;
             while (match(Type.LESS, Type.LESS_EQUAL, Type.GREATER, Type.GREATER_EQUAL)) {
+                requireOperatorDepth(++operators);
                 String operator = previous().text();
                 expression = new FclExpression.Binary(nextId(), operator, expression, term());
             }
@@ -472,7 +530,9 @@ public final class FclCompiler {
 
         private FclExpression term() {
             FclExpression expression = factor();
+            int operators = 0;
             while (match(Type.PLUS, Type.MINUS)) {
+                requireOperatorDepth(++operators);
                 String operator = previous().text();
                 expression = new FclExpression.Binary(nextId(), operator, expression, factor());
             }
@@ -481,7 +541,9 @@ public final class FclCompiler {
 
         private FclExpression factor() {
             FclExpression expression = unary();
+            int operators = 0;
             while (match(Type.STAR, Type.SLASH, Type.PERCENT)) {
+                requireOperatorDepth(++operators);
                 String operator = previous().text();
                 expression = new FclExpression.Binary(nextId(), operator, expression, unary());
             }
@@ -489,10 +551,16 @@ public final class FclCompiler {
         }
 
         private FclExpression unary() {
-            if (match(Type.BANG, Type.MINUS, Type.HASH)) {
-                return new FclExpression.Unary(nextId(), previous().text(), unary());
+            List<String> operators = new ArrayList<>();
+            while (match(Type.BANG, Type.MINUS, Type.HASH)) {
+                requireOperatorDepth(operators.size() + 1);
+                operators.add(previous().text());
             }
-            return postfix();
+            FclExpression expression = postfix();
+            for (int index = operators.size() - 1; index >= 0; index--) {
+                expression = new FclExpression.Unary(nextId(), operators.get(index), expression);
+            }
+            return expression;
         }
 
         private FclExpression postfix() {
@@ -583,6 +651,25 @@ public final class FclCompiler {
 
         private long nextId() {
             return expressionId++;
+        }
+
+        private void requireOperatorDepth(int depth) {
+            if (depth > MAX_OPERATOR_CHAIN) {
+                fail(previous(), "Expression operator chain exceeds "
+                        + MAX_OPERATOR_CHAIN + " operations");
+            }
+        }
+
+        private void requireBindableIdentifier(Token token, String description) {
+            if (!simpleBindableIdentifier(token.text())) {
+                fail(token, description + " must be a simple non-reserved identifier");
+            }
+        }
+
+        private static boolean simpleBindableIdentifier(String value) {
+            return SIMPLE_IDENTIFIER.matcher(value).matches()
+                    && !value.equals("true") && !value.equals("false")
+                    && !value.equals("null");
         }
 
         private void finishSimple() {

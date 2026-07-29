@@ -13,20 +13,20 @@ class CilExecConfigTest {
     void defaultsReserveRuntimePoolCapacity() {
         CilExecConfig config = CilExecConfig.load(Map.of());
         assertEquals("cilexec", config.instanceName());
-        assertEquals(4, config.schedulerWorkers());
-        assertEquals(8, config.runtimeDatabase().maximumPoolSize());
-        assertEquals(Duration.ofMillis(25), config.schedulerIdlePoll());
-        assertEquals(Duration.ofMillis(25), config.effectIdlePoll());
+        assertEquals(10, config.schedulerWorkers());
+        assertEquals(12, config.runtimeDatabase().maximumPoolSize());
+        assertEquals(6, config.effectWorkers());
+        assertEquals(6, config.effectDatabase().maximumPoolSize());
+        assertEquals(Duration.ofMillis(25), config.schedulerErrorBackoff());
+        assertEquals(Duration.ofMillis(25), config.effectErrorBackoff());
     }
 
     @Test
-    void effectPollingIsConfiguredIndependentlyFromTheRuntimeHeartbeat() {
+    void effectErrorBackoffIsConfiguredIndependently() {
         CilExecConfig config = CilExecConfig.load(Map.of(
-                "CILEXEC_HEARTBEAT_INTERVAL", "PT7S",
-                "CILEXEC_EFFECT_IDLE_POLL", "PT0.004S"));
+                "CILEXEC_EFFECT_ERROR_BACKOFF", "PT0.004S"));
 
-        assertEquals(Duration.ofSeconds(7), config.heartbeatInterval());
-        assertEquals(Duration.ofMillis(4), config.effectIdlePoll());
+        assertEquals(Duration.ofMillis(4), config.effectErrorBackoff());
     }
 
     @Test

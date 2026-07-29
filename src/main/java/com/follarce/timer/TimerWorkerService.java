@@ -59,7 +59,8 @@ public final class TimerWorkerService implements AutoCloseable {
     }
 
     private static boolean isFatal(Throwable failure) {
-        return failure instanceof PersistenceFailure persistence
+        return failure instanceof Error
+                || failure instanceof PersistenceFailure persistence
                 && (persistence.kind() == PersistenceFailure.Kind.DATABASE_UNAVAILABLE
                 || persistence.kind() == PersistenceFailure.Kind.RUNTIME_FENCED);
     }

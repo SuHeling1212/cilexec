@@ -31,6 +31,7 @@ import java.util.UUID;
 public final class TerminalReplService {
     private static final String LIBRARY_SCOPE_KEY = "cilexec.repl.library";
     static final String TERMINAL_PROCESS_SCOPE_KEY = "cilexec.repl.terminalProcess";
+    public static final String TERMINAL_SESSION_SCOPE_KEY = "cilexec.repl.terminalSession";
     private final UserTransactionExecutor transactions;
     private final ProgramService programs;
     private final FclCompiler compiler;
@@ -39,28 +40,47 @@ public final class TerminalReplService {
     private final com.google.gson.Gson displayJson =
             new com.google.gson.GsonBuilder().disableHtmlEscaping().create();
     private final Clock clock;
+    private final Runnable workAvailable;
 
     public TerminalReplService(UserTransactionExecutor transactions) {
+        this(transactions, () -> { });
+    }
+
+    public TerminalReplService(UserTransactionExecutor transactions, Runnable workAvailable) {
         this(transactions, new ProgramService(transactions), new FclCompiler(),
-                new FclContinuationCodec(), Clock.systemUTC());
+                new FclContinuationCodec(), Clock.systemUTC(), workAvailable);
     }
 
     TerminalReplService(UserTransactionExecutor transactions, ProgramService programs,
                         FclCompiler compiler, FclContinuationCodec codec, Clock clock) {
+        this(transactions, programs, compiler, codec, clock, () -> { });
+    }
+
+    TerminalReplService(UserTransactionExecutor transactions, ProgramService programs,
+                        FclCompiler compiler, FclContinuationCodec codec, Clock clock,
+                        Runnable workAvailable) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.programs = java.util.Objects.requireNonNull(programs, "programs");
         this.compiler = java.util.Objects.requireNonNull(compiler, "compiler");
         this.codec = java.util.Objects.requireNonNull(codec, "codec");
         this.bridge = new FclPersistenceBridge(codec);
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
+        this.workAvailable = java.util.Objects.requireNonNull(workAvailable, "workAvailable");
     }
 
     public Submission submit(UUID ownerId, UUID sessionId, String submittedSource) {
         java.util.Objects.requireNonNull(ownerId, "ownerId");
         java.util.Objects.requireNonNull(sessionId, "sessionId");
+        if (submittedSource == null
+                || submittedSource.length() > com.follarce.terminal.TerminalInput.MAX_SUBMISSION_CHARACTERS) {
+            throw new IllegalArgumentException("FCL submission exceeds 256 Ki characters");
+        }
         String library = library(ownerId, sessionId);
-        PreparedSource prepared = replSource(submittedSource, library);
-        Program program = programs.create(ownerId, prepared.source());
+        String workingDirectory = workingDirectory(ownerId, sessionId);
+        String expandedSubmission = programs.expandIncludes(ownerId, submittedSource,
+                workingDirectory);
+        PreparedSource prepared = replSource(expandedSubmission, library);
+        Program program = programs.createExpanded(ownerId, prepared.source());
         Instant now = clock.instant();
         Submission submission = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PROCESS_CREATE);
@@ -83,6 +103,7 @@ public final class TerminalReplService {
 
             FclContinuation runtime = nextSubmission(previous);
             runtime.scope().put(TERMINAL_PROCESS_SCOPE_KEY, true);
+            runtime.scope().put(TERMINAL_SESSION_SCOPE_KEY, sessionId.toString());
             runtime.scope().put(FclPath.SCOPE_KEY,
                     transaction.terminal().workingDirectory(sessionId));
             if (!prepared.library().isEmpty()) {
@@ -118,6 +139,7 @@ public final class TerminalReplService {
                     now));
             return new Submission(process, prepared.source());
             });
+            workAvailable.run();
             return submission;
     }
 
@@ -144,9 +166,10 @@ public final class TerminalReplService {
         ProcessInbox.keys().forEach(variables::remove);
         variables.remove(LIBRARY_SCOPE_KEY);
         variables.remove(TERMINAL_PROCESS_SCOPE_KEY);
+        variables.remove(TERMINAL_SESSION_SCOPE_KEY);
         variables.remove(FclPath.SCOPE_KEY);
         return new Snapshot(process.identity().pid(), process.status(), runtime.result(),
-                Map.copyOf(variables), runtime.failed(),
+                immutableVariables(variables), runtime.failed(),
                 runtime.waitState().kind() == FclContinuation.WaitKind.EXTERNAL
                         && "input:key".equals(runtime.waitState().key()),
                 runtime.exceptionStack().stream()
@@ -179,11 +202,16 @@ public final class TerminalReplService {
             compiler.compile(changedLibrary);
             return new PreparedSource(changedLibrary, changedLibrary);
         }
+        String importedLibrary = importsFrom(compiled);
+        String nextLibrary = existingLibrary + importedLibrary;
+        if (!importedLibrary.isEmpty()) {
+            compiler.compile(nextLibrary);
+        }
         if (semantic.size() == 1 && semantic.getFirst() instanceof FclInstruction.Evaluation) {
             return new PreparedSource(existingLibrary + "return " + source.strip() + "\n",
-                    existingLibrary);
+                    nextLibrary);
         }
-        return new PreparedSource(existingLibrary + normalized, existingLibrary);
+        return new PreparedSource(existingLibrary + normalized, nextLibrary);
     }
 
     private String library(UUID ownerId, UUID sessionId) {
@@ -221,6 +249,31 @@ public final class TerminalReplService {
         return declaration;
     }
 
+    /** Retains top-level imports even when package installation and import share one submission. */
+    private static String importsFrom(FclProgram program) {
+        java.util.BitSet functionBodies = new java.util.BitSet(program.instructions().size());
+        program.functions().values().forEach(function ->
+                functionBodies.set(function.entryPoint(), function.endPoint()));
+        StringBuilder imports = new StringBuilder();
+        for (int index = 0; index < program.instructions().size(); index++) {
+            if (functionBodies.get(index)) continue;
+            if (!(program.instructions().get(index) instanceof FclInstruction.Import value)) {
+                continue;
+            }
+            imports.append("import \"").append(escape(value.target())).append('"');
+            if (value.alias() != null) {
+                imports.append(" as \"").append(escape(value.alias())).append('"');
+            }
+            imports.append('\n');
+        }
+        return imports.toString();
+    }
+
+    private static String escape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    }
+
     private static Continuation initial(Program program,
                                         Map<String, com.follarce.domain.vfs.ObjectHash> bindings) {
         return new Continuation(program.programId(), program.programHash(), 0,
@@ -255,9 +308,14 @@ public final class TerminalReplService {
                            Map<String, Object> variables, boolean failed, boolean keyInput,
                            List<String> errors) {
         public Snapshot {
-            variables = Map.copyOf(variables);
+            variables = immutableVariables(variables);
             errors = List.copyOf(errors);
         }
+    }
+
+    private static Map<String, Object> immutableVariables(Map<String, Object> variables) {
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(
+                java.util.Objects.requireNonNull(variables, "variables")));
     }
 
     private record PreparedSource(String source, String library) {

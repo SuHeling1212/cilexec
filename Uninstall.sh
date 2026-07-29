@@ -10,7 +10,7 @@
 # ==============================================================================
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd)"
+project_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$project_dir"
 
 # ---------------------------------------------------------------------------
@@ -24,6 +24,13 @@ export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${proj
 IMAGE_NAME="cilexec:${CILEXEC_IMAGE_TAG:-local}"
 VOLUME_NAME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 SECRET_DIR="$project_dir/docker/secrets"
+SECRET_FILES=(
+    postgres-admin-password
+    cilexec-migrator-password
+    cilexec-runtime-password
+    cilexec-effect-worker-password
+    cilexec-readonly-password
+)
 DEFAULT_EXPORT_DIR="$project_dir/exports"
 configured_export_dir="${CILEXEC_EXPORT_DIRECTORY:-$DEFAULT_EXPORT_DIR}"
 if [[ "$configured_export_dir" == /* ]]; then
@@ -132,12 +139,13 @@ fi
 # ---------------------------------------------------------------------------
 header "第 1 步：停止并删除 Compose 服务"
 
-# 尝试 compose.yml + compose.persistent.yml 组合（最常见的部署）
+# 尝试主 Compose + 持久化变体组合（最常见的部署）
 if [[ -f "$project_dir/compose.yml" ]]; then
     compose_files=(-f "$project_dir/compose.yml")
 
-    if [[ -f "$project_dir/compose.persistent.yml" ]]; then
-        compose_files+=(-f "$project_dir/compose.persistent.yml")
+    persistent_compose="$project_dir/docker/compose/persistent.yml"
+    if [[ -f "$persistent_compose" ]]; then
+        compose_files+=(-f "$persistent_compose")
     fi
 
     echo "使用 compose 文件停止服务..."
@@ -236,8 +244,13 @@ fi
 header "第 6 步：删除密码文件"
 
 if [[ -d "$SECRET_DIR" ]]; then
-    rm -rf "$SECRET_DIR"
-    info "已删除密码目录 $SECRET_DIR"
+    for secret_file in "${SECRET_FILES[@]}"; do
+        rm -f "$SECRET_DIR/$secret_file"
+    done
+    # Keep the directory inode stable. Docker Desktop for macOS may retain a
+    # stale bind-mount view when a shared directory is removed and recreated,
+    # causing an immediate reinstall to report randomly missing secret files.
+    info "已删除密码文件（保留目录 $SECRET_DIR 以便重新安装）"
 else
     info "密码目录 $SECRET_DIR 不存在"
 fi

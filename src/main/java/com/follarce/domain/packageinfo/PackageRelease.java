@@ -11,7 +11,6 @@ public record PackageRelease(
         Hash packageHash,
         ObjectHash databaseObjectHash,
         ObjectHash databaseFileHash,
-        SignatureStatus signatureStatus,
         Instant importedAt
 ) {
     public PackageRelease {
@@ -21,7 +20,6 @@ public record PackageRelease(
         Invariant.required(databaseFileHash, "databaseFileHash");
         Invariant.check(databaseObjectHash.equals(databaseFileHash),
                 "database object hash must identify the original database bytes");
-        Invariant.required(signatureStatus, "signatureStatus");
         Invariant.required(importedAt, "importedAt");
     }
 
@@ -30,7 +28,8 @@ public record PackageRelease(
             namespace = component(namespace, "namespace");
             name = component(name, "name");
             version = Invariant.text(version, "version");
-            Invariant.check(version.length() <= 128, "version is too long");
+            Invariant.check(version.matches("[A-Za-z0-9][A-Za-z0-9._+\\-]{0,127}"),
+                    "version contains unsupported characters");
         }
 
         private static String component(String value, String name) {
@@ -49,13 +48,5 @@ public record PackageRelease(
         public Hash {
             Invariant.required(value, "value");
         }
-    }
-
-    public enum SignatureStatus {
-        UNSIGNED,
-        VALID_TRUSTED,
-        VALID_UNTRUSTED,
-        INVALID,
-        REVOKED
     }
 }

@@ -30,8 +30,14 @@ public record VfsNode(
         if (parentNodeId.isEmpty()) {
             Invariant.check(name.equals("/"), "root node name must be /");
         } else {
+            Invariant.check(name.codePointCount(0, name.length()) <= 255,
+                    "child node name is too long");
             Invariant.check(!name.contains("/") && !name.equals(".") && !name.equals(".."),
                     "child node name must be a single safe path component");
+            Invariant.check(name.codePoints().noneMatch(codePoint ->
+                            Character.isISOControl(codePoint)
+                                    || Character.getType(codePoint) == Character.FORMAT),
+                    "child node name contains terminal control characters");
         }
         Invariant.required(type, "type");
         currentObjectHash = Invariant.required(currentObjectHash, "currentObjectHash");

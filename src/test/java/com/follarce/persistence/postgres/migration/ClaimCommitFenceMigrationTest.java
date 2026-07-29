@@ -12,12 +12,7 @@ class ClaimCommitFenceMigrationTest {
     @Test
     void finalStatementGuardRequiresLiveControlProofAndUnexpiredExactLease()
             throws IOException {
-        String sql;
-        try (var input = getClass().getResourceAsStream(
-                "/db/migration/V020__claimed_statement_commit_fence.sql")) {
-            if (input == null) throw new IOException("V020 migration is missing");
-            sql = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        String sql = BaselineSql.load();
 
         assertTrue(sql.contains("control_backend_pid"));
         assertTrue(sql.contains("control_proof_lock_key"));

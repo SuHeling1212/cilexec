@@ -11,17 +11,30 @@ func ed_max(a, b) {
 }
 
 func ed_fit(value, width) {
-    visible = text.replace(value, "\t", "    ")
+    visible = term.sanitize(value)
     if #visible > width { return text.slice(visible, 0, width) }
     return visible + text.repeat(" ", width - #visible)
+}
+
+# The size is sampled at every layout/render pass.  A resize becomes visible on
+# the next key press; no fixed terminal geometry is kept in editor state.
+func ed_width() {
+    size = term.getSize()
+    return ed_max(20, size["width"])
+}
+
+func ed_body_height() {
+    size = term.getSize()
+    # title + status + footer consume three terminal rows.
+    return ed_max(1, size["height"] - 3)
 }
 
 func ed_fix(state) {
     lines = state["lines"]
     if state["row"] < 0 { state["row"] = 0 }
     if state["row"] >= #lines { state["row"] = #lines - 1 }
-    width = 80
-    height = 18
+    width = ed_width()
+    height = ed_body_height()
     line = lines[state["row"]]
     if state["col"] < 0 { state["col"] = 0 }
     if state["col"] > #line { state["col"] = #line }
@@ -291,11 +304,11 @@ func ed_key(state, key) {
         return ed_fix(state)
     }
     if key == "PAGE_UP" {
-        state["row"] = ed_max(0, row - 18)
+        state["row"] = ed_max(0, row - ed_body_height())
         return ed_fix(state)
     }
     if key == "PAGE_DOWN" {
-        state["row"] = ed_min(#lines - 1, row + 18)
+        state["row"] = ed_min(#lines - 1, row + ed_body_height())
         return ed_fix(state)
     }
     if key == "BACKSPACE" { return ed_backspace(state) }
@@ -307,39 +320,39 @@ func ed_key(state, key) {
 }
 
 func ed_render_help(state) {
+    width = ed_width()
     screen = term.hideCursor() + term.clear()
-    screen = screen + term.inverse(ed_fit(" CilEdit Help", 80)) + "\r\n"
-    screen = screen + "Ctrl-O / Ctrl-S  Save file\r\n"
-    screen = screen + "Ctrl-X  Exit (asks before discarding changes)\r\n"
-    screen = screen + "Ctrl-W  Search forward\r\n"
-    screen = screen + "Ctrl-K  Cut current line\r\n"
-    screen = screen + "Ctrl-U  Paste cut line\r\n"
-    screen = screen + "Arrows, Home, End, PageUp, PageDown move the cursor\r\n"
-    screen = screen + "Backspace, Delete, Enter and Tab edit the buffer\r\n\r\n"
-    screen = screen + "Press any key to return"
-    return screen
+    screen = screen + term.inverse(ed_fit(" CilEdit Help", width)) + "\r\n"
+    screen = screen + ed_fit("Ctrl-O / Ctrl-S  Save file", width) + "\r\n"
+    screen = screen + ed_fit("Ctrl-X  Exit (asks before discarding changes)", width) + "\r\n"
+    screen = screen + ed_fit("Ctrl-W  Search forward", width) + "\r\n"
+    screen = screen + ed_fit("Ctrl-K  Cut current line; Ctrl-U Paste cut line", width) + "\r\n"
+    screen = screen + ed_fit("Arrows, Home, End, PageUp, PageDown move", width) + "\r\n"
+    screen = screen + ed_fit("Backspace, Delete, Enter and Tab edit", width) + "\r\n\r\n"
+    return screen + ed_fit("Press any key to return", width) + term.showCursor()
 }
 
 func ed_render(state) {
     if state["mode"] == "help" { return ed_render_help(state) }
-    width = 80
-    height = 18
+    width = ed_width()
+    height = ed_body_height()
     title = " CilEdit  " + state["path"]
     if state["dirty"] { title = title + "  [Modified]" }
     screen = term.hideCursor() + term.clear() + term.inverse(ed_fit(title, width)) + "\r\n"
     visibleRow = 0
-    while visibleRow < height {
+    available = ed_min(height, #state["lines"] - state["top"])
+    while visibleRow < available {
         lineIndex = state["top"] + visibleRow
-        if lineIndex < #state["lines"] {
-            line = state["lines"][lineIndex]
-            start = ed_min(state["left"], #line)
-            end = ed_min(#line, start + width)
-            screen = screen + ed_fit(text.slice(line, start, end), width)
-        } else {
-            screen = screen + ed_fit("~", width)
-        }
+        line = state["lines"][lineIndex]
+        start = ed_min(state["left"], #line)
+        end = ed_min(#line, start + width)
+        screen = screen + ed_fit(text.slice(line, start, end), width)
         screen = screen + "\r\n"
         visibleRow = visibleRow + 1
+    }
+    remaining = height - visibleRow
+    if remaining > 0 {
+        screen = screen + text.repeat(ed_fit("~", width) + "\r\n", remaining)
     }
     status = " line " + util.toString(state["row"] + 1) + "/" + util.toString(#state["lines"])
     status = status + "  col " + util.toString(state["col"] + 1)
@@ -361,6 +374,7 @@ func ed_render(state) {
 }
 
 func open(editorPath) {
+    editorPath = term.sanitize(editorPath)
     editorContent = ""
     if file.exists(editorPath) { editorContent = file.read(editorPath) }
     editorState = {
@@ -385,4 +399,9 @@ func open(editorPath) {
     }
     io.print(term.showCursor() + term.clear())
     return null
+}
+
+# Universal zero-argument application entrypoint used by package.run("editor").
+func run() {
+    return open("untitled.txt")
 }

@@ -9,6 +9,7 @@ import com.follarce.domain.port.TransactionExecutor;
 import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsNode;
+import com.follarce.domain.vfs.VfsFileLimits;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -47,8 +48,8 @@ public final class AdminVfsService {
                                        Optional<UUID> parentNodeId) {
         return transactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            parentNodeId.ifPresent(parent -> requireNode(transaction, targetUserId, parent,
-                    VfsNode.Type.DIRECTORY));
+            parentNodeId.ifPresent(parent -> VfsNodeChecks.requireDirectory(transaction.vfs(),
+                    parent, targetUserId, "VFS node belongs to a different target user"));
             List<VfsNode> nodes = transaction.vfs().findChildren(targetUserId, parentNodeId);
             transaction.audit().append(audit(administratorId, targetUserId, "vfs.admin.listdir",
                     "vfs.node", parentNodeId.map(UUID::toString).orElse("/"), Map.of(
@@ -60,7 +61,8 @@ public final class AdminVfsService {
     public StoredObject readFile(UUID administratorId, UUID targetUserId, UUID nodeId) {
         return transactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            VfsNode node = requireContentNode(transaction, targetUserId, nodeId);
+            VfsNode node = VfsNodeChecks.requireContent(transaction.vfs(), nodeId, targetUserId,
+                    "VFS node belongs to a different target user");
             StoredObject object = transaction.vfs()
                     .findObjectByAdministrator(node.currentObjectHash().orElseThrow())
                     .orElseThrow(() -> new IllegalStateException(
@@ -75,11 +77,13 @@ public final class AdminVfsService {
 
     public VfsNode replaceContent(UUID administratorId, UUID targetUserId, UUID nodeId,
                                   byte[] replacement, String mediaType) {
+        VfsFileLimits.requireWithinLimit(replacement.length);
         Instant now = clock.instant();
         StoredObject object = StoredObject.create(new BinaryContent(replacement), mediaType, now);
         return transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            VfsNode current = requireContentNode(transaction, targetUserId, nodeId);
+            VfsNode current = VfsNodeChecks.requireContent(transaction.vfs(), nodeId,
+                    targetUserId, "VFS node belongs to a different target user");
             transaction.vfs().saveObjectByAdministrator(object, administratorId);
             if (!transaction.vfs().replaceContent(nodeId, current.currentObjectHash(),
                     object.objectHash(), now)) {
@@ -103,9 +107,9 @@ public final class AdminVfsService {
         Instant now = clock.instant();
         return transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            parentNodeId.ifPresent(parent -> requireNode(transaction, targetUserId, parent,
-                    VfsNode.Type.DIRECTORY));
-            requireUnused(transaction, targetUserId, parentNodeId, name);
+            parentNodeId.ifPresent(parent -> VfsNodeChecks.requireDirectory(transaction.vfs(),
+                    parent, targetUserId, "VFS node belongs to a different target user"));
+            VfsNodeChecks.requireUnused(transaction.vfs(), targetUserId, parentNodeId, name);
             VfsNode node = new VfsNode(UUID.randomUUID(), parentNodeId, targetUserId, name,
                     VfsNode.Type.DIRECTORY, Optional.empty(), capabilities, false, now, now);
             transaction.vfs().insertNode(node);
@@ -119,12 +123,15 @@ public final class AdminVfsService {
     public VfsNode createFile(UUID administratorId, UUID targetUserId, UUID parentNodeId,
                               String name, byte[] content, String mediaType,
                               Set<String> capabilities, boolean revisionEnabled) {
+        VfsFileLimits.requireWithinLimit(content.length);
         Instant now = clock.instant();
         StoredObject object = StoredObject.create(new BinaryContent(content), mediaType, now);
         return transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            requireNode(transaction, targetUserId, parentNodeId, VfsNode.Type.DIRECTORY);
-            requireUnused(transaction, targetUserId, Optional.of(parentNodeId), name);
+            VfsNodeChecks.requireDirectory(transaction.vfs(), parentNodeId, targetUserId,
+                    "VFS node belongs to a different target user");
+            VfsNodeChecks.requireUnused(transaction.vfs(), targetUserId,
+                    Optional.of(parentNodeId), name);
             transaction.vfs().saveObjectByAdministrator(object, administratorId);
             VfsNode node = new VfsNode(UUID.randomUUID(), Optional.of(parentNodeId), targetUserId,
                     name, VfsNode.Type.FILE, Optional.of(object.objectHash()), capabilities,
@@ -146,11 +153,9 @@ public final class AdminVfsService {
         Instant now = clock.instant();
         return transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            VfsNode node = transaction.vfs().findNode(nodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-            if (!node.ownerId().equals(targetUserId)) {
-                throw new SecurityException("VFS node belongs to a different target user");
-            }
+            VfsNode node = VfsNodeChecks.requireOwned(
+                    VfsNodeChecks.requireNode(transaction.vfs(), nodeId), targetUserId,
+                    "VFS node belongs to a different target user");
             if (node.parentNodeId().isEmpty()) {
                 throw new IllegalArgumentException("The target user's root cannot be renamed");
             }
@@ -170,11 +175,9 @@ public final class AdminVfsService {
         Instant now = clock.instant();
         return transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
             requireAccess(transaction, administratorId, targetUserId);
-            VfsNode node = transaction.vfs().findNode(nodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-            if (!node.ownerId().equals(targetUserId)) {
-                throw new SecurityException("VFS node belongs to a different target user");
-            }
+            VfsNode node = VfsNodeChecks.requireOwned(
+                    VfsNodeChecks.requireNode(transaction.vfs(), nodeId), targetUserId,
+                    "VFS node belongs to a different target user");
             if (!transaction.vfs().deleteNode(nodeId, targetUserId)) {
                 throw new IllegalStateException(
                         "Target is a root, non-empty directory, mount, or versioned file");
@@ -197,37 +200,6 @@ public final class AdminVfsService {
         if (!transaction.auth().hasCapabilityByAdministrator(
                 administratorId, com.follarce.domain.auth.Capability.SYSTEM_ADMIN)) {
             throw new SecurityException("Missing CilExec capability: SYSTEM_ADMIN");
-        }
-    }
-
-    private static VfsNode requireContentNode(TransactionContext transaction, UUID ownerId,
-                                              UUID nodeId) {
-        VfsNode node = transaction.vfs().findNode(nodeId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-        if (!node.ownerId().equals(ownerId)) {
-            throw new SecurityException("VFS node belongs to a different target user");
-        }
-        if (node.type() != VfsNode.Type.FILE && node.type() != VfsNode.Type.SYMLINK) {
-            throw new IllegalArgumentException("VFS node does not contain an object");
-        }
-        return node;
-    }
-
-    private static VfsNode requireNode(TransactionContext transaction, UUID ownerId, UUID nodeId,
-                                       VfsNode.Type type) {
-        VfsNode node = transaction.vfs().findNode(nodeId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-        if (!node.ownerId().equals(ownerId)) {
-            throw new SecurityException("VFS node belongs to a different target user");
-        }
-        if (node.type() != type) throw new IllegalArgumentException("Unexpected VFS node type");
-        return node;
-    }
-
-    private static void requireUnused(TransactionContext transaction, UUID ownerId,
-                                      Optional<UUID> parentNodeId, String name) {
-        if (transaction.vfs().findChild(ownerId, parentNodeId, name).isPresent()) {
-            throw new IllegalArgumentException("A VFS node with that name already exists");
         }
     }
 

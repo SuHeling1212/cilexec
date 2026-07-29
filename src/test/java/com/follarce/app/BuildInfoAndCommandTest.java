@@ -10,6 +10,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class BuildInfoAndCommandTest {
     @Test
+    void embeddedBuildAcceptsTheLatestDatabaseMigration() {
+        BuildInfo info = BuildInfo.load();
+
+        assertEquals(1, info.minimumSchema());
+        assertEquals(1, info.maximumSchema());
+    }
+
+    @Test
     void parsesFilteredBuildInformation() {
         String properties = """
                 application.name=CilExec
@@ -59,6 +67,8 @@ class BuildInfoAndCommandTest {
                 ApplicationCommand.parse(new String[]{"export", "snapshot.db"}));
         assertEquals(ApplicationCommand.PACKAGE_BUILD, ApplicationCommand.parse(
                 new String[]{"package", "build", "hello", "hello.db"}));
+        assertEquals(ApplicationCommand.HOST_MOVE, ApplicationCommand.parse(
+                new String[]{"host", "move", "/tmp/source", "/documents/source", "local"}));
         assertEquals(java.nio.file.Path.of("snapshot.db"),
                 ApplicationCommand.exportPath(new String[]{"export", "snapshot.db"}));
         assertThrows(IllegalArgumentException.class,
@@ -75,5 +85,13 @@ class BuildInfoAndCommandTest {
                 new String[]{"package", "build", "hello", "hello.db"}));
         assertThrows(IllegalArgumentException.class, () -> ApplicationCommand.parse(
                 new String[]{"package", "install", "hello", "hello.db"}));
+        assertEquals(java.nio.file.Path.of("/tmp/source"), ApplicationCommand.hostSourcePath(
+                new String[]{"host", "move", "/tmp/source", "/documents/source"}));
+        assertEquals("/documents/source", ApplicationCommand.hostTargetPath(
+                new String[]{"host", "move", "/tmp/source", "/documents/source"}));
+        assertEquals("local", ApplicationCommand.hostUsername(
+                new String[]{"host", "move", "/tmp/source", "/documents/source"}));
+        assertThrows(IllegalArgumentException.class, () -> ApplicationCommand.parse(
+                new String[]{"host", "move", "/tmp/source", "relative"}));
     }
 }

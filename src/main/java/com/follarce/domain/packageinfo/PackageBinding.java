@@ -15,7 +15,7 @@ public record PackageBinding(
     public PackageBinding {
         Invariant.required(environmentId, "environmentId");
         binding = Invariant.text(binding, "binding");
-        Invariant.check(binding.matches("[A-Za-z_][A-Za-z0-9_]*"),
+        Invariant.check(binding.matches("[A-Za-z_][A-Za-z0-9_]{0,127}"),
                 "binding must be an FCL identifier");
         Invariant.required(packageHash, "packageHash");
         Invariant.required(createdAt, "createdAt");

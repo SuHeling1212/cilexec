@@ -14,5 +14,9 @@ public interface TimerRepository {
 
     List<ProcessTimer> claimDue(UUID runnerId, Instant now, int limit);
 
+    default Optional<Instant> nextScheduledWakeAt() {
+        return Optional.empty();
+    }
+
     boolean update(ProcessTimer timer, ProcessTimer.Status expectedStatus);
 }

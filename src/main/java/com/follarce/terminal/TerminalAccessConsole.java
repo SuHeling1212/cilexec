@@ -16,6 +16,7 @@ public final class TerminalAccessConsole implements Runnable {
     private final TerminalAccess access;
     private final Function<UserAccount, TerminalControl> controls;
     private final String administratorUsername;
+    private final PasswordPrompt passwords;
 
     public TerminalAccessConsole(TerminalInput input, PrintWriter output,
                                  TerminalAccess access,
@@ -31,6 +32,7 @@ public final class TerminalAccessConsole implements Runnable {
         this.output = java.util.Objects.requireNonNull(output, "output");
         this.access = java.util.Objects.requireNonNull(access, "access");
         this.controls = java.util.Objects.requireNonNull(controls, "controls");
+        this.passwords = new PasswordPrompt(this.input, this.output);
         if (administratorUsername == null || administratorUsername.isBlank()) {
             throw new IllegalArgumentException("Administrator username is required");
         }
@@ -47,19 +49,19 @@ public final class TerminalAccessConsole implements Runnable {
             output.println("terminal closed: " + closed.getMessage());
             return;
         }
-        output.println("CilExec access; choose login, create, or shutdown");
+        output.println("CilExec access; choose login, create, or disconnect");
         while (!Thread.currentThread().isInterrupted()) {
             try {
                 String choice = input.readLine(output, "access> ", false);
                 if (choice == null) return;
                 String action = choice.trim().toLowerCase(java.util.Locale.ROOT);
                 if (action.equals("3") || action.equals("exit")
-                        || action.equals("shutdown")) return;
+                        || action.equals("shutdown") || action.equals("disconnect")) return;
                 Optional<UserAccount> account = switch (action) {
                     case "1", "login" -> login();
                     case "2", "create", "register" -> create();
                     default -> {
-                        output.println("error: choose login, create, or shutdown");
+                        output.println("error: choose login, create, or disconnect");
                         yield Optional.empty();
                     }
                 };
@@ -84,27 +86,24 @@ public final class TerminalAccessConsole implements Runnable {
         output.println("First time setup - create the administrator account");
         output.println("Username: " + administratorUsername);
         while (!Thread.currentThread().isInterrupted()) {
-            char[] password = password("Password (" + PasswordPolicy.MINIMUM_LENGTH
+            PasswordPrompt.Secret password = passwords.read("Password (" + PasswordPolicy.MINIMUM_LENGTH
                     + "+ characters)> ");
             if (password == null) return;
-            char[] confirmation = password("Confirm password> ");
-            if (confirmation == null) {
-                Arrays.fill(password, '\0');
-                return;
-            }
-            try {
-                if (!Arrays.equals(password, confirmation)) {
-                    throw new IllegalArgumentException("Passwords do not match");
+            try (password) {
+                PasswordPrompt.Secret confirmation = passwords.read("Confirm password> ");
+                if (confirmation == null) return;
+                try (confirmation) {
+                    if (!Arrays.equals(password.value(), confirmation.value())) {
+                        throw new IllegalArgumentException("Passwords do not match");
+                    }
+                    PasswordPolicy.require(password.value());
+                    access.bootstrap(administratorUsername, password.value());
+                    output.println("Administrator account created.");
+                    output.println();
+                    return;
                 }
-                access.bootstrap(administratorUsername, password);
-                output.println("Administrator account created.");
-                output.println();
-                return;
             } catch (IllegalArgumentException failure) {
                 output.println("error: " + failure.getMessage());
-            } finally {
-                Arrays.fill(password, '\0');
-                Arrays.fill(confirmation, '\0');
             }
         }
     }
@@ -112,51 +111,48 @@ public final class TerminalAccessConsole implements Runnable {
     private Optional<UserAccount> login() throws IOException {
         String username = line("username> ");
         if (username == null) return Optional.empty();
-        char[] password = password("password> ");
+        PasswordPrompt.Secret password = passwords.read("password> ");
         if (password == null) return Optional.empty();
-        try {
-            Optional<UserAccount> account = access.login(username, password);
+        try (password) {
+            Optional<UserAccount> account = access.login(username, password.value());
             if (account.isEmpty()) output.println("error: invalid username or password");
             return account;
-        } finally {
-            Arrays.fill(password, '\0');
         }
     }
 
     private Optional<UserAccount> create() throws IOException {
         String username = line("new username> ");
         if (username == null) return Optional.empty();
-        char[] password = password("new password (" + PasswordPolicy.MINIMUM_LENGTH
+        PasswordPrompt.Secret password = passwords.read("new password (" + PasswordPolicy.MINIMUM_LENGTH
                 + "+ characters)> ");
         if (password == null) return Optional.empty();
-        char[] confirmation = password("confirm password> ");
-        if (confirmation == null) {
-            Arrays.fill(password, '\0');
-            return Optional.empty();
-        }
-        try {
-            if (!Arrays.equals(password, confirmation)) {
-                throw new IllegalArgumentException("Passwords do not match");
-            }
-            String adminChoice = line("Create as administrator? (Y/N)> ");
-            if (adminChoice == null) {
-                return Optional.empty();
-            }
-            if (adminChoice.trim().equalsIgnoreCase("y")) {
-                char[] adminPassword = password(administratorUsername + " admin password> ");
-                if (adminPassword == null) {
+        try (password) {
+            PasswordPrompt.Secret confirmation = passwords.read("confirm password> ");
+            if (confirmation == null) return Optional.empty();
+            try (confirmation) {
+                if (!Arrays.equals(password.value(), confirmation.value())) {
+                    throw new IllegalArgumentException("Passwords do not match");
+                }
+                // Reject an invalid account password before asking whether this
+                // account should receive administrator privileges.
+                PasswordPolicy.require(password.value());
+                String adminChoice = line("Create as administrator? (Y/N)> ");
+                if (adminChoice == null) {
                     return Optional.empty();
                 }
-                try {
-                    return Optional.of(access.register(username, password, adminPassword));
-                } finally {
-                    Arrays.fill(adminPassword, '\0');
+                if (adminChoice.trim().equalsIgnoreCase("y")) {
+                    PasswordPrompt.Secret adminPassword = passwords.read(
+                            administratorUsername + " admin password> ");
+                    if (adminPassword == null) {
+                        return Optional.empty();
+                    }
+                    try (adminPassword) {
+                        return Optional.of(access.register(username, password.value(),
+                                adminPassword.value()));
+                    }
                 }
+                return Optional.of(access.register(username, password.value()));
             }
-            return Optional.of(access.register(username, password));
-        } finally {
-            Arrays.fill(password, '\0');
-            Arrays.fill(confirmation, '\0');
         }
     }
 
@@ -164,9 +160,4 @@ public final class TerminalAccessConsole implements Runnable {
         return input.readLine(output, prompt, false);
     }
 
-    private char[] password(String prompt) throws IOException {
-        output.print(prompt);
-        output.flush();
-        return input.readPassword();
-    }
 }

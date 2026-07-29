@@ -18,9 +18,27 @@ public interface SchedulerRepository {
             Duration leaseDuration
     );
 
+    /** Claims only a process fenced from normal workers by a durable Ctrl+C request. */
+    default Optional<SchedulerClaim> claimInterrupted(
+            UUID runnerId,
+            UUID bootId,
+            Instant now,
+            Duration leaseDuration
+    ) {
+        return Optional.empty();
+    }
+
     boolean heartbeat(SchedulerClaim claim);
 
     void release(UUID processUid, long executionEpoch);
 
     int releaseExpired(Instant now);
+
+    default Optional<Instant> nextLeaseExpiry() {
+        return Optional.empty();
+    }
+
+    default Optional<Instant> nextReadyAt() {
+        return Optional.empty();
+    }
 }

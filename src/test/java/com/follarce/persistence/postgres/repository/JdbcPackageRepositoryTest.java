@@ -18,8 +18,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JdbcPackageRepositoryTest {
@@ -31,38 +29,26 @@ class JdbcPackageRepositoryTest {
         JdbcPackageRepository repository = new JdbcPackageRepository(capture.connection());
 
         PackageRepository.ReleaseWriteResult result = repository.registerRelease(
-                packageIndex(PackageRelease.SignatureStatus.UNSIGNED));
+                packageIndex());
 
         assertEquals(PackageRepository.ReleaseWriteResult.REGISTERED, result);
         assertTrue(capture.sql.startsWith("SELECT package.register_release_bundle("));
-        assertEquals(14, capture.sql.chars().filter(character -> character == '?').count());
-        assertEquals("UNSIGNED", capture.parameters.get(8));
-        assertTrue(capture.parameters.get(9).toString().contains("\"moduleName\""));
-        assertTrue(capture.parameters.get(9).toString().contains("\"moduleObjectPath\""));
-        assertTrue(capture.parameters.get(10).toString().contains("\"dependencyNamespace\""));
-        assertTrue(capture.parameters.get(11).toString().contains("\"entrypointName\""));
-        assertTrue(capture.parameters.get(12).toString().contains("\"exportName\""));
-        assertTrue(capture.parameters.get(13).toString().contains("\"capabilityKey\""));
+        assertEquals(13, capture.sql.chars().filter(character -> character == '?').count());
+        assertTrue(capture.parameters.get(8).toString().contains("\"moduleName\""));
+        assertTrue(capture.parameters.get(8).toString().contains("\"moduleObjectPath\""));
+        assertTrue(capture.parameters.get(9).toString().contains("\"dependencyNamespace\""));
+        assertTrue(capture.parameters.get(10).toString().contains("\"entrypointName\""));
+        assertTrue(capture.parameters.get(11).toString().contains("\"exportName\""));
+        assertTrue(capture.parameters.get(12).toString().contains("\"capabilityKey\""));
     }
 
-    @Test
-    void rejectsUnverifiedSignatureStateBeforeTouchingJdbc() {
-        JdbcCapture capture = new JdbcCapture();
-        JdbcPackageRepository repository = new JdbcPackageRepository(capture.connection());
-
-        assertThrows(SecurityException.class, () -> repository.registerRelease(
-                packageIndex(PackageRelease.SignatureStatus.VALID_UNTRUSTED)));
-
-        assertNull(capture.sql);
-    }
-
-    private static PackageIndex packageIndex(PackageRelease.SignatureStatus signatureStatus) {
+    private static PackageIndex packageIndex() {
         ObjectHash packageHash = hash("logical package");
         ObjectHash databaseHash = hash("sqlite bytes");
         PackageRelease release = new PackageRelease(
                 new PackageRelease.Coordinate("std", "example", "1.0.0"),
                 new PackageRelease.Hash(packageHash), databaseHash, databaseHash,
-                signatureStatus, NOW);
+                NOW);
         return new PackageIndex(release,
                 List.of(new PackageIndex.Module("main", "modules/main.fcl", hash("main"))),
                 List.of(new PackageIndex.Dependency("std", "base", "1.0.0", false)),

@@ -30,15 +30,23 @@ public record EffectAttempt(
         Invariant.required(startedAt, "startedAt");
         finishedAt = Invariant.required(finishedAt, "finishedAt");
         remoteReference = Invariant.required(remoteReference, "remoteReference")
-                .map(value -> Invariant.text(value, "remoteReference"));
+                .map(value -> boundedText(value, "remoteReference", 1024));
         result = Invariant.required(result, "result");
         errorCode = Invariant.required(errorCode, "errorCode")
-                .map(value -> Invariant.text(value, "errorCode"));
+                .map(value -> boundedText(value, "errorCode", 128));
         errorMessage = Invariant.required(errorMessage, "errorMessage")
-                .map(value -> Invariant.text(value, "errorMessage"));
+                .map(value -> boundedText(value, "errorMessage", 4096));
         finishedAt.ifPresent(finished -> Invariant.check(!finished.isBefore(startedAt),
                 "attempt finish must not precede its start"));
         validateState(status, finishedAt, result, errorCode, errorMessage);
+    }
+
+    private static String boundedText(String value, String name, int maximum) {
+        value = Invariant.text(value, name);
+        Invariant.check(value.length() <= maximum, name + " is too long");
+        Invariant.check(value.chars().noneMatch(Character::isISOControl),
+                name + " contains control characters");
+        return value;
     }
 
     public static EffectAttempt claim(UUID effectId, int attemptNumber, UUID runnerId,

@@ -11,6 +11,7 @@ import com.follarce.domain.packageinfo.PackageBinding;
 import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.port.ProcessRepository;
+import com.follarce.domain.port.EnvironmentRepository;
 import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
@@ -22,6 +23,7 @@ import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
+import com.follarce.domain.vfs.VfsFileLimits;
 import com.follarce.fcl.FclBuiltins;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
@@ -49,7 +51,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -58,8 +62,11 @@ import java.util.UUID;
 /** Explicit application adapter that exposes durable CilExec services to one FCL statement. */
 public final class FclRuntimeFunctions {
     private static final String TEXT = "text/plain;charset=utf-8";
-    static final long MAX_FILE_BYTES = 1L * 1024 * 1024 * 1024;
+    static final long MAX_FILE_BYTES = VfsFileLimits.MAX_FILE_BYTES;
+    static final long MAX_IN_MEMORY_READ_BYTES = 16L * 1024 * 1024;
+    private static final int MAX_ENVIRONMENT_VALUE_BYTES = 64 * 1024;
     private static final int DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
+    private static final com.google.gson.Gson JSON = new com.google.gson.Gson();
     private static final EffectRequest.Policy MANUAL_EFFECT = new EffectRequest.Policy(
             false, Optional.empty(), false, false, EffectRequest.UnknownAction.MANUAL);
 
@@ -111,7 +118,9 @@ public final class FclRuntimeFunctions {
 
     private void register() {
         registerPathState();
+        registerEnvironment();
         registerUtilityAndIo();
+        registerMemory();
         registerFiles();
         registerProcesses();
         registerUsers();
@@ -159,6 +168,100 @@ public final class FclRuntimeFunctions {
                 });
     }
 
+    private void registerEnvironment() {
+        registry.register("env", "get", args -> {
+                    if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                            "env.get expects name and optional target user");
+                    String name = environmentName(args.getFirst());
+                    UUID ownerId = owner(args, 1);
+                    return transaction.environment().findUser(ownerId, name)
+                            .or(() -> transaction.environment().findShared(name)).orElse(null);
+                })
+                .register("env", "set", args -> {
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "env.set expects name, value, and optional target user");
+                    String name = environmentName(args.getFirst());
+                    String value = environmentValue(args.get(1));
+                    UUID ownerId = owner(args, 2);
+                    transaction.environment().saveUser(ownerId, name, value, now);
+                    return value;
+                })
+                .register("env", "remove", args -> {
+                    if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                            "env.remove expects name and optional target user");
+                    return transaction.environment().deleteUser(owner(args, 1),
+                            environmentName(args.getFirst()));
+                })
+                .register("env", "list", args -> {
+                    if (args.size() > 1) throw new FclRuntimeException(
+                            "env.list expects an optional target user");
+                    Map<String, String> resolved = new LinkedHashMap<>(
+                            transaction.environment().findShared());
+                    resolved.putAll(transaction.environment().findUsers(owner(args, 0)));
+                    return Map.copyOf(resolved);
+                })
+                .register("env", "getShared", args -> {
+                    arity(args, 1, "env.getShared");
+                    return transaction.environment().findShared(environmentName(args.getFirst()))
+                            .orElse(null);
+                })
+                .register("env", "listShared", args -> {
+                    arity(args, 0, "env.listShared");
+                    return transaction.environment().findShared();
+                })
+                .register("env", "setShared", args -> {
+                    arity(args, 2, "env.setShared");
+                    requireLocalAdministrator();
+                    String name = environmentName(args.getFirst());
+                    EnvironmentRepository.SharedPolicy policy =
+                            transaction.environment().sharedPolicy();
+                    if (!policy.allows(name)) throw new FclRuntimeException(
+                            "Shared environment policy rejects " + name);
+                    String value = environmentValue(args.get(1));
+                    transaction.environment().saveShared(name, value, process.ownerId(), now);
+                    return value;
+                })
+                .register("env", "removeShared", args -> {
+                    arity(args, 1, "env.removeShared");
+                    requireLocalAdministrator();
+                    return transaction.environment().deleteShared(
+                            environmentName(args.getFirst()));
+                })
+                .register("env", "getSharedPolicy", args -> {
+                    arity(args, 0, "env.getSharedPolicy");
+                    EnvironmentRepository.SharedPolicy policy =
+                            transaction.environment().sharedPolicy();
+                    return Map.of("mode", policy.mode().name(), "names",
+                            policy.names().stream().sorted().toList());
+                })
+                .register("env", "setSharedPolicy", args -> {
+                    arity(args, 2, "env.setSharedPolicy");
+                    requireLocalAdministrator();
+                    String mode = string(args.getFirst(), "env.setSharedPolicy mode")
+                            .toUpperCase(Locale.ROOT);
+                    EnvironmentRepository.SharedPolicy.Mode parsed;
+                    try {
+                        parsed = EnvironmentRepository.SharedPolicy.Mode.valueOf(mode);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new FclRuntimeException(
+                                "env.setSharedPolicy mode must be ALLOWLIST or DENYLIST");
+                    }
+                    if (!(args.get(1) instanceof List<?> values)) throw new FclRuntimeException(
+                            "env.setSharedPolicy names must be an array");
+                    Set<String> names = values.stream().map(FclRuntimeFunctions::environmentName)
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                    EnvironmentRepository.SharedPolicy policy =
+                            new EnvironmentRepository.SharedPolicy(parsed, names);
+                    transaction.environment().findShared().keySet().forEach(name -> {
+                        if (!policy.allows(name)) throw new FclRuntimeException(
+                                "New policy rejects existing shared variable " + name);
+                    });
+                    transaction.environment().saveSharedPolicy(policy, process.ownerId(), now);
+                    return Map.of("mode", policy.mode().name(), "names",
+                            policy.names().stream().sorted().toList());
+                });
+    }
+
     private static Map<String, Object> aliases(FclContinuation continuation) {
         if (!continuation.scope().contains("path.aliases")) return new LinkedHashMap<>();
         Object value = continuation.scope().get("path.aliases");
@@ -179,6 +282,10 @@ public final class FclRuntimeFunctions {
                     arity(args, 0, "util.getTime");
                     return now.toEpochMilli();
                 })
+                .register("util", "which", args -> {
+                    arity(args, 1, "util.which");
+                    return functionOrigin(string(args.getFirst(), "util.which function"));
+                })
                 .register("math", "random", args -> {
                     if (args.isEmpty()) return Math.random();
                     arity(args, 2, "math.random");
@@ -190,22 +297,25 @@ public final class FclRuntimeFunctions {
                 })
                 .register("term", "getSize", args -> {
                     arity(args, 0, "term.getSize");
-                    TerminalDimensions.Size size = TerminalDimensions.current();
+                    TerminalDimensions.Size size = TerminalDimensions.current(process.ownerId());
                     return Map.of("width", (long) size.width(),
                             "height", (long) size.height());
-                }, "size");
+                }, "size")
+                .register("term", "sanitize", args -> {
+                    arity(args, 1, "term.sanitize");
+                    return com.follarce.terminal.TerminalSanitizer.sanitize(
+                            display(args.getFirst()));
+                });
 
         FclFunctionRegistry.ContextFunction print = (args, invocation) -> {
             arity(args, 1, "print");
             return external(invocation, "io.output",
-                    Map.of("text", display(args.getFirst()), "newline", false), MANUAL_EFFECT,
-                    false);
+                    outputPayload(display(args.getFirst()), false), MANUAL_EFFECT, false);
         };
         FclFunctionRegistry.ContextFunction println = (args, invocation) -> {
             arity(args, 1, "println");
             return external(invocation, "io.output",
-                    Map.of("text", display(args.getFirst()), "newline", true), MANUAL_EFFECT,
-                    false);
+                    outputPayload(display(args.getFirst()), true), MANUAL_EFFECT, false);
         };
         registry.registerContextual("io", "print", print)
                 .registerContextual("io", "println", println)
@@ -215,8 +325,8 @@ public final class FclRuntimeFunctions {
                     if (args.size() > 1) arity(args, 1, "io.input");
                     if (!args.isEmpty()) {
                         external(invocation, "io.output",
-                                Map.of("text", display(args.getFirst()), "newline", false),
-                                MANUAL_EFFECT, false);
+                                outputPayload(display(args.getFirst()), false), MANUAL_EFFECT,
+                                false);
                     }
                     return terminalInput(invocation, false);
                 })
@@ -256,6 +366,111 @@ public final class FclRuntimeFunctions {
                 });
     }
 
+    /**
+     * Returns 0 for a Runtime/extension function and the installed package database SHA-256
+     * for an imported FCL function. A null result means that the name is not callable in the
+     * current program, or that it is a function defined by the user's own source.
+     */
+    private Object functionOrigin(String identifier) {
+        if (identifier.isBlank()) throw new FclRuntimeException(
+                "util.which requires a non-blank function name");
+        try {
+            registry.resolve(identifier);
+            return 0L;
+        } catch (FclRuntimeException notRuntimeFunction) {
+            // Imported and user-defined functions live in the compiled program, not here.
+        }
+        List<ProcessPackageBinding> bindings = transaction.packages()
+                .findProcessBindings(process.identity().processUid());
+        int separator = identifier.indexOf('.');
+        if (separator > 0) {
+            String importName = identifier.substring(0, separator);
+            String publishedName = identifier.substring(separator + 1);
+            return bindings.stream()
+                    .filter(binding -> binding.importName().equals(importName))
+                    .filter(binding -> packagePublishes(binding, publishedName))
+                    .findFirst().map(this::marketPackageId).orElse(null);
+        }
+
+        String found = null;
+        for (ProcessPackageBinding binding : bindings) {
+            if (!packagePublishes(binding, identifier)) continue;
+            String candidate = marketPackageId(binding);
+            if (found != null && !found.equals(candidate)) return null;
+            found = candidate;
+        }
+        return found;
+    }
+
+    private boolean packagePublishes(ProcessPackageBinding binding, String name) {
+        PackageRelease release = transaction.packages().findRelease(binding.packageHash())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Pinned package release is missing"));
+        StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Pinned package database is missing"));
+        PackageDescriptor descriptor = new SqlitePackageReader().inspect(database.content().bytes());
+        return descriptor.exports().stream().anyMatch(export -> export.name().equals(name))
+                || descriptor.entrypoints().stream()
+                .anyMatch(entrypoint -> entrypoint.name().equals(name));
+    }
+
+    private String marketPackageId(ProcessPackageBinding binding) {
+        return transaction.packages().findRelease(binding.packageHash())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Pinned package release is missing"))
+                .databaseFileHash().value();
+    }
+
+    private Map<String, Object> outputPayload(String text, boolean newline) {
+        FclScope global = continuation.globalScope();
+        Object route = global.contains(
+                TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
+                ? global.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
+                : process.identity().processUid().toString();
+        return Map.of("text", text, "newline", newline, "routeId", display(route));
+    }
+
+    /** Removes one current-scope user binding so its persisted value can be reclaimed. */
+    private void registerMemory() {
+        registry.registerContextual("memory", "destroy", (args, invocation) -> {
+            arity(args, 1, "memory.destroy");
+            String name = string(args.getFirst(), "variable name");
+            if (reservedScopeKey(name)) {
+                throw new FclRuntimeException("memory.destroy cannot remove runtime state: " + name);
+            }
+            if (!invocation.continuation().scope().contains(name)) return false;
+            releaseValue(invocation.continuation().scope().remove(name), new IdentityHashMap<>());
+            return true;
+        }, "unset", "release");
+    }
+
+    private static boolean reservedScopeKey(String name) {
+        return name.startsWith("cilexec.") || ProcessInbox.keys().contains(name);
+    }
+
+    /** Breaks every mutable container edge before the enclosing continuation is persisted. */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void releaseValue(Object value, IdentityHashMap<Object, Boolean> seen) {
+        if (value == null || seen.put(value, Boolean.TRUE) != null) return;
+        if (value instanceof Map map) {
+            for (Object entry : new ArrayList<>(map.entrySet())) {
+                Map.Entry item = (Map.Entry) entry;
+                releaseValue(item.getKey(), seen);
+                releaseValue(item.getValue(), seen);
+            }
+            map.clear();
+            return;
+        }
+        if (value instanceof List list) {
+            for (Object item : new ArrayList<>(list)) releaseValue(item, seen);
+            list.clear();
+            return;
+        }
+        if (value instanceof byte[] bytes) java.util.Arrays.fill(bytes, (byte) 0);
+        if (value instanceof char[] chars) java.util.Arrays.fill(chars, '\0');
+    }
+
     private void registerFiles() {
         registry.register("file", "read", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
@@ -268,19 +483,20 @@ public final class FclRuntimeFunctions {
                     String path = string(args.get(0), "file.readChunk path");
                     long offset = integer(args.get(1), "file.readChunk offset");
                     long requested = integer(args.get(2), "file.readChunk maximum bytes");
-                    if (offset < 0 || requested < 0 || requested > 64L * 1024 * 1024) {
+                    if (offset < 0 || requested < 0 || requested > 4L * 1024 * 1024) {
                         throw new FclRuntimeException(
-                                "file.readChunk requires a non-negative offset and at most 64 MiB");
+                                "file.readChunk requires a non-negative offset and at most 4 MiB");
                     }
-                    return new String(readRange(path, offset, (int) requested, owner(args, 3)),
-                            StandardCharsets.UTF_8);
+                    return decodeUtf8(readRange(path, offset, (int) requested, owner(args, 3)),
+                            "file.readChunk");
                 })
                 .register("file", "size", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.size expects path and optional target user");
-                    UUID owner = owner(args, 1);
-                    requireFileAccess(owner, Capability.VFS_READ);
-                    VfsNode node = requireNode(string(args.getFirst(), "file.size path"), owner);
+                    String path = string(args.getFirst(), "file.size path");
+                    RoutedPath routed = route(path, owner(args, 1));
+                    requireFileAccess(routed.ownerId(), Capability.VFS_READ);
+                    VfsNode node = requireNode(routed.path(), routed.ownerId());
                     requireType(node, VfsNode.Type.FILE, "file.size");
                     return transaction.vfs().logicalObjectSize(
                             node.currentObjectHash().orElseThrow());
@@ -288,7 +504,10 @@ public final class FclRuntimeFunctions {
                 .register("file", "exists", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.exists expects path and optional target user");
-                    return resolve(string(args.getFirst(), "file.exists path"), owner(args, 1))
+                    RoutedPath routed = route(string(args.getFirst(), "file.exists path"),
+                            owner(args, 1));
+                    requireFileAccess(routed.ownerId(), Capability.VFS_READ);
+                    return resolve(routed.path(), routed.ownerId())
                             .isPresent();
                 })
                 .register("file", "listdir", args -> {
@@ -297,17 +516,27 @@ public final class FclRuntimeFunctions {
                     String requested = args.isEmpty() ? "."
                             : string(args.getFirst(), "file.listdir path");
                     UUID owner = owner(args, 1);
-                    VfsNode directory = requireNode(requested, owner);
+                    String absolute = normalize(requested);
+                    if (owner.equals(process.ownerId()) && absolute.equals("/Users")
+                            && isLocalAdministrator()) {
+                        return transaction.auth().findUsersByAdministrator(process.ownerId())
+                                .stream().map(user -> virtualUserNode(user)).toList();
+                    }
+                    RoutedPath routed = route(requested, owner);
+                    requireFileAccess(routed.ownerId(), Capability.VFS_READ);
+                    VfsNode directory = requireNode(routed.path(), routed.ownerId());
                     requireType(directory, VfsNode.Type.DIRECTORY, "file.listdir");
-                    return transaction.vfs().findChildren(owner,
+                    return transaction.vfs().findChildren(routed.ownerId(),
                                     Optional.of(directory.nodeId())).stream()
                             .map(this::nodeMap).toList();
                 })
                 .register("file", "readMetaData", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.readMetaData expects path and optional target user");
-                    return nodeMap(requireNode(string(args.getFirst(), "file.readMetaData path"),
-                            owner(args, 1)));
+                    RoutedPath routed = route(string(args.getFirst(),
+                            "file.readMetaData path"), owner(args, 1));
+                    requireFileAccess(routed.ownerId(), Capability.VFS_READ);
+                    return nodeMap(requireNode(routed.path(), routed.ownerId()));
                 })
                 .register("file", "write", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
@@ -341,12 +570,17 @@ public final class FclRuntimeFunctions {
                 .register("file", "rename", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "file.rename expects path, name, and optional target user");
-                    UUID owner = owner(args, 2);
+                    UUID requestedOwner = owner(args, 2);
+                    RoutedPath routed = route(string(args.get(0), "file.rename path"),
+                            requestedOwner);
+                    UUID owner = routed.ownerId();
                     requireFileAccess(owner, Capability.VFS_WRITE);
-                    VfsNode source = requireNode(string(args.get(0), "file.rename path"), owner);
+                    VfsNode source = requireNode(routed.path(), owner);
                     String replacement = string(args.get(1), "file.rename name");
-                    if (replacement.contains("/") || replacement.equals(".")
-                            || replacement.equals("..")) {
+                    if (replacement.isBlank() || replacement.contains("/")
+                            || replacement.contains("\\") || replacement.equals(".")
+                            || replacement.equals("..") || replacement.codePoints()
+                            .anyMatch(Character::isISOControl)) {
                         throw new FclRuntimeException("file.rename requires a safe file name");
                     }
                     boolean renamed = owner.equals(process.ownerId())
@@ -368,6 +602,7 @@ public final class FclRuntimeFunctions {
                 })
                 .register("file", "lock", args -> {
                     arity(args, 2, "file.lock");
+                    Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
                     VfsNode node = requireNode(string(args.get(0), "file.lock path"));
                     long lease = positiveMillis(args.get(1), "file.lock lease");
                     return transaction.vfs().acquireLock(node.nodeId(), process.ownerId(),
@@ -377,6 +612,7 @@ public final class FclRuntimeFunctions {
                 })
                 .register("file", "renewLock", args -> {
                     arity(args, 3, "file.renewLock");
+                    Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
                     VfsNode node = requireNode(string(args.get(0), "file.renewLock path"));
                     long token = integer(args.get(1), "file.renewLock token");
                     long lease = positiveMillis(args.get(2), "file.renewLock lease");
@@ -387,6 +623,7 @@ public final class FclRuntimeFunctions {
                 })
                 .register("file", "unlock", args -> {
                     arity(args, 2, "file.unlock");
+                    Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
                     VfsNode node = requireNode(string(args.get(0), "file.unlock path"));
                     return transaction.vfs().releaseLock(node.nodeId(), process.ownerId(),
                             process.identity().processUid(), process.executionEpoch(),
@@ -512,7 +749,6 @@ public final class FclRuntimeFunctions {
                     return transaction.auth().findUsersByAdministrator(process.ownerId()).stream()
                             .map(FclRuntimeFunctions::userMap).toList();
                 })
-                .register("user", "createUser", args -> createUser(args))
                 .register("user", "removeUser", args -> {
                     arity(args, 1, "user.removeUser");
                     UUID userId = uuid(args.getFirst(), "user.removeUser user");
@@ -521,43 +757,6 @@ public final class FclRuntimeFunctions {
                 })
                 .register("user", "switchUser", args -> unavailable("user.switchUser",
                         "a durable process identity cannot be changed in place"));
-    }
-
-    private Object createUser(List<Object> args) {
-        if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
-                "user.createUser expects username, password, and optional local admin password");
-        String username = string(args.get(0), "user.createUser username");
-        String password = string(args.get(1), "user.createUser password");
-        Set<Capability> capabilities;
-        if (args.size() == 3) {
-            String adminPassword = string(args.get(2),
-                    "user.createUser local admin password");
-            if (passwordVerifier == null) throw new FclRuntimeException(
-                    "user.createUser: password verifier is not available");
-            char[] adminSecret = adminPassword.toCharArray();
-            try {
-                if (!passwordVerifier.verify(adminSecret)) {
-                    throw new FclRuntimeException(
-                            "Invalid local administrator password");
-                }
-            } finally {
-                java.util.Arrays.fill(adminSecret, '\0');
-            }
-            capabilities = com.follarce.terminal.TerminalAccessService.ADMIN_CAPABILITIES;
-        } else {
-            capabilities = com.follarce.terminal.TerminalAccessService.USER_CAPABILITIES;
-        }
-        Optional<UserAccount> existing = transaction.auth()
-                .findUsersByAdministrator(process.ownerId()).stream()
-                .filter(user -> user.username().equalsIgnoreCase(username)).findFirst();
-        if (existing.isPresent()) return userMap(existing.orElseThrow());
-        char[] secret = password.toCharArray();
-        try {
-            return userMap(transaction.auth().createUserByAdministrator(process.ownerId(),
-                    UUID.randomUUID(), username, secret, capabilities, UUID.randomUUID(), now));
-        } finally {
-            java.util.Arrays.fill(secret, '\0');
-        }
     }
 
     private static Map<String, Object> userMap(UserAccount user) {
@@ -605,7 +804,7 @@ public final class FclRuntimeFunctions {
     private void registerPackages() {
         registry.register("package", "info", args -> {
                     Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
-                    return packageMap(requirePackage(args, "package.info"));
+                    return packageDetails(requirePackage(args, "package.info"));
                 })
                 .register("package", "list", args -> {
                     arity(args, 0, "package.list");
@@ -643,11 +842,11 @@ public final class FclRuntimeFunctions {
                                     "Package database object is missing"));
                     boolean hashMatches = ObjectHash.sha256(object.content())
                             .equals(release.databaseFileHash());
-                    return Map.of("valid", hashMatches
-                                    && release.signatureStatus() != PackageRelease.SignatureStatus.INVALID
-                                    && release.signatureStatus() != PackageRelease.SignatureStatus.REVOKED,
-                            "hashMatches", hashMatches,
-                            "signatureStatus", release.signatureStatus().name());
+                    Map<String, Object> verification = new LinkedHashMap<>(
+                            packageDetails(release));
+                    verification.put("valid", hashMatches);
+                    verification.put("hashMatches", hashMatches);
+                    return Map.copyOf(verification);
                 })
                 .register("package", "resource", args -> {
                     arity(args, 2, "package.resource");
@@ -659,7 +858,7 @@ public final class FclRuntimeFunctions {
                                     "Package database object is missing"));
                     byte[] content = new SqlitePackageReader().readResource(object.content().bytes(),
                             string(args.get(1), "package.resource path"));
-                    return new String(content, StandardCharsets.UTF_8);
+                    return decodeUtf8(content, "package.resource");
                 })
                 .register("package", "pin", args -> pinPackage(args))
                 .register("package", "unpin", args -> {
@@ -697,7 +896,11 @@ public final class FclRuntimeFunctions {
         requireType(node, VfsNode.Type.FILE, "package.install");
         StoredObject database = transaction.vfs().findObject(node.currentObjectHash().orElseThrow())
                 .orElseThrow(() -> new FclRuntimeException("Package source bytes are missing"));
-        PackageDescriptor descriptor = new SqlitePackageReader().inspect(database.content().bytes());
+        byte[] databaseBytes = database.content().bytes();
+        PackageDescriptor descriptor = new SqlitePackageReader().inspect(databaseBytes);
+        com.follarce.package_manager.PackageCapabilityPolicy.inspect(
+                databaseBytes, descriptor).requireUserCapabilities(
+                transaction.auth().capabilities(process.ownerId()));
         ObjectHash fileHash = new ObjectHash(descriptor.databaseFileHash());
         if (!fileHash.equals(database.objectHash())) {
             throw new FclRuntimeException("Package database hash changed during inspection");
@@ -705,7 +908,7 @@ public final class FclRuntimeFunctions {
         PackageRelease release = new PackageRelease(new PackageRelease.Coordinate(
                 descriptor.namespace(), descriptor.name(), descriptor.version()),
                 new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())), fileHash,
-                fileHash, PackageRelease.SignatureStatus.UNSIGNED, now);
+                fileHash, now);
         PackageIndex index = new PackageIndex(release, descriptor.moduleIndex(),
                 descriptor.dependencyIndex(), descriptor.entrypoints(), descriptor.exports(),
                 descriptor.capabilityIndex());
@@ -713,6 +916,8 @@ public final class FclRuntimeFunctions {
         if (result == com.follarce.domain.port.PackageRepository.ReleaseWriteResult.COORDINATE_CONFLICT) {
             throw new PackageCoordinateConflictException(release.coordinate());
         }
+        release = transaction.packages().findRelease(release.coordinate()).orElseThrow(
+                () -> new IllegalStateException("Installed package release is missing"));
         UUID environmentId;
         String binding;
         if (args.size() == 3) {
@@ -735,6 +940,7 @@ public final class FclRuntimeFunctions {
                 "coordinate", release.coordinate().key(), "writeResult", result.name(),
                 "environmentId", environmentId.toString(), "binding", binding));
         Map<String, Object> installed = new LinkedHashMap<>(packageMap(release));
+        installed.putAll(descriptorMap(descriptor));
         installed.put("environmentId", environmentId.toString());
         installed.put("binding", binding);
         return Map.copyOf(installed);
@@ -756,9 +962,13 @@ public final class FclRuntimeFunctions {
                 path -> readBytes(normalize(directory + "/" + path)));
         String nodeId = writeBinary(outputPath, database, "application/vnd.sqlite3");
         PackageDescriptor descriptor = new SqlitePackageReader().inspect(database);
-        return Map.of("nodeId", nodeId, "path", outputPath,
-                "coordinate", descriptor.coordinate(), "packageHash", descriptor.packageHash(),
-                "databaseFileHash", descriptor.databaseFileHash());
+        Map<String, Object> built = new LinkedHashMap<>(descriptorMap(descriptor));
+        built.put("nodeId", nodeId);
+        built.put("path", outputPath);
+        built.put("coordinate", descriptor.coordinate());
+        built.put("packageHash", descriptor.packageHash());
+        built.put("databaseFileHash", descriptor.databaseFileHash());
+        return Map.copyOf(built);
     }
 
     private Object runPackage(List<Object> args) {
@@ -785,12 +995,14 @@ public final class FclRuntimeFunctions {
                 .filter(value -> value.name().equals(entrypointName)).findFirst()
                 .orElseThrow(() -> new FclRuntimeException("Unknown package entrypoint: "
                         + entrypointName));
-        String source = "import \"" + escapeFcl(bindingName) + "\" as __package_entry\n"
+        String importHash = release.databaseFileHash().value();
+        String source = "import \"" + escapeFcl(importHash)
+                + "\" as \"__package_entry\"\n"
                 + "return __package_entry." + entrypoint.name() + "()\n";
         Program entryProgram = createProgram(source);
         long pid = transaction.processes().allocatePid();
         UUID processUid = UUID.randomUUID();
-        Map<String, ObjectHash> packageBindings = Map.of(bindingName,
+        Map<String, ObjectHash> packageBindings = Map.of(importHash,
                 binding.packageHash().value());
         Continuation continuation = new Continuation(entryProgram.programId(),
                 entryProgram.programHash(), 0, List.of(), List.of(), List.of(), List.of(),
@@ -801,7 +1013,7 @@ public final class FclRuntimeFunctions {
                 Optional.of(process.identity().processUid()), now, now);
         transaction.processes().insert(child);
         transaction.packages().saveProcessBinding(new ProcessPackageBinding(processUid,
-                bindingName, environment.environmentId(), binding.packageHash(), now));
+                importHash, environment.environmentId(), binding.packageHash(), now));
         transaction.scheduler().enqueue(new com.follarce.domain.scheduler.SchedulerQueueEntry(
                 processUid, now, now,
                 com.follarce.domain.scheduler.SchedulerQueueEntry.Status.READY));
@@ -870,9 +1082,43 @@ public final class FclRuntimeFunctions {
 
     private static Map<String, Object> packageMap(PackageRelease release) {
         return Map.of("coordinate", release.coordinate().key(),
+                "name", release.coordinate().name(),
                 "hash", release.packageHash().value().value(),
-                "signatureStatus", release.signatureStatus().name(),
+                "sha256", release.databaseFileHash().value(),
                 "importedAt", release.importedAt().toString());
+    }
+
+    private Map<String, Object> packageDetails(PackageRelease release) {
+        StoredObject object = transaction.vfs().findObject(release.databaseObjectHash())
+                .orElseThrow(() -> new FclRuntimeException("Package database object is missing"));
+        PackageDescriptor descriptor = new SqlitePackageReader().inspect(object.content().bytes());
+        Map<String, Object> result = new LinkedHashMap<>(packageMap(release));
+        result.putAll(descriptorMap(descriptor));
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Object> descriptorMap(PackageDescriptor descriptor) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("kind", descriptor.kind().wireName());
+        result.put("languageVersion", descriptor.languageVersion());
+        result.put("dependencies", descriptor.dependencyIndex().stream().map(dependency -> Map.of(
+                "namespace", dependency.namespace(),
+                "name", dependency.name(),
+                "version", dependency.versionConstraint(),
+                "optional", dependency.optional())).toList());
+        result.put("entrypoints", descriptor.entrypoints().stream().map(entrypoint -> Map.of(
+                "name", entrypoint.name(),
+                "module", entrypoint.moduleName(),
+                "function", entrypoint.functionName())).toList());
+        result.put("exports", descriptor.exports().stream().map(export -> Map.of(
+                "name", export.name(),
+                "module", export.moduleName(),
+                "symbol", export.symbolName())).toList());
+        result.put("capabilities", descriptor.capabilityIndex().stream().map(capability -> Map.of(
+                "key", capability.key(),
+                "required", capability.required(),
+                "rationale", capability.rationale())).toList());
+        return Map.copyOf(result);
     }
 
     private static Map<String, Object> environmentMap(PackageEnvironment environment) {
@@ -1054,9 +1300,15 @@ public final class FclRuntimeFunctions {
         registry.register("system", "ls", args -> {
                     if (args.isEmpty()) return new ArrayList<>(registry.qualifiedNames());
                     arity(args, 1, "system.ls");
-                    VfsNode directory = requireNode(string(args.getFirst(), "system.ls path"));
+                    String requested = string(args.getFirst(), "system.ls path");
+                    if (normalize(requested).equals("/Users") && isLocalAdministrator()) {
+                        return transaction.auth().findUsersByAdministrator(process.ownerId())
+                                .stream().map(this::virtualUserNode).toList();
+                    }
+                    RoutedPath routed = route(requested, process.ownerId());
+                    VfsNode directory = requireNode(routed.path(), routed.ownerId());
                     requireType(directory, VfsNode.Type.DIRECTORY, "system.ls");
-                    return transaction.vfs().findChildren(process.ownerId(),
+                    return transaction.vfs().findChildren(routed.ownerId(),
                                     Optional.of(directory.nodeId())).stream()
                             .map(this::nodeMap).toList();
                 })
@@ -1128,7 +1380,8 @@ public final class FclRuntimeFunctions {
         FclContinuation continuation = invocation.continuation();
         if (continuation.scope().contains(ProcessInbox.TERMINAL_INPUT)) {
             String input = display(continuation.scope().remove(ProcessInbox.TERMINAL_INPUT));
-            return oneCharacter ? (input.isEmpty() ? "" : input.substring(0, 1)) : input;
+            return oneCharacter ? (input.isEmpty() ? ""
+                    : input.substring(0, input.offsetByCodePoints(0, 1))) : input;
         }
         continuation.waitFor(rawKey ? "input:key" : "input",
                 Map.of("readChar", oneCharacter, "rawKey", rawKey));
@@ -1204,8 +1457,7 @@ public final class FclRuntimeFunctions {
             clearDownloadState(scope, state);
             String nodeId = attachDownloadedObject(path, currentHash.orElseThrow(), mediaType,
                     offset, "network.download");
-            return Map.of("nodeId", nodeId, "path", normalize(path), "url", url,
-                    "status", 206L, "bytes", offset, "mediaType", mediaType);
+            return completedDownload(nodeId, path, url, 206L, offset, mediaType);
         }
         if (status < 200 || status >= 300) {
             clearDownloadState(scope, state);
@@ -1259,8 +1511,7 @@ public final class FclRuntimeFunctions {
             clearDownloadState(scope, state);
             String nodeId = attachDownloadedObject(path, nextHash, mediaType, downloaded,
                     "network.download");
-            return Map.of("nodeId", nodeId, "path", normalize(path), "url", url,
-                    "status", status, "bytes", downloaded, "mediaType", mediaType);
+            return completedDownload(nodeId, path, url, status, downloaded, mediaType);
         }
 
         scope.put(state + "offset", downloaded);
@@ -1272,6 +1523,18 @@ public final class FclRuntimeFunctions {
         return download(args, invocation);
     }
 
+    private Map<String, Object> completedDownload(String nodeId, String path, String url,
+                                                   long status, long bytes, String mediaType) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("nodeId", nodeId);
+        result.put("path", normalize(path));
+        result.put("url", url);
+        result.put("status", status);
+        result.put("bytes", bytes);
+        result.put("mediaType", mediaType);
+        return Map.copyOf(result);
+    }
+
     private static void clearDownloadState(FclScope scope, String prefix) {
         for (String suffix : List.of("offset", "hash", "mediaType", "validator")) {
             String key = prefix + suffix;
@@ -1281,8 +1544,14 @@ public final class FclRuntimeFunctions {
 
     private EffectRequest.Policy idempotentPolicy(FclFunctionRegistry.Invocation invocation,
                                                    String operation) {
-        String key = process.identity().processUid() + ":" + process.executionEpoch() + ":"
-                + invocation.expressionId() + ":" + operation;
+        // A terminal process is deliberately reused across commands. Expression identifiers
+        // restart for every compiled submission, so epoch + expression alone aliases effects
+        // from separate commands. stateVersion is stable across a transaction retry but advances
+        // before the next terminal submission. Hash the material to keep attacker-controlled URLs
+        // out of the unique-index key.
+        String material = process.identity().processUid() + ":" + process.executionEpoch() + ":"
+                + process.stateVersion() + ":" + invocation.expressionId() + ":" + operation;
+        String key = sha256(material.getBytes(StandardCharsets.UTF_8));
         return new EffectRequest.Policy(true, Optional.of(key), false, true,
                 EffectRequest.UnknownAction.RETRY_IDEMPOTENT);
     }
@@ -1296,7 +1565,7 @@ public final class FclRuntimeFunctions {
     }
 
     private String readText(String path, UUID owner) {
-        return new String(readBytes(path, owner), StandardCharsets.UTF_8);
+        return decodeUtf8(readBytes(path, owner), "file.read");
     }
 
     private byte[] readBytes(String path) {
@@ -1304,6 +1573,9 @@ public final class FclRuntimeFunctions {
     }
 
     private byte[] readBytes(String path, UUID owner) {
+        RoutedPath routed = route(path, owner);
+        path = routed.path();
+        owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_READ);
         VfsNode node = requireNode(path, owner);
         if (node.type() != VfsNode.Type.FILE && node.type() != VfsNode.Type.SYMLINK) {
@@ -1315,12 +1587,12 @@ public final class FclRuntimeFunctions {
                     node.nodeId(), UUID.randomUUID(), now);
         }
         long size = transaction.vfs().logicalObjectSize(hash);
-        if (size > Integer.MAX_VALUE) throw new FclRuntimeException(
-                "File is too large for one FCL string; use file.readChunk");
+        if (size > MAX_IN_MEMORY_READ_BYTES) throw new FclRuntimeException(
+                "File exceeds the 16 MiB in-memory read limit; use file.readChunk");
         java.io.ByteArrayOutputStream result = new java.io.ByteArrayOutputStream((int) size);
         long offset = 0;
         while (offset < size) {
-            int request = (int) Math.min(64L * 1024 * 1024, size - offset);
+            int request = (int) Math.min(4L * 1024 * 1024, size - offset);
             byte[] chunk = transaction.vfs().readObjectRange(hash, offset, request);
             if (chunk.length == 0) throw new FclRuntimeException(
                     "File content ended before its declared size: " + path);
@@ -1331,6 +1603,9 @@ public final class FclRuntimeFunctions {
     }
 
     private byte[] readRange(String path, long offset, int maximum, UUID owner) {
+        RoutedPath routed = route(path, owner);
+        path = routed.path();
+        owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_READ);
         VfsNode node = requireNode(path, owner);
         requireType(node, VfsNode.Type.FILE, "file.readChunk");
@@ -1347,6 +1622,9 @@ public final class FclRuntimeFunctions {
     }
 
     private String writeText(String source, String content, boolean append, UUID owner) {
+        RoutedPath routed = route(source, owner);
+        source = routed.path();
+        owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         String path = normalize(source);
         Optional<VfsNode> existing = resolve(path, owner);
@@ -1357,7 +1635,10 @@ public final class FclRuntimeFunctions {
         VfsNode current = existing.orElseThrow();
         requireType(current, VfsNode.Type.FILE, "file.write");
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        VfsFileLimits.requireWithinLimit(bytes.length);
         if (append) {
+            VfsFileLimits.checkedAppendSize(transaction.vfs().logicalObjectSize(
+                    current.currentObjectHash().orElseThrow()), bytes.length);
             if (!owner.equals(process.ownerId())) {
                 transaction.vfs().readFileByAdministrator(process.ownerId(), owner,
                         current.nodeId(), UUID.randomUUID(), now);
@@ -1401,6 +1682,7 @@ public final class FclRuntimeFunctions {
         }
         VfsNode current = existing.orElseThrow();
         requireType(current, VfsNode.Type.FILE, operation);
+        VfsFileLimits.requireWithinLimit(bytes.length);
         StoredObject object = StoredObject.create(new BinaryContent(bytes), mediaType, now);
         transaction.vfs().saveObject(object);
         if (!transaction.vfs().replaceContent(current.nodeId(), current.currentObjectHash(),
@@ -1419,6 +1701,7 @@ public final class FclRuntimeFunctions {
     /** Publishes an already persisted logical object only after every download chunk arrived. */
     private String attachDownloadedObject(String source, ObjectHash objectHash, String mediaType,
                                           long byteSize, String operation) {
+        VfsFileLimits.requireWithinLimit(byteSize);
         Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
         String path = normalize(source);
         Optional<VfsNode> existing = resolve(path);
@@ -1459,6 +1742,10 @@ public final class FclRuntimeFunctions {
 
     private VfsNode createContentNode(String source, byte[] bytes, VfsNode.Type type,
                                       boolean revisions, String mediaType, UUID owner) {
+        VfsFileLimits.requireWithinLimit(bytes.length);
+        RoutedPath routed = route(source, owner);
+        source = routed.path();
+        owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         ParentAndName parent = parentAndName(source, owner);
         if (transaction.vfs().findChild(owner, Optional.of(parent.parent().nodeId()),
@@ -1491,6 +1778,9 @@ public final class FclRuntimeFunctions {
     }
 
     private String createDirectory(String source, UUID owner) {
+        RoutedPath routed = route(source, owner);
+        source = routed.path();
+        owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         ParentAndName parent = parentAndName(source, owner);
         if (transaction.vfs().findChild(owner, Optional.of(parent.parent().nodeId()),
@@ -1515,6 +1805,9 @@ public final class FclRuntimeFunctions {
     }
 
     private boolean deletePath(String source, VfsNode.Type expected, UUID owner) {
+        RoutedPath routed = route(source, owner);
+        source = routed.path();
+        owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         VfsNode node = requireNode(source, owner);
         requireType(node, expected, "file.remove");
@@ -1546,7 +1839,8 @@ public final class FclRuntimeFunctions {
     }
 
     private Optional<VfsNode> resolve(String source) {
-        return resolve(source, process.ownerId());
+        RoutedPath routed = route(source, process.ownerId());
+        return resolve(routed.path(), routed.ownerId());
     }
 
     private Optional<VfsNode> resolve(String source, UUID owner) {
@@ -1585,13 +1879,11 @@ public final class FclRuntimeFunctions {
         UUID requested = null;
         try {
             requested = UUID.fromString(identity);
-        } catch (IllegalArgumentException ignored) {
-            Optional<UserAccount> own = transaction.auth().findUser(identity);
-            if (own.isPresent() && own.orElseThrow().userId().equals(process.ownerId())) {
-                return process.ownerId();
-            }
-        }
+        } catch (IllegalArgumentException ignored) { }
         if (process.ownerId().equals(requested)) return requested;
+        Optional<UserAccount> current = transaction.auth().findUser(process.ownerId());
+        if (current.isPresent() && current.orElseThrow().username()
+                .equalsIgnoreCase(identity)) return process.ownerId();
         Authorization.requireAdministrator(transaction, process.ownerId());
         UUID parsed = requested;
         return transaction.auth().findUsersByAdministrator(process.ownerId()).stream()
@@ -1610,6 +1902,60 @@ public final class FclRuntimeFunctions {
 
     private String normalize(String source) {
         return FclPath.resolve(continuation, source);
+    }
+
+    private RoutedPath route(String source, UUID requestedOwner) {
+        String absolute = normalize(source);
+        if (!requestedOwner.equals(process.ownerId()) || !isLocalAdministrator()
+                || !absolute.startsWith("/Users/")) {
+            return new RoutedPath(requestedOwner, absolute);
+        }
+        String remainder = absolute.substring("/Users/".length());
+        int slash = remainder.indexOf('/');
+        String username = slash < 0 ? remainder : remainder.substring(0, slash);
+        String userPath = slash < 0 ? "/" : remainder.substring(slash);
+        UserAccount target = transaction.auth().findUsersByAdministrator(process.ownerId())
+                .stream().filter(user -> user.username().equalsIgnoreCase(username))
+                .findFirst().orElseThrow(() ->
+                        new FclRuntimeException("Unknown VFS path: " + absolute));
+        return new RoutedPath(target.userId(), userPath);
+    }
+
+    private Map<String, Object> virtualUserNode(UserAccount user) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("nodeId", "virtual-user-root:" + user.userId());
+        result.put("ownerId", user.userId().toString());
+        result.put("name", user.username());
+        result.put("type", VfsNode.Type.DIRECTORY.name());
+        result.put("revisionEnabled", false);
+        result.put("virtual", true);
+        return Map.copyOf(result);
+    }
+
+    private boolean isLocalAdministrator() {
+        // User transactions intentionally cannot SELECT auth.user_account directly.
+        // The security-definer capability function is the authority for administrator routing.
+        return isAdministrator();
+    }
+
+    private void requireLocalAdministrator() {
+        Authorization.requireAdministrator(transaction, process.ownerId());
+    }
+
+    private static String environmentName(Object value) {
+        String name = string(value, "environment variable name").trim()
+                .toUpperCase(Locale.ROOT);
+        if (!name.matches("[A-Z_][A-Z0-9_]{0,127}")) throw new FclRuntimeException(
+                "Environment variable name must match [A-Z_][A-Z0-9_]{0,127}");
+        return name;
+    }
+
+    private static String environmentValue(Object value) {
+        String text = string(value, "environment variable value");
+        if (text.getBytes(StandardCharsets.UTF_8).length > MAX_ENVIRONMENT_VALUE_BYTES) {
+            throw new FclRuntimeException("Environment variable value exceeds 64 KiB");
+        }
+        return text;
     }
 
     private Map<String, Object> nodeMap(VfsNode node) {
@@ -1687,10 +2033,10 @@ public final class FclRuntimeFunctions {
         CilProcess target = transaction.processes().findByPid(pid)
                 .orElseThrow(() -> new FclRuntimeException("Unknown PID: " + pid));
         Set<Capability> capabilities = transaction.auth().capabilities(process.ownerId());
-        boolean allowed = target.ownerId().equals(process.ownerId())
+        boolean allowed = capabilities.contains(Capability.SYSTEM_ADMIN)
+                || (target.ownerId().equals(process.ownerId())
                 ? capabilities.contains(Capability.PROCESS_CONTROL_OWN)
-                : capabilities.contains(Capability.PROCESS_CONTROL_ANY)
-                || capabilities.contains(Capability.SYSTEM_ADMIN);
+                : capabilities.contains(Capability.PROCESS_CONTROL_ANY));
         if (!allowed) throw new SecurityException("Missing process control capability for "
                 + operation);
         return target;
@@ -1754,7 +2100,28 @@ public final class FclRuntimeFunctions {
     private static String display(Object value) {
         if (value == null) return "null";
         if (value instanceof String text) return text;
-        return new com.google.gson.Gson().toJson(value);
+        return JSON.toJson(value);
+    }
+
+    private static String decodeUtf8(byte[] bytes, String operation) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+        } catch (java.nio.charset.CharacterCodingException invalid) {
+            throw new FclRuntimeException(operation + " encountered invalid UTF-8; "
+                    + "use a binary-capable API or align chunk boundaries", invalid);
+        }
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private static Object unavailable(String function, String reason) {
@@ -1767,4 +2134,5 @@ public final class FclRuntimeFunctions {
     }
 
     private record ParentAndName(VfsNode parent, String name) {}
+    private record RoutedPath(UUID ownerId, String path) {}
 }

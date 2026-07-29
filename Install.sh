@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd)"
+project_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$project_dir"
 
 # Use a unique project name per install directory so volumes and networks
@@ -10,15 +10,20 @@ project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
 export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 image_name="cilexec:${CILEXEC_IMAGE_TAG:-local}"
-terminal_container="${COMPOSE_PROJECT_NAME}-terminal"
 rebuild=false
+
+if [[ "$#" -gt 1 ]]; then
+    echo "Error: too many arguments." >&2
+    echo "Usage: ./Install.sh [--rebuild]" >&2
+    exit 2
+fi
 
 case "${1:-}" in
     "") ;;
     --rebuild) rebuild=true ;;
     --help|-h)
         echo "Usage: ./Install.sh [--rebuild]"
-        echo "  --rebuild  rebuild the image and recreate the persistent terminal container"
+        echo "  --rebuild  rebuild the shared application image before opening this terminal"
         exit 0
         ;;
     *)
@@ -37,32 +42,25 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 1
 fi
 
-secret_dir="$project_dir/docker/secrets"
-mkdir -p "$secret_dir"
+bash "$project_dir/docker/create-secrets.sh" >/dev/null
+# Permit HTTP downloads only from the market origin, without allowing arbitrary
+# socket access to the Docker host or other private-network services.
+market_port="${CILEXEC_MARKET_PORT:-8787}"
+if [[ ! "$market_port" =~ ^[0-9]+$ ]] \
+        || (( 10#$market_port < 1 || 10#$market_port > 65535 )); then
+    echo "Error: CILEXEC_MARKET_PORT must be an integer from 1 to 65535." >&2
+    exit 2
+fi
+export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="${CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS:-http://host.docker.internal:${market_port}}"
 
-create_internal_secret() {
-    local destination="$1"
-    if [[ -s "$destination" ]]; then
-        return
-    fi
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 32 > "$destination"
-    else
-        printf 'cilexec-internal-%s-%s-%s\n' "$RANDOM" "$RANDOM" "$RANDOM" > "$destination"
-    fi
-    chmod 600 "$destination"
-}
-
-create_internal_secret "$secret_dir/postgres-admin-password"
-create_internal_secret "$secret_dir/cilexec-migrator-password"
-create_internal_secret "$secret_dir/cilexec-runtime-password"
-create_internal_secret "$secret_dir/cilexec-effect-worker-password"
-create_internal_secret "$secret_dir/cilexec-readonly-password"
-
-compose=(docker compose -f compose.yml -f compose.persistent.yml)
+compose=(docker compose -f compose.yml -f docker/compose/persistent.yml)
 
 echo "Starting CilExec..."
 "${compose[@]}" up -d postgres
+runtime_running=false
+if [[ -n "$("${compose[@]}" ps --status running -q cilexec)" ]]; then
+    runtime_running=true
+fi
 
 if [[ "$rebuild" == true ]] || ! docker image inspect "$image_name" >/dev/null 2>&1; then
     if [[ ! -d "$project_dir/src" ]]; then
@@ -76,7 +74,17 @@ else
     echo "Reusing image $image_name (use --rebuild to rebuild it)."
 fi
 
-"${compose[@]}" run --rm migrate
+if [[ "$rebuild" == true && "$runtime_running" == true ]]; then
+    echo "Stopping the shared Runtime to activate the rebuilt image..."
+    "${compose[@]}" stop cilexec
+    runtime_running=false
+fi
+
+if [[ "$runtime_running" != true ]]; then
+    "${compose[@]}" run --rm migrate
+else
+    echo "Shared Runtime is already running; skipping migration JVM startup."
+fi
 
 echo
 echo "On first use you will be prompted to create the administrator password."
@@ -84,30 +92,44 @@ echo "Choose login and enter username ${CILEXEC_TERMINAL_USERNAME:-local} with t
 echo "Type :exit to quit."
 echo
 
-recreate_terminal="$rebuild"
-if docker container inspect "$terminal_container" >/dev/null 2>&1; then
-    container_image_id="$(docker container inspect --format '{{.Image}}' "$terminal_container")"
-    current_image_id="$(docker image inspect --format '{{.Id}}' "$image_name")"
-    if [[ "$container_image_id" != "$current_image_id" ]]; then
-        recreate_terminal=true
+# One persistent JVM owns the bounded worker pools. Host terminals are lightweight raw byte
+# bridges into independent authenticated connections; they never start another Runtime/JVM.
+terminal_port="${CILEXEC_TERMINAL_PORT:-8022}"
+if [[ ! "$terminal_port" =~ ^[0-9]+$ ]] \
+        || (( 10#$terminal_port < 1 || 10#$terminal_port > 65535 )); then
+    echo "Error: CILEXEC_TERMINAL_PORT must be an integer from 1 to 65535." >&2
+    exit 2
+fi
+"${compose[@]}" up -d --no-deps cilexec
+
+terminal_ready=false
+for _ in {1..60}; do
+    if "${compose[@]}" exec -T cilexec /usr/local/bin/cilexec-terminal-client \
+            --probe "$terminal_port" >/dev/null 2>&1; then
+        terminal_ready=true
+        break
     fi
+    sleep 0.25
+done
+if [[ "$terminal_ready" != true ]]; then
+    echo "Error: shared CilExec Runtime did not open terminal port $terminal_port." >&2
+    "${compose[@]}" logs --tail=80 cilexec >&2 || true
+    exit 1
 fi
 
-if [[ "$recreate_terminal" == true ]] \
-        && docker container inspect "$terminal_container" >/dev/null 2>&1; then
-    if [[ "$(docker container inspect --format '{{.State.Running}}' "$terminal_container")" == true ]]; then
-        echo "Error: terminal container $terminal_container is already running." >&2
-        exit 1
-    fi
-    docker container rm "$terminal_container" >/dev/null
-fi
+echo "Connecting to the shared CilExec Runtime."
+"${compose[@]}" exec cilexec /usr/local/bin/cilexec-terminal-client "$terminal_port"
 
-if docker container inspect "$terminal_container" >/dev/null 2>&1; then
-    echo "Reusing terminal container $terminal_container."
-    docker start --attach --interactive "$terminal_container"
+runtime_stopped=false
+for _ in {1..12}; do
+    if [[ -z "$("${compose[@]}" ps --status running -q cilexec)" ]]; then
+        runtime_stopped=true
+        break
+    fi
+    sleep 0.25
+done
+if [[ "$runtime_stopped" == true ]]; then
+    echo "CilExec Runtime shut down."
 else
-    echo "Creating persistent terminal container $terminal_container."
-    "${compose[@]}" run --name "$terminal_container" --no-deps cilexec
+    echo "Terminal disconnected. The shared Runtime and background processes are still running."
 fi
-
-echo "CilExec terminal stopped. PostgreSQL and the terminal container were kept for fast restart."

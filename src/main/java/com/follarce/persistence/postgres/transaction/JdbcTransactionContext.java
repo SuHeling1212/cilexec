@@ -3,6 +3,7 @@ package com.follarce.persistence.postgres.transaction;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.domain.port.AuthRepository;
 import com.follarce.domain.port.EffectRepository;
+import com.follarce.domain.port.EnvironmentRepository;
 import com.follarce.domain.port.IpcRepository;
 import com.follarce.domain.port.PackageRepository;
 import com.follarce.domain.port.ProcessRepository;
@@ -17,6 +18,7 @@ import com.follarce.persistence.postgres.mapper.JsonCodec;
 import com.follarce.persistence.postgres.repository.JdbcAuditRepository;
 import com.follarce.persistence.postgres.repository.JdbcAuthRepository;
 import com.follarce.persistence.postgres.repository.JdbcEffectRepository;
+import com.follarce.persistence.postgres.repository.JdbcEnvironmentRepository;
 import com.follarce.persistence.postgres.repository.JdbcIpcRepository;
 import com.follarce.persistence.postgres.repository.JdbcPackageRepository;
 import com.follarce.persistence.postgres.repository.JdbcProcessRepository;
@@ -43,6 +45,7 @@ public final class JdbcTransactionContext implements TransactionContext {
     private final AuthRepository auth;
     private final AuditRepository audit;
     private final TerminalRepository terminal;
+    private final EnvironmentRepository environment;
     private final AtomicReference<State> state = new AtomicReference<>(State.OPEN);
 
     JdbcTransactionContext(Connection connection, JsonCodec json) {
@@ -58,6 +61,7 @@ public final class JdbcTransactionContext implements TransactionContext {
         auth = new JdbcAuthRepository(connection);
         audit = new JdbcAuditRepository(connection, json);
         terminal = new JdbcTerminalRepository(connection);
+        environment = new JdbcEnvironmentRepository(connection);
     }
 
     @Override public ProgramRepository programs() { return programs; }
@@ -71,6 +75,7 @@ public final class JdbcTransactionContext implements TransactionContext {
     @Override public AuthRepository auth() { return auth; }
     @Override public AuditRepository audit() { return audit; }
     @Override public TerminalRepository terminal() { return terminal; }
+    @Override public EnvironmentRepository environment() { return environment; }
 
     @Override
     public void commit() {
@@ -81,8 +86,15 @@ public final class JdbcTransactionContext implements TransactionContext {
             connection.commit();
         } catch (SQLException exception) {
             state.set(State.FAILED);
-            rollbackConnection();
-            throw SqlStateClassifier.classify("transaction.commit", exception);
+            RuntimeException failure = SqlStateClassifier.classify(
+                    "transaction.commit", exception);
+            try {
+                rollbackConnection();
+                state.set(State.ROLLED_BACK);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+            throw failure;
         }
     }
 
@@ -102,15 +114,22 @@ public final class JdbcTransactionContext implements TransactionContext {
         if (current == State.CLOSED) {
             return;
         }
-        if (current == State.OPEN || current == State.FAILED) {
+        RuntimeException failure = null;
+        if (current == State.OPEN || current == State.FAILED) try {
             rollback();
+        } catch (RuntimeException rollbackFailure) {
+            failure = rollbackFailure;
         }
         state.set(State.CLOSED);
         try {
             connection.close();
         } catch (SQLException exception) {
-            throw SqlStateClassifier.classify("transaction.close", exception);
+            RuntimeException closeFailure = SqlStateClassifier.classify(
+                    "transaction.close", exception);
+            if (failure == null) failure = closeFailure;
+            else failure.addSuppressed(closeFailure);
         }
+        if (failure != null) throw failure;
     }
 
     boolean isOpen() {

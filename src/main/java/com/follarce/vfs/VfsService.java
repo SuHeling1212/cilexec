@@ -10,6 +10,7 @@ import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsMount;
 import com.follarce.domain.vfs.VfsNode;
+import com.follarce.domain.vfs.VfsFileLimits;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 
 import java.time.Clock;
@@ -50,9 +51,9 @@ public final class VfsService {
                 VfsNode.Type.DIRECTORY, Optional.empty(), capabilities, false, now, now);
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
-            parentNodeId.ifPresent(parent -> requireDirectory(
-                    transaction.vfs().findNode(parent), ownerId));
-            requireUnusedName(transaction.vfs().findChild(ownerId, parentNodeId, name));
+            parentNodeId.ifPresent(parent -> VfsNodeChecks.requireDirectory(transaction.vfs(),
+                    parent, ownerId, "VFS node belongs to a different owner"));
+            VfsNodeChecks.requireUnused(transaction.vfs(), ownerId, parentNodeId, name);
             transaction.vfs().insertNode(node);
             transaction.audit().append(audit(ownerId, "vfs.directory.create", node, now));
             return node;
@@ -68,6 +69,7 @@ public final class VfsService {
             Set<String> capabilities,
             boolean revisionEnabled
     ) {
+        VfsFileLimits.requireWithinLimit(content.length);
         Instant now = clock.instant();
         StoredObject object = StoredObject.create(new BinaryContent(content), mediaType, now);
         VfsNode node = new VfsNode(UUID.randomUUID(), Optional.of(parentNodeId), ownerId, name,
@@ -75,16 +77,10 @@ public final class VfsService {
                 revisionEnabled, now, now);
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
-            VfsNode parent = transaction.vfs().findNode(parentNodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown parent node"));
-            if (parent.type() != VfsNode.Type.DIRECTORY) {
-                throw new IllegalArgumentException("Parent node is not a directory");
-            }
-            if (!parent.ownerId().equals(ownerId)) {
-                throw new SecurityException("VFS parent belongs to a different owner");
-            }
-            requireUnusedName(transaction.vfs().findChild(ownerId,
-                    Optional.of(parentNodeId), name));
+            VfsNodeChecks.requireDirectory(transaction.vfs(), parentNodeId, ownerId,
+                    "VFS parent belongs to a different owner");
+            VfsNodeChecks.requireUnused(transaction.vfs(), ownerId,
+                    Optional.of(parentNodeId), name);
             transaction.vfs().saveObject(object);
             transaction.vfs().insertNode(node);
             if (node.revisionEnabled()) {
@@ -99,12 +95,8 @@ public final class VfsService {
     public StoredObject readFile(UUID ownerId, UUID nodeId) {
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_READ);
-            VfsNode node = transaction.vfs().findNode(nodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-            requireOwner(node, ownerId);
-            if (node.type() != VfsNode.Type.FILE && node.type() != VfsNode.Type.SYMLINK) {
-                throw new IllegalArgumentException("VFS node does not contain an object");
-            }
+            VfsNode node = VfsNodeChecks.requireContent(transaction.vfs(), nodeId, ownerId,
+                    "VFS node belongs to a different owner");
             return transaction.vfs().findObject(node.currentObjectHash().orElseThrow())
                     .orElseThrow(() -> new IllegalStateException("VFS node references a missing object"));
         });
@@ -117,15 +109,14 @@ public final class VfsService {
             byte[] replacement,
             String mediaType
     ) {
+        VfsFileLimits.requireWithinLimit(replacement.length);
         Instant now = clock.instant();
         StoredObject object = StoredObject.create(new BinaryContent(replacement), mediaType, now);
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
-            VfsNode current = transaction.vfs().findNode(nodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-            if (!current.ownerId().equals(ownerId)) {
-                throw new SecurityException("Only the owner may replace VFS content");
-            }
+            VfsNode current = VfsNodeChecks.requireOwned(
+                    VfsNodeChecks.requireNode(transaction.vfs(), nodeId), ownerId,
+                    "Only the owner may replace VFS content");
             if (!current.currentObjectHash().equals(Optional.of(expectedHash))) {
                 throw new IllegalStateException("VFS object version conflict");
             }
@@ -147,9 +138,9 @@ public final class VfsService {
     public List<FileRevision> fileRevisions(UUID ownerId, UUID nodeId) {
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_READ);
-            VfsNode node = transaction.vfs().findNode(nodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-            requireOwner(node, ownerId);
+            VfsNode node = VfsNodeChecks.requireOwned(
+                    VfsNodeChecks.requireNode(transaction.vfs(), nodeId), ownerId,
+                    "VFS node belongs to a different owner");
             if (node.type() != VfsNode.Type.FILE || !node.revisionEnabled()) {
                 throw new IllegalArgumentException("VFS node does not retain file revisions");
             }
@@ -170,9 +161,9 @@ public final class VfsService {
         }
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_READ);
-            VfsNode node = transaction.vfs().findNode(nodeId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown VFS node"));
-            requireOwner(node, ownerId);
+            VfsNode node = VfsNodeChecks.requireOwned(
+                    VfsNodeChecks.requireNode(transaction.vfs(), nodeId), ownerId,
+                    "VFS node belongs to a different owner");
             if (node.type() != VfsNode.Type.FILE || !node.revisionEnabled()) {
                 throw new IllegalArgumentException("VFS node does not retain file revisions");
             }
@@ -203,9 +194,10 @@ public final class VfsService {
             if (!hostSourceKeys.contains(sourceKey)) {
                 throw new SecurityException("Host source key is not configured: " + sourceKey);
             }
-            VfsNode parent = requireDirectory(transaction.vfs().findNode(parentNodeId), ownerId);
-            requireUnusedName(transaction.vfs().findChild(ownerId,
-                    Optional.of(parent.nodeId()), name));
+            VfsNode parent = VfsNodeChecks.requireDirectory(transaction.vfs(), parentNodeId,
+                    ownerId, "VFS node belongs to a different owner");
+            VfsNodeChecks.requireUnused(transaction.vfs(), ownerId,
+                    Optional.of(parent.nodeId()), name);
             VfsNode node = new VfsNode(UUID.randomUUID(), Optional.of(parent.nodeId()), ownerId,
                     name, VfsNode.Type.MOUNT, Optional.empty(), nodeCapabilities,
                     false, now, now);
@@ -251,28 +243,6 @@ public final class VfsService {
             mounts.forEach(mount -> requireMountOwner(mount, ownerId));
             return List.copyOf(mounts);
         });
-    }
-
-    private static void requireUnusedName(Optional<VfsNode> existing) {
-        if (existing.isPresent()) {
-            throw new IllegalArgumentException("A VFS node with that name already exists");
-        }
-    }
-
-    private static VfsNode requireDirectory(Optional<VfsNode> found, UUID ownerId) {
-        VfsNode parent = found.orElseThrow(() ->
-                new IllegalArgumentException("Unknown parent node"));
-        requireOwner(parent, ownerId);
-        if (parent.type() != VfsNode.Type.DIRECTORY) {
-            throw new IllegalArgumentException("Parent node is not a directory");
-        }
-        return parent;
-    }
-
-    private static void requireOwner(VfsNode node, UUID ownerId) {
-        if (!node.ownerId().equals(ownerId)) {
-            throw new SecurityException("VFS node belongs to a different owner");
-        }
     }
 
     private static void requireMountOwner(VfsMount mount, UUID ownerId) {

@@ -18,9 +18,8 @@ public record CilExecConfig(
         int schedulerWorkers,
         int effectWorkers,
         Duration leaseDuration,
-        Duration heartbeatInterval,
-        Duration schedulerIdlePoll,
-        Duration effectIdlePoll,
+        Duration schedulerErrorBackoff,
+        Duration effectErrorBackoff,
         Duration shutdownGrace,
         int healthPort,
         boolean migrateOnStart
@@ -33,9 +32,8 @@ public record CilExecConfig(
         Objects.requireNonNull(effectDatabase, "effectDatabase");
         Objects.requireNonNull(migratorDatabase, "migratorDatabase");
         leaseDuration = positive(leaseDuration, "leaseDuration");
-        heartbeatInterval = positive(heartbeatInterval, "heartbeatInterval");
-        schedulerIdlePoll = positive(schedulerIdlePoll, "schedulerIdlePoll");
-        effectIdlePoll = positive(effectIdlePoll, "effectIdlePoll");
+        schedulerErrorBackoff = positive(schedulerErrorBackoff, "schedulerErrorBackoff");
+        effectErrorBackoff = positive(effectErrorBackoff, "effectErrorBackoff");
         shutdownGrace = positive(shutdownGrace, "shutdownGrace");
         if (schedulerWorkers < 1 || effectWorkers < 1) {
             throw new ConfigException("Worker counts must be positive");
@@ -45,9 +43,6 @@ public record CilExecConfig(
         }
         if (effectWorkers > effectDatabase.maximumPoolSize()) {
             throw new ConfigException("Effect workers exceed their connection pool");
-        }
-        if (heartbeatInterval.compareTo(leaseDuration) >= 0) {
-            throw new ConfigException("Heartbeat interval must be shorter than lease duration");
         }
         if (healthPort < 1 || healthPort > 65_535) {
             throw new ConfigException("healthPort is outside 1..65535");
@@ -78,9 +73,8 @@ public record CilExecConfig(
                 integer(environment, defaults, "CILEXEC_SCHEDULER_WORKERS", "scheduler.workers"),
                 integer(environment, defaults, "CILEXEC_EFFECT_WORKERS", "effect.workers"),
                 duration(environment, defaults, "CILEXEC_LEASE_DURATION", "scheduler.lease-duration"),
-                duration(environment, defaults, "CILEXEC_HEARTBEAT_INTERVAL", "scheduler.heartbeat-interval"),
-                duration(environment, defaults, "CILEXEC_SCHEDULER_IDLE_POLL", "scheduler.idle-poll"),
-                duration(environment, defaults, "CILEXEC_EFFECT_IDLE_POLL", "effect.idle-poll"),
+                duration(environment, defaults, "CILEXEC_SCHEDULER_ERROR_BACKOFF", "scheduler.error-backoff"),
+                duration(environment, defaults, "CILEXEC_EFFECT_ERROR_BACKOFF", "effect.error-backoff"),
                 duration(environment, defaults, "CILEXEC_SHUTDOWN_GRACE", "runtime.shutdown-grace"),
                 integer(environment, defaults, "CILEXEC_HEALTH_PORT", "health.port"),
                 bool(environment, defaults, "CILEXEC_MIGRATE_ON_START", "database.migrate-on-start")

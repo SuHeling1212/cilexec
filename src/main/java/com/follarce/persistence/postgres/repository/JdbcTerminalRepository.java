@@ -170,6 +170,106 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
     }
 
     @Override
+    public boolean startExportCapture(UUID captureId, UUID ownerId, String targetPath,
+                                      java.time.Instant startedAt) {
+        String sql = "INSERT INTO terminal.export_capture"
+                + "(capture_id,owner_id,target_path,status,started_at) "
+                + "VALUES (?,?,?,'CAPTURING',?) ON CONFLICT (owner_id) DO NOTHING";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, captureId);
+            statement.setObject(2, ownerId);
+            statement.setString(3, targetPath);
+            statement.setTimestamp(4, java.sql.Timestamp.from(startedAt));
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("terminal.startExportCapture", exception);
+        }
+    }
+
+    @Override
+    public void appendCapturedOperation(UUID ownerId, String operation,
+                                        java.time.Instant submittedAt) {
+        String sql = "INSERT INTO terminal.export_capture_operation"
+                + "(capture_id,owner_id,operation_text,submitted_at) "
+                + "SELECT capture_id,owner_id,?,? FROM terminal.export_capture "
+                + "WHERE owner_id=? AND status='CAPTURING'";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, operation);
+            statement.setTimestamp(2, java.sql.Timestamp.from(submittedAt));
+            statement.setObject(3, ownerId);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("terminal.appendCapturedOperation", exception);
+        }
+    }
+
+    @Override
+    public Optional<TerminalRepository.ExportCapture> beginExportFinalization(UUID ownerId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE terminal.export_capture SET status='FINALIZING' "
+                        + "WHERE owner_id=? AND status='CAPTURING'")) {
+            statement.setObject(1, ownerId);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("terminal.fenceExportCapture", exception);
+        }
+        String captureSql = "SELECT capture_id,target_path FROM terminal.export_capture "
+                + "WHERE owner_id=? AND status='FINALIZING'";
+        try (PreparedStatement statement = connection.prepareStatement(captureSql)) {
+            statement.setObject(1, ownerId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                UUID captureId = rows.getObject("capture_id", UUID.class);
+                String targetPath = rows.getString("target_path");
+                return Optional.of(new TerminalRepository.ExportCapture(captureId, ownerId,
+                        targetPath, capturedOperations(captureId)));
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.beginExportFinalization", exception);
+        }
+    }
+
+    private List<String> capturedOperations(UUID captureId) {
+        String sql = "SELECT operation_text FROM terminal.export_capture_operation "
+                + "WHERE capture_id=? ORDER BY operation_id";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, captureId);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<String> operations = new ArrayList<>();
+                while (rows.next()) operations.add(rows.getString(1));
+                return List.copyOf(operations);
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.capturedOperations", exception);
+        }
+    }
+
+    @Override
+    public boolean completeExportCapture(UUID ownerId, UUID captureId) {
+        return changeExportCapture("DELETE FROM terminal.export_capture "
+                + "WHERE owner_id=? AND capture_id=? AND status='FINALIZING'", ownerId,
+                captureId, "terminal.completeExportCapture");
+    }
+
+    @Override
+    public boolean resumeExportCapture(UUID ownerId, UUID captureId) {
+        return changeExportCapture("UPDATE terminal.export_capture SET status='CAPTURING' "
+                + "WHERE owner_id=? AND capture_id=? AND status='FINALIZING'", ownerId,
+                captureId, "terminal.resumeExportCapture");
+    }
+
+    private boolean changeExportCapture(String sql, UUID ownerId, UUID captureId,
+                                        String operation) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            statement.setObject(2, captureId);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure(operation, exception);
+        }
+    }
+
+    @Override
     public void appendInput(TerminalSession.Input input) {
         String sql = "INSERT INTO terminal.input(input_id,session_id,owner_id,input_sequence,submitted_text,"
                 + "submitted_at,accepted_at,target_process_uid) "
@@ -308,6 +408,9 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
                     interrupt.handledAt().orElse(interrupt.requestedAt())));
             statement.setObject(3, interrupt.processUid());
             requireOne("terminal.requestInterrupt", statement.executeUpdate());
+            if (interrupt.handledAt().isEmpty()) {
+                notifyWork("cilexec_interrupt_work", "terminal.interrupt.notify");
+            }
         } catch (SQLException exception) {
             throw failure("terminal.requestInterrupt", exception);
         }

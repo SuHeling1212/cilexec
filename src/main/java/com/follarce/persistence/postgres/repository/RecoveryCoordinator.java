@@ -206,6 +206,11 @@ public final class RecoveryCoordinator {
     private static void rebuildReadyQueue(Connection connection, Instant now)
             throws SQLException {
         execute(connection,
+                "UPDATE scheduler.queue AS queue SET queue_state='REMOVED',"
+                        + "claimed_by=NULL,claimed_at=NULL FROM process.process AS process "
+                        + "WHERE process.process_uid=queue.process_uid "
+                        + "AND process.status<>'READY'");
+        execute(connection,
                 "INSERT INTO scheduler.queue(process_uid,owner_id,queue_state,ready_at,enqueued_at) "
                         + "SELECT process_uid,owner_id,'READY',?,? FROM process.process "
                         + "WHERE status='READY' ON CONFLICT (process_uid) DO UPDATE SET "

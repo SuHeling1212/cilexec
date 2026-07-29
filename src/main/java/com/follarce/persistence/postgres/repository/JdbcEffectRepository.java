@@ -59,6 +59,7 @@ public final class JdbcEffectRepository extends JdbcRepositorySupport implements
             bindEffect(effect, statement);
             statement.setObject(20, effect.processUid());
             requireOne("effect.save", statement.executeUpdate());
+            notifyWork("cilexec_effect_work", "effect.notify");
         } catch (SQLException exception) {
             throw failure("effect.save", exception);
         }

@@ -11,7 +11,6 @@ import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
-import com.follarce.terminal.TerminalAccessService;
 import com.follarce.vfs.AdminVfsService;
 import com.follarce.vfs.VfsService;
 import org.junit.jupiter.api.Test;
@@ -34,10 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class FclSystemFunctionsExternalIT {
     @Test
     void executesVfsSwapProcessAndAdministratorFunctionsFromFcl() {
-        execute(transactions(), System.getProperty("cilexec.external.jdbc"));
+        execute(transactions());
     }
 
-    static void execute(JdbcTransactionExecutor transactions, String jdbcUrl) {
+    static void execute(JdbcTransactionExecutor transactions) {
         Clock clock = Clock.systemUTC();
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         AuthService auth = new AuthService(transactions, clock);
@@ -50,6 +49,9 @@ class FclSystemFunctionsExternalIT {
                 "admin-password-123".toCharArray(), Set.of(Capability.SYSTEM_ADMIN,
                         Capability.VFS_READ, Capability.PROCESS_CREATE,
                         Capability.PROCESS_CONTROL_OWN));
+        UserAccount local = auth.create("local", "local-password-123".toCharArray(),
+                Set.of(Capability.SYSTEM_ADMIN, Capability.VFS_READ, Capability.VFS_WRITE,
+                        Capability.PROCESS_CREATE, Capability.PROCESS_CONTROL_OWN));
         UserAccount removable = auth.create("fcl-removable-" + suffix,
                 "removable-password-123".toCharArray(), Set.of(Capability.VFS_READ));
         VfsService vfs = new VfsService(transactions, clock);
@@ -66,6 +68,7 @@ class FclSystemFunctionsExternalIT {
                   "name":"hello",
                   "version":"1.0.0",
                   "languageVersion":"fcl-1",
+                  "kind":"application",
                   "modules":[{"name":"main","path":"main.fcl"}],
                   "entrypoints":[{"name":"run","module":"main","function":"run"}],
                   "exports":[{"name":"greet","module":"main","symbol":"greet"}]
@@ -92,6 +95,7 @@ class FclSystemFunctionsExternalIT {
                 packageCheck = package.verify("demo/hello/1.0.0")
                 packageEnvironments = package.environments()
                 launchedPackage = package.run("hello")
+                foreignHomeVisible = file.exists("/Users/local")
                 """;
         var ownerProgram = new ProgramService(transactions).create(owner.userId(), source);
         CilProcess ownerProcess = new ProcessService(transactions).create(owner.userId(),
@@ -99,6 +103,7 @@ class FclSystemFunctionsExternalIT {
         FclContinuation ownerRuntime = run(transactions, ownerProcess, ownerProgram, source);
         assertEquals("hello", ownerRuntime.scope().get("content"));
         assertEquals("ready", ownerRuntime.scope().get("received"));
+        assertEquals(false, ownerRuntime.scope().get("foreignHomeVisible"));
         assertEquals(ownerProcess.identity().pid(), ownerRuntime.scope().get("pid"));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> ownProcesses =
@@ -120,6 +125,11 @@ class FclSystemFunctionsExternalIT {
         Map<String, Object> packageCheck =
                 (Map<String, Object>) ownerRuntime.scope().get("packageCheck");
         assertEquals(true, packageCheck.get("valid"));
+        assertEquals("application", packageCheck.get("kind"));
+        assertEquals(List.of(), packageCheck.get("dependencies"));
+        assertTrue(packageCheck.get("entrypoints") instanceof List<?> entrypoints
+                && entrypoints.stream().anyMatch(value -> value instanceof Map<?, ?> entrypoint
+                && "run".equals(entrypoint.get("name"))));
         @SuppressWarnings("unchecked")
         Map<String, Object> launchedPackage =
                 (Map<String, Object>) ownerRuntime.scope().get("launchedPackage");
@@ -136,7 +146,6 @@ class FclSystemFunctionsExternalIT {
                         launchedChild.identity().processUid(), "hello").isPresent());
         assertTrue(bindingPersisted);
 
-        String createdUsername = "fcl-created-" + suffix;
         String adminSource = """
                 data = file.read("/private.txt", "%s")
                 written = file.write("/private.txt", "changed", "%s")
@@ -147,7 +156,6 @@ class FclSystemFunctionsExternalIT {
                 deleted = file.removeFile("/managed/renamed.txt", "%s")
                 users = user.getListOfUsers()
                 valid = user.validateUser("%s")
-                created = user.createUser("%s", "created-password-123")
                 removed = user.removeUser("%s")
                 processes = process.getList()
                 paused = process.pause(%s)
@@ -156,7 +164,7 @@ class FclSystemFunctionsExternalIT {
                 finished = process.waitPID(%s)
                 """.formatted(
                 owner.userId(), owner.userId(), owner.userId(), owner.userId(),
-                owner.userId(), owner.userId(), owner.userId(), removable.userId(), createdUsername,
+                owner.userId(), owner.userId(), owner.userId(), removable.userId(),
                 removable.userId(), ownerProcess.identity().pid(), ownerProcess.identity().pid(),
                 ownerProcess.identity().pid(), ownerProcess.identity().pid());
         var adminProgram = new ProgramService(transactions).create(administrator.userId(),
@@ -179,13 +187,7 @@ class FclSystemFunctionsExternalIT {
         Map<String, Object> finished = (Map<String, Object>) adminRuntime.scope().get("finished");
         assertEquals("TERMINATED", finished.get("status"));
         @SuppressWarnings("unchecked")
-        Map<String, Object> created = (Map<String, Object>) adminRuntime.scope().get("created");
-        @SuppressWarnings("unchecked")
         Map<String, Object> removed = (Map<String, Object>) adminRuntime.scope().get("removed");
-        assertEquals(createdUsername, created.get("username"));
-        assertEquals("ACTIVE", created.get("status"));
-        assertTrue(new TerminalAccessService(transactions, jdbcUrl, clock)
-                .login(createdUsername, "created-password-123".toCharArray()).isPresent());
         assertEquals("DISABLED", removed.get("status"));
         AdminVfsService administratorVfs = new AdminVfsService(transactions, clock);
         assertEquals("changed", new String(administratorVfs
@@ -193,6 +195,28 @@ class FclSystemFunctionsExternalIT {
                 .content().bytes(), StandardCharsets.UTF_8));
         assertTrue(administratorVfs.listNodes(administrator.userId(), owner.userId()).stream()
                 .anyMatch(node -> node.name().equals("managed")));
+
+        String localSource = """
+                mountedContent = file.read("/Users/%s/private.txt")
+                mountedWrite = file.write("/Users/%s/from-local.txt", "mounted")
+                homes = file.listdir("/Users")
+                """.formatted(owner.username(), owner.username());
+        var localProgram = new ProgramService(transactions).create(local.userId(), localSource);
+        CilProcess localProcess = new ProcessService(transactions).create(local.userId(),
+                localProgram, Optional.empty());
+        FclContinuation localRuntime = run(transactions, localProcess, localProgram, localSource);
+        assertEquals("changed", localRuntime.scope().get("mountedContent"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> homes =
+                (List<Map<String, Object>>) localRuntime.scope().get("homes");
+        assertTrue(homes.stream().anyMatch(home -> owner.username().equals(home.get("name"))));
+        VfsNode mountedFile = transactions.inUserTransaction(owner.userId(),
+                Isolation.READ_COMMITTED, transaction -> transaction.vfs()
+                        .findChild(owner.userId(), Optional.of(ownerRoot.nodeId()),
+                                "from-local.txt").orElseThrow());
+        assertEquals("mounted", new String(administratorVfs
+                .readFile(local.userId(), owner.userId(), mountedFile.nodeId())
+                .content().bytes(), StandardCharsets.UTF_8));
     }
 
     private static FclContinuation run(JdbcTransactionExecutor transactions, CilProcess process,

@@ -12,8 +12,10 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,6 +23,48 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TerminalReplServiceTest {
     private static final Instant NOW = Instant.parse("2026-07-26T10:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+
+    @Test
+    void wakesTheInProcessSchedulerAfterTheSubmissionCommits() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        AtomicInteger wakes = new AtomicInteger();
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK, wakes::incrementAndGet);
+
+        repl.submit(owner, sessionId, "answer = 42");
+
+        assertEquals(1, wakes.get(),
+                "same-JVM submissions must not depend solely on a lossy database notification");
+        assertEquals(CilProcess.Status.READY, persistence.processes.current.status());
+    }
+
+    @Test
+    void exposesPersistedNullVariablesWithoutThrowing() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        repl.submit(owner, sessionId, "empty = null");
+        run(persistence, executor, owner);
+
+        Map<String, Object> variables = repl.variables(owner, sessionId);
+        assertTrue(variables.containsKey("empty"));
+        assertEquals(null, variables.get("empty"));
+    }
 
     @Test
     void executesEverySubmissionInTheSameDurableSuspendedProcess() {
@@ -135,6 +179,29 @@ class TerminalReplServiceTest {
         assertEquals(1L, snapshot.variables().get("first"));
         assertEquals(2L, snapshot.variables().get("second"));
         assertEquals(1, persistence.scheduler.releases);
+    }
+
+    @Test
+    void retainsAnImportFromAMixedInstallStyleSubmission() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        String packageId = "a".repeat(64);
+        repl.submit(owner, sessionId, "value = 1; import \"" + packageId + "\" as \"m\"");
+        run(persistence, executor, owner);
+
+        TerminalReplService.Submission next = repl.submit(owner, sessionId, "value + 1");
+        assertTrue(next.source().startsWith("import \"" + packageId + "\" as \"m\"\n"),
+                next.source());
     }
 
     private static void run(ProgramServiceTest.TestPersistence persistence,

@@ -168,7 +168,7 @@ class CilExecApplicationTest {
         DatabaseConfig effects = database("effect", "/secrets/effect", 1);
         DatabaseConfig migrator = database("migrator", "/secrets/migrator", 1);
         return new CilExecConfig("primary", 42L, runtime, effects, migrator,
-                2, 1, Duration.ofSeconds(10), Duration.ofSeconds(1),
+                2, 1, Duration.ofSeconds(10),
                 Duration.ofMillis(25), Duration.ofMillis(25), Duration.ofSeconds(2), 8081, false);
     }
 

@@ -72,7 +72,7 @@ class PostgresBackupRestoreIT {
         try (Connection connection = restoredConnection()) {
             assertEquals(1, count(connection,
                     "SELECT count(*) FROM auth.user_account WHERE user_id='" + ownerId + "'::uuid"));
-            assertEquals(30, count(connection,
+            assertEquals(1, count(connection,
                     "SELECT max(version::integer) FROM flyway.flyway_schema_history WHERE success"));
             assertEquals(12, count(connection,
                     "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname IN "

@@ -66,9 +66,10 @@ public record UserAccount(
 
     private static String username(String value) {
         value = Invariant.text(value, "username");
-        Invariant.check(value.length() <= 128, "username is too long");
-        Invariant.check(value.chars().noneMatch(Character::isISOControl),
-                "username contains control characters");
+        Invariant.check(value.matches("[a-z0-9][a-z0-9._-]{0,63}"),
+                "username must be canonical lowercase ASCII");
+        Invariant.check(!value.equals(".") && !value.equals(".."),
+                "username cannot be a relative path marker");
         return value;
     }
 

@@ -7,6 +7,7 @@ import com.follarce.effect.EffectHandler;
 import com.follarce.effect.EffectHandlerRegistry;
 import com.follarce.effect.EffectWorkerService;
 import com.follarce.effect.BuiltinEffectHandlers;
+import com.follarce.domain.port.Isolation;
 import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.health.HealthServer;
 import com.follarce.health.HealthState;
@@ -14,6 +15,7 @@ import com.follarce.persistence.postgres.connection.ControlLock;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.DatabaseHealth;
 import com.follarce.persistence.postgres.connection.SchemaVerifier;
+import com.follarce.persistence.postgres.connection.PostgresWorkListener;
 import com.follarce.persistence.postgres.repository.RecoveryCoordinator;
 import com.follarce.persistence.postgres.repository.RuntimeMetadataStore;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
@@ -21,26 +23,22 @@ import com.follarce.scheduler.ClaimedProcessHandler;
 import com.follarce.scheduler.SchedulerService;
 import com.follarce.timer.TimerService;
 import com.follarce.terminal.DatabaseTerminalControl;
-import com.follarce.terminal.TerminalAccessConsole;
 import com.follarce.terminal.TerminalAccessService;
 import com.follarce.terminal.TerminalBootstrap;
-import com.follarce.terminal.TerminalInput;
 import com.follarce.terminal.TerminalSettings;
+import com.follarce.terminal.TerminalServer;
 import com.zaxxer.hikari.HikariDataSource;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
+import java.util.stream.Stream;
 
 /** Explicit production assembly for the single active Runtime. */
 public final class RuntimeBootstrap {
@@ -53,13 +51,11 @@ public final class RuntimeBootstrap {
     }
 
     public static RuntimeLifecycle assembleTerminal(CilExecConfig config, BuildInfo buildInfo,
-                                                    TerminalSettings settings,
-                                                    InputStream input, OutputStream output) {
+                                                    TerminalSettings settings) {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo,
-                ProcessStatementExecutor::new, productionEffectHandlers(), settings,
-                input, output);
+                ProcessStatementExecutor::new, productionEffectHandlers(), settings);
         RuntimeLifecycle lifecycle = new RuntimeLifecycle(hooks, config.shutdownGrace());
-        hooks.terminalShutdown = () -> lifecycle.shutdown("terminal closed");
+        hooks.runtimeShutdown = () -> lifecycle.shutdown("administrator terminal shutdown");
         return lifecycle;
     }
 
@@ -70,7 +66,7 @@ public final class RuntimeBootstrap {
             List<? extends EffectHandler> effectHandlers
     ) {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo, handlerFactory,
-                effectHandlers, null, null, null);
+                effectHandlers, null);
         return new RuntimeLifecycle(hooks, config.shutdownGrace());
     }
 
@@ -95,8 +91,6 @@ public final class RuntimeBootstrap {
         private final RuntimeMetadataStore metadata;
         private final RecoveryCoordinator recovery;
         private final TerminalSettings terminalSettings;
-        private final InputStream terminalInput;
-        private final OutputStream terminalOutput;
         private final AtomicBoolean resourcesClosed = new AtomicBoolean();
 
         private volatile Consumer<Throwable> fence;
@@ -104,27 +98,26 @@ public final class RuntimeBootstrap {
         private volatile RuntimeMetadataStore.BootIdentity boot;
         private volatile HealthServer healthServer;
         private volatile SchedulerService scheduler;
+        private volatile PostgresWorkListener workListener;
         private volatile HikariDataSource effectDataSource;
         private volatile EffectWorkerService effectWorkers;
         private volatile TimerLoop timerLoop;
-        private volatile Thread terminalThread;
-        private volatile Runnable terminalShutdown = () -> { };
+        private volatile TerminalServer terminalServer;
+        private volatile Runnable runtimeShutdown = () -> {
+            throw new IllegalStateException("Runtime shutdown is not available");
+        };
 
         private ProductionHooks(
                 CilExecConfig config,
                 BuildInfo buildInfo,
                 Function<JdbcTransactionExecutor, ? extends ClaimedProcessHandler> handlerFactory,
                 List<? extends EffectHandler> effectHandlers,
-                TerminalSettings terminalSettings,
-                InputStream terminalInput,
-                OutputStream terminalOutput
+                TerminalSettings terminalSettings
         ) {
             this.config = Objects.requireNonNull(config, "config");
             this.buildInfo = Objects.requireNonNull(buildInfo, "buildInfo");
             this.effectHandlers = List.copyOf(effectHandlers);
             this.terminalSettings = terminalSettings;
-            this.terminalInput = terminalInput;
-            this.terminalOutput = terminalOutput;
             runtimeDataSource = DataSourceFactory.create(config.runtimeDatabase());
             runtimeTransactions = new JdbcTransactionExecutor(runtimeDataSource);
             processHandler = Objects.requireNonNull(handlerFactory, "handlerFactory")
@@ -154,7 +147,7 @@ public final class RuntimeBootstrap {
             fence = Objects.requireNonNull(onFence, "onFence");
             control = ControlLock.acquire(config.runtimeDatabase(), config.advisoryLockKey());
             health.controlLock(true);
-            control.monitor(config.heartbeatInterval(), failure -> {
+            control.monitor(failure -> {
                 health.controlLock(false);
                 health.database(false);
                 fence.accept(failure);
@@ -192,7 +185,22 @@ public final class RuntimeBootstrap {
         public void startScheduler() {
             scheduler = new SchedulerService(runtimeTransactions, processHandler,
                     requireBoot().bootId(), config.schedulerWorkers(), config.leaseDuration(),
-                    config.schedulerIdlePoll(), requireFence());
+                    config.schedulerErrorBackoff(), requireFence());
+            workListener = new PostgresWorkListener(runtimeDataSource,
+                    () -> {
+                        SchedulerService current = scheduler;
+                        if (current != null) current.wake();
+                    }, () -> {
+                        EffectWorkerService current = effectWorkers;
+                        if (current != null) current.wake();
+                    }, () -> {
+                        TimerLoop current = timerLoop;
+                        if (current != null) current.wake();
+                    }, () -> {
+                        SchedulerService current = scheduler;
+                        if (current != null) current.wakeInterrupt();
+                    }, requireFence());
+            workListener.start();
             scheduler.start();
             health.schedulerLoop(true);
         }
@@ -204,7 +212,7 @@ public final class RuntimeBootstrap {
                     new JdbcTransactionExecutor(effectDataSource);
             effectWorkers = new EffectWorkerService(effectTransactions, runtimeTransactions,
                     requireBoot().bootId(), new EffectHandlerRegistry(effectHandlers), config.effectWorkers(),
-                    config.effectIdlePoll(), Clock.systemUTC(), requireFence());
+                    config.effectErrorBackoff(), Clock.systemUTC(), requireFence());
             effectWorkers.start();
         }
 
@@ -221,46 +229,62 @@ public final class RuntimeBootstrap {
                         transaction -> transaction.scheduler().releaseExpired(Instant.now()));
                 int fired = timers.fireDue(runnerId, TIMER_BATCH);
                 int purged = auditRetention.purgeExpired(AUDIT_PURGE_BATCH);
+                SchedulerService current = scheduler;
+                if (current != null) {
+                    current.wake();
+                    current.wakeInterrupt();
+                }
                 return released + fired + purged;
-            },
-                    config.heartbeatInterval(), requireFence());
+            }, this::nextMaintenanceAt, requireFence());
             timerLoop.start();
+        }
+
+        private Optional<Instant> nextMaintenanceAt() {
+            return runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction ->
+                    Stream.of(transaction.timers().nextScheduledWakeAt(),
+                                    transaction.scheduler().nextLeaseExpiry(),
+                                    transaction.scheduler().nextReadyAt(),
+                                    transaction.audit().nextRetentionExpiry())
+                            .flatMap(Optional::stream)
+                            .min(Instant::compareTo));
         }
 
         @Override
         public void markReady() {
             metadata.markReady(requireBoot());
-            if (terminalSettings != null) startTerminal();
+            if (terminalSettings != null) startTerminalServer();
         }
 
-        private void startTerminal() {
+        private void startTerminalServer() {
             Clock clock = Clock.systemUTC();
             new TerminalBootstrap(runtimeTransactions, clock).ensure(terminalSettings)
                     .ifPresent(_ -> {});
-            TerminalInput input = TerminalInput.system(
-                    Objects.requireNonNull(terminalInput, "terminal input"));
-            PrintWriter output = new PrintWriter(new OutputStreamWriter(
-                    Objects.requireNonNull(terminalOutput, "terminal output"),
-                    StandardCharsets.UTF_8), true);
             var access = new TerminalAccessService(runtimeTransactions,
                     config.runtimeDatabase().jdbcUrl(), clock, terminalSettings.username());
             com.follarce.application.FclRuntimeFunctions.setPasswordVerifier(
                     password -> access.login(terminalSettings.username(), password).isPresent());
-            var console = new TerminalAccessConsole(input, output, access,
+            terminalServer = new TerminalServer(terminalSettings.port(), access,
                     account -> new DatabaseTerminalControl(runtimeTransactions, account,
-                            terminalShutdown), terminalSettings.username());
-            terminalThread = Thread.ofPlatform().daemon(true).name("cilexec-terminal").start(() -> {
-                try {
-                    console.run();
-                } finally {
-                    terminalShutdown.run();
-                }
-            });
+                            runtimeShutdown,
+                            password -> access.login(account.username(), password).isPresent(),
+                            () -> {
+                                SchedulerService current = scheduler;
+                                if (current != null) current.wake();
+                            }, () -> {
+                                SchedulerService current = scheduler;
+                                if (current != null) current.wakeInterrupt();
+                            }),
+                    terminalSettings.username());
+            terminalServer.start();
         }
 
         @Override
         public synchronized void stopScheduler() {
             health.schedulerLoop(false);
+            if (workListener != null) {
+                workListener.close();
+                workListener = null;
+            }
             if (scheduler != null) {
                 scheduler.close();
                 scheduler = null;
@@ -285,6 +309,10 @@ public final class RuntimeBootstrap {
 
         @Override
         public synchronized void stopHealth() {
+            if (terminalServer != null) {
+                terminalServer.close();
+                terminalServer = null;
+            }
             if (healthServer != null) {
                 healthServer.close();
                 healthServer = null;

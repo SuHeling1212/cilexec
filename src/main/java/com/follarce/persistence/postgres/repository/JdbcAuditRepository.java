@@ -40,6 +40,7 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
             statement.setObject(8, com.follarce.persistence.postgres.mapper.JdbcValues.json(json.write(event.details())));
             statement.setTimestamp(9, java.sql.Timestamp.from(event.createdAt()));
             requireOne("audit.append", statement.executeUpdate());
+            notifyWork("cilexec_timer_work", "audit.append.notify");
         } catch (SQLException exception) {
             throw failure("audit.append", exception);
         }
@@ -75,6 +76,7 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
             statement.setBoolean(3, policy.enabled());
             statement.setTimestamp(4, java.sql.Timestamp.from(policy.updatedAt()));
             requireOne("audit.saveRetentionPolicy", statement.executeUpdate());
+            notifyWork("cilexec_timer_work", "audit.retention.notify");
         } catch (SQLException exception) {
             throw failure("audit.saveRetentionPolicy", exception);
         }
@@ -108,6 +110,20 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
             }
         } catch (SQLException exception) {
             throw failure("audit.purgeExpired", exception);
+        }
+    }
+
+    @Override
+    public Optional<java.time.Instant> nextRetentionExpiry() {
+        String sql = "SELECT min(candidate.created_at + policy.retain_for) "
+                + "FROM audit.event candidate JOIN audit.retention_policy policy "
+                + "ON policy.event_type=candidate.action WHERE policy.enabled";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next() || rows.getTimestamp(1) == null) return Optional.empty();
+            return Optional.of(rows.getTimestamp(1).toInstant());
+        } catch (SQLException exception) {
+            throw failure("audit.nextRetentionExpiry", exception);
         }
     }
 

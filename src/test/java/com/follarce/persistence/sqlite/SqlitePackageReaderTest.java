@@ -79,6 +79,17 @@ class SqlitePackageReaderTest {
                 () -> inspect(database));
     }
 
+    @Test
+    void rejectsApplicationDatabaseWithoutUniversalRunEntrypoint() throws Exception {
+        Path database = packageDatabase(null);
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE package_metadata SET metadata_value='application' "
+                    + "WHERE metadata_key='package_kind'");
+        }
+        assertThrows(PackageDatabaseException.class, () -> inspect(database));
+    }
+
     private PackageDescriptor inspect(Path database) throws IOException {
         return new SqlitePackageReader().inspect(Files.readAllBytes(database));
     }
@@ -101,10 +112,9 @@ class SqlitePackageReaderTest {
                     + "module_name TEXT NOT NULL, symbol_name TEXT NOT NULL)");
             statement.execute("CREATE TABLE package_capability(capability_name TEXT NOT NULL, "
                     + "required INTEGER NOT NULL, rationale TEXT NOT NULL)");
-            statement.execute("CREATE TABLE package_signature(signature BLOB)");
             statement.execute("INSERT INTO package_metadata(metadata_key,metadata_value) VALUES "
                     + "('namespace','std'),('name','example'),('version','1.2.3'),"
-                    + "('language_version','1')");
+                    + "('language_version','1'),('package_kind','library')");
             statement.execute("INSERT INTO package_module(module_name,module_object_path,module_hash) "
                     + "VALUES ('main','modules/main.fcl','"
                     + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'" + ")");

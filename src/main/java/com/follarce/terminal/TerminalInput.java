@@ -9,10 +9,13 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 
 /** One input source that can disable password echo when attached to a real TTY. */
 public interface TerminalInput {
+    int MAX_SUBMISSION_CHARACTERS = 256 * 1024;
+
     String readLine() throws IOException;
 
     /**
@@ -36,11 +39,19 @@ public interface TerminalInput {
             if (line == null) return null;
             if (!value.isEmpty()) value.append('\n');
             value.append(line);
+            if (value.length() > MAX_SUBMISSION_CHARACTERS) {
+                throw new IOException("Terminal submission exceeds 256 Ki characters");
+            }
             if (complete.test(value.toString())) return value.toString();
         }
     }
 
     char[] readPassword() throws IOException;
+
+    /** Raw remote clients need the server to render the newline after hidden input. */
+    default boolean passwordNeedsLineBreak() {
+        return false;
+    }
 
     /** Reads one normalized key token for an attached full-screen FCL application. */
     default String readKey(PrintWriter output) throws IOException {
@@ -87,9 +98,22 @@ public interface TerminalInput {
         Console console = stream == System.in ? System.console() : null;
         if (console != null) {
             TerminalDimensions.refresh();
-            return new EditableTerminalInput(stream, console);
+            return new EditableTerminalInput(stream, console,
+                    () -> TerminalDimensions.refresh().width());
         }
         return visible(new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8)));
+    }
+
+    /** Input transported from a raw-mode terminal client to the shared Runtime JVM. */
+    static TerminalInput remoteRaw(InputStream stream) {
+        return new EditableTerminalInput(
+                java.util.Objects.requireNonNull(stream, "stream"), null);
+    }
+
+    static TerminalInput remoteRaw(InputStream stream, IntSupplier terminalWidth) {
+        return new EditableTerminalInput(
+                java.util.Objects.requireNonNull(stream, "stream"), null,
+                java.util.Objects.requireNonNull(terminalWidth, "terminalWidth"));
     }
 
     /** A small dependency-free line editor for a real TTY. */
@@ -98,24 +122,41 @@ public interface TerminalInput {
 
         private final InputStream stream;
         private final Console console;
+        private final IntSupplier terminalWidth;
         private final List<String> history = new ArrayList<>();
         private RawMode keyMode;
 
         EditableTerminalInput(InputStream stream, Console console) {
+            this(stream, console, () -> TerminalDimensions.current().width());
+        }
+
+        EditableTerminalInput(InputStream stream, Console console, IntSupplier terminalWidth) {
             this.stream = stream;
             this.console = console;
+            this.terminalWidth = java.util.Objects.requireNonNull(terminalWidth,
+                    "terminalWidth");
         }
 
         @Override
-        public String readLine() {
+        public String readLine() throws IOException {
+            if (console == null) return readRawLine();
             String line = console.readLine();
             TerminalDimensions.refresh();
             return line;
         }
 
         @Override
-        public char[] readPassword() {
+        public char[] readPassword() throws IOException {
+            if (console == null) {
+                String value = readRawLine();
+                return value == null ? null : value.toCharArray();
+            }
             return console.readPassword();
+        }
+
+        @Override
+        public boolean passwordNeedsLineBreak() {
+            return console == null;
         }
 
         @Override
@@ -124,6 +165,7 @@ public interface TerminalInput {
             finishKeyMode();
             output.print(prompt);
             output.flush();
+            if (console == null) return edit(output, prompt, remember);
             RawMode mode;
             try {
                 mode = RawMode.enable();
@@ -150,6 +192,11 @@ public interface TerminalInput {
                                      String continuationPrompt, boolean remember,
                                      Predicate<String> complete) throws IOException {
             finishKeyMode();
+            if (console == null) {
+                output.print(prompt);
+                output.flush();
+                return editSubmission(output, prompt, continuationPrompt, remember, complete);
+            }
             RawMode mode;
             try {
                 mode = RawMode.enable();
@@ -179,14 +226,15 @@ public interface TerminalInput {
 
         @Override
         public String readKey(PrintWriter output) throws IOException {
-            if (keyMode == null) keyMode = RawMode.enable();
+            if (console != null && keyMode == null) keyMode = RawMode.enable();
             String key = decodeByteKey(stream.read());
-            TerminalDimensions.refresh();
+            if (console != null) TerminalDimensions.refresh();
             return key;
         }
 
         @Override
         public void finishKeyMode() throws IOException {
+            if (console == null) return;
             if (keyMode == null) return;
             RawMode current = keyMode;
             keyMode = null;
@@ -221,12 +269,34 @@ public interface TerminalInput {
             return new String(bytes, StandardCharsets.UTF_8);
         }
 
+        private String readRawLine() throws IOException {
+            StringBuilder value = new StringBuilder();
+            while (true) {
+                int character = stream.read();
+                if (character < 0) return value.isEmpty() ? null : value.toString();
+                if (character == '\r' || character == '\n') return value.toString();
+                if (character == 127 || character == 8) {
+                    if (!value.isEmpty()) {
+                        int previous = value.offsetByCodePoints(value.length(), -1);
+                        value.delete(previous, value.length());
+                    }
+                    continue;
+                }
+                if (character >= 32) value.append(decodeUtf8(character));
+                if (value.length() > MAX_SUBMISSION_CHARACTERS) {
+                    throw new IOException("Terminal line exceeds 256 Ki characters");
+                }
+            }
+        }
+
         String editSubmission(PrintWriter output, String prompt, String continuationPrompt,
                               boolean remember, Predicate<String> complete) throws IOException {
             StringBuilder value = new StringBuilder();
             int cursor = 0;
-            int screenCursorLine = 0;
-            int renderedLines = 1;
+            RenderState initial = layout(prompt, continuationPrompt, value, cursor,
+                    width());
+            int screenCursorLine = initial.cursorLine();
+            int renderedLines = initial.renderedLines();
             int historyIndex = history.size();
             String draft = "";
             while (true) {
@@ -235,12 +305,13 @@ public interface TerminalInput {
                 if (character == '\r' || character == '\n') {
                     String candidate = value.toString();
                     if (complete.test(candidate)) {
-                        finish(output, screenCursorLine, lineCount(value));
+                        finish(output, screenCursorLine, renderedLines);
                         if (remember && !candidate.isBlank()) remember(candidate);
                         return candidate;
                     }
                     value.insert(cursor++, '\n');
-                    RenderState state = redraw(output, prompt, continuationPrompt, value, cursor,
+                    requireSubmissionLimit(value);
+                    RenderState state = render(output, prompt, continuationPrompt, value, cursor,
                             screenCursorLine, renderedLines);
                     screenCursorLine = state.cursorLine();
                     renderedLines = state.renderedLines();
@@ -250,12 +321,17 @@ public interface TerminalInput {
                     finish(output, screenCursorLine, renderedLines);
                     return "";
                 }
+                if (character == '\t') {
+                    // Command completion is intentionally unavailable. Tabs are ignored rather
+                    // than inserted so an accidental key press cannot change submitted FCL.
+                    continue;
+                }
                 if (character == 127 || character == 8) {
                     if (cursor > 0) {
                         int previous = value.offsetByCodePoints(cursor, -1);
                         value.delete(previous, cursor);
                         cursor = previous;
-                        RenderState state = redraw(output, prompt, continuationPrompt, value,
+                        RenderState state = render(output, prompt, continuationPrompt, value,
                                 cursor, screenCursorLine, renderedLines);
                         screenCursorLine = state.cursorLine();
                         renderedLines = state.renderedLines();
@@ -265,13 +341,13 @@ public interface TerminalInput {
                 if (character == 27) {
                     int bracket = stream.read();
                     int direction = stream.read();
-                    if (bracket != '[' || direction < 0) continue;
+                    if ((bracket != '[' && bracket != 'O') || direction < 0) continue;
                     switch (direction) {
                         case 'A' -> { // Up
                             int moved = moveVertical(value, cursor, -1);
                             if (moved != cursor) {
                                 cursor = moved;
-                                RenderState state = redraw(output, prompt, continuationPrompt,
+                                RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
@@ -279,8 +355,9 @@ public interface TerminalInput {
                                     && historyIndex > 0) {
                                 if (historyIndex == history.size()) draft = value.toString();
                                 replace(value, history.get(--historyIndex));
+                                requireSubmissionLimit(value);
                                 cursor = value.length();
-                                RenderState state = redraw(output, prompt, continuationPrompt,
+                                RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
@@ -290,7 +367,7 @@ public interface TerminalInput {
                             int moved = moveVertical(value, cursor, 1);
                             if (moved != cursor) {
                                 cursor = moved;
-                                RenderState state = redraw(output, prompt, continuationPrompt,
+                                RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
@@ -298,8 +375,9 @@ public interface TerminalInput {
                                 historyIndex++;
                                 replace(value, historyIndex == history.size()
                                         ? draft : history.get(historyIndex));
+                                requireSubmissionLimit(value);
                                 cursor = value.length();
-                                RenderState state = redraw(output, prompt, continuationPrompt,
+                                RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
@@ -308,7 +386,7 @@ public interface TerminalInput {
                         case 'C' -> { // Right
                             if (cursor < value.length()) {
                                 cursor = value.offsetByCodePoints(cursor, 1);
-                                RenderState state = redraw(output, prompt, continuationPrompt,
+                                RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                             }
@@ -316,10 +394,29 @@ public interface TerminalInput {
                         case 'D' -> { // Left
                             if (cursor > 0) {
                                 cursor = value.offsetByCodePoints(cursor, -1);
-                                RenderState state = redraw(output, prompt, continuationPrompt,
+                                RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                             }
+                        }
+                        case 'H' -> { // Home
+                            int target = cursor;
+                            while (target > 0 && value.charAt(target - 1) != '\n') target--;
+                            if (target != cursor) {
+                                cursor = target;
+                                RenderState state = render(output, prompt, continuationPrompt,
+                                        value, cursor, screenCursorLine, renderedLines);
+                                screenCursorLine = state.cursorLine();
+                            }
+                        }
+                        case 'F' -> { // End
+                            while (cursor < value.length() && value.charAt(cursor) != '\n') {
+                                cursor++;
+                            }
+                            RenderState state = render(output, prompt, continuationPrompt,
+                                    value, cursor, screenCursorLine, renderedLines);
+                            screenCursorLine = state.cursorLine();
+                            renderedLines = state.renderedLines();
                         }
                         default -> { }
                     }
@@ -327,13 +424,37 @@ public interface TerminalInput {
                 }
                 if (character >= 32 && character != 127) {
                     String typed = decodeUtf8(character);
+                    boolean appending = cursor == value.length();
                     value.insert(cursor, typed);
+                    requireSubmissionLimit(value);
                     cursor += typed.length();
-                    RenderState state = redraw(output, prompt, continuationPrompt, value, cursor,
-                            screenCursorLine, renderedLines);
+                    RenderState state;
+                    if (appending) {
+                        output.print(typed);
+                        output.flush();
+                        state = layout(prompt, continuationPrompt, value, cursor, width());
+                    } else {
+                        state = render(output, prompt, continuationPrompt, value, cursor,
+                                screenCursorLine, renderedLines);
+                    }
                     screenCursorLine = state.cursorLine();
                     renderedLines = state.renderedLines();
                 }
+            }
+        }
+
+        private RenderState render(PrintWriter output, String prompt, String continuationPrompt,
+                                   StringBuilder value, int cursor, int previousCursorLine,
+                                   int previousRenderedLines) {
+            return redraw(output, prompt, continuationPrompt, value, cursor,
+                    previousCursorLine, previousRenderedLines, width());
+        }
+
+        private int width() {
+            try {
+                return Math.max(1, terminalWidth.getAsInt());
+            } catch (RuntimeException ignored) {
+                return TerminalDimensions.current().width();
             }
         }
 
@@ -366,35 +487,92 @@ public interface TerminalInput {
             target.append(replacement);
         }
 
+        private static void requireSubmissionLimit(StringBuilder value) throws IOException {
+            if (value.length() > MAX_SUBMISSION_CHARACTERS) {
+                throw new IOException("Terminal submission exceeds 256 Ki characters");
+            }
+        }
+
         private static RenderState redraw(PrintWriter output, String prompt,
                                           String continuationPrompt, StringBuilder value,
                                           int cursor, int previousCursorLine,
-                                          int previousRenderedLines) {
+                                          int previousRenderedLines, int terminalWidth) {
+            String[] lines = value.toString().split("\\n", -1);
+            RenderState next = layout(prompt, continuationPrompt, value, cursor, terminalWidth);
+            StringBuilder frame = new StringBuilder();
+            frame.append('\r');
+            if (previousCursorLine > 0) {
+                frame.append("\u001b[").append(previousCursorLine).append('A');
+            }
+            frame.append('\r');
+
+            // Only the old rendering exists on screen. Clearing rows from the new, larger
+            // layout would try to move below the current terminal bottom before those rows have
+            // been painted, which can clamp the cursor and corrupt the subsequent move back up.
+            int linesToClear = previousRenderedLines;
+            for (int line = 0; line < linesToClear; line++) {
+                frame.append("\u001b[2K");
+                if (line + 1 < linesToClear) frame.append("\u001b[1B\r");
+            }
+            if (linesToClear > 1) {
+                frame.append("\u001b[").append(linesToClear - 1).append("A\r");
+            }
+
+            for (int line = 0; line < lines.length; line++) {
+                frame.append(line == 0 ? prompt : continuationPrompt).append(lines[line]);
+                if (line + 1 < lines.length) frame.append("\r\n");
+            }
+            int moveUp = next.renderedLines() - 1 - next.cursorLine();
+            if (moveUp > 0) frame.append("\u001b[").append(moveUp).append('A');
+            frame.append('\r');
+            if (next.cursorColumn() > 0) {
+                frame.append("\u001b[").append(next.cursorColumn()).append('C');
+            }
+            output.print(frame);
+            output.flush();
+            return next;
+        }
+
+        private static RenderState layout(String prompt, String continuationPrompt,
+                                          StringBuilder value, int cursor, int terminalWidth) {
+            int width = Math.max(1, terminalWidth);
             String[] lines = value.toString().split("\\n", -1);
             Position position = position(value, cursor);
-            output.print("\r");
-            if (previousCursorLine > 0) output.print("\u001b[" + previousCursorLine + "A");
-            output.print("\r");
-            int paintedLines = Math.max(previousRenderedLines, lines.length);
-            for (int line = 0; line < paintedLines; line++) {
-                if (line < lines.length) {
-                    output.print(line == 0 ? prompt : continuationPrompt);
-                    output.print(lines[line]);
+            int renderedLines = 0;
+            int cursorLine = 0;
+            int cursorColumn = 0;
+            int offset = 0;
+            for (int line = 0; line < lines.length; line++) {
+                String linePrompt = line == 0 ? prompt : continuationPrompt;
+                int promptWidth = visibleWidth(linePrompt);
+                int columns = promptWidth + visibleWidth(lines[line]);
+                int physicalLines = physicalLines(columns, width);
+                if (line == position.line()) {
+                    int prefixLength = Math.max(0, Math.min(lines[line].length(),
+                            cursor - offset));
+                    int cursorColumns = promptWidth
+                            + visibleWidth(lines[line].substring(0, prefixLength));
+                    cursorLine = renderedLines + physicalLine(cursorColumns, width);
+                    cursorColumn = physicalColumn(cursorColumns, width);
                 }
-                output.print("\u001b[K");
-                if (line + 1 < paintedLines) output.print("\r\n");
+                renderedLines += physicalLines;
+                offset += lines[line].length() + 1;
             }
-            int moveUp = paintedLines - 1 - position.line();
-            if (moveUp > 0) output.print("\u001b[" + moveUp + "A");
-            output.print("\r");
-            int promptWidth = visibleWidth(position.line() == 0 ? prompt
-                    : continuationPrompt);
-            int lineStart = cursor;
-            while (lineStart > 0 && value.charAt(lineStart - 1) != '\n') lineStart--;
-            int moveRight = promptWidth + visibleWidth(value.substring(lineStart, cursor));
-            if (moveRight > 0) output.print("\u001b[" + moveRight + "C");
-            output.flush();
-            return new RenderState(position.line(), lines.length);
+            return new RenderState(cursorLine, renderedLines, cursorColumn);
+        }
+
+        private static int physicalLines(int columns, int width) {
+            return columns == 0 ? 1 : (columns - 1) / width + 1;
+        }
+
+        private static int physicalLine(int columns, int width) {
+            return columns == 0 ? 0 : (columns - 1) / width;
+        }
+
+        private static int physicalColumn(int columns, int width) {
+            if (columns == 0) return 0;
+            int remainder = columns % width;
+            return remainder == 0 ? width - 1 : remainder;
         }
 
         /** Returns terminal columns while ignoring ANSI CSI formatting sequences. */
@@ -481,7 +659,7 @@ public interface TerminalInput {
 
         private record Position(int line, int column) { }
 
-        private record RenderState(int cursorLine, int renderedLines) { }
+        private record RenderState(int cursorLine, int renderedLines, int cursorColumn) { }
     }
 
     @FunctionalInterface

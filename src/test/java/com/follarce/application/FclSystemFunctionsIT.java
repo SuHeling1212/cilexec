@@ -55,30 +55,29 @@ class FclSystemFunctionsIT {
         source.setURL(POSTGRES.getJdbcUrl());
         source.setUser(POSTGRES.getUsername());
         source.setPassword(POSTGRES.getPassword());
-        FclSystemFunctionsExternalIT.execute(new JdbcTransactionExecutor(source),
-                POSTGRES.getJdbcUrl());
+        FclSystemFunctionsExternalIT.execute(new JdbcTransactionExecutor(source));
     }
 
     @Test
-    void upgradesLegacyPlainDatabasePasswordOnFirstLogin() throws Exception {
+    void rotatesApplicationCredentialWithoutDatabaseLoginPassword() throws Exception {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(POSTGRES.getJdbcUrl());
         source.setUser(POSTGRES.getUsername());
         source.setPassword(POSTGRES.getPassword());
         JdbcTransactionExecutor transactions = new JdbcTransactionExecutor(source);
         String username = "legacy-" + UUID.randomUUID().toString().substring(0, 8);
-        String password = "legacy-password-123";
+        String password = "original-password-123";
+        String replacement = "replacement-password-123";
         var account = new AuthService(transactions, Clock.systemUTC()).create(username,
                 password.toCharArray(), Set.of(Capability.VFS_READ));
-        try (Connection connection = adminConnection(); Statement statement = connection.createStatement()) {
-            statement.execute("ALTER ROLE \"" + account.postgresRoleName()
-                    + "\" PASSWORD '" + password + "'");
-        }
 
         var access = new TerminalAccessService(transactions, POSTGRES.getJdbcUrl(),
                 Clock.systemUTC());
         assertTrue(access.login(username, password.toCharArray()).isPresent());
-        assertTrue(access.login(username, password.toCharArray()).isPresent());
+        new AuthService(transactions, Clock.systemUTC()).rotateCredential(
+                account.userId(), replacement.toCharArray());
+        assertTrue(access.login(username, password.toCharArray()).isEmpty());
+        assertTrue(access.login(username, replacement.toCharArray()).isPresent());
         assertEquals(2L, transactions.inTransaction(
                 com.follarce.domain.port.Isolation.READ_COMMITTED,
                 transaction -> transaction.auth().findUser(account.userId())

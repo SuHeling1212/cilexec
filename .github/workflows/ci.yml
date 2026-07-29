@@ -17,6 +17,12 @@ jobs:
           distribution: temurin
           java-version: '26'
           cache: maven
+      - name: Verify host tools
+        run: |
+          bash -n Install.sh Shell.sh Uninstall.sh HostMove.sh build/*.sh docker/create-secrets.sh market/*.sh
+          sh -n docker/healthcheck.sh docker/postgres/init/00-cilexec-bootstrap.sh
+          python3 -m unittest market/test_server.py
+          cc -std=c11 -Wall -Wextra -Werror -O2 docker/terminal-client.c -o /tmp/cilexec-terminal-client
       - name: Verify Java build
         run: mvn --batch-mode --no-transfer-progress clean verify
 
