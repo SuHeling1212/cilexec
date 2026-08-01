@@ -13,7 +13,9 @@ RUN --mount=type=cache,target=/root/.m2 \
         dependency:go-offline
 
 COPY src ./src
-COPY market/sources ./market/sources
+# Editor source is a distributable FCL package fixture used by package tests;
+# the old market/sources tree no longer exists.
+COPY dist/editor ./dist/editor
 RUN --mount=type=cache,target=/root/.m2 \
     mvn --batch-mode --no-transfer-progress \
         -Djava.net.preferIPv4Stack=true \

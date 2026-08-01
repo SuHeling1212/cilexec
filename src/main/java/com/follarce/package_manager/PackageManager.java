@@ -63,6 +63,8 @@ public final class PackageManager {
             Authorization.require(transaction, ownerId, Capability.PACKAGE_IMPORT);
             PackageCapabilityPolicy.inspect(databaseBytes, descriptor)
                     .requireUserCapabilities(transaction.auth().capabilities(ownerId));
+            PackageDependencyPolicy.requireInstalled(transaction.packages(),
+                    packageIndex.dependencies());
             transaction.vfs().saveObject(object);
             PackageRepository.ReleaseWriteResult result =
                     transaction.packages().registerRelease(packageIndex);
@@ -115,6 +117,12 @@ public final class PackageManager {
             requireActiveEnvironment(transaction.packages(), ownerId, environmentId);
             transaction.packages().findRelease(packageHash)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown package hash"));
+            transaction.packages().findBinding(environmentId, bindingName).ifPresent(existing -> {
+                if (!existing.packageHash().equals(packageHash)) {
+                    throw new IllegalStateException(
+                            "Package binding is already used by another release: " + bindingName);
+                }
+            });
             transaction.packages().saveBinding(binding);
             transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
                     ownerId.toString(), "package.bind", "package.environment",

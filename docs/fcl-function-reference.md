@@ -37,8 +37,8 @@ package.run("demo")
 
 只有 `:exp-start` 与 `:exp-end` 之间的操作会进入临时录制。FCL 输入按原样写入；`:cd`、`:ls` 等终端指令以注释保存，因为它们不是 FCL 语法。两个边界指令、用户名、密码及 `io.input()` 输入都不会写入脚本。成功导出后，数据库会级联删除该录制及其中的操作，因此系统不会为了导出而永久保存全部历史；方向键历史仍独立保留最近 200 条。
 
-所有在线用户共享一个 Runtime JVM、一个数据库连接池以及有上限的 worker 池。默认有 4
-个 scheduler worker 和 2 个 effect worker。超过 worker 数量的进程留在持久化 FIFO
+所有在线用户共享一个 Runtime JVM、一个数据库连接池以及有上限的 worker 池。默认有 10
+个 scheduler worker 和 6 个 effect worker。超过 worker 数量的进程留在持久化 FIFO
 队列中；终端进程每个时间片最多执行 4096 个纯步骤或 20 ms，随后持久化并重新排队。
 另有 1 个事件驱动的 Ctrl+C 中断 worker；它只在 PostgreSQL 中断通知到达时唤醒，
 不轮询。已设置持久中断标志的进程会被普通 scheduler worker 排除，只能由该
@@ -48,16 +48,16 @@ package.run("demo")
 包。第一次使用时先下载和安装，之后可以在持久终端上下文中直接调用：
 
 ```fcl
-network.download("http://host.docker.internal:8787/market/v1/28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008", "/editor.db")
-package.install("/editor.db", "editor")
-import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "editor"
+market.configure("http://host.docker.internal:8787")
+market.update()
+market.install("cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283")
+import "editor"
 editor.open("notes.txt")
 ```
 
-其包坐标为 `cilexec/editor/1.0.4`，绑定名为 `editor`，公开函数为
-`editor.open(path)`。包导入只接受已安装 `.db` 文件的 64 位 SHA-256，不接受包名或
-`namespace/name/version` 坐标；不写别名时，完整 SHA-256 本身就是函数命名空间，调用
-形式为 `<完整SHA256>.函数(...)`。
+其包坐标为 `cilexec/editor/1.0.8`，绑定名为 `editor`，公开函数为
+`editor.open(path)`。包导入接受当前用户默认环境里的绑定名或已安装 `.db` 文件的
+64 位 SHA-256，但不接受 `namespace/name/version` 坐标。
 
 ## 通用数据与权限规则
 
@@ -260,11 +260,14 @@ editor.open("notes.txt")
 ## 包：`package`
 
 包是不可变 SQLite `package.db` 文件。推荐流程：`package.build` → `package.install` → `import` 或 `package.run`。
-`import` 只导入包，并且目标必须是已安装包数据库文件的 SHA-256；别名可选。普通
+`import` 只导入包，目标可以是当前用户默认环境中的绑定名，也可以是已安装包数据库
+文件的 SHA-256；别名可选。普通
 FCL 源文件使用 `include "path.fcl"`，会在编译前原样插入到该位置，不能用 `import`。
 `package.json` 必须声明 `kind`。`application` 必须提供零参数的通用 `run` 入口；
-`library` 用作导入或依赖，可以没有入口。依赖清单完整保存在包内，包含命名空间、名称、
-版本约束和是否可选。
+`library` 用作导入或依赖，可以没有入口。依赖清单完整保存在包内，每项包含依赖 `.db`
+文件的完整 SHA-256 和是否可选。普通安装会拒绝尚未安装的必需依赖；市场安装会先按
+哈希递归安装必需依赖，并拒绝循环依赖。运行时会沿哈希依赖图递归链接依赖的导出；
+包源码使用 `<完整依赖SHA-256>.<导出名>` 调用它们。
 
 宿主机市场的默认索引是 `http://127.0.0.1:8787/market/v1/index.json`；容器内使用
 `http://host.docker.internal:8787/market/v1/index.json`。完整方案见 `docs/package-market.md`。
@@ -283,9 +286,42 @@ FCL 源文件使用 `include "path.fcl"`，会在编译前原样插入到该位�
 | `package.resource(coordinateOrHash, resourcePath)` | 读取包中声明的文本资源。 |
 | `package.pin(environmentUuid, binding, coordinateOrHash)` | 将环境绑定固定到发行版。也可将坐标拆为后三个参数。 |
 | `package.unpin(environmentUuid, binding)` | 删除一个环境绑定。 |
+
+`import` 可以使用当前用户默认环境中的绑定名，也可以使用包数据库的完整 SHA-256：
+
+```fcl
+import "editor" as "e"
+import "cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283" as "exactEditor"
+```
+
+绑定名在同一个包环境中唯一。重复安装相同发行版是幂等操作；普通安装不能用同一个绑定名替换成另一发行版。需要有意调整绑定时，应使用显式的包管理操作。
 | `package.remove(environmentUuid, binding)` | `unpin` 的同义操作，删除绑定。 |
 | `package.gc()` | 管理员接口；当前不可变包不会被实际删除，返回 `0`。 |
 | `package.recover()` | 管理员恢复检查入口，当前返回 `true`。 |
+
+## 内置市场：`market`
+
+市场客户端是 Runtime 自带的 Java 功能，不是 FCL 包，不需要下载 `market.db`，也不需要
+`import`。镜像地址保存在当前用户的持久环境变量 `MARKET_ORIGIN`；管理员设置的共享值
+可作为默认值，用户值优先。完整协议和独立服务端说明见 `docs/package-market.md`。
+
+| 调用 | 作用 |
+| --- | --- |
+| `market.configure(origin)` | 设置当前用户唯一的 HTTP/HTTPS 镜像 origin。 |
+| `market.origin()` | 返回当前生效的镜像源，未配置时返回 `null`。 |
+| `market.update()` | 下载、验证并持久化完整市场索引。 |
+| `market.search(text)` | 多关键词搜索本地索引；索引不存在时先更新。 |
+| `market.info(sha256)` | 按完整分发文件 SHA-256 查询包记录。 |
+| `market.download(sha256)` | 4 MiB 分块下载并重新计算完整文件哈希。 |
+| `market.install(sha256)` | 递归安装精确哈希依赖并建立默认绑定。 |
+| `market.list()` | 列出由市场管理的当前用户安装记录。 |
+| `market.upgrade()` | 更新索引并升级存在新版本的市场安装。 |
+| `market.uninstall(sha256)` | 解除市场安装绑定并移除下载文件。 |
+| `market.help()` | 返回市场函数帮助文本。 |
+| `market.run()` | 返回内置客户端版本和帮助，不要求配置镜像。 |
+
+除 `market.configure`、`market.origin`、`market.help` 和 `market.run` 外，操作需要已配置
+镜像。未配置时会明确报错并给出配置命令，不会突然进入原始输入模式。
 
 ## 交换池（进程间数据）：`swapPool`
 

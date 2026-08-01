@@ -1,6 +1,7 @@
 package com.follarce.application;
 
 import com.follarce.domain.port.ProcessRepository;
+import com.follarce.domain.packageinfo.PackageBinding;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.process.CilProcess;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -116,6 +118,22 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void directlySignalsEffectWorkersAfterAnEffectRequestCommits() {
+        AtomicInteger schedulerWakes = new AtomicInteger();
+        AtomicInteger effectWakes = new AtomicInteger();
+        Fixture fixture = new Fixture("io.print(1)\n",
+                com.follarce.extension.SourceExtensionIndex.catalog(),
+                schedulerWakes::incrementAndGet, effectWakes::incrementAndGet);
+
+        fixture.executor.executeOne(fixture.claim);
+
+        assertEquals(CilProcess.Status.WAITING_EFFECT,
+                fixture.persistence.processes.current.status());
+        assertEquals(0, schedulerWakes.get());
+        assertEquals(1, effectWakes.get());
+    }
+
+    @Test
     void linksPinnedPackageExportsAndPersistsTheExactHash() {
         PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
@@ -161,6 +179,67 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void transitivelyLinksDependencyExportsByDatabaseFileSha256() {
+        PackageManifest dependencyManifest = new PackageManifest("demo", "base", "1.0.0",
+                "fcl-1", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
+                List.of(), List.of(new PackageManifest.Export("value", "main", "value")),
+                List.of());
+        byte[] dependencyDatabase = new PackageBuilder().build(dependencyManifest, path ->
+                "func value() { return 42 }\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var dependencyDescriptor = new SqlitePackageReader().inspect(dependencyDatabase);
+        String dependencyHash = dependencyDescriptor.databaseFileHash();
+
+        PackageManifest parentManifest = new PackageManifest("demo", "parent", "1.0.0",
+                "fcl-1", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
+                List.of(new PackageManifest.Dependency(dependencyHash, false)),
+                List.of(new PackageManifest.Entrypoint("run", "main", "run")),
+                List.of(new PackageManifest.Export("answer", "main", "answer")), List.of());
+        byte[] parentDatabase = new PackageBuilder().build(parentManifest, path -> ("func answer() { return "
+                + dependencyHash + ".value() }\nfunc run() { return null }\n")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var parentDescriptor = new SqlitePackageReader().inspect(parentDatabase);
+        Fixture fixture = new Fixture("import \"" + parentDescriptor.databaseFileHash()
+                + "\"\nresult = " + parentDescriptor.databaseFileHash() + ".answer()\n");
+
+        PackageRelease dependencyRelease = saveRelease(fixture, dependencyDatabase,
+                dependencyDescriptor);
+        PackageRelease parentRelease = saveRelease(fixture, parentDatabase, parentDescriptor);
+        fixture.persistence.packages.releases.put(dependencyRelease.packageHash(),
+                dependencyRelease);
+        fixture.persistence.packages.releases.put(parentRelease.packageHash(), parentRelease);
+
+        int steps = 0;
+        while (!fixture.persistence.processes.current.isTerminal() && steps++ < 40) {
+            if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = fixture.persistence.processes.current.claim(
+                        fixture.persistence.processes.current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                        claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+            fixture.executor.executeOne(fixture.claim);
+        }
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(42L, restored.scope().get("result"));
+    }
+
+    private static PackageRelease saveRelease(Fixture fixture, byte[] database,
+                                               com.follarce.persistence.sqlite.PackageDescriptor descriptor) {
+        StoredObject object = StoredObject.create(new BinaryContent(database),
+                "application/vnd.sqlite3", NOW);
+        fixture.persistence.vfs.saveObject(object);
+        return new PackageRelease(new PackageRelease.Coordinate(descriptor.namespace(),
+                descriptor.name(), descriptor.version()),
+                new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
+                object.objectHash(), object.objectHash(), NOW);
+    }
+
+    @Test
     void resolvesAnInstalledPackageByDatabaseFileSha256WithOptionalAlias() {
         ObjectHash fileHash = new ObjectHash("a".repeat(64));
         PackageRelease release = new PackageRelease(
@@ -180,6 +259,55 @@ class ProcessStatementExecutorTest {
         unaliased.executor.executeOne(unaliased.claim);
         assertEquals(CilProcess.Status.READY,
                 unaliased.persistence.processes.current.status());
+    }
+
+    @Test
+    void resolvesAnInstalledPackageByEnvironmentBindingAndPinsItsExactHash() {
+        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
+                List.of(new PackageManifest.Entrypoint("run", "main", "run")),
+                List.of(new PackageManifest.Export("greet", "main", "greet")),
+                List.of());
+        byte[] database = new PackageBuilder().build(manifest, path ->
+                ("func greet(value) { return \"Hello, \" + value }\n"
+                        + "func run() { return null }\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var descriptor = new SqlitePackageReader().inspect(database);
+        Fixture fixture = new Fixture("import \"hello\"\n"
+                + "result = hello.greet(\"CilExec\")\n");
+        StoredObject object = StoredObject.create(new BinaryContent(database),
+                "application/vnd.sqlite3", NOW);
+        fixture.persistence.vfs.saveObject(object);
+        PackageRelease release = new PackageRelease(new PackageRelease.Coordinate(
+                "demo", "hello", "1.0.0"),
+                new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
+                object.objectHash(), object.objectHash(), NOW);
+        fixture.persistence.packages.releases.put(release.packageHash(), release);
+        var environment = PackageEnvironments.ensureDefault(fixture.persistence.packages,
+                fixture.ownerId, NOW);
+        fixture.persistence.packages.saveBinding(new PackageBinding(environment.environmentId(),
+                "hello", release.packageHash(), NOW));
+
+        int steps = 0;
+        while (!fixture.persistence.processes.current.isTerminal() && steps++ < 30) {
+            if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = fixture.persistence.processes.current.claim(
+                        fixture.persistence.processes.current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                        claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+            fixture.executor.executeOne(fixture.claim);
+        }
+
+        assertEquals(CilProcess.Status.TERMINATED,
+                fixture.persistence.processes.current.status());
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals("Hello, CilExec", restored.scope().get("result"));
+        assertEquals(release.packageHash().value(), fixture.persistence.processes.current
+                .continuation().packageBindings().get("hello"));
     }
 
     @Test
@@ -427,12 +555,18 @@ class ProcessStatementExecutorTest {
         }
 
         Fixture(String source, JavaExtensionCatalog extensions) {
+            this(source, extensions, () -> { }, () -> { });
+        }
+
+        Fixture(String source, JavaExtensionCatalog extensions,
+                Runnable schedulerWake, Runnable effectWake) {
             executor = extensions == null
                     ? new ProcessStatementExecutor(persistence,
                     new FclRuntime(FclBuiltins.pureRegistry()), new FclProgramCodec(),
                     new FclContinuationCodec(), CLOCK)
                     : new ProcessStatementExecutor(persistence, extensions, null,
-                    new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+                    new FclProgramCodec(), new FclContinuationCodec(), CLOCK,
+                    schedulerWake, effectWake);
             program = new ProgramService(persistence, new FclCompiler(),
                     new FclProgramCodec(), CLOCK, UUID::randomUUID).create(ownerId, source);
             persistence.runtimeTransactions = 0;

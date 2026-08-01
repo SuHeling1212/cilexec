@@ -86,6 +86,16 @@ class PackageBuilderTest {
                 new SqlitePackageReader().inspect(database).kind());
     }
 
+    @Test
+    void dependencyManifestUsesOnlyAnExactDatabaseSha256() {
+        PackageManifest.Dependency dependency = new PackageManifest.Dependency(
+                "AB".repeat(32), false);
+
+        assertEquals("ab".repeat(32), dependency.sha256());
+        assertThrows(IllegalArgumentException.class,
+                () -> new PackageManifest.Dependency("demo/library/1.0.0", false));
+    }
+
     private PackageManifest manifest() {
         return new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")),

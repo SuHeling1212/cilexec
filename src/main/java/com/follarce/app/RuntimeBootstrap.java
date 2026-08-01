@@ -46,14 +46,15 @@ public final class RuntimeBootstrap {
     }
 
     public static RuntimeLifecycle assemble(CilExecConfig config, BuildInfo buildInfo) {
-        return assemble(config, buildInfo, ProcessStatementExecutor::new,
-                productionEffectHandlers());
+        ProductionHooks hooks = new ProductionHooks(config, buildInfo, null,
+                productionEffectHandlers(), null);
+        return new RuntimeLifecycle(hooks, config.shutdownGrace());
     }
 
     public static RuntimeLifecycle assembleTerminal(CilExecConfig config, BuildInfo buildInfo,
                                                     TerminalSettings settings) {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo,
-                ProcessStatementExecutor::new, productionEffectHandlers(), settings);
+                null, productionEffectHandlers(), settings);
         RuntimeLifecycle lifecycle = new RuntimeLifecycle(hooks, config.shutdownGrace());
         hooks.runtimeShutdown = () -> lifecycle.shutdown("administrator terminal shutdown");
         return lifecycle;
@@ -120,8 +121,10 @@ public final class RuntimeBootstrap {
             this.terminalSettings = terminalSettings;
             runtimeDataSource = DataSourceFactory.create(config.runtimeDatabase());
             runtimeTransactions = new JdbcTransactionExecutor(runtimeDataSource);
-            processHandler = Objects.requireNonNull(handlerFactory, "handlerFactory")
-                    .apply(runtimeTransactions);
+            processHandler = handlerFactory == null
+                    ? new ProcessStatementExecutor(runtimeTransactions,
+                    this::wakeScheduler, this::wakeEffects)
+                    : handlerFactory.apply(runtimeTransactions);
             metadata = new RuntimeMetadataStore(runtimeDataSource);
             recovery = new RecoveryCoordinator(runtimeDataSource);
         }
@@ -187,13 +190,7 @@ public final class RuntimeBootstrap {
                     requireBoot().bootId(), config.schedulerWorkers(), config.leaseDuration(),
                     config.schedulerErrorBackoff(), requireFence());
             workListener = new PostgresWorkListener(runtimeDataSource,
-                    () -> {
-                        SchedulerService current = scheduler;
-                        if (current != null) current.wake();
-                    }, () -> {
-                        EffectWorkerService current = effectWorkers;
-                        if (current != null) current.wake();
-                    }, () -> {
+                    this::wakeScheduler, this::wakeEffects, () -> {
                         TimerLoop current = timerLoop;
                         if (current != null) current.wake();
                     }, () -> {
@@ -212,7 +209,8 @@ public final class RuntimeBootstrap {
                     new JdbcTransactionExecutor(effectDataSource);
             effectWorkers = new EffectWorkerService(effectTransactions, runtimeTransactions,
                     requireBoot().bootId(), new EffectHandlerRegistry(effectHandlers), config.effectWorkers(),
-                    config.effectErrorBackoff(), Clock.systemUTC(), requireFence());
+                    config.effectErrorBackoff(), Clock.systemUTC(), requireFence(),
+                    this::wakeScheduler);
             effectWorkers.start();
         }
 
@@ -249,6 +247,16 @@ public final class RuntimeBootstrap {
                             .min(Instant::compareTo));
         }
 
+        private void wakeScheduler() {
+            SchedulerService current = scheduler;
+            if (current != null) current.wake();
+        }
+
+        private void wakeEffects() {
+            EffectWorkerService current = effectWorkers;
+            if (current != null) current.wake();
+        }
+
         @Override
         public void markReady() {
             metadata.markReady(requireBoot());
@@ -267,10 +275,7 @@ public final class RuntimeBootstrap {
                     account -> new DatabaseTerminalControl(runtimeTransactions, account,
                             runtimeShutdown,
                             password -> access.login(account.username(), password).isPresent(),
-                            () -> {
-                                SchedulerService current = scheduler;
-                                if (current != null) current.wake();
-                            }, () -> {
+                            this::wakeScheduler, () -> {
                                 SchedulerService current = scheduler;
                                 if (current != null) current.wakeInterrupt();
                             }),

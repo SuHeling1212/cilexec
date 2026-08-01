@@ -47,7 +47,7 @@ class FclFunctionOriginTest {
 
         Path packageFile = temporaryDirectory.resolve("editor.db");
         PackageDescriptor descriptor = new PackageBuilder().build(
-                Path.of("market/sources/editor"), packageFile);
+                Path.of("dist/editor"), packageFile);
         byte[] bytes = Files.readAllBytes(packageFile);
         StoredObject database = StoredObject.create(new BinaryContent(bytes),
                 "application/vnd.sqlite3", Instant.now());

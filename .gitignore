@@ -25,7 +25,7 @@ Thumbs.db
 # Logs
 *.log
 
-# Python-generated market-server cache
+# Legacy/generated Python cache
 __pycache__/
 *.py[cod]
 

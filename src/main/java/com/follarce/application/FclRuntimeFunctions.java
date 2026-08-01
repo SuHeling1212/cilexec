@@ -43,6 +43,8 @@ import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.package_manager.PackageCoordinateConflictException;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageEnvironments;
+import com.follarce.package_manager.PackageDependencyPolicy;
+import com.follarce.market.client.MarketRuntimeFunctions;
 import com.follarce.terminal.TerminalDimensions;
 
 import java.nio.charset.StandardCharsets;
@@ -58,12 +60,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 /** Explicit application adapter that exposes durable CilExec services to one FCL statement. */
 public final class FclRuntimeFunctions {
     private static final String TEXT = "text/plain;charset=utf-8";
     static final long MAX_FILE_BYTES = VfsFileLimits.MAX_FILE_BYTES;
     static final long MAX_IN_MEMORY_READ_BYTES = 16L * 1024 * 1024;
+    private static final long MAX_PACKAGE_DATABASE_BYTES = 64L * 1024 * 1024;
     private static final int MAX_ENVIRONMENT_VALUE_BYTES = 64 * 1024;
     private static final int DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
     private static final com.google.gson.Gson JSON = new com.google.gson.Gson();
@@ -126,6 +131,7 @@ public final class FclRuntimeFunctions {
         registerUsers();
         registerNetworkAndSockets();
         registerPackages();
+        registerMarket();
         registerSwapPool();
         registerSystem();
         extensions.installFunctions(registry, transaction, process, continuation, now);
@@ -888,23 +894,105 @@ public final class FclRuntimeFunctions {
                 });
     }
 
+    private void registerMarket() {
+        new MarketRuntimeFunctions(new MarketRuntimeFunctions.Host() {
+            @Override public String environment(String name) {
+                return transaction.environment().findUser(process.ownerId(), name)
+                        .or(() -> transaction.environment().findShared(name)).orElse(null);
+            }
+
+            @Override public void setEnvironment(String name, String value) {
+                transaction.environment().saveUser(process.ownerId(), name, value, now);
+            }
+
+            @Override public boolean exists(String path) {
+                return resolve(normalize(path)).isPresent();
+            }
+
+            @Override public void ensureDirectory(String path) {
+                Optional<VfsNode> existing = resolve(normalize(path));
+                if (existing.isEmpty()) {
+                    createDirectory(path, process.ownerId());
+                } else {
+                    requireType(existing.orElseThrow(), VfsNode.Type.DIRECTORY,
+                            "market storage");
+                }
+            }
+
+            @Override public String readText(String path) {
+                return FclRuntimeFunctions.this.readText(path);
+            }
+
+            @Override public void writeText(String path, String content) {
+                FclRuntimeFunctions.this.writeText(path, content, false);
+            }
+
+            @Override public boolean removeFile(String path) {
+                if (resolve(normalize(path)).isEmpty()) return false;
+                return Boolean.TRUE.equals(remove(List.of(path), VfsNode.Type.FILE,
+                        "market.removeFile"));
+            }
+
+            @Override public boolean fileMatches(String path, String sha256, long bytes) {
+                return downloadedFileMatches(path, sha256, bytes);
+            }
+
+            @Override public Object httpGet(String url,
+                                            FclFunctionRegistry.Invocation invocation) {
+                return external(invocation, "network.http-get", Map.of("url", url),
+                        idempotentPolicy(invocation, "MARKET-INDEX:" + url), true);
+            }
+
+            @Override public Object download(String url, String path,
+                                             FclFunctionRegistry.Invocation invocation) {
+                return FclRuntimeFunctions.this.download(List.of(url, path), invocation);
+            }
+
+            @Override @SuppressWarnings("unchecked")
+            public Map<String, Object> install(String path, String binding) {
+                Object installed = installPackage(List.of(path, binding));
+                if (!(installed instanceof Map<?, ?> map)) {
+                    throw new FclRuntimeException("Package installer returned an invalid result");
+                }
+                return (Map<String, Object>) map;
+            }
+
+            @Override public boolean removeBinding(String environmentId, String binding) {
+                Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+                return transaction.packages().deleteBinding(
+                        uuid(environmentId, "market package environment"), binding);
+            }
+
+            @Override public void pin(String environmentId, String binding,
+                                      String packageHash) {
+                Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+                saveNonReplacingBinding(new PackageBinding(
+                        uuid(environmentId, "market package environment"), binding,
+                        new PackageRelease.Hash(new ObjectHash(packageHash)), now));
+            }
+        }).register(registry);
+    }
+
     private Object installPackage(List<Object> args) {
         if (args.isEmpty() || args.size() > 3) throw new FclRuntimeException(
                 "package.install expects a VFS path and optional binding arguments");
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
         VfsNode node = requireNode(string(args.getFirst(), "package.install path"));
         requireType(node, VfsNode.Type.FILE, "package.install");
-        StoredObject database = transaction.vfs().findObject(node.currentObjectHash().orElseThrow())
-                .orElseThrow(() -> new FclRuntimeException("Package source bytes are missing"));
-        byte[] databaseBytes = database.content().bytes();
+        ObjectHash sourceHash = node.currentObjectHash().orElseThrow();
+        byte[] databaseBytes = readLogicalObject(sourceHash, MAX_PACKAGE_DATABASE_BYTES,
+                "Package database");
         PackageDescriptor descriptor = new SqlitePackageReader().inspect(databaseBytes);
         com.follarce.package_manager.PackageCapabilityPolicy.inspect(
                 databaseBytes, descriptor).requireUserCapabilities(
                 transaction.auth().capabilities(process.ownerId()));
         ObjectHash fileHash = new ObjectHash(descriptor.databaseFileHash());
+        StoredObject database = StoredObject.create(new BinaryContent(databaseBytes),
+                "application/vnd.sqlite3", now);
         if (!fileHash.equals(database.objectHash())) {
             throw new FclRuntimeException("Package database hash changed during inspection");
         }
+        transaction.vfs().saveObject(database);
         PackageRelease release = new PackageRelease(new PackageRelease.Coordinate(
                 descriptor.namespace(), descriptor.name(), descriptor.version()),
                 new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())), fileHash,
@@ -912,6 +1000,7 @@ public final class FclRuntimeFunctions {
         PackageIndex index = new PackageIndex(release, descriptor.moduleIndex(),
                 descriptor.dependencyIndex(), descriptor.entrypoints(), descriptor.exports(),
                 descriptor.capabilityIndex());
+        PackageDependencyPolicy.requireInstalled(transaction.packages(), index.dependencies());
         var result = transaction.packages().registerRelease(index);
         if (result == com.follarce.domain.port.PackageRepository.ReleaseWriteResult.COORDINATE_CONFLICT) {
             throw new PackageCoordinateConflictException(release.coordinate());
@@ -934,8 +1023,9 @@ public final class FclRuntimeFunctions {
             binding = args.size() == 2
                     ? string(args.get(1), "package binding") : descriptor.name();
         }
-        transaction.packages().saveBinding(new PackageBinding(environmentId, binding,
-                release.packageHash(), now));
+        PackageBinding requestedBinding = new PackageBinding(environmentId, binding,
+                release.packageHash(), now);
+        saveNonReplacingBinding(requestedBinding);
         audit("package.install", node.nodeId(), Map.of(
                 "coordinate", release.coordinate().key(), "writeResult", result.name(),
                 "environmentId", environmentId.toString(), "binding", binding));
@@ -1049,9 +1139,21 @@ public final class FclRuntimeFunctions {
         UUID environment = uuid(args.get(0), "package environment");
         String binding = string(args.get(1), "package binding");
         PackageRelease release = requirePackage(args.subList(2, args.size()), "package.pin");
-        transaction.packages().saveBinding(new PackageBinding(environment, binding,
+        saveNonReplacingBinding(new PackageBinding(environment, binding,
                 release.packageHash(), now));
         return packageMap(release);
+    }
+
+    private void saveNonReplacingBinding(PackageBinding requested) {
+        transaction.packages().findBinding(requested.environmentId(), requested.binding())
+                .ifPresent(existing -> {
+                    if (!existing.packageHash().equals(requested.packageHash())) {
+                        throw new FclRuntimeException(
+                                "Package binding is already used by another release: "
+                                        + requested.binding());
+                    }
+                });
+        transaction.packages().saveBinding(requested);
     }
 
     private PackageRelease requirePackage(List<Object> args, String function) {
@@ -1102,9 +1204,7 @@ public final class FclRuntimeFunctions {
         result.put("kind", descriptor.kind().wireName());
         result.put("languageVersion", descriptor.languageVersion());
         result.put("dependencies", descriptor.dependencyIndex().stream().map(dependency -> Map.of(
-                "namespace", dependency.namespace(),
-                "name", dependency.name(),
-                "version", dependency.versionConstraint(),
+                "sha256", dependency.databaseFileHash().value(),
                 "optional", dependency.optional())).toList());
         result.put("entrypoints", descriptor.entrypoints().stream().map(entrypoint -> Map.of(
                 "name", entrypoint.name(),
@@ -1602,6 +1702,50 @@ public final class FclRuntimeFunctions {
         return result.toByteArray();
     }
 
+    private byte[] readLogicalObject(ObjectHash hash, long maximumBytes, String field) {
+        long size = transaction.vfs().logicalObjectSize(hash);
+        if (size > maximumBytes || size > Integer.MAX_VALUE) {
+            throw new FclRuntimeException(field + " exceeds the 64 MiB package limit");
+        }
+        java.io.ByteArrayOutputStream result = new java.io.ByteArrayOutputStream((int) size);
+        long offset = 0;
+        while (offset < size) {
+            byte[] chunk = transaction.vfs().readObjectRange(hash, offset,
+                    (int) Math.min(DOWNLOAD_CHUNK_BYTES, size - offset));
+            if (chunk.length == 0) {
+                throw new FclRuntimeException(field + " ended before its declared size");
+            }
+            result.writeBytes(chunk);
+            offset += chunk.length;
+        }
+        return result.toByteArray();
+    }
+
+    /** Verifies a potentially large logical VFS file without materializing it in one array. */
+    private boolean downloadedFileMatches(String path, String expectedSha256,
+                                          long expectedBytes) {
+        Optional<VfsNode> resolved = resolve(normalize(path));
+        if (resolved.isEmpty() || resolved.orElseThrow().type() != VfsNode.Type.FILE) return false;
+        Authorization.require(transaction, process.ownerId(), Capability.VFS_READ);
+        ObjectHash hash = resolved.orElseThrow().currentObjectHash().orElse(null);
+        if (hash == null || transaction.vfs().logicalObjectSize(hash) != expectedBytes) return false;
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is unavailable", unavailable);
+        }
+        long offset = 0;
+        while (offset < expectedBytes) {
+            byte[] chunk = transaction.vfs().readObjectRange(hash, offset,
+                    (int) Math.min(DOWNLOAD_CHUNK_BYTES, expectedBytes - offset));
+            if (chunk.length == 0) return false;
+            digest.update(chunk);
+            offset += chunk.length;
+        }
+        return java.util.HexFormat.of().formatHex(digest.digest()).equals(expectedSha256);
+    }
+
     private byte[] readRange(String path, long offset, int maximum, UUID owner) {
         RoutedPath routed = route(path, owner);
         path = routed.path();
@@ -1881,9 +2025,11 @@ public final class FclRuntimeFunctions {
             requested = UUID.fromString(identity);
         } catch (IllegalArgumentException ignored) { }
         if (process.ownerId().equals(requested)) return requested;
-        Optional<UserAccount> current = transaction.auth().findUser(process.ownerId());
-        if (current.isPresent() && current.orElseThrow().username()
-                .equalsIgnoreCase(identity)) return process.ownerId();
+        if (requested == null) {
+            Optional<UserAccount> current = transaction.auth().findUser(process.ownerId());
+            if (current.isPresent() && current.orElseThrow().username()
+                    .equalsIgnoreCase(identity)) return process.ownerId();
+        }
         Authorization.requireAdministrator(transaction, process.ownerId());
         UUID parsed = requested;
         return transaction.auth().findUsersByAdministrator(process.ownerId()).stream()

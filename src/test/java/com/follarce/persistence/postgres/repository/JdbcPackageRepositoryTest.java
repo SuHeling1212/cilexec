@@ -36,7 +36,7 @@ class JdbcPackageRepositoryTest {
         assertEquals(13, capture.sql.chars().filter(character -> character == '?').count());
         assertTrue(capture.parameters.get(8).toString().contains("\"moduleName\""));
         assertTrue(capture.parameters.get(8).toString().contains("\"moduleObjectPath\""));
-        assertTrue(capture.parameters.get(9).toString().contains("\"dependencyNamespace\""));
+        assertTrue(capture.parameters.get(9).toString().contains("\"dependencyFileHash\""));
         assertTrue(capture.parameters.get(10).toString().contains("\"entrypointName\""));
         assertTrue(capture.parameters.get(11).toString().contains("\"exportName\""));
         assertTrue(capture.parameters.get(12).toString().contains("\"capabilityKey\""));
@@ -51,7 +51,7 @@ class JdbcPackageRepositoryTest {
                 NOW);
         return new PackageIndex(release,
                 List.of(new PackageIndex.Module("main", "modules/main.fcl", hash("main"))),
-                List.of(new PackageIndex.Dependency("std", "base", "1.0.0", false)),
+                List.of(new PackageIndex.Dependency(hash("dependency database"), false)),
                 List.of(new PackageIndex.Entrypoint("run", "main", "main")),
                 List.of(new PackageIndex.Export("api", "main", "api")),
                 List.of(new PackageIndex.CapabilityRequirement("vfs_read", true, "read")));

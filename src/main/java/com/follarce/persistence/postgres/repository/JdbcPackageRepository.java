@@ -45,7 +45,7 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
             statement.setString(4, release.coordinate().version());
             statement.setBytes(5, JdbcValues.hash(release.databaseObjectHash()));
             statement.setBytes(6, JdbcValues.hash(release.databaseFileHash()));
-            statement.setInt(7, 1);
+            statement.setInt(7, com.follarce.persistence.sqlite.SqlitePackageReader.FORMAT_VERSION);
             statement.setString(8, json.write(moduleJson(packageIndex.modules())));
             statement.setString(9, json.write(dependencyJson(packageIndex.dependencies())));
             statement.setString(10, json.write(entrypointJson(packageIndex.entrypoints())));
@@ -159,14 +159,23 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     public void saveBinding(PackageBinding binding) {
         String sql = "INSERT INTO package.binding(environment_id,owner_id,binding_name,package_hash,bound_at,bound_by) "
                 + "SELECT environment_id,owner_id,?,?,?,owner_id FROM package.environment WHERE environment_id=? "
-                + "ON CONFLICT (environment_id,binding_name) DO UPDATE SET package_hash=EXCLUDED.package_hash,"
-                + "bound_at=EXCLUDED.bound_at,bound_by=EXCLUDED.bound_by";
+                + "ON CONFLICT (environment_id,binding_name) DO NOTHING";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, binding.binding());
             statement.setBytes(2, JdbcValues.hash(binding.packageHash().value()));
             statement.setTimestamp(3, java.sql.Timestamp.from(binding.createdAt()));
             statement.setObject(4, binding.environmentId());
-            requireOne("package.saveBinding", statement.executeUpdate());
+            int affected = statement.executeUpdate();
+            if (affected == 0) {
+                PackageBinding persisted = findBinding(binding.environmentId(), binding.binding())
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Package binding target is missing"));
+                if (!persisted.packageHash().equals(binding.packageHash())) {
+                    throw new IllegalStateException(
+                            "Package binding is immutable until explicitly removed: "
+                                    + binding.binding());
+                }
+            }
         } catch (SQLException exception) {
             throw failure("package.saveBinding", exception);
         }
@@ -333,9 +342,7 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     private static List<Map<String, Object>> dependencyJson(
             List<PackageIndex.Dependency> dependencies) {
         return dependencies.stream().map(dependency -> fields(
-                "dependencyNamespace", dependency.namespace(),
-                "dependencyName", dependency.name(),
-                "versionConstraint", dependency.versionConstraint(),
+                "dependencyFileHash", dependency.databaseFileHash().value(),
                 "optional", dependency.optional())).toList();
     }
 

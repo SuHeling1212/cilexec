@@ -10,6 +10,7 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -99,6 +100,27 @@ class TerminalConsoleTest {
                 control).run();
 
         assertEquals(List.of("UP"), control.attachedInputs);
+        assertEquals(List.of(new ShellCommand.Exit()), control.commands);
+    }
+
+    @Test
+    void treatsCtrlCAsGlobalCancellationInsteadOfEditorInput() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        AtomicInteger modeChecks = new AtomicInteger();
+        RecordingControl control = new RecordingControl() {
+            @Override public AttachedInputMode attachedInputMode() {
+                return modeChecks.getAndIncrement() == 0
+                        ? AttachedInputMode.KEY : AttachedInputMode.NONE;
+            }
+        };
+        String input = "\u0003:exit\n";
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        assertTrue(control.attachedInputs.isEmpty());
         assertEquals(List.of(new ShellCommand.Exit()), control.commands);
     }
 

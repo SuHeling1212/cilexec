@@ -245,12 +245,7 @@ ALTER TABLE package.release_module
 
 ALTER TABLE package.release_dependency
     ADD CONSTRAINT ck_package_release_dependency_domain
-    CHECK (
-        dependency_namespace ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
-        AND dependency_name ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
-        AND version_constraint ~ '[^[:space:]]'
-        AND version_constraint !~ '[[:cntrl:]]'
-    ) NOT VALID;
+    CHECK (octet_length(dependency_file_hash) = 32) NOT VALID;
 
 ALTER TABLE package.release_entrypoint
     ADD CONSTRAINT ck_package_release_entrypoint_domain
@@ -394,22 +389,16 @@ BEGIN
     FOR item IN SELECT value FROM jsonb_array_elements(p_dependencies)
     LOOP
         IF jsonb_typeof(item) <> 'object'
-           OR jsonb_typeof(item->'dependencyNamespace') IS DISTINCT FROM 'string'
-           OR (item->>'dependencyNamespace') !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
-           OR jsonb_typeof(item->'dependencyName') IS DISTINCT FROM 'string'
-           OR (item->>'dependencyName') !~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
-           OR jsonb_typeof(item->'versionConstraint') IS DISTINCT FROM 'string'
-           OR (item->>'versionConstraint') !~ '[^[:space:]]'
-           OR (item->>'versionConstraint') ~ '[[:cntrl:]]'
+           OR jsonb_typeof(item->'dependencyFileHash') IS DISTINCT FROM 'string'
+           OR (item->>'dependencyFileHash') !~ '^[0-9a-f]{64}$'
            OR jsonb_typeof(item->'optional') IS DISTINCT FROM 'boolean' THEN
             RAISE EXCEPTION 'invalid package dependency index' USING ERRCODE = '22000';
         END IF;
         INSERT INTO package.release_dependency(
-            package_hash, dependency_namespace, dependency_name,
-            version_constraint, optional
+            package_hash, dependency_file_hash, optional
         ) VALUES (
-            p_package_hash, item->>'dependencyNamespace', item->>'dependencyName',
-            item->>'versionConstraint', (item->>'optional')::boolean
+            p_package_hash, decode(item->>'dependencyFileHash', 'hex'),
+            (item->>'optional')::boolean
         );
     END LOOP;
 
@@ -1019,4 +1008,3 @@ COMMENT ON FUNCTION scheduler.claim_authorizes_commit(
     uuid, uuid, uuid, uuid, bigint
 ) IS 'Final same-transaction guard for active control lock, boot, runner, epoch, and unexpired lease';
 RESET ROLE;
-

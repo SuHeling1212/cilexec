@@ -20,6 +20,8 @@ import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.audit.AuditRetentionPolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
+import com.follarce.domain.effect.EffectAttempt;
+import com.follarce.domain.effect.EffectRequest;
 import com.follarce.domain.ipc.IpcChannel;
 import com.follarce.domain.ipc.IpcDelivery;
 import com.follarce.domain.ipc.IpcMessage;
@@ -183,6 +185,7 @@ class ProgramServiceTest {
         final MemoryTerminalRepository terminal = new MemoryTerminalRepository();
         final MemoryIpcRepository ipc = new MemoryIpcRepository();
         final MemoryPackageRepository packages = new MemoryPackageRepository();
+        final MemoryEffectRepository effects = new MemoryEffectRepository();
         final MemoryAuthRepository auth = new MemoryAuthRepository();
         final MemoryEnvironmentRepository environment = new MemoryEnvironmentRepository();
         final MemoryAuditRepository audit = new MemoryAuditRepository();
@@ -214,7 +217,7 @@ class ProgramServiceTest {
         @Override public IpcRepository ipc() { return ipc; }
         @Override public TimerRepository timers() { return null; }
         @Override public PackageRepository packages() { return packages; }
-        @Override public EffectRepository effects() { return null; }
+        @Override public EffectRepository effects() { return effects; }
         @Override public AuthRepository auth() { return auth; }
         @Override public AuditRepository audit() { return audit; }
         @Override public TerminalRepository terminal() { return terminal; }
@@ -222,6 +225,33 @@ class ProgramServiceTest {
         @Override public void commit() { }
         @Override public void rollback() { }
         @Override public void close() { }
+    }
+
+    static final class MemoryEffectRepository implements EffectRepository {
+        final Map<UUID, EffectRequest> requests = new LinkedHashMap<>();
+
+        @Override public void registerWorker(UUID workerId, UUID bootId, Instant now) { }
+        @Override public void save(EffectRequest effect) { requests.put(effect.effectId(), effect); }
+        @Override public Optional<EffectRequest> findById(UUID effectId) {
+            return Optional.ofNullable(requests.get(effectId));
+        }
+        @Override public List<EffectRequest> claimPending(UUID workerId, Instant now, int limit) {
+            return List.of();
+        }
+        @Override public boolean update(EffectRequest effect, EffectRequest.Status expectedStatus) {
+            requests.put(effect.effectId(), effect);
+            return true;
+        }
+        @Override public int nextAttemptNumber(UUID effectId) { return 1; }
+        @Override public void saveAttempt(EffectAttempt attempt) { }
+        @Override public Optional<EffectAttempt> findAttempt(UUID attemptId) {
+            return Optional.empty();
+        }
+        @Override public List<EffectAttempt> findAttempts(UUID effectId) { return List.of(); }
+        @Override public boolean updateAttempt(EffectAttempt attempt,
+                                               EffectAttempt.Status expectedStatus) {
+            return true;
+        }
     }
 
     static final class MemoryProgramRepository implements ProgramRepository {

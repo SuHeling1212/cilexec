@@ -44,7 +44,7 @@ public final class TerminalConsole implements Runnable {
                     if (inputMode == TerminalControl.AttachedInputMode.KEY) {
                         String key = input.readKey(output);
                         if (key == null) return Outcome.END_OF_INPUT;
-                        if (key.equals("CTRL_C") && !control.awaitingAttachedInput()) {
+                        if (key.equals("CTRL_C")) {
                             input.finishKeyMode();
                             output.print(RESET_TUI);
                             output.flush();

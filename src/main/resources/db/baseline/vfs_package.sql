@@ -143,15 +143,9 @@ CREATE TABLE package.release (
 -- name: baseline.create_release_indexes
 CREATE TABLE package.release_dependency (
     package_hash bytea NOT NULL REFERENCES package.release(package_hash) ON DELETE RESTRICT,
-    dependency_namespace text NOT NULL CHECK (
-        dependency_namespace ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'),
-    dependency_name text NOT NULL CHECK (
-        dependency_name ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'),
-    version_constraint text NOT NULL CHECK (
-        char_length(version_constraint) BETWEEN 1 AND 128
-        AND version_constraint !~ '[[:cntrl:]]'),
+    dependency_file_hash bytea NOT NULL CHECK (octet_length(dependency_file_hash) = 32),
     optional boolean NOT NULL DEFAULT false,
-    PRIMARY KEY (package_hash, dependency_namespace, dependency_name)
+    PRIMARY KEY (package_hash, dependency_file_hash)
 );
 
 CREATE TABLE package.release_module (
@@ -266,7 +260,7 @@ CREATE TABLE process.package_binding (
 -- name: baseline.package_indexes
 CREATE INDEX ix_release_coordinate ON package.release(namespace, package_name, package_version);
 CREATE INDEX ix_release_dependency_target
-    ON package.release_dependency(dependency_namespace, dependency_name);
+    ON package.release_dependency(dependency_file_hash);
 CREATE INDEX ix_binding_package ON package.binding(package_hash);
 CREATE INDEX ix_process_package_hash ON process.package_binding(package_hash);
 

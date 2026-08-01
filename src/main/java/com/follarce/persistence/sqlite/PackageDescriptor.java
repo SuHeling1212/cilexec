@@ -61,7 +61,7 @@ public record PackageDescriptor(
     }
 
     public List<String> dependencies() {
-        return dependencyIndex.stream().map(PackageIndex.Dependency::coordinate).toList();
+        return dependencyIndex.stream().map(PackageIndex.Dependency::sha256).toList();
     }
 
     public List<String> capabilities() {

@@ -37,6 +37,7 @@ public final class EffectWorkerService implements AutoCloseable {
     private final Clock clock;
     private final Consumer<Throwable> fatalFailure;
     private final Optional<UUID> bootId;
+    private final Runnable schedulerWake;
     private final AtomicBoolean running = new AtomicBoolean();
     private final Semaphore workAvailable = new Semaphore(0);
     private final List<Thread> workers = new ArrayList<>();
@@ -48,7 +49,7 @@ public final class EffectWorkerService implements AutoCloseable {
                                Clock clock,
                                Consumer<Throwable> fatalFailure) {
         this(transactions, transactions, handlers, workerCount, errorBackoff, clock, fatalFailure,
-                Optional.empty());
+                Optional.empty(), () -> { });
     }
 
     public EffectWorkerService(TransactionExecutor effectTransactions,
@@ -59,7 +60,7 @@ public final class EffectWorkerService implements AutoCloseable {
                                Clock clock,
                                Consumer<Throwable> fatalFailure) {
         this(effectTransactions, runtimeTransactions, handlers, workerCount, errorBackoff, clock,
-                fatalFailure, Optional.empty());
+                fatalFailure, Optional.empty(), () -> { });
     }
 
     /** Production constructor: attempts reference workers registered under this boot. */
@@ -72,7 +73,22 @@ public final class EffectWorkerService implements AutoCloseable {
                                Clock clock,
                                Consumer<Throwable> fatalFailure) {
         this(effectTransactions, runtimeTransactions, handlers, workerCount, errorBackoff, clock,
-                fatalFailure, Optional.of(java.util.Objects.requireNonNull(bootId, "bootId")));
+                fatalFailure, Optional.of(java.util.Objects.requireNonNull(bootId, "bootId")),
+                () -> { });
+    }
+
+    public EffectWorkerService(TransactionExecutor effectTransactions,
+                               TransactionExecutor runtimeTransactions,
+                               UUID bootId,
+                               EffectHandlerRegistry handlers,
+                               int workerCount,
+                               Duration errorBackoff,
+                               Clock clock,
+                               Consumer<Throwable> fatalFailure,
+                               Runnable schedulerWake) {
+        this(effectTransactions, runtimeTransactions, handlers, workerCount, errorBackoff, clock,
+                fatalFailure, Optional.of(java.util.Objects.requireNonNull(bootId, "bootId")),
+                schedulerWake);
     }
 
     private EffectWorkerService(TransactionExecutor effectTransactions,
@@ -82,7 +98,8 @@ public final class EffectWorkerService implements AutoCloseable {
                                 Duration errorBackoff,
                                 Clock clock,
                                 Consumer<Throwable> fatalFailure,
-                                Optional<UUID> bootId) {
+                                Optional<UUID> bootId,
+                                Runnable schedulerWake) {
         this.effectTransactions = java.util.Objects.requireNonNull(effectTransactions,
                 "effectTransactions");
         this.runtimeTransactions = java.util.Objects.requireNonNull(runtimeTransactions,
@@ -97,6 +114,7 @@ public final class EffectWorkerService implements AutoCloseable {
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
         this.fatalFailure = java.util.Objects.requireNonNull(fatalFailure, "fatalFailure");
         this.bootId = java.util.Objects.requireNonNull(bootId, "bootId");
+        this.schedulerWake = java.util.Objects.requireNonNull(schedulerWake, "schedulerWake");
     }
 
     public synchronized void start() {
@@ -276,6 +294,7 @@ public final class EffectWorkerService implements AutoCloseable {
             wakeProcess(transaction, completed, result.deliveryValue(), now);
             return null;
         });
+        schedulerWake.run();
     }
 
     private void retainRecoveredUnknown(EffectRequest unknown, String reason) {
@@ -406,6 +425,7 @@ public final class EffectWorkerService implements AutoCloseable {
             wakeProcess(transaction, completed, result.deliveryValue(), now);
             return null;
         });
+        schedulerWake.run();
     }
 
     private void persistFailure(ClaimedWork work, String code, String reason, boolean unknown) {
@@ -427,6 +447,7 @@ public final class EffectWorkerService implements AutoCloseable {
             }
             return null;
         });
+        if (!unknown) schedulerWake.run();
     }
 
     private static void wakeProcess(com.follarce.domain.port.TransactionContext transaction,

@@ -1296,6 +1296,14 @@ package.release.database_object_hash
 
 完整原始 `.db` 是内容权威；PostgreSQL 中的依赖、入口、导出和 capability 索引是可重建派生数据。
 
+依赖不按坐标或版本范围解析，而是固定到被依赖 `.db` 分发文件的完整 SHA-256：
+
+```text
+package.release_dependency.dependency_file_hash
+```
+
+坐标只用于显示。安装必需依赖时必须找到完全相同的文件哈希；可选依赖允许缺失。
+
 ## 14.5 Package Environment
 
 首版实现显式软件包环境：

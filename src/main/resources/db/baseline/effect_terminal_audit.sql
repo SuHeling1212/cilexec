@@ -831,17 +831,14 @@ BEGIN
     FOR item IN SELECT value FROM jsonb_array_elements(p_dependencies)
     LOOP
         IF jsonb_typeof(item) <> 'object'
-           OR NULLIF(btrim(item->>'dependencyNamespace'), '') IS NULL
-           OR NULLIF(btrim(item->>'dependencyName'), '') IS NULL
-           OR NULLIF(btrim(item->>'versionConstraint'), '') IS NULL THEN
+           OR COALESCE(item->>'dependencyFileHash', '') !~ '^[0-9a-f]{64}$' THEN
             RAISE EXCEPTION 'invalid package dependency index' USING ERRCODE = '22000';
         END IF;
         INSERT INTO package.release_dependency(
-            package_hash, dependency_namespace, dependency_name,
-            version_constraint, optional
+            package_hash, dependency_file_hash, optional
         ) VALUES (
-            p_package_hash, item->>'dependencyNamespace', item->>'dependencyName',
-            item->>'versionConstraint', COALESCE((item->>'optional')::boolean, false)
+            p_package_hash, decode(item->>'dependencyFileHash', 'hex'),
+            COALESCE((item->>'optional')::boolean, false)
         );
     END LOOP;
 

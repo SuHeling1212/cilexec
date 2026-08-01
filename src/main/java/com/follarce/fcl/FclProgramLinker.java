@@ -30,6 +30,12 @@ public final class FclProgramLinker {
     }
 
     private final FclCompiler compiler = new FclCompiler();
+    private final Map<String, FclProgram> compiledModules = java.util.Collections.synchronizedMap(
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(Map.Entry<String, FclProgram> eldest) {
+                    return size() > 128;
+                }
+            });
 
     public FclProgram link(FclProgram base, List<Module> requestedModules) {
         Objects.requireNonNull(base, "base");
@@ -40,7 +46,18 @@ public final class FclProgramLinker {
         long expressionOffset = maximumExpressionId(base.instructions());
         for (int index = 0; index < modules.size(); index++) {
             Module module = modules.get(index);
-            FclProgram compiled = compiler.compile(module.source());
+            String moduleKey = module.packageIdentity() + "\u0000" + module.moduleName();
+            FclProgram compiled;
+            synchronized (compiledModules) {
+                compiled = compiledModules.get(moduleKey);
+                if (compiled == null) {
+                    compiled = compiler.compile(module.source());
+                    compiledModules.put(moduleKey, compiled);
+                } else if (!compiled.source().equals(module.source())) {
+                    throw new FclRuntimeException(
+                            "Package module identity resolved to different source");
+                }
+            }
             requireLibraryModule(module, compiled);
             long maximum = maximumExpressionId(compiled.instructions());
             contexts.add(new Context(module, compiled, expressionOffset,

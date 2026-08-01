@@ -104,12 +104,7 @@ public final class TerminalServer implements AutoCloseable {
             PrintWriter sessionOutput = output;
             new TerminalAccessConsole(input, output, access, account -> {
                         TerminalControl control = controls.apply(account);
-                        transported.bind(account.userId(), () -> {
-                            boolean attached = control.attachedInputMode()
-                                    != TerminalControl.AttachedInputMode.NONE;
-                            boolean interrupted = control.interruptForeground();
-                            return interrupted && !attached;
-                        });
+                        transported.bind(account.userId(), control::interruptForeground);
                         control.outputRouteId().ifPresent(
                                 routeId -> TerminalOutputRouter.attach(routeId, sessionOutput));
                         return control;
@@ -249,7 +244,15 @@ public final class TerminalServer implements AutoCloseable {
             }
             String[] fields = frame.toString().trim().split("\\s+");
             if (fields.length == 1 && fields[0].equals("I")) {
-                if (!interrupt.getAsBoolean()) input.put(3);
+                try {
+                    interrupt.getAsBoolean();
+                } catch (RuntimeException ignored) {
+                    // A transient control-plane failure must not kill the only socket reader.
+                }
+                // Always wake whichever console read is active. If FCL was running, byte 3 is
+                // only an in-band acknowledgement of the already-persisted cancellation; if no
+                // process was running it cancels the editable prompt.
+                input.put(3);
                 return;
             }
             if (fields.length != 3 || !fields[0].equals("S")) return;

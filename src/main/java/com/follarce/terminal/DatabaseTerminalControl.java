@@ -135,9 +135,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 .filter(snapshot -> !terminal(snapshot.status()));
         if (active.isEmpty()) return false;
         long pid = active.orElseThrow().pid();
-        if (!terminals.interruptTerminal(user.userId(), pid)) return false;
-        await(pid);
-        return true;
+        return terminals.interruptTerminal(user.userId(), pid);
     }
 
     @Override
@@ -423,8 +421,10 @@ public final class DatabaseTerminalControl implements TerminalControl {
                                                   download the SQLite package into VFS
                   package.install("/editor.db", "editor")
                                                   install and bind the downloaded package
+                  import "editor"
+                                                  import the installed package by binding
                   import "<package-db-sha256>" as "editor"
-                                                  import an exact package with an explicit alias
+                                                  alternatively import an exact package hash
                   editor.open("notes.txt")         open or create a VFS text file
                   Ctrl-O/Ctrl-S save, Ctrl-X exit, Ctrl-W search, Ctrl-K cut line, Ctrl-U paste
 

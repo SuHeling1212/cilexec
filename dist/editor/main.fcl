@@ -358,7 +358,7 @@ func ed_render(state) {
     status = status + "  col " + util.toString(state["col"] + 1)
     screen = screen + term.inverse(ed_fit(status, width)) + "\r\n"
     if state["mode"] == "exit" {
-        screen = screen + ed_fit("Save modified buffer?  Y Yes   N No   Ctrl-C Cancel", width)
+        screen = screen + ed_fit("Save modified buffer?  Y Yes   N No   Esc Cancel", width)
     } else {
         if state["mode"] == "search" {
             screen = screen + ed_fit("Search: " + state["query"], width)

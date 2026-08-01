@@ -198,14 +198,14 @@ public final class PackageBuilder {
                 statement.execute("PRAGMA page_size=4096");
                 statement.execute("PRAGMA journal_mode=OFF");
                 statement.execute("PRAGMA synchronous=OFF");
-                statement.execute("PRAGMA user_version=1");
+                statement.execute("PRAGMA user_version=" + SqlitePackageReader.FORMAT_VERSION);
             }
             connection.setAutoCommit(false);
             try (Statement statement = connection.createStatement()) {
                 statement.execute("CREATE TABLE package_metadata(metadata_key TEXT PRIMARY KEY, metadata_value TEXT NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_file(file_path TEXT PRIMARY KEY, content BLOB NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_module(module_name TEXT PRIMARY KEY, module_object_path TEXT NOT NULL UNIQUE, module_hash TEXT NOT NULL) WITHOUT ROWID");
-                statement.execute("CREATE TABLE package_dependency(dependency_namespace TEXT NOT NULL, dependency_name TEXT NOT NULL, version_constraint TEXT NOT NULL, optional INTEGER NOT NULL, PRIMARY KEY(dependency_namespace,dependency_name)) WITHOUT ROWID");
+                statement.execute("CREATE TABLE package_dependency(dependency_file_hash TEXT PRIMARY KEY, optional INTEGER NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_entrypoint(entrypoint_name TEXT PRIMARY KEY, module_name TEXT NOT NULL, function_name TEXT NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_export(export_name TEXT PRIMARY KEY, module_name TEXT NOT NULL, symbol_name TEXT NOT NULL) WITHOUT ROWID");
                 statement.execute("CREATE TABLE package_capability(capability_key TEXT PRIMARY KEY, required INTEGER NOT NULL, rationale TEXT NOT NULL) WITHOUT ROWID");
@@ -276,13 +276,11 @@ public final class PackageBuilder {
     private static void insertDependencies(Connection connection, PackageManifest manifest)
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
-                "INSERT INTO package_dependency(dependency_namespace,dependency_name,version_constraint,optional) VALUES (?,?,?,?)")) {
+                "INSERT INTO package_dependency(dependency_file_hash,optional) VALUES (?,?)")) {
             for (PackageManifest.Dependency dependency : sorted(manifest.dependencies(),
-                    value -> value.namespace() + "/" + value.name())) {
-                statement.setString(1, dependency.namespace());
-                statement.setString(2, dependency.name());
-                statement.setString(3, dependency.version());
-                statement.setBoolean(4, dependency.optional());
+                    PackageManifest.Dependency::sha256)) {
+                statement.setString(1, dependency.sha256());
+                statement.setBoolean(2, dependency.optional());
                 statement.addBatch();
             }
             statement.executeBatch();

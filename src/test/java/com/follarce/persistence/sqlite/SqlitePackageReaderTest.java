@@ -90,6 +90,17 @@ class SqlitePackageReaderTest {
         assertThrows(PackageDatabaseException.class, () -> inspect(database));
     }
 
+    @Test
+    void rejectsTheCoordinateDependencyPackageFormat() throws Exception {
+        Path database = packageDatabase(null);
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA user_version=1");
+        }
+
+        assertThrows(PackageDatabaseException.class, () -> inspect(database));
+    }
+
     private PackageDescriptor inspect(Path database) throws IOException {
         return new SqlitePackageReader().inspect(Files.readAllBytes(database));
     }
@@ -98,13 +109,13 @@ class SqlitePackageReaderTest {
         Path database = temporaryDirectory.resolve(UUID.randomUUID() + ".db");
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA user_version=" + SqlitePackageReader.FORMAT_VERSION);
             statement.execute("CREATE TABLE package_metadata(metadata_key TEXT NOT NULL, "
                     + "metadata_value TEXT NOT NULL)");
             statement.execute("CREATE TABLE package_file(file_path TEXT NOT NULL, content BLOB)");
             statement.execute("CREATE TABLE package_module(module_name TEXT NOT NULL, "
                     + "module_object_path TEXT NOT NULL, module_hash TEXT NOT NULL)");
-            statement.execute("CREATE TABLE package_dependency(dependency_namespace TEXT NOT NULL, "
-                    + "dependency_name TEXT NOT NULL, version_constraint TEXT NOT NULL, "
+            statement.execute("CREATE TABLE package_dependency(dependency_file_hash TEXT NOT NULL, "
                     + "optional INTEGER NOT NULL)");
             statement.execute("CREATE TABLE package_entrypoint(entrypoint_name TEXT NOT NULL, "
                     + "module_name TEXT NOT NULL, function_name TEXT NOT NULL)");
@@ -120,8 +131,8 @@ class SqlitePackageReaderTest {
                     + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'" + ")");
             statement.execute("INSERT INTO package_file(file_path,content) "
                     + "VALUES ('modules/main.fcl',X'')");
-            statement.execute("INSERT INTO package_dependency(dependency_namespace,dependency_name,"
-                    + "version_constraint,optional) VALUES ('std','base','1.0.0',0)");
+            statement.execute("INSERT INTO package_dependency(dependency_file_hash,optional) "
+                    + "VALUES ('" + "aa".repeat(32) + "',0)");
             statement.execute("INSERT INTO package_capability(capability_name,required,rationale) "
                     + "VALUES ('vfs_read',1,'read package data')");
             if (extraDdl != null) statement.execute(extraDdl);

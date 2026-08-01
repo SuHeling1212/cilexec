@@ -1,4 +1,0 @@
-downloaded = network.download("http://host.docker.internal:8787/market/v1/e65c7741c15f9cda04581d6883556092408800f5f34dd970aba85caad0a59229", "/market.db")
-installed = package.install("/market.db", "market")
-import "e65c7741c15f9cda04581d6883556092408800f5f34dd970aba85caad0a59229" as "mkt"
-updated = mkt.update()

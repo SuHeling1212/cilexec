@@ -116,6 +116,7 @@ class FclSystemFunctionsExternalIT {
         assertFalse(names.stream().anyMatch(name -> String.valueOf(name).startsWith("file.admin")));
         assertTrue(names.contains("network.httpGet"));
         assertTrue(names.contains("package.install"));
+        assertTrue(names.contains("market.install"));
         assertTrue(names.contains("socket.connect"));
         @SuppressWarnings("unchecked")
         Map<String, Object> installedPackage =
@@ -139,11 +140,12 @@ class FclSystemFunctionsExternalIT {
                 Isolation.READ_COMMITTED, transaction -> transaction.processes()
                         .findByPid(launchedPid).orElseThrow());
         assertEquals(CilProcess.Status.READY, launchedChild.status());
-        assertTrue(launchedChild.continuation().packageBindings().containsKey("hello"));
+        String exactImport = (String) installedPackage.get("sha256");
+        assertTrue(launchedChild.continuation().packageBindings().containsKey(exactImport));
         boolean bindingPersisted = transactions.inUserTransaction(owner.userId(),
                 Isolation.READ_COMMITTED,
                 transaction -> transaction.packages().findProcessBinding(
-                        launchedChild.identity().processUid(), "hello").isPresent());
+                        launchedChild.identity().processUid(), exactImport).isPresent());
         assertTrue(bindingPersisted);
 
         String adminSource = """

@@ -164,9 +164,7 @@ class LogicalExportServiceTest {
         FileStore store = Files.getFileStore(database);
         if (store.supportsFileAttributeView(PosixFileAttributeView.class)) {
             Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(database);
-            assertEquals(Set.of(PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.GROUP_READ,
-                    PosixFilePermission.OTHERS_READ), permissions);
+            assertEquals(Set.of(PosixFilePermission.OWNER_READ), permissions);
         }
     }
 }

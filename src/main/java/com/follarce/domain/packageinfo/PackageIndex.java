@@ -26,7 +26,7 @@ public record PackageIndex(
         Set<String> moduleNames = unique(modules.stream().map(Module::name).toList(),
                 "module name");
         unique(dependencies.stream().map(dependency ->
-                dependency.namespace() + "/" + dependency.name()).toList(), "dependency");
+                dependency.databaseFileHash().value()).toList(), "dependency");
         unique(entrypoints.stream().map(Entrypoint::name).toList(), "entrypoint name");
         unique(exports.stream().map(Export::name).toList(), "export name");
         unique(capabilities.stream().map(CapabilityRequirement::key).toList(),
@@ -51,13 +51,6 @@ public record PackageIndex(
         return value;
     }
 
-    private static String component(String value, String name) {
-        value = Invariant.text(value, name);
-        Invariant.check(value.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"),
-                name + " contains unsupported characters");
-        return value;
-    }
-
     public record Module(String name, String objectPath, ObjectHash hash) {
         public Module {
             name = key(name, "moduleName");
@@ -78,24 +71,13 @@ public record PackageIndex(
         }
     }
 
-    public record Dependency(
-            String namespace,
-            String name,
-            String versionConstraint,
-            boolean optional
-    ) {
+    public record Dependency(ObjectHash databaseFileHash, boolean optional) {
         public Dependency {
-            namespace = component(namespace, "dependencyNamespace");
-            name = component(name, "dependencyName");
-            versionConstraint = Invariant.text(versionConstraint, "versionConstraint");
-            Invariant.check(versionConstraint.length() <= 128,
-                    "versionConstraint is too long");
-            Invariant.check(versionConstraint.chars().noneMatch(Character::isISOControl),
-                    "versionConstraint contains control characters");
+            Invariant.required(databaseFileHash, "dependencyDatabaseFileHash");
         }
 
-        public String coordinate() {
-            return namespace + "/" + name + "/" + versionConstraint;
+        public String sha256() {
+            return databaseFileHash.value();
         }
     }
 

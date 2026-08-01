@@ -1,3 +1,0 @@
-downloaded = network.download("http://host.docker.internal:8787/market/v1/28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008", "/editor.db")
-installed = package.install("/editor.db", "editor")
-import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "editor"

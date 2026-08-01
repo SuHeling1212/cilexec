@@ -73,8 +73,8 @@ class PackageManagerTest {
         PackageIndex index = persistence.packages.lastIndex;
         assertEquals(List.of("main"), index.modules().stream()
                 .map(PackageIndex.Module::name).toList());
-        assertEquals(List.of("std/base/1.0.0"), index.dependencies().stream()
-                .map(PackageIndex.Dependency::coordinate).toList());
+        assertEquals(List.of("aa".repeat(32)), index.dependencies().stream()
+                .map(PackageIndex.Dependency::sha256).toList());
         assertEquals(List.of("run"), index.entrypoints().stream()
                 .map(PackageIndex.Entrypoint::name).toList());
         assertEquals(List.of("api"), index.exports().stream()
@@ -98,12 +98,28 @@ class PackageManagerTest {
                 ownerId, Files.readAllBytes(packageDatabase("11".repeat(32)))));
     }
 
+    @Test
+    void rejectsARequiredDependencyThatIsNotInstalled() throws Exception {
+        MemoryPersistence persistence = new MemoryPersistence();
+        PackageManager manager = manager(persistence);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> manager.importDatabase(UUID.randomUUID(),
+                        Files.readAllBytes(packageDatabase("00".repeat(32), false))));
+
+        assertTrue(failure.getMessage().contains("aa".repeat(32)));
+    }
+
     private PackageManager manager(MemoryPersistence persistence) {
         return new PackageManager(persistence, new SqlitePackageReader(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private Path packageDatabase(String moduleHash) throws SQLException {
+        return packageDatabase(moduleHash, true);
+    }
+
+    private Path packageDatabase(String moduleHash, boolean dependencyOptional) throws SQLException {
         Path database = temporaryDirectory.resolve(UUID.randomUUID() + ".db");
         byte[] moduleSource = ("func api() { return \"" + moduleHash
                 + "\" }\nfunc main() { return null }\n")
@@ -111,12 +127,13 @@ class PackageManagerTest {
         String moduleHex = java.util.HexFormat.of().formatHex(moduleSource);
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA user_version=" + SqlitePackageReader.FORMAT_VERSION);
             statement.execute("CREATE TABLE package_metadata(metadata_key TEXT, metadata_value TEXT)");
             statement.execute("CREATE TABLE package_file(file_path TEXT, content BLOB)");
             statement.execute("CREATE TABLE package_module(module_name TEXT, "
                     + "module_object_path TEXT, module_hash TEXT)");
-            statement.execute("CREATE TABLE package_dependency(dependency_namespace TEXT, "
-                    + "dependency_name TEXT, version_constraint TEXT, optional INTEGER)");
+            statement.execute("CREATE TABLE package_dependency(dependency_file_hash TEXT, "
+                    + "optional INTEGER)");
             statement.execute("CREATE TABLE package_entrypoint(entrypoint_name TEXT, "
                     + "module_name TEXT, function_name TEXT)");
             statement.execute("CREATE TABLE package_export(export_name TEXT, "
@@ -130,8 +147,8 @@ class PackageManagerTest {
                     + "('main','modules/main.fcl','" + sha256(moduleSource) + "')");
             statement.execute("INSERT INTO package_file VALUES "
                     + "('modules/main.fcl',X'" + moduleHex + "')");
-            statement.execute("INSERT INTO package_dependency VALUES "
-                    + "('std','base','1.0.0',0)");
+            statement.execute("INSERT INTO package_dependency VALUES ('" + "aa".repeat(32)
+                    + "'," + (dependencyOptional ? 1 : 0) + ")");
             statement.execute("INSERT INTO package_entrypoint VALUES ('run','main','main')");
             statement.execute("INSERT INTO package_export VALUES ('api','main','api')");
             statement.execute("INSERT INTO package_capability VALUES "
@@ -233,6 +250,9 @@ class PackageManagerTest {
         }
         @Override public Optional<PackageRelease> findRelease(PackageRelease.Coordinate coordinate) {
             return Optional.ofNullable(byCoordinate.get(coordinate));
+        }
+        @Override public List<PackageRelease> findReleases() {
+            return List.copyOf(byHash.values());
         }
         @Override public void saveEnvironment(PackageEnvironment environment) {
             environments.put(environment.environmentId(), environment);

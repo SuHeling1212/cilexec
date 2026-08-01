@@ -54,11 +54,12 @@ class EffectWorkerServiceTest {
         FakePersistence persistence = new FakePersistence(prepared(manualPolicy()));
         UUID bootId = UUID.randomUUID();
         AtomicReference<Throwable> fatal = new AtomicReference<>();
+        AtomicInteger schedulerWakes = new AtomicInteger();
         EffectHandler handler = handler(request -> value("json", "{\"ok\":true}"));
 
         try (EffectWorkerService workers = new EffectWorkerService(
                 persistence, persistence, bootId, new EffectHandlerRegistry(List.of(handler)),
-                1, Duration.ofMillis(1), CLOCK, fatal::set)) {
+                1, Duration.ofMillis(1), CLOCK, fatal::set, schedulerWakes::incrementAndGet)) {
             workers.start();
             assertTrue(persistence.completed.await(3, TimeUnit.SECONDS));
         }
@@ -69,6 +70,7 @@ class EffectWorkerServiceTest {
         assertEquals(EffectAttempt.Status.SUCCEEDED,
                 persistence.effects.attempts.getFirst().status());
         assertNull(fatal.get());
+        assertEquals(1, schedulerWakes.get());
     }
 
     @Test

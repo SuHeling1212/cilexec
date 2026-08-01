@@ -62,6 +62,7 @@ class SchedulerServiceTest {
         AtomicInteger normalClaims = new AtomicInteger();
         AtomicInteger interruptClaims = new AtomicInteger();
         CountDownLatch cancelled = new CountDownLatch(1);
+        CountDownLatch initialNormalClaims = new CountDownLatch(workerCount);
         CountDownLatch threeInterruptChecks = new CountDownLatch(3);
         UUID processUid = UUID.randomUUID();
         UUID ownerId = UUID.randomUUID();
@@ -72,6 +73,7 @@ class SchedulerServiceTest {
             @Override public Optional<SchedulerClaim> claimNext(UUID runnerId, UUID bootId,
                     Instant now, Duration leaseDuration) {
                 normalClaims.incrementAndGet();
+                initialNormalClaims.countDown();
                 return Optional.empty();
             }
             @Override public Optional<SchedulerClaim> claimInterrupted(UUID runnerId, UUID bootId,
@@ -101,6 +103,7 @@ class SchedulerServiceTest {
                 failure -> { })) {
             service.start();
             assertTrue(cancelled.await(1, TimeUnit.SECONDS));
+            assertTrue(initialNormalClaims.await(1, TimeUnit.SECONDS));
             assertEquals(workerCount, normalClaims.get());
             assertTrue(interruptClaims.get() >= 1);
 

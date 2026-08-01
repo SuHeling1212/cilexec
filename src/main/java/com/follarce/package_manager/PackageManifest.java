@@ -42,8 +42,7 @@ public record PackageManifest(
         Set<String> contentPaths = new HashSet<>();
         modules.forEach(module -> uniquePath(contentPaths, module.path()));
         resources.forEach(path -> uniquePath(contentPaths, path));
-        unique(dependencies.stream().map(dependency -> dependency.namespace() + "/"
-                + dependency.name()).toList(), "dependency");
+        unique(dependencies.stream().map(Dependency::sha256).toList(), "dependency SHA-256");
         unique(entrypoints.stream().map(Entrypoint::name).toList(), "entrypoint name");
         unique(exports.stream().map(Export::name).toList(), "export name");
         unique(capabilities.stream().map(Capability::key).toList(), "capability key");
@@ -80,11 +79,13 @@ public record PackageManifest(
         }
     }
 
-    public record Dependency(String namespace, String name, String version, boolean optional) {
+    public record Dependency(String sha256, boolean optional) {
         public Dependency {
-            namespace = component(namespace, "dependency namespace");
-            name = component(name, "dependency name");
-            version = boundedText(version, "dependency version", 128);
+            sha256 = text(sha256, "dependency sha256").toLowerCase(java.util.Locale.ROOT);
+            if (!sha256.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException(
+                        "Dependency sha256 must be a 64-character SHA-256 value");
+            }
         }
     }
 

@@ -1,241 +1,143 @@
-# CilExec 市场
+# CilExec Java 市场
 
-## 组成
-
-完整市场由两个独立部分组成：
+市场由两个 Java 程序组成，不再分发 `market.db`，也不再需要导入 `mkt`：
 
 ```text
-宿主机包仓库                         CilExec 内的 market FCL 包
-──────────────────                   ──────────────────────────
-保存不可变 .db 包                     下载完整索引并缓存到用户 VFS
-提供 /market/v1/index.json  ─────►    本地自然语言搜索和信息查询
-提供 /market/v1/<sha256>    ◄─────    按 SHA-256 下载、安装和管理包
+CilExec Runtime（内置 market.*）        cilexec-market-server.jar
+──────────────────────────────          ─────────────────────────
+用户 VFS 缓存完整索引                    读取明确发布的 catalog.json
+自然语言本地搜索                         校验只读 SQLite package.db
+按 SHA-256 下载、安装和升级      ◄────►  提供索引、HEAD 和 Range 下载
 ```
 
-`market/server.py` 只是仓库。真正供用户操作的市场客户端是
-`cilexec/market/1.0.2` FCL 应用包。市场复用现有网络、VFS 和包管理函数，
-不引入第二套包格式，也不改变 FCL 语法。
+客户端随 `cilexec-app.jar` 一起发布。服务端是独立胖 JAR，macOS、Linux 和 Windows
+均以 `java -jar` 运行，不依赖 Python、Bash 或 Docker。
 
-## 市场地址
-
-CilExec 只通过一个宿主机 HTTP origin 与包仓库通信：
-
-```text
-http://host.docker.internal:8787
-```
-
-该 origin 下的市场接口为：
-
-| HTTP 路径 | 功能 |
-| --- | --- |
-| `GET /market/v1/index.json` | 返回仓库中全部软件包的 JSON 列表。 |
-| `GET /market/v1/{sha256}` | 按 64 位 SHA-256 包 ID 下载对应 `.db`。 |
-
-`v1` 是市场索引协议的主版本，不是软件包版本。将来出现不兼容协议时可以新增
-`/market/v2/...`，而不破坏旧客户端。
-
-旧的 `/v1/index.json` 和坐标文件路径暂时保留兼容，新市场客户端只使用
-`/market/v1/...`。
-
-## 包 ID
-
-所有市场操作统一使用 SHA-256，不使用 SHA-512。
-
-市场包 ID 是完整 `.db` 包文件的 SHA-256：64 个小写十六进制字符。例如编辑器
-1.0.4 的当前 ID 是：
-
-```text
-28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008
-```
-
-该值同时用于：
-
-- 索引记录中的 `sha256`；
-- `/market/v1/{sha256}` 下载路径；
-- `mkt.info`、`mkt.download`、`mkt.install` 和 `mkt.uninstall` 参数；
-- `util.which` 对外部包函数的返回值；
-- Runtime 安装时保存和复核的 `databaseFileHash`。
-
-SHA-256 是内容标识，不是签名，也不代表发布者身份。
-
-## 完整索引
-
-市场客户端调用 `mkt.update()` 时一次性下载全部软件包列表。列表体积较小，下载后
-保存在当前用户 VFS 的 `/market/index.json`。之后 `mkt.search()` 和 `mkt.info()`
-只读取本地文件，不会为每个关键词重新请求服务器。
-
-索引结构示例：
-
-```json
-{
-  "apiVersion": "cilexec.market/v1",
-  "packages": [
-    {
-      "coordinate": "cilexec/editor/1.0.4",
-      "namespace": "cilexec",
-      "name": "editor",
-      "version": "1.0.4",
-      "kind": "application",
-      "summary": "自适应终端文本编辑器",
-      "description": "具有 nano 级基础编辑能力的 FCL 文本编辑器。",
-      "tags": ["editor", "text", "tui", "编辑器", "文本"],
-      "download": "/market/v1/28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008",
-      "sha256": "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008",
-      "bytes": 45056,
-      "mediaType": "application/vnd.sqlite3",
-      "dependencies": [],
-      "latest": true
-    }
-  ]
-}
-```
-
-`market/catalog.json` 保存简介、描述和标签；服务器将这些展示信息与 `.db` 中的坐标、
-类型、版本和依赖合并为索引。搜索会把输入按空格分为多个词，并要求每个非空词都能
-在该包的本地索引记录中找到，因此可以搜索名称、坐标、简介、标签或中文描述。
-
-## 安装市场包
-
-市场自身也以普通 `.db` 包分发。当前 `cilexec/market/1.0.2` 的包 ID 是：
-
-```text
-e65c7741c15f9cda04581d6883556092408800f5f34dd970aba85caad0a59229
-```
-
-在 CilExec 终端中执行：
-
-```fcl
-network.download("http://host.docker.internal:8787/market/v1/e65c7741c15f9cda04581d6883556092408800f5f34dd970aba85caad0a59229", "/market.db")
-package.install("/market.db", "market")
-import "e65c7741c15f9cda04581d6883556092408800f5f34dd970aba85caad0a59229" as "mkt"
-mkt.run()
-```
-
-市场也具有应用统一入口：
-
-```fcl
-package.run("market")
-```
-
-## 市场函数
-
-| 函数 | 功能 | 状态变化 |
-| --- | --- | --- |
-| `mkt.search(text)` | 在本地完整索引中进行多关键词搜索，返回包记录数组。 | 无 |
-| `mkt.info(sha256)` | 按包 ID 返回完整索引记录；不存在时返回 `null`。 | 无 |
-| `mkt.list()` | 返回所有已登记包的包名和分发文件 SHA-256；同名版本分别列出。 | 无 |
-| `mkt.download(sha256)` | 按哈希地址下载到 `/market/packages/{sha256}.db`。 | 写入当前用户 VFS |
-| `mkt.install(sha256)` | 下载、安装并记录绑定与环境信息。 | 安装并绑定包 |
-| `mkt.update()` | 重新下载完整索引到 `/market/index.json`。 | 更新当前用户索引 |
-| `mkt.upgrade()` | 更新索引并升级所有由市场管理且存在新版本的包。 | 可能更新包绑定 |
-| `mkt.uninstall(sha256)` | 删除该市场安装记录对应的包绑定。 | 解除绑定 |
-| `mkt.help()` | 在终端显示所有市场函数。 | 无 |
-| `mkt.run()` | 无需配置镜像，显示 Market 版本和帮助界面。 | 无 |
-
-除 `mkt.run()` 外，首次调用任何 Market 操作时，如果当前用户尚未设置
-`MARKET_ORIGIN`，客户端会进入单镜像配置流程并通过 `io.input()` 要求输入一个
-`http://` 或 `https://` origin。当前只保存一个镜像；再次配置可直接用
-`env.set("MARKET_ORIGIN", "...")` 覆盖。
-终端会先显示英文提示 `Please enter the mirror source address> `，不会再在
-空白画面中等待输入。
-
-`mkt.uninstall()` 删除的是安装绑定和市场凭据。不可变包内容仍按 Runtime 的内容存储
-策略保留，避免破坏仍被其他环境或进程引用的数据。
-
-## 函数来源查询
-
-Runtime 新增：
-
-```fcl
-util.which("函数名")
-```
-
-返回规则：
-
-| 函数来源 | 返回值 |
-| --- | --- |
-| Runtime 自带函数 | `0` |
-| 编译期 Java 扩展函数 | `0` |
-| 当前进程已导入的外部 FCL 包函数 | 包 `.db` 文件的 SHA-256 市场 ID |
-| 未知函数或当前源码自己定义的函数 | `null` |
-
-示例：
-
-```fcl
-util.which("file.read")
-# 0
-
-import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "e"
-util.which("e.open")
-# 28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008
-```
-
-## 下载与持久化
-
-`mkt.download()` 最终调用现有 `network.download()`。下载以 4 MiB 持久化分块执行，
-目标 VFS 文件只在完整下载结束后出现。因此未完成包不会进入可安装文件列表，
-`mkt.install()` 也不会看到半个 `.db`。
-
-Runtime 安装包时会重新读取包数据库、检查其内部结构并记录文件 SHA-256。
-`package.verify()` 可在安装后重新检查内容是否仍与安装记录一致。
-
-## 宿主机发布
-
-在项目目录执行：
+## 构建与启动服务端
 
 ```bash
-./market/start.sh
+java --enable-native-access=ALL-UNNAMED \
+  -jar dist/cilexec-market-server.jar \
+  --repository dist/repository \
+  --catalog dist/catalog.json
 ```
 
-脚本只构建并发布 `editor` 和 `market`，然后启动仓库服务。`files` 包因为当前性能
-不达标，保留开发源码但不在市场索引中、不通过市场接口提供下载。
-当前已发布版本为：
+Windows PowerShell 使用同一 JAR：
 
-| 坐标 | SHA-256 市场 ID |
+```powershell
+java --enable-native-access=ALL-UNNAMED `
+  -jar dist\cilexec-market-server.jar `
+  --repository dist\repository `
+  --catalog dist\catalog.json
+```
+
+默认只监听 `127.0.0.1:8787`。需要让 Docker 容器访问时，应显式监听宿主接口并只放行
+实际的容器网段：
+
+```bash
+java --enable-native-access=ALL-UNNAMED \
+  -jar dist/cilexec-market-server.jar \
+  --repository dist/repository --catalog dist/catalog.json \
+  --bind 0.0.0.0 --port 8787 --allow-cidr 172.20.0.0/16
+```
+
+完整参数可用 `java -jar ... --help` 查看。`--allow-cidr` 可重复使用；回环网络始终允许。
+
+## HTTP 协议
+
+| 请求 | 作用 |
 | --- | --- |
-| `cilexec/editor/1.0.4` | `28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008` |
-| `cilexec/market/1.0.2` | `e65c7741c15f9cda04581d6883556092408800f5f34dd970aba85caad0a59229` |
+| `GET/HEAD /market/v1/index.json` | 返回全部已发布包的索引。 |
+| `GET/HEAD /market/v1/{sha256}` | 下载完整 SHA-256 指定的不可变 `.db`。 |
 
-仓库只接受回环地址、当前 CilExec Docker 网络和明确放行的客户端；CilExec Runtime
-只放行 `http://host.docker.internal:8787` 这一私有 HTTP origin。
+包下载支持单个显式 `Range: bytes=start-end`、`ETag`、`If-Range`、`Content-Length` 和
+`416` 结束探测，正好对应 Runtime 的 4 MiB 持久化分块下载。`v1` 是市场 HTTP 协议
+主版本，不是软件包版本。
 
-## FCL 环境变量
+`dist/catalog.json` 是唯一发布清单。仓库里存在但未写入清单的文件不会上架。服务端
+启动时会拒绝符号链接、路径逃逸、超过 64 MiB 的包、格式不是 2 的 SQLite 数据库、
+坐标与路径不一致、非法依赖哈希和重复哈希。下载前还会重新核对大小和 SHA-256。
 
-市场客户端从当前用户的持久 FCL 环境变量 `MARKET_ORIGIN` 获取唯一仓库 origin。
-未设置时不会偷偷采用默认服务器，而是在除 `mkt.run()` 之外的首次操作中进入配置。
-本机开发时可输入：
+索引中的 `sha256` 是完整 `.db` 文件的 64 位小写 SHA-256，同时也是包 ID、下载路径和
+依赖 ID。它是内容标识，不是签名或发布者身份。
 
-```text
-http://host.docker.internal:8787
-```
+## 内置客户端
 
-管理员可设置共享值，用户也可用自己的值覆盖：
-
-```fcl
-env.setShared("MARKET_ORIGIN", "https://market.example.com")
-env.set("MARKET_ORIGIN", "https://my-mirror.example.com")
-```
-
-市场会自动请求 `${MARKET_ORIGIN}/market/v1/index.json`。私有 origin 还必须
-同时在 `CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS` 中精确放行；公网 HTTPS origin
-不需要加入私有网络白名单。
-
-## 精确导入
-
-市场 ID 是分发 `.db` 文件的 SHA-256。`import` 完全不接受包名或坐标，只接受这个
-64 位哈希。别名不再强制：省略时完整 SHA-256 本身就是函数命名空间，不会产生任何
-包名映射。只有显式写出 `as` 才会得到短名称：
+首次使用先为当前用户配置唯一镜像源：
 
 ```fcl
-import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008"
-28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008.open("a.txt")
-
-import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "editor"
-editor.open("a.txt")
+market.configure("http://host.docker.internal:8787")
+market.update()
 ```
 
-`include "path.fcl"` 只接受当前用户 VFS 中的普通 UTF-8 FCL 文件，并在编译前把
-文件源码插入到 `include` 所在位置。相对路径按当前终端工作目录解析；嵌套 include
-改按被包含文件所在目录解析；循环引用和 `.db` 包文件会被拒绝。插入后的完整源码与
-编译结果一起持久化，因此文件以后发生变化不会改写已经创建的程序。包 `.db` 必须先
-用 `package.install()` 注册，再用 `import "<sha256>"` 导入，不能 include。
+镜像源保存在当前用户持久化 FCL 环境变量 `MARKET_ORIGIN` 中。管理员可通过
+`env.setShared("MARKET_ORIGIN", "https://market.example.com")` 提供共享默认值，用户
+自己的值优先。客户端不会在执行途中突然进入交互输入；未配置时会明确提示调用
+`market.configure(...)`。
+
+| 函数 | 功能 |
+| --- | --- |
+| `market.configure(origin)` | 设置当前用户的 HTTP/HTTPS 镜像 origin。 |
+| `market.origin()` | 查看当前生效的镜像源。 |
+| `market.update()` | 下载、验证并持久化完整索引。 |
+| `market.search(text)` | 在用户 VFS 的本地索引中进行多关键词搜索。 |
+| `market.info(sha256)` | 查询一个完整包记录，不存在时返回 `null`。 |
+| `market.download(sha256)` | 分块下载并重新计算完整文件 SHA-256。 |
+| `market.install(sha256)` | 递归安装精确哈希依赖并建立默认绑定。 |
+| `market.list()` | 查看由市场管理的包名、绑定和 SHA-256。 |
+| `market.upgrade()` | 更新索引并升级所有存在新版本的市场安装。 |
+| `market.uninstall(sha256)` | 解除对应绑定并移除市场下载文件。 |
+| `market.help()` | 返回函数帮助。 |
+| `market.run()` | 返回客户端版本和帮助，不要求配置镜像。 |
+
+安装编辑器的完整流程：
+
+```fcl
+market.configure("http://host.docker.internal:8787")
+market.update()
+market.search("editor")
+market.install("cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283")
+import "editor"
+editor.open("notes.txt")
+```
+
+索引缓存位于当前用户 VFS 的 `/market/index.json`，下载包位于
+`/market/packages/{sha256}.db`，市场安装凭据位于 `/market/installed.json`。普通用户
+看不到其他用户的这三类数据。
+
+下载分块先作为不可变对象写入对象存储，只有最后一块完成后才把目标 VFS 节点发布。
+客户端随后按 4 MiB 重新读取整个逻辑文件，复核索引声明的大小与 SHA-256。安装时
+Runtime 还会重新验证 SQLite 结构、包内部哈希、能力声明和精确依赖图。市场包上限为
+64 MiB；普通 VFS 单文件上限仍为 1 GiB。
+
+## 发布包
+
+编辑器源码位于 `dist/editor/`。使用独立的单文件构建器：
+
+```bash
+python3 PackageBuild.py dist/editor dist/repository/editor.db
+```
+
+构建器不依赖 CilExec JAR、Docker 或数据库服务，会生成不可变 `editor.db`。随后把包
+文件与对应条目写入 `dist/catalog.json` 即可上架；同一坐标内容变化时必须增加包版本。
+
+每项依赖都必须是精确分发文件 SHA-256：
+
+```json
+"dependencies": [
+  {"sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "optional": false}
+]
+```
+
+客户端会先递归安装必需依赖，拒绝循环和超过 64 层的依赖链。可选依赖不会自动安装。
+包模块通过完整依赖哈希调用导出函数，坐标和绑定名不参与依赖解析。
+
+## 安全与部署说明
+
+- 公网部署应使用 HTTPS 反向代理；内置服务端本身不终止 TLS。
+- 不要把 `--allow-cidr 0.0.0.0/0` 当作开发捷径。
+- Runtime 的私网 HTTP 策略仍必须允许配置的私有 origin；市场配置不会绕过网络策略。
+- 服务端并发数默认 16，可用 `--workers 1..256` 调整；超过上限立即返回 `503`。
+- 服务端只读仓库，不提供上传、删除、登录或动态上架接口。
+- 包签名系统已完全移除；安全边界是受控发布清单、HTTPS、精确 SHA-256 和 Runtime
+  的包结构/能力校验。

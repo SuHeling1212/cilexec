@@ -60,11 +60,14 @@ source code, explicitly rebuild the shared application image with:
 ./Install.sh --rebuild
 ```
 
-The editor is distributed by the host-side local package market, not embedded in the Runtime
-image. Start the market in a second host terminal before installing market packages:
+The market client is built into `cilexec-app.jar`; there is no `market.db` to install or import.
+The editor remains an independently distributed FCL package. Start the standalone Java market
+server in a second host terminal before installing it:
 
 ```bash
-./market/start.sh
+java --enable-native-access=ALL-UNNAMED \
+  -jar dist/cilexec-market-server.jar \
+  --repository dist/repository --catalog dist/catalog.json
 ```
 
 The manual deployment procedure is below.
@@ -110,6 +113,8 @@ java -jar target/cilexec-app.jar migrate
 java -jar target/cilexec-app.jar runtime
 java -jar target/cilexec-app.jar export /explicit/path/cilexec-export.db
 java -jar target/cilexec-app.jar package build ./docs/examples/hello-package ./hello.db
+# Standalone: no CilExec JAR, Docker, or database service required.
+python3 PackageBuild.py ./docs/examples/hello-package ./hello.db
 ```
 
 With no arguments, the JAR starts the authenticated composite FCL REPL and terminal. Choose
@@ -145,24 +150,25 @@ Each ordinary user sees their private VFS root as `/`. The `local` administrator
 sees `/Users/<username>` as a live view of that user's root. This is a virtual mapping rather than
 a copy; `:cd`, `:ls`, and FCL file paths all address the same stored nodes. Ordinary users cannot
 list or address another user's root through `/Users`.
-The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.4`) served by
-the host market. Download and install it once for the current user, then import it into the durable
-terminal context:
+The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.8`) served by
+the host market. Configure the built-in client, install the exact SHA-256 once for the current user,
+then import its binding into the durable terminal context:
 
 ```fcl
-network.download("http://host.docker.internal:8787/market/v1/28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008", "/editor.db")
-package.install("/editor.db", "editor")
-import "28bb03a8fd62788100447513a1a7de56123713fcf74811e1aa6fec41bb4b9008" as "editor"
+market.configure("http://host.docker.internal:8787")
+market.update()
+market.install("cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283")
+import "editor"
 editor.open("notes.txt")
 ```
 
 The package supports cursor movement, multiline insertion/deletion, save, guarded exit, search,
 line cut/paste, Home/End, paging, and an in-editor help screen. `Ctrl-O` (nano style) and `Ctrl-S`
 both save; `Ctrl-X` exits. The Runtime image contains neither the editor source nor its package
-database; the package is independently built and published under `market/repository/`.
-Use `:help` for the command list. The explicit
-Package imports accept only the exact installed `.db` SHA-256. An alias is optional; without one,
-the complete SHA-256 itself is the function namespace. The `runtime` command remains a headless operations mode for deployments that deliberately provide
+database; its source is independently distributed under `dist/editor/`.
+Use `:help` for the command list. Package imports accept either a binding in the current user's
+default package environment or the exact installed `.db` SHA-256. An alias is optional. The
+`runtime` command remains a headless operations mode for deployments that deliberately provide
 another terminal transport.
 
 `package build` is an offline command and does not read database configuration or secrets. It
@@ -206,7 +212,7 @@ The complete API, persistence rules, example, recovery policies, and release che
 [the Java source extension guide](docs/java-extension-development.md).
 
 The runtime registry exposes `math`, `util`, `path`, `term`, `file`, `io`, `process`, `user`,
-`swapPool`, `network`, `socket`, `package`, and `system` namespaces. Local database operations
+`swapPool`, `network`, `socket`, `package`, `market`, and `system` namespaces. Local database operations
 commit with the FCL statement. Input, timers, HTTP, terminal output, one-shot sockets, and
 allowlisted host commands suspend the continuation and resume through durable inbox/effect rows;
 already completed calls in the same statement are not repeated after recovery.
@@ -230,11 +236,16 @@ build; `system.ls()` includes their registered functions.
 A source package is a directory containing `package.json` and its declared content. Package
 modules are libraries: their top level may contain function declarations only. Entrypoints must
 be zero-argument functions; exported functions may accept ordinary FCL arguments.
+Current package databases use SQLite package format version 2; version 1 coordinate-based
+dependency databases are deliberately rejected rather than resolved ambiguously.
 
 `kind` is mandatory. An `application` must publish the universal zero-argument `run` entrypoint;
 a `library` is intended for import/dependency use and is exempt from that entrypoint requirement.
-Every declared dependency is stored in `package_dependency` with namespace, name, version
-constraint, and optional status. `package.info(...)` exposes these lists without opening SQLite.
+Every declared dependency is stored in `package_dependency` by the exact distributed `.db`
+SHA-256 and optional status. Required dependencies must already be installed; the market client
+recursively downloads and installs them by hash. `package.info(...)` exposes these lists without
+opening SQLite. Runtime linking follows the same hash graph transitively; dependency exports are
+addressed inside package source as `<dependency-sha256>.<export>`.
 
 ```json
 {
@@ -252,13 +263,17 @@ constraint, and optional status. `package.info(...)` exposes these lists without
 }
 ```
 
+When needed, one dependency entry is
+`{"sha256":"<64 lowercase hex characters>","optional":false}`; it identifies the exact
+distributed dependency database, not a coordinate or version range.
+
 Build on the host with the command shown above, or build entirely inside the CilExec VFS:
 
 ```text
 built = package.build("/src/hello/package.json", "/packages/hello.db")
 installed = package.install("/packages/hello.db", "hello")
 
-import "<package-db-sha256>" as "hello"
+import "hello"
 message = hello.greet("CilExec")
 
 child = package.run("hello", "run")
@@ -269,7 +284,9 @@ explicit binding, and the existing three-argument form accepts an explicit envir
 binding. Every user gets a stable `default` environment automatically; additional environments
 can be created and listed with `package.createEnvironment(name)` and `package.environments()`.
 
-The first successful import writes an immutable `(process, import name) -> package hash` binding.
+Imports accept either an installed environment binding such as `import "hello"` or an exact
+package database SHA-256. The first successful import writes an immutable
+`(process, import name) -> package hash` binding.
 On every later statement and after a crash, the Runtime reloads the exact SQLite package bytes,
 checks module hashes, deterministically links the exported functions, and resumes the same
 continuation. `package.run(binding, entrypoint)` creates a normal durable child process and returns

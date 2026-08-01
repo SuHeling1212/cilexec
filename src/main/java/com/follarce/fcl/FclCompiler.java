@@ -421,11 +421,13 @@ public final class FclCompiler {
 
         private void importInstruction(Token start) {
             String target = String.valueOf(consume(Type.STRING,
-                    "Expected quoted package database SHA-256 after import").literal());
+                    "Expected quoted package binding or database SHA-256 after import").literal());
             String identity = target.endsWith(".*")
                     ? target.substring(0, target.length() - 2) : target;
-            if (!identity.matches("(?i)[0-9a-f]{64}")) {
-                fail(previous(), "Import target must be a 64-character package database SHA-256");
+            if (!identity.matches("(?i)[0-9a-f]{64}")
+                    && !simpleBindableIdentifier(identity)) {
+                fail(previous(), "Import target must be a package binding or a "
+                        + "64-character package database SHA-256");
             }
             String alias = null;
             if (word("as")) {

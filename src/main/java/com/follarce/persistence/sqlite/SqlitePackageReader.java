@@ -28,6 +28,7 @@ import java.util.Set;
 
 /** Opens package bytes through an immutable, query-only SQLite cache file. */
 public final class SqlitePackageReader {
+    public static final int FORMAT_VERSION = 2;
     public static final int MAX_PACKAGE_DATABASE_BYTES = 64 * 1024 * 1024;
     public static final int MAX_PACKAGE_RESOURCE_BYTES = 16 * 1024 * 1024;
     private static final List<String> REQUIRED_TABLES = List.of(
@@ -51,6 +52,7 @@ public final class SqlitePackageReader {
             cache = Files.createTempFile("cilexec-package-", ".db");
             Files.write(cache, databaseBytes);
             try (Connection connection = openImmutable(cache)) {
+                validateFormatVersion(connection);
                 validateSchema(connection);
                 Map<String, String> metadata = readMetadata(connection);
                 rejectLifecycleHooks(metadata);
@@ -117,6 +119,7 @@ public final class SqlitePackageReader {
             cache = Files.createTempFile("cilexec-package-resource-", ".db");
             Files.write(cache, databaseBytes);
             try (Connection connection = openImmutable(cache)) {
+                validateFormatVersion(connection);
                 validateSchema(connection);
                 Map<String, byte[]> result = new LinkedHashMap<>();
                 try (PreparedStatement statement = connection.prepareStatement(
@@ -270,6 +273,15 @@ public final class SqlitePackageReader {
         }
     }
 
+    private static void validateFormatVersion(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("PRAGMA user_version")) {
+            if (!rows.next() || rows.getInt(1) != FORMAT_VERSION) {
+                throw new PackageDatabaseException("Unsupported package database format version");
+            }
+        }
+    }
+
     private static Map<String, String> readMetadata(Connection connection) throws SQLException {
         Map<String, String> metadata = new LinkedHashMap<>();
         try (Statement statement = connection.createStatement();
@@ -360,40 +372,18 @@ public final class SqlitePackageReader {
     private static List<PackageIndex.Dependency> readDependencies(Connection connection)
             throws SQLException {
         Set<String> columns = tableColumns(connection, "package_dependency");
-        List<PackageIndex.Dependency> dependencies = new ArrayList<>();
-        if (columns.containsAll(Set.of("dependency_namespace", "dependency_name",
-                "version_constraint"))) {
-            boolean hasOptional = columns.contains("optional");
-            String sql = "SELECT dependency_namespace,dependency_name,version_constraint"
-                    + (hasOptional ? ",optional" : "")
-                    + " FROM package_dependency ORDER BY dependency_namespace,dependency_name";
-            try (Statement statement = connection.createStatement();
-                 ResultSet rows = statement.executeQuery(sql)) {
-                while (rows.next()) {
-                    dependencies.add(new PackageIndex.Dependency(rows.getString(1),
-                            rows.getString(2), rows.getString(3),
-                            hasOptional && rows.getBoolean(4)));
-                }
-            }
-            return List.copyOf(dependencies);
-        }
-        if (!columns.contains("dependency_coordinate")) {
+        if (!columns.equals(Set.of("dependency_file_hash", "optional"))) {
             throw new PackageDatabaseException(
-                    "package_dependency has no supported dependency columns");
+                    "package_dependency must contain dependency_file_hash and optional");
         }
+        List<PackageIndex.Dependency> dependencies = new ArrayList<>();
         try (Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(
-                     "SELECT dependency_coordinate FROM package_dependency "
-                             + "ORDER BY dependency_coordinate")) {
+                     "SELECT dependency_file_hash,optional FROM package_dependency "
+                             + "ORDER BY dependency_file_hash")) {
             while (rows.next()) {
-                String coordinate = rows.getString(1);
-                String[] parts = coordinate == null ? new String[0] : coordinate.split("/", 3);
-                if (parts.length != 3) {
-                    throw new PackageDatabaseException(
-                            "Invalid package dependency coordinate: " + coordinate);
-                }
-                dependencies.add(new PackageIndex.Dependency(parts[0], parts[1], parts[2],
-                        false));
+                dependencies.add(new PackageIndex.Dependency(
+                        readHash(rows, 1, "dependency_file_hash"), rows.getBoolean(2)));
             }
         }
         return List.copyOf(dependencies);
