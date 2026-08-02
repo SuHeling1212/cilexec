@@ -16,6 +16,7 @@ static struct termios saved_terminal;
 static int terminal_saved;
 static volatile sig_atomic_t resized = 1;
 static volatile sig_atomic_t stopping;
+static int output_ended_with_cr;
 
 static void restore_terminal(void) {
     if (terminal_saved) tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_terminal);
@@ -54,28 +55,33 @@ static int write_terminal_output(const unsigned char *buffer, size_t length) {
         if (index > start && write_all(STDOUT_FILENO, buffer + start, index - start) != 0) {
             return -1;
         }
-        if (index == 0 || buffer[index - 1] != '\r') {
+        int preceded_by_cr = index > 0 ? buffer[index - 1] == '\r' : output_ended_with_cr;
+        if (!preceded_by_cr) {
             if (write_all(STDOUT_FILENO, "\r", 1) != 0) return -1;
         }
         if (write_all(STDOUT_FILENO, "\n", 1) != 0) return -1;
         start = index + 1;
     }
-    return start == length || write_all(STDOUT_FILENO, buffer + start, length - start) == 0
-            ? 0 : -1;
+    if (start != length
+            && write_all(STDOUT_FILENO, buffer + start, length - start) != 0) return -1;
+    if (length > 0) output_ended_with_cr = buffer[length - 1] == '\r';
+    return 0;
 }
 
 /* Ctrl-C is one out-of-band control request. The Runtime decides whether it
  * interrupts active FCL or cancels the editable prompt. */
 static int forward_terminal_input(int socket_descriptor, const unsigned char *buffer,
                                   size_t length) {
+    size_t start = 0;
     for (size_t index = 0; index < length; index++) {
-        if (buffer[index] == 3) {
-            if (write_all(socket_descriptor, "\0I\n", 3) != 0) return -1;
-            continue;
-        }
-        if (write_all(socket_descriptor, buffer + index, 1) != 0) return -1;
+        if (buffer[index] != 3) continue;
+        if (index > start
+                && write_all(socket_descriptor, buffer + start, index - start) != 0) return -1;
+        if (write_all(socket_descriptor, "\0I\n", 3) != 0) return -1;
+        start = index + 1;
     }
-    return 0;
+    return start == length
+            || write_all(socket_descriptor, buffer + start, length - start) == 0 ? 0 : -1;
 }
 
 static int send_size(int socket_descriptor) {
@@ -106,9 +112,133 @@ static int connect_runtime(int port) {
     return descriptor;
 }
 
+static int send_field(int descriptor, const unsigned char *value, size_t length) {
+    char header[32];
+    int header_length = snprintf(header, sizeof(header), "%zu\n", length);
+    return header_length > 0 && (size_t) header_length < sizeof(header)
+            && write_all(descriptor, header, (size_t) header_length) == 0
+            && write_all(descriptor, value, length) == 0 ? 0 : -1;
+}
+
+static int receive_headless_response(int runtime) {
+    unsigned char tail[64];
+    size_t tail_length = 0;
+    unsigned char received[8192];
+    while (1) {
+        ssize_t count = read(runtime, received, sizeof(received));
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            return 74;
+        }
+        if (count == 0) break;
+        size_t incoming = (size_t) count;
+        if (tail_length + incoming <= sizeof(tail)) {
+            memcpy(tail + tail_length, received, incoming);
+            tail_length += incoming;
+            continue;
+        }
+        size_t flush = tail_length + incoming - sizeof(tail);
+        if (flush <= tail_length) {
+            if (write_all(STDOUT_FILENO, tail, flush) != 0) return 74;
+            memmove(tail, tail + flush, tail_length - flush);
+            tail_length -= flush;
+            memcpy(tail + tail_length, received, incoming);
+            tail_length += incoming;
+        } else {
+            if (tail_length > 0 && write_all(STDOUT_FILENO, tail, tail_length) != 0) return 74;
+            size_t received_flush = flush - tail_length;
+            if (received_flush > 0
+                    && write_all(STDOUT_FILENO, received, received_flush) != 0) return 74;
+            memcpy(tail, received + received_flush, incoming - received_flush);
+            tail_length = incoming - received_flush;
+        }
+    }
+
+    for (size_t index = 0; index + 5 <= tail_length; index++) {
+        if (tail[index] != 0 || tail[index + 1] != 'R' || tail[index + 2] != ' ') continue;
+        if (tail[tail_length - 1] != '\n') continue;
+        char status_text[16];
+        size_t status_length = tail_length - index - 4;
+        if (status_length == 0 || status_length >= sizeof(status_text)) continue;
+        memcpy(status_text, tail + index + 3, status_length);
+        status_text[status_length] = '\0';
+        char *end = NULL;
+        long status = strtol(status_text, &end, 10);
+        if (end == NULL || *end != '\0' || status < 0 || status > 255) continue;
+        if (index > 0 && write_all(STDOUT_FILENO, tail, index) != 0) return 74;
+        return (int) status;
+    }
+    if (tail_length > 0) write_all(STDOUT_FILENO, tail, tail_length);
+    fprintf(stderr, "headless response ended without a status frame\n");
+    return 74;
+}
+
+/* Headless stdin is: one password line followed by the exact FCL source. Neither value is
+ * placed in argv or the environment, so host process listings cannot disclose them. */
+static int run_headless(int runtime, const char *context, const char *username) {
+    const size_t maximum = 4U * 1024U * 1024U + 4097U;
+    /* Keep one sentinel byte so an input exactly at the documented limit is accepted while
+     * an oversized stream is detected without waiting for an additional allocation. */
+    const size_t capacity = maximum + 1U;
+    unsigned char *input = malloc(capacity);
+    if (input == NULL) return 70;
+    size_t used = 0;
+    while (used < capacity) {
+        ssize_t count = read(STDIN_FILENO, input + used, capacity - used);
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            memset(input, 0, used);
+            free(input);
+            return 74;
+        }
+        if (count == 0) break;
+        used += (size_t) count;
+    }
+    if (used > maximum) {
+        fprintf(stderr, "headless input exceeds 4 MiB\n");
+        memset(input, 0, used);
+        free(input);
+        return 64;
+    }
+    unsigned char *separator = memchr(input, '\n', used);
+    if (separator == NULL) {
+        fprintf(stderr, "headless password line is missing\n");
+        memset(input, 0, used);
+        free(input);
+        return 64;
+    }
+    size_t password_length = (size_t) (separator - input);
+    if (password_length > 0 && input[password_length - 1] == '\r') password_length--;
+    size_t source_offset = (size_t) (separator - input) + 1;
+    size_t source_length = used - source_offset;
+    if (password_length > 4096) {
+        fprintf(stderr, "headless password exceeds 4096 bytes\n");
+        memset(input, 0, used);
+        free(input);
+        return 64;
+    }
+
+    int failed = write_all(runtime, "\0M HEADLESS\n", 12) != 0
+            || send_field(runtime, (const unsigned char *) context, strlen(context)) != 0
+            || send_field(runtime, (const unsigned char *) username, strlen(username)) != 0
+            || send_field(runtime, input, password_length) != 0
+            || send_field(runtime, input + source_offset, source_length) != 0;
+    memset(input, 0, used);
+    free(input);
+    if (failed) return 74;
+    shutdown(runtime, SHUT_WR);
+
+    return receive_headless_response(runtime);
+}
+
 int main(int argument_count, char **arguments) {
     int probe = argument_count > 1 && strcmp(arguments[1], "--probe") == 0;
-    const char *port_argument = probe
+    int headless = argument_count > 1 && strcmp(arguments[1], "--headless") == 0;
+    if (headless && argument_count != 5) {
+        fprintf(stderr, "usage: cilexec-terminal-client --headless <port> <context> <username>\n");
+        return 64;
+    }
+    const char *port_argument = headless ? arguments[2] : probe
             ? (argument_count > 2 ? arguments[2] : "8022")
             : (argument_count > 1 ? arguments[1] : "8022");
     char *end = NULL;
@@ -125,6 +255,12 @@ int main(int argument_count, char **arguments) {
     if (probe) {
         close(runtime);
         return 0;
+    }
+    if (headless) {
+        signal(SIGPIPE, SIG_IGN);
+        int status = run_headless(runtime, arguments[3], arguments[4]);
+        close(runtime);
+        return status;
     }
 
     if (tcgetattr(STDIN_FILENO, &saved_terminal) != 0) {
@@ -146,6 +282,10 @@ int main(int argument_count, char **arguments) {
     signal(SIGWINCH, on_resize);
     signal(SIGTERM, on_stop);
     signal(SIGHUP, on_stop);
+    if (write_all(runtime, "\0M INTERACTIVE\n", 15) != 0) {
+        close(runtime);
+        return 74;
+    }
     unsigned char buffer[8192];
     int input_open = 1;
     while (!stopping) {

@@ -69,6 +69,18 @@ class EditableTerminalInputTest {
     }
 
     @Test
+    void nonRememberedAccessInputCannotBrowseAuthenticatedCommandHistory() throws Exception {
+        byte[] source = "\u001b[A\n".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        input.replaceHistory(List.of("file.read(\"/private.txt\")"));
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("", input.edit(output, "access> ", false));
+    }
+
+    @Test
     void recallsCommandHistoryAndEditsWithinTheLineWithArrowKeys() throws Exception {
         byte[] source = ("first command\n"
                 + "\u001b[A\n"

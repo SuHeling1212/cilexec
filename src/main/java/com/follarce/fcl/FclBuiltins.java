@@ -20,6 +20,7 @@ public final class FclBuiltins {
         FclFunctionRegistry registry = new FclFunctionRegistry();
         registerMath(registry);
         registerUtil(registry, new Gson());
+        registerArray(registry);
         registerText(registry);
         registerPath(registry);
         registerTerminal(registry);
@@ -165,6 +166,45 @@ public final class FclBuiltins {
                 });
     }
 
+    private static void registerArray(FclFunctionRegistry registry) {
+        registry.register("array", "insert", args -> {
+                    arity(args, 3, "array.insert");
+                    if (!(args.getFirst() instanceof List<?> values)) {
+                        throw new FclRuntimeException(
+                                "array.insert requires an array as its first argument");
+                    }
+                    long requested = integral(args.get(1), "array.insert index");
+                    if (requested < 0 || requested > values.size()) {
+                        throw new FclRuntimeException(
+                                "array.insert index must be between 0 and " + values.size());
+                    }
+                    List<Object> result = new ArrayList<>(values.size() + 1);
+                    values.forEach(item -> result.add(FclValues.deepCopy(item)));
+                    result.add((int) requested, FclValues.deepCopy(args.get(2)));
+                    return result;
+                })
+                .register("array", "removeAt", args -> {
+                    arity(args, 2, "array.removeAt");
+                    if (!(args.getFirst() instanceof List<?> values)) {
+                        throw new FclRuntimeException(
+                                "array.removeAt requires an array as its first argument");
+                    }
+                    long requested = integral(args.get(1), "array.removeAt index");
+                    if (requested < 0 || requested >= values.size()) {
+                        throw new FclRuntimeException(
+                                "array.removeAt index must be between 0 and "
+                                        + (values.size() - 1));
+                    }
+                    List<Object> result = new ArrayList<>(values.size() - 1);
+                    for (int index = 0; index < values.size(); index++) {
+                        if (index != requested) {
+                            result.add(FclValues.deepCopy(values.get(index)));
+                        }
+                    }
+                    return result;
+                });
+    }
+
     private static void registerText(FclFunctionRegistry registry) {
         registry.register("text", "slice", args -> {
                     if (args.size() < 2 || args.size() > 3) {
@@ -279,6 +319,19 @@ public final class FclBuiltins {
                 .register("term", "showCursor", args -> {
                     arity(args, 0, "showCursor");
                     return "\u001b[?25h";
+                })
+                .register("term", "displayWidth", args -> {
+                    arity(args, 1, "displayWidth");
+                    return (long) com.follarce.terminal.TerminalColumns.width(
+                            stringAt(args, 0, "displayWidth"));
+                })
+                .register("term", "truncate", args -> {
+                    arity(args, 2, "truncate");
+                    String value = stringAt(args, 0, "truncate");
+                    long width = integral(args.get(1), "truncate width");
+                    if (width < 0 || width > 1_000_000) throw new FclRuntimeException(
+                            "truncate width must be between 0 and 1000000");
+                    return com.follarce.terminal.TerminalColumns.truncate(value, (int) width);
                 })
                 .register("term", "cursorTo", args -> {
                     arity(args, 2, "cursorTo");

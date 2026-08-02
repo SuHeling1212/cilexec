@@ -11,8 +11,12 @@ public final class FclPath {
     }
 
     public static String current(FclContinuation continuation) {
-        if (!continuation.scope().contains(SCOPE_KEY)) return "/";
-        Object value = continuation.scope().get(SCOPE_KEY);
+        // The working directory belongs to the process, not to a function's local scope.
+        // During a user-function call the Runtime replaces scope() with a fresh parameter
+        // scope, while globalScope() keeps the durable process state in the outer call frame.
+        FclScope processScope = continuation.globalScope();
+        if (!processScope.contains(SCOPE_KEY)) return "/";
+        Object value = processScope.get(SCOPE_KEY);
         if (value == null) return "/";
         if (!(value instanceof String path) || !path.startsWith("/")) {
             throw new FclRuntimeException("Persisted working directory is invalid");

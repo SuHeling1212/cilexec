@@ -27,15 +27,13 @@ package.run("demo")
 | `:cd <路径>` | 切换并持久化当前 VFS 工作目录。目标必须是目录。 |
 | `:pwd` | 显示当前工作目录。 |
 | `:ls [路径]` | 列出当前目录或指定目录的子项；目录名带 `/`。 |
-| `:exp-start [路径]` | 开始录制后续终端操作；默认目标是当前目录的 `terminal-export.fcl`。录制状态可跨断线和 Runtime 重启。 |
-| `:exp-end` | 停止录制，将区间内的操作写成 FCL 脚本，然后删除临时录制数据。已有目标文件会原子覆盖并保留修订历史。 |
 | `:logout` | 回到登录界面，保留该用户的终端状态和工作目录。 |
 | `:exit` | 断开当前终端连接；共享 Runtime 和后台进程继续运行。 |
 | `:shutdown` | 输入当前管理员密码并关闭共享 Runtime；仅拥有 `SYSTEM_ADMIN` 权限的用户可用。 |
 
 在真实交互终端中，`↑` / `↓` 选取当前用户先前输入的 FCL 或冒号指令，`←` / `→` 在当前输入行内移动光标。历史记录按用户持久化，重新登录、重启 Runtime 或重启容器后仍可用。用户名、密码和 `io.input()` 的原始输入不会进入历史记录。
 
-只有 `:exp-start` 与 `:exp-end` 之间的操作会进入临时录制。FCL 输入按原样写入；`:cd`、`:ls` 等终端指令以注释保存，因为它们不是 FCL 语法。两个边界指令、用户名、密码及 `io.input()` 输入都不会写入脚本。成功导出后，数据库会级联删除该录制及其中的操作，因此系统不会为了导出而永久保存全部历史；方向键历史仍独立保留最近 200 条。
+终端不提供操作录制或脚本导出功能。FCL 进程上下文、工作目录和最近 200 条方向键历史分别持久化；需要可执行脚本时应直接创建 FCL 文件。
 
 所有在线用户共享一个 Runtime JVM、一个数据库连接池以及有上限的 worker 池。默认有 10
 个 scheduler worker 和 6 个 effect worker。超过 worker 数量的进程留在持久化 FIFO
@@ -50,12 +48,12 @@ package.run("demo")
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
-market.install("cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283")
+market.install("1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557")
 import "editor"
 editor.open("notes.txt")
 ```
 
-其包坐标为 `cilexec/editor/1.0.8`，绑定名为 `editor`，公开函数为
+其包坐标为 `cilexec/editor/1.0.12`，绑定名为 `editor`，公开函数为
 `editor.open(path)`。包导入接受当前用户默认环境里的绑定名或已安装 `.db` 文件的
 64 位 SHA-256，但不接受 `namespace/name/version` 坐标。
 
@@ -120,7 +118,6 @@ editor.open("notes.txt")
 | `path.getParentPath(path)` | 取父路径。别名：`path.getParent(path)`。 |
 | `path.isAbsolute(path)` | 判断是否以 `/` 开头。 |
 | `path.join(part1, part2, ...)` | 拼接并规范化多个路径段；无参数返回 `/`。 |
-| `path.getEnvVar(name)` | 读取进程固有值 `PWD`、`USER`、`USER_ID`、`PID`；其他名称返回 `null`。用户配置使用 `env`。 |
 | `path.setAlias(name, path)` | 在当前 FCL 上下文保存路径别名。 |
 | `path.removeAlias(name)` | 删除别名，返回是否删除成功。 |
 | `path.getAlias(name)` | 读取别名，未找到时返回 `null`。 |
@@ -132,9 +129,18 @@ editor.open("notes.txt")
 普通用户只能管理自己；管理员可把用户名或用户 UUID 作为最后一个参数，查看、设置或删除
 任意用户的变量。
 
+`PWD`、`USER`、`USER_ID`、`PID` 是 Java Runtime 提供的只读动态环境变量，不能通过
+`env.set`、`env.remove` 或共享环境变量接口修改。其中 `PWD` 由终端的 `:cd` 更新；FCL
+进程只能读取。VFS 函数要求绝对路径，不会自动使用 `PWD`。需要当前目录的脚本必须显式写：
+
+```fcl
+absolute = path.join(env.get("PWD"), "note.txt")
+content = file.read(absolute)
+```
+
 | 调用 | 作用 |
 | --- | --- |
-| `env.get(name [, targetUser])` | 读取用户变量；没有用户值时读取共享默认值。 |
+| `env.get(name [, targetUser])` | 读取环境变量；当前进程可直接读取只读的 `PWD`、`USER`、`USER_ID`、`PID`，其他名称读取用户值或共享默认值。 |
 | `env.set(name, value [, targetUser])` | 持久设置用户变量。 |
 | `env.remove(name [, targetUser])` | 删除用户变量。 |
 | `env.list([targetUser])` | 返回用户值覆盖共享默认值后的完整环境。 |
@@ -159,7 +165,18 @@ editor.open("notes.txt")
 | `term.cursorTo(row, column)` | 返回绝对光标定位控制序列，行列从 1 开始。 |
 | `term.inverse(value)` | 使用反显样式包裹文本。 |
 | `term.hideCursor()` / `term.showCursor()` | 隐藏 / 显示终端光标。 |
+| `term.displayWidth(value)` | 返回文本占用的终端显示列数；中文、全角字符和 Emoji 通常占两列，ANSI 样式序列不计宽度。 |
+| `term.truncate(value, width)` | 按终端显示列安全截断文本，不会截断 Unicode 码点。 |
 | `term.getSize()` | 返回当前终端字符尺寸，例如 `{"width":120,"height":40}`。别名：`term.size()`。全屏 TUI 等待按键时每 100ms 刷新一次，因此尺寸变化会在下一次重绘中体现。 |
+
+## 数组处理：`array`
+
+| 调用 | 作用 |
+| --- | --- |
+| `array.insert(values, index, value)` | 返回在指定位置插入元素后的新数组；允许在数组末尾插入。 |
+| `array.removeAt(values, index)` | 返回删除指定位置元素后的新数组。 |
+
+这两个操作在单条 FCL 指令内完成，适合 TUI 修改大数组，避免用 FCL 循环逐项复制并反复持久化中间状态。
 
 ## 文本处理：`text`
 
@@ -187,7 +204,7 @@ editor.open("notes.txt")
 
 ## 文件与目录：`file`
 
-`targetUser` 可以是用户名或用户 UUID。只有管理员能传入其他用户；不传时默认当前用户。所有读写均在 VFS 中完成，不对应宿主机真实路径。
+`targetUser` 可以是用户名或用户 UUID。只有管理员能传入其他用户；不传时默认当前用户。所有读写均在 VFS 中完成，不对应宿主机真实路径。路径参数必须是绝对路径；这些函数不会自动读取 `PWD`。
 
 | 调用 | 作用 |
 | --- | --- |
@@ -195,7 +212,7 @@ editor.open("notes.txt")
 | `file.readChunk(path, offset, maximumBytes [, targetUser])` | 读取 UTF-8 区间；`offset` 非负，单次最多 4 MiB。 |
 | `file.size(path [, targetUser])` | 返回逻辑文件字节数。 |
 | `file.exists(path [, targetUser])` | 判断路径是否存在。 |
-| `file.listdir([path [, targetUser]])` | 返回目录子项的元数据数组；无路径时列当前目录。 |
+| `file.listdir([path [, targetUser]])` | 返回目录子项的元数据数组；无路径时列 VFS 根目录 `/`。 |
 | `file.readMetaData(path [, targetUser])` | 返回节点元数据，如 `nodeId`、`ownerId`、`type`、`objectHash`。 |
 | `file.write(path, content [, targetUser])` | 新建或覆盖文本文件。 |
 | `file.append(path, content [, targetUser])` | 追加文本；使用分块存储，不会加载整个旧文件。 |
@@ -204,7 +221,7 @@ editor.open("notes.txt")
 | `file.removeFile(path [, targetUser])` | 删除文件。 |
 | `file.removeDir(path [, targetUser])` | 删除空目录。 |
 | `file.rename(path, newName [, targetUser])` | 在原目录中重命名；`newName` 不能含 `/`。 |
-| `file.link(linkPath, targetPath)` | 创建内容为目标路径的符号链接节点；仅当前用户范围。 |
+| `file.link(linkPath, targetPath)` | 创建内容为目标路径的符号链接节点；仅当前用户范围。`file.read`、`file.readChunk`、`file.size` 读取链接时跟随到目标文件（链长限制 16 层，循环会报错）。 |
 | `file.lock(path, leaseMilliseconds)` | 获取文件租约锁，成功返回 `{fencingToken, leaseUntil}`，失败返回 `null`。 |
 | `file.renewLock(path, fencingToken, leaseMilliseconds)` | 续期文件锁。 |
 | `file.unlock(path, fencingToken)` | 释放当前进程持有的文件锁。 |
@@ -225,7 +242,7 @@ editor.open("notes.txt")
 | `process.pause(pid)` | 暂停其他可控制进程。 |
 | `process.continue(pid)` | 恢复已暂停的可控制进程。 |
 | `process.fork()` | 复制当前 FCL 执行上下文并创建子进程，返回子 PID。 |
-| `process.exec(programId)` | 将当前进程切换为已存在的程序并挂起等待执行。 |
+| `process.exec(path)` | 从当前用户 VFS 的绝对路径编译 FCL 文件并在当前 PID 中执行；PID、process UID、所有者和父子关系保持不变，且不会继续执行 `exec` 后面的旧程序指令。若脚本希望采用当前目录，必须显式传入 `path.join(env.get("PWD"), relativePath)`。终端进程会保留全局变量、包绑定和工作目录，目标程序结束后回到同一终端；普通后台进程在目标程序结束后终止。 |
 | `process.wait()` | 等待一个仍在运行的子进程；若没有活动子进程，返回空数组。 |
 | `process.waitPID(pid)` | 等待可访问的指定 PID，结束后返回 `{pid, status}`。 |
 
@@ -237,7 +254,6 @@ editor.open("notes.txt")
 | `user.isLocal()` | 判断当前用户是否拥有 `SYSTEM_ADMIN`。 |
 | `user.validateUser(usernameOrUuid)` | 验证用户是否存在且对当前用户可见；普通用户只会验证自身。 |
 | `user.getListOfUsers()` | 返回所有用户的基本信息；需要管理员身份。 |
-| `user.createUser(username, password [, capabilities])` | 创建用户；`capabilities` 是能力名称数组；需要管理员身份。 |
 | `user.removeUser(userUuid)` | 停用用户；需要管理员身份。 |
 | `user.switchUser(...)` | **当前不可用**。持久进程不能在原地更换身份；请使用 `:logout` 后重新登录。 |
 
@@ -291,7 +307,7 @@ FCL 源文件使用 `include "path.fcl"`，会在编译前原样插入到该位�
 
 ```fcl
 import "editor" as "e"
-import "cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283" as "exactEditor"
+import "1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557" as "exactEditor"
 ```
 
 绑定名在同一个包环境中唯一。重复安装相同发行版是幂等操作；普通安装不能用同一个绑定名替换成另一发行版。需要有意调整绑定时，应使用显式的包管理操作。
@@ -310,7 +326,7 @@ import "cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283" as "ex
 | `market.configure(origin)` | 设置当前用户唯一的 HTTP/HTTPS 镜像 origin。 |
 | `market.origin()` | 返回当前生效的镜像源，未配置时返回 `null`。 |
 | `market.update()` | 下载、验证并持久化完整市场索引。 |
-| `market.search(text)` | 多关键词搜索本地索引；索引不存在时先更新。 |
+| `market.search(text)` | 按名称、标签和说明词前缀搜索本地索引；版本号不参与搜索。索引不存在时先更新。 |
 | `market.info(sha256)` | 按完整分发文件 SHA-256 查询包记录。 |
 | `market.download(sha256)` | 4 MiB 分块下载并重新计算完整文件哈希。 |
 | `market.install(sha256)` | 递归安装精确哈希依赖并建立默认绑定。 |
@@ -344,6 +360,10 @@ import "cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283" as "ex
 | `swapPool.signal(pool, variable)` | 发送变量信号。 |
 | `swapPool.waitFor(pool, variable)` | 等待信号；收到后返回 `true`。 |
 
+交换池锁属于创建它的逻辑进程，而不是某一次 scheduler 时间片。同一 PID 被重新调度、终端
+进程暂停后接收下一条指令，或同一 Headless 上下文再次提交代码时，只要租约尚未过期并继续
+使用当前围栏令牌，就可以更新、续期或释放该锁。其他进程即使知道变量名也不能使用该令牌。
+
 ## 系统：`system`
 
 | 调用 | 作用 |
@@ -363,11 +383,11 @@ import "cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283" as "ex
 
 ```fcl
 system.ls()                         // 查看实际加载的函数
-path.getEnvVar("PWD")              // 当前工作目录
+env.get("PWD")                     // 当前工作目录（Java 管理，只读）
 user.getCurrentUser()               // 当前用户 UUID
 user.isLocal()                      // 是否管理员
 process.getList()                   // 可见进程
-file.listdir(".")                  // 当前目录元数据
+file.listdir(path.join(env.get("PWD"), ".")) // 当前目录元数据
 package.list()                      // 已登记包
 ```
 

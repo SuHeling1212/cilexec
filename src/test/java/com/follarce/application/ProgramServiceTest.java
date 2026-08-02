@@ -526,8 +526,14 @@ class ProgramServiceTest {
     }
 
     static final class MemoryAuthRepository implements AuthRepository {
-        @Override public Optional<UserAccount> findUser(UUID userId) { return Optional.empty(); }
-        @Override public Optional<UserAccount> findUser(String username) { return Optional.empty(); }
+        @Override public Optional<UserAccount> findUser(UUID userId) {
+            return Optional.of(UserAccount.active(userId, "test", Instant.EPOCH));
+        }
+        @Override public Optional<UserAccount> findUser(String username) {
+            return "test".equalsIgnoreCase(username)
+                    ? Optional.of(UserAccount.active(new UUID(0, 1), "test", Instant.EPOCH))
+                    : Optional.empty();
+        }
         @Override public void saveUser(UserAccount user) { }
         @Override public String provisionPrincipal(UUID userId, char[] password) {
             return "cilexec_user_" + userId.toString().replace("-", "");

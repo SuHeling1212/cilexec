@@ -105,15 +105,20 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
     public void release(UUID processUid, long executionEpoch) {
         String release = "WITH released AS MATERIALIZED ("
                 + "SELECT scheduler.release_process(?,?) AS done), "
-                + "notified AS (SELECT pg_notify('cilexec_interrupt_work','') FROM released "
+                + "scheduler_notified AS (SELECT pg_notify('cilexec_scheduler_work','') "
+                + "FROM released JOIN process.process ON process_uid=? AND status='READY' "
+                + "AND NOT interrupt_requested), "
+                + "interrupt_notified AS (SELECT pg_notify('cilexec_interrupt_work','') FROM released "
                 + "JOIN process.process ON process_uid=? AND status='READY' "
                 + "AND interrupt_requested) "
                 + "SELECT (SELECT count(*) FROM released),"
-                + "(SELECT count(*) FROM notified)";
+                + "(SELECT count(*) FROM scheduler_notified),"
+                + "(SELECT count(*) FROM interrupt_notified)";
         try (PreparedStatement statement = connection.prepareStatement(release)) {
             statement.setObject(1, processUid);
             statement.setLong(2, executionEpoch);
             statement.setObject(3, processUid);
+            statement.setObject(4, processUid);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next() || rows.getInt(1) != 1) {
                     throw new SQLException("Scheduler release function was not evaluated",

@@ -8,9 +8,6 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.fcl.FclPath;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
-import com.follarce.vfs.VfsService;
-
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -29,7 +26,6 @@ public final class DatabaseTerminalControl implements TerminalControl {
     private final UserAccount user;
     private final TerminalService terminals;
     private final TerminalReplService repl;
-    private final VfsService vfs;
     private final Runnable shutdown;
     private final Predicate<char[]> passwordVerifier;
     private UUID sessionId;
@@ -43,6 +39,23 @@ public final class DatabaseTerminalControl implements TerminalControl {
     public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
                                    Runnable shutdown, Predicate<char[]> passwordVerifier,
                                    Runnable schedulerWake, Runnable interruptWake) {
+        this(transactions, user, shutdown, passwordVerifier, schedulerWake, interruptWake,
+                Optional.empty());
+    }
+
+    /** Creates a control surface backed by the durable context for one host terminal. */
+    public static DatabaseTerminalControl headless(
+            JdbcTransactionExecutor transactions, UserAccount user, String contextId,
+            Runnable shutdown, Predicate<char[]> passwordVerifier,
+            Runnable schedulerWake, Runnable interruptWake) {
+        return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
+                schedulerWake, interruptWake, Optional.of(contextId));
+    }
+
+    private DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
+                                    Runnable shutdown, Predicate<char[]> passwordVerifier,
+                                    Runnable schedulerWake, Runnable interruptWake,
+                                    Optional<String> headlessContext) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.user = java.util.Objects.requireNonNull(user, "user");
         this.shutdown = java.util.Objects.requireNonNull(shutdown, "shutdown");
@@ -51,8 +64,9 @@ public final class DatabaseTerminalControl implements TerminalControl {
         this.terminals = new TerminalService(transactions, Clock.systemUTC(), schedulerWake,
                 interruptWake);
         this.repl = new TerminalReplService(transactions, schedulerWake);
-        this.vfs = new VfsService(transactions, Clock.systemUTC());
-        this.sessionId = terminals.openOrResume(user.userId()).sessionId();
+        this.sessionId = headlessContext
+                .map(context -> terminals.openOrResume(user.userId(), context))
+                .orElseGet(() -> terminals.openOrResume(user.userId())).sessionId();
     }
 
     @Override
@@ -63,11 +77,11 @@ public final class DatabaseTerminalControl implements TerminalControl {
             case ShellCommand.ChangeDirectory cd -> changeDirectory(cd.path());
             case ShellCommand.WorkingDirectory ignored -> workingDirectory();
             case ShellCommand.ListDirectory ls -> listDirectory(ls.path());
-            case ShellCommand.StartExport start -> startExport(start.path());
-            case ShellCommand.EndExport ignored -> endExport();
             case ShellCommand.Clear ignored -> "\033[?25h\033[2J\033[H";
             case ShellCommand.Logout ignored -> "logout requested";
-            case ShellCommand.Exit ignored -> stop("");
+            // Exit closes only the calling transport. TerminalConsole handles it before
+            // delegation; keeping this branch side-effect-free protects other adapters too.
+            case ShellCommand.Exit ignored -> "";
             case ShellCommand.Shutdown ignored -> throw new IllegalArgumentException(
                     "shutdown requires interactive password verification");
         };
@@ -198,7 +212,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     private String workingDirectory() {
-        return repl.workingDirectory(user.userId(), sessionId);
+        return repl.environmentVariable(user.userId(), sessionId, "PWD");
     }
 
     private String listDirectory(Optional<String> path) {
@@ -225,79 +239,6 @@ public final class DatabaseTerminalControl implements TerminalControl {
                             .collect(java.util.stream.Collectors.joining("\n"));
                 });
     }
-
-    private String startExport(Optional<String> path) {
-        String absolutePath = FclPath.resolve(workingDirectory(),
-                path.orElse("terminal-export.fcl"));
-        locateExportTarget(absolutePath);
-        terminals.startExportCapture(user.userId(), absolutePath);
-        return "";
-    }
-
-    private String endExport() {
-        com.follarce.domain.port.TerminalRepository.ExportCapture capture =
-                terminals.beginExportFinalization(user.userId());
-        try {
-            writeExport(capture.targetPath(), capture.operations());
-            terminals.completeExportCapture(user.userId(), capture.captureId());
-            return "";
-        } catch (RuntimeException failure) {
-            try {
-                terminals.resumeExportCapture(user.userId(), capture.captureId());
-            } catch (RuntimeException resumeFailure) {
-                failure.addSuppressed(resumeFailure);
-            }
-            throw failure;
-        }
-    }
-
-    private void writeExport(String absolutePath, List<String> operations) {
-        ExportTarget target = locateExportTarget(absolutePath);
-        byte[] content = TerminalOperationScript.render(operations)
-                .getBytes(StandardCharsets.UTF_8);
-        if (target.existing().isEmpty()) {
-            vfs.createFile(user.userId(), target.parentId(), target.name(), content,
-                    "text/x-fcl;charset=utf-8", java.util.Set.of(), true);
-        } else {
-            VfsNode existing = target.existing().orElseThrow();
-            vfs.replaceContent(user.userId(), existing.nodeId(),
-                    existing.currentObjectHash().orElseThrow(), content,
-                    "text/x-fcl;charset=utf-8");
-        }
-    }
-
-    private ExportTarget locateExportTarget(String absolutePath) {
-        if (absolutePath.equals("/")) {
-            throw new IllegalArgumentException("Export path must name a file");
-        }
-        int slash = absolutePath.lastIndexOf('/');
-        String parentPath = slash == 0 ? "/" : absolutePath.substring(0, slash);
-        String name = absolutePath.substring(slash + 1);
-        if (name.isBlank()) throw new IllegalArgumentException("Export path must name a file");
-
-        return transactions.inUserTransaction(user.userId(),
-                Isolation.READ_COMMITTED, transaction -> {
-                    ResolvedPath routed = route(transaction, parentPath);
-                    if (!routed.ownerId().equals(user.userId())) {
-                        throw new IllegalArgumentException(
-                                "Operation history can only be exported into your own VFS");
-                    }
-                    VfsNode parent = resolve(transaction, routed.ownerId(), routed.path());
-                    if (parent.type() != VfsNode.Type.DIRECTORY) {
-                        throw new IllegalArgumentException("Not a directory: " + parentPath);
-                    }
-                    Optional<VfsNode> existing = transaction.vfs().findChild(routed.ownerId(),
-                            Optional.of(parent.nodeId()), name);
-                    existing.ifPresent(node -> {
-                        if (node.type() != VfsNode.Type.FILE) {
-                            throw new IllegalArgumentException("Not a file: " + absolutePath);
-                        }
-                    });
-                    return new ExportTarget(parent.nodeId(), name, existing);
-                });
-    }
-
-    private record ExportTarget(UUID parentId, String name, Optional<VfsNode> existing) {}
 
     private VfsNode resolve(TransactionContext transaction, String absolutePath) {
         ResolvedPath routed = route(transaction, absolutePath);
@@ -342,11 +283,6 @@ public final class DatabaseTerminalControl implements TerminalControl {
 
     private boolean isLocalAdministrator() {
         return user.username().equals("local") && isAdmin();
-    }
-
-    private String stop(String message) {
-        shutdown.run();
-        return message;
     }
 
     private String await(long pid) {
@@ -405,8 +341,6 @@ public final class DatabaseTerminalControl implements TerminalControl {
                   :cd <vfs-path>                 change the durable working directory
                   :pwd                           print the working directory
                   :ls [vfs-path]                 list a directory
-                  :exp-start [vfs-path]          start a durable operation capture
-                  :exp-end                       export the capture and discard its temporary log
                   :clear                         clear the terminal screen
                   :logout                        return to login without losing REPL state
                   :exit                          close only this terminal connection

@@ -8,7 +8,6 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.port.ProcessRepository;
-import com.follarce.domain.port.TerminalRepository;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
@@ -19,6 +18,7 @@ import java.util.Map;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 
 /** Persists complete terminal inputs, attachments, and process interrupts. */
 public final class TerminalService {
@@ -68,6 +68,45 @@ public final class TerminalService {
         });
     }
 
+    /**
+     * Opens one durable, non-interactive REPL namespace. The opaque context identifier is
+     * deliberately hashed into the session UUID: it is never stored as user-visible metadata.
+     */
+    public TerminalSession openOrResume(UUID ownerId, String contextId) {
+        java.util.Objects.requireNonNull(ownerId, "ownerId");
+        String normalized = requireContextId(contextId);
+        UUID sessionId = UUID.nameUUIDFromBytes(("cilexec-headless-v1\0" + ownerId + "\0"
+                + normalized).getBytes(StandardCharsets.UTF_8));
+        return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
+            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
+            Optional<TerminalSession> existing = transaction.terminal().findSession(sessionId);
+            if (existing.isPresent()) {
+                TerminalSession session = existing.orElseThrow();
+                if (!session.ownerId().equals(ownerId)) {
+                    throw new IllegalStateException("Headless terminal context owner mismatch");
+                }
+                if (session.status() != TerminalSession.Status.OPEN) {
+                    throw new IllegalStateException("Headless terminal context is closed");
+                }
+                return session;
+            }
+            Instant now = clock.instant();
+            TerminalSession session = new TerminalSession(sessionId, ownerId,
+                    TerminalSession.Status.OPEN, 1, now, now, Optional.empty());
+            transaction.terminal().saveApiSession(session);
+            transaction.audit().append(audit(ownerId, "terminal.headless.open", sessionId, now));
+            return session;
+        });
+    }
+
+    private static String requireContextId(String contextId) {
+        if (contextId == null || contextId.isBlank() || contextId.length() > 128
+                || !contextId.matches("[A-Za-z0-9._:-]+")) {
+            throw new IllegalArgumentException("Invalid headless terminal context identifier");
+        }
+        return contextId;
+    }
+
     /** Loads only this user's durable commands; it never includes passwords or process input. */
     public List<String> commandHistory(UUID ownerId) {
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
@@ -83,40 +122,8 @@ public final class TerminalService {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
             transaction.terminal().appendCommandHistory(ownerId, command, now,
                     COMMAND_HISTORY_LIMIT);
-            transaction.terminal().appendCapturedOperation(ownerId, command, now);
             return null;
         });
-    }
-
-    public void startExportCapture(UUID ownerId, String targetPath) {
-        Instant now = clock.instant();
-        boolean started = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
-                transaction -> {
-                    Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
-                    return transaction.terminal().startExportCapture(UUID.randomUUID(), ownerId,
-                            targetPath, now);
-                });
-        if (!started) throw new IllegalStateException("An export capture is already active");
-    }
-
-    public TerminalRepository.ExportCapture beginExportFinalization(UUID ownerId) {
-        return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
-            Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
-            return transaction.terminal().beginExportFinalization(ownerId)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "No export capture is active; run :exp-start first"));
-        });
-    }
-
-    public void completeExportCapture(UUID ownerId, UUID captureId) {
-        boolean completed = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
-                transaction -> transaction.terminal().completeExportCapture(ownerId, captureId));
-        if (!completed) throw new IllegalStateException("Export capture changed concurrently");
-    }
-
-    public void resumeExportCapture(UUID ownerId, UUID captureId) {
-        transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
-                transaction -> transaction.terminal().resumeExportCapture(ownerId, captureId));
     }
 
     public TerminalSession.Input submit(UUID ownerId, UUID sessionId, String completeInput) {

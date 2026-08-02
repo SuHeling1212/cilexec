@@ -28,16 +28,47 @@ class MarketRuntimeFunctionsTest {
                 new FclContinuation());
 
         registry.invoke("market.configure", List.of("http://market.example:8787"), invocation);
+        assertEquals("http://market.example:8787",
+                registry.invoke("market.origin", List.of(), invocation));
         Object updated = registry.invoke("market.update", List.of(), invocation);
         assertEquals(1L, ((Map<?, ?>) updated).get("packages"));
 
         Object found = registry.invoke("market.search", List.of("text editor"), invocation);
         assertEquals(1, ((List<?>) found).size());
+        assertEquals(1, ((List<?>) registry.invoke("market.search", List.of("ed"),
+                invocation)).size());
+        assertTrue(((List<?>) registry.invoke("market.search", List.of("or"),
+                invocation)).isEmpty());
+        assertTrue(((List<?>) registry.invoke("market.search", List.of("1"),
+                invocation)).isEmpty());
+        assertTrue(((List<?>) registry.invoke("market.search", List.of("1.0.0"),
+                invocation)).isEmpty());
+        assertTrue(((List<?>) registry.invoke("market.search",
+                List.of("cilexec/editor/1.0.0"), invocation)).isEmpty());
+        assertEquals(1, ((List<?>) registry.invoke("market.search",
+                List.of(sha256.substring(0, 8)), invocation)).size());
+        assertEquals(sha256, ((Map<?, ?>) registry.invoke("market.info", List.of(sha256),
+                invocation)).get("sha256"));
+        Object downloaded = registry.invoke("market.download", List.of(sha256), invocation);
+        assertEquals(true, ((Map<?, ?>) downloaded).get("ok"));
         Object installed = registry.invoke("market.install", List.of(sha256), invocation);
         assertEquals(true, ((Map<?, ?>) installed).get("ok"));
         assertEquals(1, ((List<?>) registry.invoke("market.list", List.of(), invocation)).size());
         assertEquals(1, host.downloads);
         assertEquals(1, host.installs);
+
+        Object installedAgain = registry.invoke("market.install", List.of(sha256), invocation);
+        assertEquals(true, ((Map<?, ?>) installedAgain).get("alreadyInstalled"));
+        assertEquals(1, host.installs);
+        assertEquals(List.of(), ((Map<?, ?>) registry.invoke("market.upgrade", List.of(),
+                invocation)).get("upgraded"));
+        assertTrue(((String) registry.invoke("market.help", List.of(), invocation))
+                .contains("market.install"));
+        assertEquals(MarketRuntimeFunctions.CLIENT_VERSION,
+                ((Map<?, ?>) registry.invoke("market.run", List.of(), invocation)).get("version"));
+        assertEquals(true, registry.invoke("market.uninstall", List.of(sha256), invocation));
+        assertTrue(((List<?>) registry.invoke("market.list", List.of(), invocation)).isEmpty());
+        assertEquals(false, registry.invoke("market.uninstall", List.of(sha256), invocation));
     }
 
     @Test
@@ -54,6 +85,40 @@ class MarketRuntimeFunctionsTest {
                 () -> registry.invoke("market.update", List.of(), invocation));
         assertThrows(FclRuntimeException.class,
                 () -> registry.invoke("market.info", List.of("abc"), invocation));
+        assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("market.configure", List.of("file:///tmp/market"),
+                        invocation));
+        assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("market.search", List.of(), invocation));
+    }
+
+    @Test
+    void rejectsCyclicDependenciesBeforeDownloadingAnything() {
+        String first = "1".repeat(64);
+        String second = "2".repeat(64);
+        FakeHost host = new FakeHost(new byte[]{1}, first);
+        host.index = "{\"apiVersion\":\"cilexec.market/v1\",\"packages\":["
+                + record("one", first, second) + "," + record("two", second, first) + "]}";
+        FclFunctionRegistry registry = new FclFunctionRegistry();
+        new MarketRuntimeFunctions(host).register(registry);
+        FclFunctionRegistry.Invocation invocation = new FclFunctionRegistry.Invocation(2,
+                new FclContinuation());
+        registry.invoke("market.configure", List.of("https://market.example"), invocation);
+        registry.invoke("market.update", List.of(), invocation);
+
+        assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("market.install", List.of(first), invocation));
+        assertEquals(0, host.downloads);
+    }
+
+    private static String record(String name, String sha256, String dependency) {
+        return "{\"namespace\":\"test\",\"name\":\"" + name
+                + "\",\"version\":\"1.0.0\",\"kind\":\"application\","
+                + "\"coordinate\":\"test/" + name + "/1.0.0\","
+                + "\"download\":\"/market/v1/" + sha256 + "\","
+                + "\"sha256\":\"" + sha256 + "\",\"bytes\":1,"
+                + "\"dependencies\":[{\"sha256\":\"" + dependency
+                + "\",\"optional\":false}],\"latest\":true}";
     }
 
     private static String hex(byte[] bytes) {

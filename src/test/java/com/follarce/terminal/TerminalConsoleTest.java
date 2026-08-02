@@ -29,7 +29,8 @@ class TerminalConsoleTest {
                 control).run();
 
         assertInstanceOf(ShellCommand.WorkingDirectory.class, control.commands.get(0));
-        assertInstanceOf(ShellCommand.Exit.class, control.commands.get(1));
+        assertEquals(1, control.commands.size(),
+                ":exit must not be delegated to the shared Runtime control");
         assertEquals(List.of("func twice(value) {\nreturn value * 2\n}", "twice(21)"),
                 control.sources);
         assertEquals(List.of(":pwd", "func twice(value) {\nreturn value * 2\n}",
@@ -84,7 +85,7 @@ class TerminalConsoleTest {
 
         String transcript = output.toString(StandardCharsets.UTF_8);
         assertTrue(transcript.contains("for example :ls or :cd /path"), transcript);
-        assertEquals(List.of(new ShellCommand.Exit()), control.commands);
+        assertTrue(control.commands.isEmpty());
     }
 
     @Test
@@ -100,7 +101,7 @@ class TerminalConsoleTest {
                 control).run();
 
         assertEquals(List.of("UP"), control.attachedInputs);
-        assertEquals(List.of(new ShellCommand.Exit()), control.commands);
+        assertTrue(control.commands.isEmpty());
     }
 
     @Test
@@ -121,7 +122,7 @@ class TerminalConsoleTest {
                 control).run();
 
         assertTrue(control.attachedInputs.isEmpty());
-        assertEquals(List.of(new ShellCommand.Exit()), control.commands);
+        assertTrue(control.commands.isEmpty());
     }
 
     @Test
@@ -158,23 +159,6 @@ class TerminalConsoleTest {
         assertTrue(transcript.contains("Administrator permission is required"), transcript);
         assertTrue(!transcript.contains("administrator password> "), transcript);
         assertTrue(!control.shutdownRequested);
-    }
-
-    @Test
-    void exportBoundaryCommandsAreNotIncludedInTheCapture() {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        RecordingControl control = new RecordingControl();
-
-        new TerminalConsole(new BufferedReader(new InputStreamReader(
-                new ByteArrayInputStream(":exp-start /history.fcl\nio.println(1)\n"
-                        .concat(":exp-end\n:exit\n")
-                        .getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8)),
-                new PrintWriter(output, true, StandardCharsets.UTF_8), control).run();
-
-        assertInstanceOf(ShellCommand.StartExport.class, control.commands.getFirst());
-        assertInstanceOf(ShellCommand.EndExport.class, control.commands.get(1));
-        assertEquals(List.of("io.println(1)", ":exit"), control.remembered,
-                "capture boundary commands must not enter the exported interval");
     }
 
     @Test

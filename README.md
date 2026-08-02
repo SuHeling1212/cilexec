@@ -60,6 +60,17 @@ source code, explicitly rebuild the shared application image with:
 ./Install.sh --rebuild
 ```
 
+To run one FCL submission directly from the host without entering the interactive Shell, use:
+
+```bash
+./Headless.sh 'value = 41'
+./Headless.sh 'io.println(value + 1)'
+```
+
+Calls from the same host terminal share one durable paused REPL process; different host terminals
+use independent contexts. The password is read without echo and sent over standard input, never in
+the command arguments or environment. See [docs/headless-mode.md](docs/headless-mode.md).
+
 The market client is built into `cilexec-app.jar`; there is no `market.db` to install or import.
 The editor remains an independently distributed FCL package. Start the standalone Java market
 server in a second host terminal before installing it:
@@ -150,14 +161,14 @@ Each ordinary user sees their private VFS root as `/`. The `local` administrator
 sees `/Users/<username>` as a live view of that user's root. This is a virtual mapping rather than
 a copy; `:cd`, `:ls`, and FCL file paths all address the same stored nodes. Ordinary users cannot
 list or address another user's root through `/Users`.
-The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.8`) served by
+The full-screen editor is a real immutable FCL package database (`cilexec/editor/1.0.12`) served by
 the host market. Configure the built-in client, install the exact SHA-256 once for the current user,
 then import its binding into the durable terminal context:
 
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
-market.install("cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283")
+market.install("1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557")
 import "editor"
 editor.open("notes.txt")
 ```

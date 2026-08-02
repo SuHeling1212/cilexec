@@ -35,11 +35,21 @@ final class MarketRepository {
     private static final Gson PRETTY_JSON = new GsonBuilder().setPrettyPrinting().create();
 
     private final Path repository;
-    private final Map<String, PublishedPackage> packages;
-    private final byte[] index;
+    private final Path catalog;
+    private volatile Snapshot snapshot;
 
     MarketRepository(Path repository, Path catalog) throws IOException, SQLException {
         this.repository = requireDirectory(repository).toRealPath(LinkOption.NOFOLLOW_LINKS);
+        this.catalog = catalog.toAbsolutePath().normalize();
+        this.snapshot = loadSnapshot();
+    }
+
+    /** Rebuilds and validates a complete repository view before publishing it atomically. */
+    synchronized void refresh() throws IOException, SQLException {
+        snapshot = loadSnapshot();
+    }
+
+    private Snapshot loadSnapshot() throws IOException, SQLException {
         Map<String, Publication> publications = readPublications(catalog);
         List<PublishedPackage> loaded = new ArrayList<>();
         for (Map.Entry<String, Publication> entry : publications.entrySet()) {
@@ -53,18 +63,20 @@ final class MarketRepository {
                 throw new IllegalArgumentException("Duplicate published package SHA-256");
             }
         }
-        this.packages = Map.copyOf(byHash);
+        Map<String, PublishedPackage> packages = Map.copyOf(byHash);
         Map<String, Object> document = Map.of("apiVersion", API_VERSION,
                 "packages", loaded.stream().map(value -> value.record().asMap()).toList());
-        this.index = (PRETTY_JSON.toJson(document) + "\n").getBytes(StandardCharsets.UTF_8);
+        byte[] index = (PRETTY_JSON.toJson(document) + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+        return new Snapshot(packages, index);
     }
 
     byte[] index() {
-        return index.clone();
+        return snapshot.index().clone();
     }
 
     PublishedPackage require(String sha256) {
-        return packages.get(sha256);
+        return snapshot.packages().get(sha256);
     }
 
     boolean unchanged(PublishedPackage value) throws IOException {
@@ -269,6 +281,12 @@ final class MarketRepository {
     }
 
     record PublishedPackage(Path path, PackageRecord record) { }
+    private record Snapshot(Map<String, PublishedPackage> packages, byte[] index) {
+        private Snapshot {
+            packages = Map.copyOf(packages);
+            index = index.clone();
+        }
+    }
     private record Publication(String summary, String description, List<String> tags) { }
     record Dependency(String sha256, boolean optional) { }
 

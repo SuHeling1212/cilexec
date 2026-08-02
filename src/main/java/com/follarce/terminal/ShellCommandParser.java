@@ -16,8 +16,6 @@ public final class ShellCommandParser {
             case "cd" -> exact(words, 2, new ShellCommand.ChangeDirectory(words.get(1)));
             case "pwd" -> exact(words, 1, new ShellCommand.WorkingDirectory());
             case "ls" -> listDirectory(words);
-            case "exp-start" -> startExport(words);
-            case "exp-end" -> exact(words, 1, new ShellCommand.EndExport());
             case "clear", "cls" -> exact(words, 1, new ShellCommand.Clear());
             case "logout" -> exact(words, 1, new ShellCommand.Logout());
             case "exit", "quit" -> exact(words, 1, new ShellCommand.Exit());
@@ -63,14 +61,6 @@ public final class ShellCommandParser {
             throw new IllegalArgumentException("ls accepts at most one path");
         }
         return new ShellCommand.ListDirectory(words.size() == 2
-                ? Optional.of(words.get(1)) : Optional.empty());
-    }
-
-    private static ShellCommand startExport(List<String> words) {
-        if (words.size() > 2) {
-            throw new IllegalArgumentException("exp-start accepts at most one path");
-        }
-        return new ShellCommand.StartExport(words.size() == 2
                 ? Optional.of(words.get(1)) : Optional.empty());
     }
 

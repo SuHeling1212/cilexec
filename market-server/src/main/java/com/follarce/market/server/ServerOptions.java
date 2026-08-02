@@ -7,18 +7,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 record ServerOptions(Path repository, Path catalog, InetAddress bind, int port,
-                     List<IpNetwork> allowedNetworks, int workers) {
+                     List<IpNetwork> allowedNetworks, int workers, boolean checkOnly) {
     static ServerOptions parse(String[] arguments) {
         Path repository = Path.of("repository");
         Path catalog = Path.of("catalog.json");
         InetAddress bind = address("127.0.0.1");
         int port = 8787;
         int workers = 16;
+        boolean checkOnly = false;
         List<IpNetwork> allowed = new ArrayList<>();
         allowed.add(IpNetwork.parse("127.0.0.0/8"));
         allowed.add(IpNetwork.parse("::1/128"));
         for (int index = 0; index < arguments.length; index++) {
             String option = arguments[index];
+            if (option.equals("--check")) {
+                checkOnly = true;
+                continue;
+            }
             String value = switch (option) {
                 case "--repository", "--catalog", "--bind", "--port", "--allow-cidr",
                      "--workers" -> requireValue(arguments, ++index, option);
@@ -36,7 +41,8 @@ record ServerOptions(Path repository, Path catalog, InetAddress bind, int port,
             }
         }
         return new ServerOptions(repository.toAbsolutePath().normalize(),
-                catalog.toAbsolutePath().normalize(), bind, port, List.copyOf(allowed), workers);
+                catalog.toAbsolutePath().normalize(), bind, port, List.copyOf(allowed), workers,
+                checkOnly);
     }
 
     static String usage() {
@@ -46,7 +52,8 @@ record ServerOptions(Path repository, Path catalog, InetAddress bind, int port,
                 + "  --bind ADDRESS      listen address (default: 127.0.0.1)\n"
                 + "  --port PORT         listen port (default: 8787)\n"
                 + "  --allow-cidr CIDR   permit client network; repeatable\n"
-                + "  --workers COUNT     concurrent request limit (default: 16)";
+                + "  --workers COUNT     concurrent request limit (default: 16)\n"
+                + "  --check             validate repository and exit without listening";
     }
 
     private static String requireValue(String[] arguments, int index, String option) {

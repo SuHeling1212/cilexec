@@ -309,10 +309,52 @@ AS $function$
     )
 $function$;
 
+-- Returns only the username belonging to the authenticated CilExec identity. The expected UUID
+-- prevents a caller from using this narrow helper as an account enumeration interface.
+-- name: auth.resolve_visible_username
+CREATE FUNCTION auth.resolve_visible_username(
+    p_database_role name,
+    p_claim text,
+    p_expected_user_id uuid
+)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, auth
+AS $function$
+    SELECT account.username
+    FROM auth.user_account AS account
+    WHERE account.user_id = auth.resolve_cilexec_user_id(p_database_role, p_claim)
+      AND account.user_id = p_expected_user_id
+      AND account.status = 'ACTIVE'
+$function$;
+
+-- name: auth.visible_username
+CREATE FUNCTION auth.visible_username(p_expected_user_id uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, auth
+AS $function$
+    SELECT auth.resolve_visible_username(
+        current_user::name,
+        NULLIF(current_setting('app.cilexec_user_id', true), ''),
+        p_expected_user_id
+    )
+$function$;
+
 REVOKE ALL ON FUNCTION auth.resolve_cilexec_user_id(name, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auth.resolve_visible_username(name, text, uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auth.visible_username(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION auth.resolve_cilexec_user_id(name, text)
     TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
 GRANT EXECUTE ON FUNCTION auth.current_cilexec_user_id()
+    TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
+GRANT EXECUTE ON FUNCTION auth.resolve_visible_username(name, text, uuid)
+    TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
+GRANT EXECUTE ON FUNCTION auth.visible_username(uuid)
     TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
 
 -- name: baseline.auth_rls
@@ -422,4 +464,3 @@ COMMENT ON FUNCTION auth.current_cilexec_user_id() IS
     'Returns an identity only when current_user, transaction GUC, and user_account mapping all agree';
 
 RESET ROLE;
-

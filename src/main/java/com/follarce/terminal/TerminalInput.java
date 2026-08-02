@@ -351,7 +351,7 @@ public interface TerminalInput {
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
-                            } else if (lineCount(value) == 1 && !history.isEmpty()
+                            } else if (remember && lineCount(value) == 1 && !history.isEmpty()
                                     && historyIndex > 0) {
                                 if (historyIndex == history.size()) draft = value.toString();
                                 replace(value, history.get(--historyIndex));
@@ -371,7 +371,8 @@ public interface TerminalInput {
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
-                            } else if (lineCount(value) == 1 && historyIndex < history.size()) {
+                            } else if (remember && lineCount(value) == 1
+                                    && historyIndex < history.size()) {
                                 historyIndex++;
                                 replace(value, historyIndex == history.size()
                                         ? draft : history.get(historyIndex));
@@ -577,42 +578,7 @@ public interface TerminalInput {
 
         /** Returns terminal columns while ignoring ANSI CSI formatting sequences. */
         private static int visibleWidth(String value) {
-            int width = 0;
-            for (int index = 0; index < value.length();) {
-                char character = value.charAt(index);
-                if (character == '\u001b' && index + 1 < value.length()
-                        && value.charAt(index + 1) == '[') {
-                    index += 2;
-                    while (index < value.length()) {
-                        char ansi = value.charAt(index++);
-                        if (ansi >= '@' && ansi <= '~') break;
-                    }
-                    continue;
-                }
-                int codePoint = value.codePointAt(index);
-                index += Character.charCount(codePoint);
-                width += codePointWidth(codePoint);
-            }
-            return width;
-        }
-
-        private static int codePointWidth(int codePoint) {
-            if (Character.isISOControl(codePoint)) return 0;
-            int type = Character.getType(codePoint);
-            if (type == Character.NON_SPACING_MARK
-                    || type == Character.ENCLOSING_MARK
-                    || type == Character.COMBINING_SPACING_MARK) return 0;
-            if (codePoint >= 0x1100 && (codePoint <= 0x115F
-                    || codePoint == 0x2329 || codePoint == 0x232A
-                    || codePoint >= 0x2E80 && codePoint <= 0xA4CF
-                    || codePoint >= 0xAC00 && codePoint <= 0xD7A3
-                    || codePoint >= 0xF900 && codePoint <= 0xFAFF
-                    || codePoint >= 0xFE10 && codePoint <= 0xFE6F
-                    || codePoint >= 0xFF00 && codePoint <= 0xFF60
-                    || codePoint >= 0xFFE0 && codePoint <= 0xFFE6
-                    || codePoint >= 0x1F300 && codePoint <= 0x1FAFF
-                    || codePoint >= 0x20000 && codePoint <= 0x3FFFD)) return 2;
-            return 1;
+            return TerminalColumns.width(value);
         }
 
         private static int moveVertical(StringBuilder value, int cursor, int direction) {

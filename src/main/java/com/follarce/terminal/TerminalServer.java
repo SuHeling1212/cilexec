@@ -5,6 +5,7 @@ import com.follarce.domain.auth.UserAccount;
 import java.io.IOException;
 import java.io.FilterInputStream;
 import java.io.InputStream;
+import java.io.PushbackInputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.Writer;
@@ -13,6 +14,10 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -20,6 +25,7 @@ import java.util.concurrent.Semaphore;
 import java.util.function.BooleanSupplier;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import java.util.function.BiFunction;
 
 /**
  * Lightweight multi-user terminal transport owned by the one active Runtime JVM.
@@ -31,6 +37,7 @@ public final class TerminalServer implements AutoCloseable {
     private final int port;
     private final TerminalAccess access;
     private final Function<UserAccount, TerminalControl> controls;
+    private final BiFunction<UserAccount, String, TerminalControl> headlessControls;
     private final String administratorUsername;
     private final AtomicBoolean running = new AtomicBoolean();
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
@@ -41,12 +48,22 @@ public final class TerminalServer implements AutoCloseable {
     public TerminalServer(int port, TerminalAccess access,
                           Function<UserAccount, TerminalControl> controls,
                           String administratorUsername) {
+        this(port, access, controls, (account, ignored) -> controls.apply(account),
+                administratorUsername);
+    }
+
+    public TerminalServer(int port, TerminalAccess access,
+                          Function<UserAccount, TerminalControl> controls,
+                          BiFunction<UserAccount, String, TerminalControl> headlessControls,
+                          String administratorUsername) {
         if (port < 1 || port > 65_535) {
             throw new IllegalArgumentException("Terminal port is outside 1..65535");
         }
         this.port = port;
         this.access = java.util.Objects.requireNonNull(access, "access");
         this.controls = java.util.Objects.requireNonNull(controls, "controls");
+        this.headlessControls = java.util.Objects.requireNonNull(headlessControls,
+                "headlessControls");
         this.administratorUsername = java.util.Objects.requireNonNull(
                 administratorUsername, "administratorUsername");
     }
@@ -99,7 +116,22 @@ public final class TerminalServer implements AutoCloseable {
         try (client) {
             output = new LockedPrintWriter(new OutputStreamWriter(client.getOutputStream(),
                     StandardCharsets.UTF_8));
-            DimensionInputStream transported = new DimensionInputStream(client.getInputStream());
+            PushbackInputStream connection = new PushbackInputStream(client.getInputStream(), 128);
+            ConnectionMode mode = readConnectionMode(connection);
+            if (mode == ConnectionMode.CLOSED) return;
+            if (mode == ConnectionMode.HEADLESS) {
+                int status;
+                try {
+                    status = serveHeadless(connection, output);
+                } catch (IOException failure) {
+                    output.println("error: " + failure.getMessage());
+                    status = 74;
+                }
+                output.print("\0R " + status + "\n");
+                output.flush();
+                return;
+            }
+            DimensionInputStream transported = new DimensionInputStream(connection);
             TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
             PrintWriter sessionOutput = output;
             new TerminalAccessConsole(input, output, access, account -> {
@@ -118,6 +150,122 @@ public final class TerminalServer implements AutoCloseable {
             if (output != null) TerminalOutputRouter.detachAll(output);
         }
     }
+
+    private int serveHeadless(InputStream input, PrintWriter output) throws IOException {
+        byte[] contextBytes = readField(input, 128, "context");
+        byte[] usernameBytes = readField(input, 128, "username");
+        byte[] passwordBytes = readField(input, 4_096, "password");
+        byte[] sourceBytes = readField(input, 4 * 1024 * 1024, "source");
+        char[] password = null;
+        try {
+            password = decodePassword(passwordBytes);
+            String context = new String(contextBytes, StandardCharsets.UTF_8);
+            String username = new String(usernameBytes, StandardCharsets.UTF_8);
+            String source = new String(sourceBytes, StandardCharsets.UTF_8);
+            java.util.Optional<UserAccount> authenticated = access.login(username, password);
+            if (authenticated.isEmpty()) {
+                output.println("error: invalid username or password");
+                return 77;
+            }
+            TerminalControl control = headlessControls.apply(authenticated.orElseThrow(), context);
+            control.outputRouteId().ifPresent(route -> TerminalOutputRouter.attach(route, output));
+            String result = source.isBlank() ? "" : control.evaluate(source);
+            if (result != null && !result.isEmpty()) output.println(result);
+            return result != null && result.startsWith("error") ? 1 : 0;
+        } catch (RuntimeException failure) {
+            output.println("error: " + describe(failure));
+            return 1;
+        } finally {
+            if (password != null) java.util.Arrays.fill(password, '\0');
+            java.util.Arrays.fill(passwordBytes, (byte) 0);
+            java.util.Arrays.fill(contextBytes, (byte) 0);
+            java.util.Arrays.fill(usernameBytes, (byte) 0);
+            java.util.Arrays.fill(sourceBytes, (byte) 0);
+            TerminalOutputRouter.detachAll(output);
+        }
+    }
+
+    /** Decodes without constructing an immutable String containing the credential. */
+    private static char[] decodePassword(byte[] encoded) throws IOException {
+        char[] workspace = new char[encoded.length];
+        try {
+            var decoder = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
+            CharBuffer output = CharBuffer.wrap(workspace);
+            var decoded = decoder.decode(ByteBuffer.wrap(encoded), output, true);
+            if (decoded.isError()) decoded.throwException();
+            var flushed = decoder.flush(output);
+            if (flushed.isError()) flushed.throwException();
+            return java.util.Arrays.copyOf(workspace, output.position());
+        } catch (CharacterCodingException invalid) {
+            throw new IOException("Headless password is not valid UTF-8", invalid);
+        } finally {
+            java.util.Arrays.fill(workspace, '\0');
+        }
+    }
+
+    private static ConnectionMode readConnectionMode(PushbackInputStream input)
+            throws IOException {
+        int first = input.read();
+        if (first < 0) return ConnectionMode.CLOSED;
+        if (first != 0) {
+            input.unread(first);
+            return ConnectionMode.INTERACTIVE;
+        }
+        byte[] frame = new byte[96];
+        frame[0] = 0;
+        int length = 1;
+        while (length < frame.length) {
+            int value = input.read();
+            if (value < 0) return ConnectionMode.CLOSED;
+            frame[length++] = (byte) value;
+            if (value == '\n') break;
+        }
+        String payload = new String(frame, 1, length - 1, StandardCharsets.US_ASCII).trim();
+        if (payload.equals("M HEADLESS")) return ConnectionMode.HEADLESS;
+        // New terminal clients identify the transport explicitly. Consume that marker so its
+        // NUL-prefixed bytes can never leak into the access prompt as user input.
+        if (payload.equals("M INTERACTIVE")) return ConnectionMode.INTERACTIVE;
+        input.unread(frame, 0, length);
+        return ConnectionMode.INTERACTIVE;
+    }
+
+    private static byte[] readField(InputStream input, int maximum, String name)
+            throws IOException {
+        StringBuilder length = new StringBuilder();
+        while (length.length() <= 10) {
+            int value = input.read();
+            if (value < 0) throw new IOException("Incomplete headless " + name + " length");
+            if (value == '\n') break;
+            if (value < '0' || value > '9') {
+                throw new IOException("Invalid headless " + name + " length");
+            }
+            length.append((char) value);
+        }
+        if (length.isEmpty() || length.length() > 10) {
+            throw new IOException("Invalid headless " + name + " length");
+        }
+        int count;
+        try {
+            count = Integer.parseInt(length.toString());
+        } catch (NumberFormatException invalid) {
+            throw new IOException("Invalid headless " + name + " length", invalid);
+        }
+        if (count < 0 || count > maximum) {
+            throw new IOException("Headless " + name + " exceeds " + maximum + " bytes");
+        }
+        byte[] value = input.readNBytes(count);
+        if (value.length != count) throw new IOException("Incomplete headless " + name);
+        return value;
+    }
+
+    private static String describe(RuntimeException failure) {
+        return failure.getMessage() == null || failure.getMessage().isBlank()
+                ? failure.getClass().getSimpleName() : failure.getMessage();
+    }
+
+    private enum ConnectionMode { INTERACTIVE, HEADLESS, CLOSED }
 
     /** Keeps asynchronous FCL output atomic with prompts written by the terminal session. */
     private static final class LockedPrintWriter extends PrintWriter {

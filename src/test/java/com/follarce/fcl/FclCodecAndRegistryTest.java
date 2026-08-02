@@ -127,9 +127,17 @@ class FclCodecAndRegistryTest {
         assertEquals("bc", second.invoke("text.slice", List.of("abcd", 1L, 3L)));
         assertEquals(List.of("a", "", "b"),
                 second.invoke("text.split", List.of("a\n\nb", "\n")));
+        assertEquals(List.of("a", "b", "c"),
+                second.invoke("array.insert", List.of(List.of("a", "c"), 1L, "b")));
+        assertEquals(List.of("a", "c"),
+                second.invoke("array.removeAt", List.of(List.of("a", "b", "c"), 1L)));
+        assertThrows(FclRuntimeException.class,
+                () -> second.invoke("array.removeAt", List.of(List.of(), 0L)));
         assertEquals("a/b", second.invoke("text.join", List.of(List.of("a", "b"), "/")));
         assertEquals(2L, second.invoke("text.indexOf", List.of("abcd", "c")));
         assertEquals("xxx", second.invoke("text.repeat", List.of("x", 3L)));
+        assertEquals(5L, second.invoke("term.displayWidth", List.of("a中文")));
+        assertEquals("a中", second.invoke("term.truncate", List.of("a中文", 3L)));
         assertEquals("\u001b[2;4H", second.invoke("term.cursorTo", List.of(2L, 4L)));
     }
 

@@ -42,6 +42,7 @@ java --enable-native-access=ALL-UNNAMED \
 ```
 
 完整参数可用 `java -jar ... --help` 查看。`--allow-cidr` 可重复使用；回环网络始终允许。
+部署前可添加 `--check` 只校验仓库和清单并立即退出，不会监听任何端口。
 
 ## HTTP 协议
 
@@ -57,6 +58,11 @@ java --enable-native-access=ALL-UNNAMED \
 `dist/catalog.json` 是唯一发布清单。仓库里存在但未写入清单的文件不会上架。服务端
 启动时会拒绝符号链接、路径逃逸、超过 64 MiB 的包、格式不是 2 的 SQLite 数据库、
 坐标与路径不一致、非法依赖哈希和重复哈希。下载前还会重新核对大小和 SHA-256。
+
+服务端不需要为新包重启。每次请求索引时都会重新读取并完整验证仓库，然后原子替换
+内存快照。发布者必须先把新的 `.db` 放到最终版本目录，最后再以原子重命名更新
+`catalog.json`；不能覆盖已经发布的内容哈希文件。验证失败时索引请求返回 `503`，已有
+有效快照不会被半成品替换，正在进行的 SHA-256 下载也不会切换文件。
 
 索引中的 `sha256` 是完整 `.db` 文件的 64 位小写 SHA-256，同时也是包 ID、下载路径和
 依赖 ID。它是内容标识，不是签名或发布者身份。
@@ -80,7 +86,7 @@ market.update()
 | `market.configure(origin)` | 设置当前用户的 HTTP/HTTPS 镜像 origin。 |
 | `market.origin()` | 查看当前生效的镜像源。 |
 | `market.update()` | 下载、验证并持久化完整索引。 |
-| `market.search(text)` | 在用户 VFS 的本地索引中进行多关键词搜索。 |
+| `market.search(text)` | 按包名、命名空间、类型、标签和说明词前缀搜索；版本号不参与搜索。 |
 | `market.info(sha256)` | 查询一个完整包记录，不存在时返回 `null`。 |
 | `market.download(sha256)` | 分块下载并重新计算完整文件 SHA-256。 |
 | `market.install(sha256)` | 递归安装精确哈希依赖并建立默认绑定。 |
@@ -96,7 +102,7 @@ market.update()
 market.configure("http://host.docker.internal:8787")
 market.update()
 market.search("editor")
-market.install("cfadd92e6c229fb9f1a5201412724c6b5054c5a304c099047d86955e8963d283")
+market.install("1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557")
 import "editor"
 editor.open("notes.txt")
 ```
@@ -112,14 +118,26 @@ Runtime 还会重新验证 SQLite 结构、包内部哈希、能力声明和精�
 
 ## 发布包
 
-编辑器源码位于 `dist/editor/`。使用独立的单文件构建器：
+正式发布从项目根目录执行：
 
 ```bash
-python3 PackageBuild.py dist/editor dist/repository/editor.db
+./build/release.sh
 ```
 
-构建器不依赖 CilExec JAR、Docker 或数据库服务，会生成不可变 `editor.db`。随后把包
-文件与对应条目写入 `dist/catalog.json` 即可上架；同一坐标内容变化时必须增加包版本。
+Windows 执行 `build\release.bat`。该流程运行 Runtime 和市场服务端测试，构建两个独立
+JAR，扫描带有 `package.json` 和 `market.json` 的 `dist/*/` 包源码，按坐标生成市场仓库
+与 `catalog.json`，最后重新生成并复核 `SHA256SUMS`。所有暂存产物验证通过后才会替换
+`dist` 中的发布物。CI 已经运行过完整测试时，可使用 `--skip-tests`；仅复核现有成品时
+使用 `--verify-only`。
+
+编辑器源码位于 `dist/editor/`。只构建单个 `.db` 时可使用独立的单文件构建器：
+
+```bash
+python3 PackageBuild.py dist/editor editor.db
+```
+
+构建器不依赖 CilExec JAR、Docker 或数据库服务，会生成不可变 `editor.db`；它不会自动
+上架。正式仓库路径和清单应交给发布流程生成。同一坐标内容变化时必须增加包版本。
 
 每项依赖都必须是精确分发文件 SHA-256：
 

@@ -71,6 +71,10 @@ public final class FclRuntimeFunctions {
     private static final long MAX_PACKAGE_DATABASE_BYTES = 64L * 1024 * 1024;
     private static final int MAX_ENVIRONMENT_VALUE_BYTES = 64 * 1024;
     private static final int DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
+    private static final int MAX_SYMLINK_DEPTH = 16;
+    private static final int MAX_LINK_TARGET_BYTES = 4 * 1024;
+    private static final Set<String> RUNTIME_ENVIRONMENT_NAMES = Set.of(
+            "PWD", "USER", "USER_ID", "PID");
     private static final com.google.gson.Gson JSON = new com.google.gson.Gson();
     private static final EffectRequest.Policy MANUAL_EFFECT = new EffectRequest.Policy(
             false, Optional.empty(), false, false, EffectRequest.UnknownAction.MANUAL);
@@ -138,17 +142,7 @@ public final class FclRuntimeFunctions {
     }
 
     private void registerPathState() {
-        registry.register("path", "getEnvVar", args -> {
-                    arity(args, 1, "path.getEnvVar");
-                    String name = string(args.getFirst(), "environment variable");
-                    return switch (name) {
-                        case "PWD" -> FclPath.current(continuation);
-                        case "USER", "USER_ID" -> process.ownerId().toString();
-                        case "PID" -> Long.toString(process.identity().pid());
-                        default -> null;
-                    };
-                })
-                .registerContextual("path", "setAlias", (args, invocation) -> {
+        registry.registerContextual("path", "setAlias", (args, invocation) -> {
                     arity(args, 2, "path.setAlias");
                     Map<String, Object> aliases = aliases(invocation.continuation());
                     aliases.put(string(args.get(0), "alias"),
@@ -179,6 +173,12 @@ public final class FclRuntimeFunctions {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "env.get expects name and optional target user");
                     String name = environmentName(args.getFirst());
+                    if (RUNTIME_ENVIRONMENT_NAMES.contains(name)) {
+                        if (args.size() != 1) throw new FclRuntimeException(
+                                "Runtime environment variable " + name
+                                        + " does not accept a target user");
+                        return runtimeEnvironment(name);
+                    }
                     UUID ownerId = owner(args, 1);
                     return transaction.environment().findUser(ownerId, name)
                             .or(() -> transaction.environment().findShared(name)).orElse(null);
@@ -187,6 +187,7 @@ public final class FclRuntimeFunctions {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "env.set expects name, value, and optional target user");
                     String name = environmentName(args.getFirst());
+                    requireWritableEnvironmentName(name, "env.set");
                     String value = environmentValue(args.get(1));
                     UUID ownerId = owner(args, 2);
                     transaction.environment().saveUser(ownerId, name, value, now);
@@ -195,8 +196,9 @@ public final class FclRuntimeFunctions {
                 .register("env", "remove", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "env.remove expects name and optional target user");
-                    return transaction.environment().deleteUser(owner(args, 1),
-                            environmentName(args.getFirst()));
+                    String name = environmentName(args.getFirst());
+                    requireWritableEnvironmentName(name, "env.remove");
+                    return transaction.environment().deleteUser(owner(args, 1), name);
                 })
                 .register("env", "list", args -> {
                     if (args.size() > 1) throw new FclRuntimeException(
@@ -204,21 +206,32 @@ public final class FclRuntimeFunctions {
                     Map<String, String> resolved = new LinkedHashMap<>(
                             transaction.environment().findShared());
                     resolved.putAll(transaction.environment().findUsers(owner(args, 0)));
+                    RUNTIME_ENVIRONMENT_NAMES.forEach(resolved::remove);
+                    if (args.isEmpty()) {
+                        RUNTIME_ENVIRONMENT_NAMES.forEach(name ->
+                                resolved.put(name, runtimeEnvironment(name)));
+                    }
                     return Map.copyOf(resolved);
                 })
                 .register("env", "getShared", args -> {
                     arity(args, 1, "env.getShared");
-                    return transaction.environment().findShared(environmentName(args.getFirst()))
+                    String name = environmentName(args.getFirst());
+                    if (RUNTIME_ENVIRONMENT_NAMES.contains(name)) return null;
+                    return transaction.environment().findShared(name)
                             .orElse(null);
                 })
                 .register("env", "listShared", args -> {
                     arity(args, 0, "env.listShared");
-                    return transaction.environment().findShared();
+                    Map<String, String> shared = new LinkedHashMap<>(
+                            transaction.environment().findShared());
+                    RUNTIME_ENVIRONMENT_NAMES.forEach(shared::remove);
+                    return Map.copyOf(shared);
                 })
                 .register("env", "setShared", args -> {
                     arity(args, 2, "env.setShared");
                     requireLocalAdministrator();
                     String name = environmentName(args.getFirst());
+                    requireWritableEnvironmentName(name, "env.setShared");
                     EnvironmentRepository.SharedPolicy policy =
                             transaction.environment().sharedPolicy();
                     if (!policy.allows(name)) throw new FclRuntimeException(
@@ -230,8 +243,9 @@ public final class FclRuntimeFunctions {
                 .register("env", "removeShared", args -> {
                     arity(args, 1, "env.removeShared");
                     requireLocalAdministrator();
-                    return transaction.environment().deleteShared(
-                            environmentName(args.getFirst()));
+                    String name = environmentName(args.getFirst());
+                    requireWritableEnvironmentName(name, "env.removeShared");
+                    return transaction.environment().deleteShared(name);
                 })
                 .register("env", "getSharedPolicy", args -> {
                     arity(args, 0, "env.getSharedPolicy");
@@ -501,9 +515,7 @@ public final class FclRuntimeFunctions {
                             "file.size expects path and optional target user");
                     String path = string(args.getFirst(), "file.size path");
                     RoutedPath routed = route(path, owner(args, 1));
-                    requireFileAccess(routed.ownerId(), Capability.VFS_READ);
-                    VfsNode node = requireNode(routed.path(), routed.ownerId());
-                    requireType(node, VfsNode.Type.FILE, "file.size");
+                    VfsNode node = resolveFileNode(routed.path(), routed.ownerId());
                     return transaction.vfs().logicalObjectSize(
                             node.currentObjectHash().orElseThrow());
                 })
@@ -519,7 +531,7 @@ public final class FclRuntimeFunctions {
                 .register("file", "listdir", args -> {
                     if (args.size() > 2) throw new FclRuntimeException(
                             "file.listdir expects optional path and target user");
-                    String requested = args.isEmpty() ? "."
+                    String requested = args.isEmpty() ? "/"
                             : string(args.getFirst(), "file.listdir path");
                     UUID owner = owner(args, 1);
                     String absolute = normalize(requested);
@@ -703,10 +715,28 @@ public final class FclRuntimeFunctions {
                     arity(args, 1, "process.exec");
                     Authorization.require(transaction, process.ownerId(),
                             Capability.PROCESS_CONTROL_OWN);
-                    UUID programId = uuid(args.getFirst(), "process.exec program");
-                    transaction.programs().findById(programId)
-                            .orElseThrow(() -> new FclRuntimeException("Unknown program"));
-                    invocation.continuation().waitFor("exec:" + programId, Map.of());
+                    String requestedPath = string(args.getFirst(), "process.exec path");
+                    String absolutePath = normalize(requestedPath);
+                    RoutedPath routed = route(requestedPath, process.ownerId());
+                    if (!routed.ownerId().equals(process.ownerId())) {
+                        throw new FclRuntimeException(
+                                "process.exec accepts a file in the current user's VFS");
+                    }
+                    VfsNode sourceNode = requireNode(routed.path(), routed.ownerId());
+                    requireType(sourceNode, VfsNode.Type.FILE, "process.exec");
+                    if (absolutePath.toLowerCase(Locale.ROOT).endsWith(".db")) {
+                        throw new FclRuntimeException(
+                                "process.exec accepts an FCL source file, not a package database");
+                    }
+                    String source = readText(routed.path(), routed.ownerId());
+                    String expanded = new FclSourceIncludes().expand(transaction,
+                            process.ownerId(), source, parentDirectory(routed.path()));
+                    String terminalLibrary = TerminalReplService.isTerminalProcess(
+                            invocation.continuation())
+                            ? TerminalReplService.librarySource(invocation.continuation()) : "";
+                    Program target = createProgram(terminalLibrary + expanded);
+                    invocation.continuation().waitFor("exec:" + target.programId(),
+                            Map.of("path", absolutePath));
                     throw FclSuspension.suspend();
                 })
                 .registerContextual("process", "wait", (args, invocation) -> {
@@ -1668,6 +1698,49 @@ public final class FclRuntimeFunctions {
         return decodeUtf8(readBytes(path, owner), "file.read");
     }
 
+    /**
+     * Resolves a file-shaped path through symbolic links to its underlying FILE node.
+     * Each SYMLINK node stores its target path as its object content (file.link);
+     * reading follows the chain while rejecting cycles and excessive depth.
+     */
+    private VfsNode resolveFileNode(String path, UUID owner) {
+        requireFileAccess(owner, Capability.VFS_READ);
+        Set<String> visited = new java.util.HashSet<>();
+        VfsNode node = requireNode(path, owner);
+        while (node.type() == VfsNode.Type.SYMLINK) {
+            if (!visited.add(normalize(path))) {
+                throw new FclRuntimeException("Symbolic link cycle at: " + normalize(path));
+            }
+            if (visited.size() > MAX_SYMLINK_DEPTH) {
+                throw new FclRuntimeException(
+                        "Symbolic link chain exceeds " + MAX_SYMLINK_DEPTH + " links");
+            }
+            ObjectHash hash = node.currentObjectHash().orElseThrow();
+            long size = transaction.vfs().logicalObjectSize(hash);
+            if (size > MAX_LINK_TARGET_BYTES) {
+                throw new FclRuntimeException("Symbolic link target is too long");
+            }
+            java.io.ByteArrayOutputStream target = new java.io.ByteArrayOutputStream((int) size);
+            long offset = 0;
+            while (offset < size) {
+                byte[] chunk = transaction.vfs().readObjectRange(hash, offset,
+                        (int) Math.min(DOWNLOAD_CHUNK_BYTES, size - offset));
+                if (chunk.length == 0) {
+                    throw new FclRuntimeException("Symbolic link ended before its target");
+                }
+                target.writeBytes(chunk);
+                offset += chunk.length;
+            }
+            path = normalize(decodeUtf8(target.toByteArray(), "file.link"));
+            node = requireNode(path, owner);
+            requireFileAccess(owner, Capability.VFS_READ);
+        }
+        if (node.type() != VfsNode.Type.FILE) {
+            throw new FclRuntimeException("Path is not a file: " + path);
+        }
+        return node;
+    }
+
     private byte[] readBytes(String path) {
         return readBytes(path, process.ownerId());
     }
@@ -1676,11 +1749,7 @@ public final class FclRuntimeFunctions {
         RoutedPath routed = route(path, owner);
         path = routed.path();
         owner = routed.ownerId();
-        requireFileAccess(owner, Capability.VFS_READ);
-        VfsNode node = requireNode(path, owner);
-        if (node.type() != VfsNode.Type.FILE && node.type() != VfsNode.Type.SYMLINK) {
-            throw new FclRuntimeException("Path is not a file: " + path);
-        }
+        VfsNode node = resolveFileNode(path, owner);
         ObjectHash hash = node.currentObjectHash().orElseThrow();
         if (!owner.equals(process.ownerId())) {
             transaction.vfs().readFileByAdministrator(process.ownerId(), owner,
@@ -1750,9 +1819,7 @@ public final class FclRuntimeFunctions {
         RoutedPath routed = route(path, owner);
         path = routed.path();
         owner = routed.ownerId();
-        requireFileAccess(owner, Capability.VFS_READ);
-        VfsNode node = requireNode(path, owner);
-        requireType(node, VfsNode.Type.FILE, "file.readChunk");
+        VfsNode node = resolveFileNode(path, owner);
         if (!owner.equals(process.ownerId())) {
             transaction.vfs().readFileByAdministrator(process.ownerId(), owner,
                     node.nodeId(), UUID.randomUUID(), now);
@@ -1954,7 +2021,14 @@ public final class FclRuntimeFunctions {
         owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         VfsNode node = requireNode(source, owner);
-        requireType(node, expected, "file.remove");
+        // A symbolic link is a leaf node and is removed through the file-shaped API.
+        // Requiring FILE here made links permanent for ordinary users because no separate
+        // removeLink function exists.
+        if (node.type() != expected
+                && !(expected == VfsNode.Type.FILE && node.type() == VfsNode.Type.SYMLINK)) {
+            throw new FclRuntimeException("file.remove requires "
+                    + expected.name().toLowerCase(java.util.Locale.ROOT));
+        }
         boolean removed = owner.equals(process.ownerId())
                 ? transaction.vfs().deleteNode(node.nodeId(), owner)
                 : transaction.vfs().deleteByAdministrator(process.ownerId(), owner,
@@ -2047,7 +2121,17 @@ public final class FclRuntimeFunctions {
     }
 
     private String normalize(String source) {
-        return FclPath.resolve(continuation, source);
+        if (source == null || source.isBlank() || !source.replace('\\', '/').startsWith("/")) {
+            throw new FclRuntimeException(
+                    "Absolute VFS path required; scripts may explicitly resolve a relative path "
+                            + "with path.join(env.get(\"PWD\"), path)");
+        }
+        return FclPath.normalizeAbsolute(source);
+    }
+
+    private static String parentDirectory(String absolutePath) {
+        int separator = absolutePath.lastIndexOf('/');
+        return separator <= 0 ? "/" : absolutePath.substring(0, separator);
     }
 
     private RoutedPath route(String source, UUID requestedOwner) {
@@ -2104,6 +2188,26 @@ public final class FclRuntimeFunctions {
         return text;
     }
 
+    private String runtimeEnvironment(String name) {
+        return switch (name) {
+            case "PWD" -> FclPath.current(continuation);
+            case "USER" -> transaction.auth().findVisibleUsername(process.ownerId())
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Current process owner account is missing"));
+            case "USER_ID" -> process.ownerId().toString();
+            case "PID" -> Long.toString(process.identity().pid());
+            default -> throw new IllegalArgumentException(
+                    "Unknown Runtime environment variable: " + name);
+        };
+    }
+
+    private static void requireWritableEnvironmentName(String name, String operation) {
+        if (RUNTIME_ENVIRONMENT_NAMES.contains(name)) {
+            throw new FclRuntimeException(operation + " cannot change Java-managed Runtime "
+                    + "environment variable " + name);
+        }
+    }
+
     private Map<String, Object> nodeMap(VfsNode node) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("nodeId", node.nodeId().toString());
@@ -2119,15 +2223,16 @@ public final class FclRuntimeFunctions {
     private boolean terminate(long pid) {
         CilProcess target = targetProcess(pid, "process.kill");
         if (target.isTerminal()) return false;
-        CilProcess changed = target;
-        if (changed.status() != CilProcess.Status.TERMINATING) {
-            changed = changed.transitionTo(CilProcess.Status.TERMINATING, now);
-            requireUpdated(transaction.processes().update(changed, target.stateVersion(),
-                    target.executionEpoch()), "process.kill");
-        }
-        CilProcess terminated = changed.transitionTo(CilProcess.Status.TERMINATED, now);
-        requireUpdated(transaction.processes().update(terminated, changed.stateVersion(),
-                changed.executionEpoch()), "process.kill");
+        Continuation stoppedContinuation = target.continuation()
+                .withoutWait().withoutTransientInbox();
+        CilProcess terminating = target.commitStatement(stoppedContinuation,
+                CilProcess.Status.TERMINATING, target.stateVersion(),
+                target.executionEpoch(), now);
+        requireUpdated(transaction.processes().update(terminating, target.stateVersion(),
+                target.executionEpoch()), "process.kill");
+        CilProcess terminated = terminating.transitionTo(CilProcess.Status.TERMINATED, now);
+        requireUpdated(transaction.processes().update(terminated, terminating.stateVersion(),
+                terminating.executionEpoch()), "process.kill");
         transaction.scheduler().release(target.identity().processUid(), target.executionEpoch());
         audit("process.kill", target.identity().processUid(), Map.of("pid", Long.toString(pid)));
         return true;

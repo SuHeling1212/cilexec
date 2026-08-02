@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -72,6 +73,12 @@ final class MarketHttpServer implements AutoCloseable {
                 return;
             }
             if (path.equals("/market/v1/index.json")) {
+                try {
+                    repository.refresh();
+                } catch (IOException | SQLException | IllegalArgumentException invalidCatalog) {
+                    respondText(exchange, 503, "Market catalog refresh failed\n");
+                    return;
+                }
                 respondBytes(exchange, 200, "application/json; charset=utf-8",
                         repository.index(), method.equals("HEAD"));
                 return;

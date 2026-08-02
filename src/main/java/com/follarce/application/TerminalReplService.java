@@ -17,6 +17,7 @@ import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
+import com.follarce.fcl.FclScope;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 
 import java.time.Clock;
@@ -29,7 +30,7 @@ import java.util.UUID;
 
 /** Runs every submission from one terminal in the same durable, suspended process. */
 public final class TerminalReplService {
-    private static final String LIBRARY_SCOPE_KEY = "cilexec.repl.library";
+    static final String LIBRARY_SCOPE_KEY = "cilexec.repl.library";
     static final String TERMINAL_PROCESS_SCOPE_KEY = "cilexec.repl.terminalProcess";
     public static final String TERMINAL_SESSION_SCOPE_KEY = "cilexec.repl.terminalSession";
     private final UserTransactionExecutor transactions;
@@ -156,6 +157,13 @@ public final class TerminalReplService {
     }
 
     public String workingDirectory(UUID ownerId, UUID sessionId) {
+        return environmentVariable(ownerId, sessionId, "PWD");
+    }
+
+    public String environmentVariable(UUID ownerId, UUID sessionId, String name) {
+        if (!"PWD".equals(name)) {
+            throw new IllegalArgumentException("Unknown terminal environment variable: " + name);
+        }
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
                 transaction -> transaction.terminal().workingDirectory(sessionId));
     }
@@ -287,6 +295,17 @@ public final class TerminalReplService {
         if (runtime.scope().contains(TERMINAL_PROCESS_SCOPE_KEY)) return true;
         return runtime.callStack().stream().anyMatch(frame ->
                 frame.callerScope().contains(TERMINAL_PROCESS_SCOPE_KEY));
+    }
+
+    static String librarySource(FclContinuation continuation) {
+        FclScope global = java.util.Objects.requireNonNull(continuation,
+                "continuation").globalScope();
+        if (!global.contains(LIBRARY_SCOPE_KEY)) return "";
+        Object value = global.get(LIBRARY_SCOPE_KEY);
+        if (!(value instanceof String source)) {
+            throw new IllegalStateException("Persisted REPL library is invalid");
+        }
+        return source;
     }
 
     private static void requireUpdated(

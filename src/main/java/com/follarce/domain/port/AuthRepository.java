@@ -14,6 +14,11 @@ public interface AuthRepository {
 
     Optional<UserAccount> findUser(String username);
 
+    /** Returns a username only when the current database identity owns that account. */
+    default Optional<String> findVisibleUsername(UUID userId) {
+        return findUser(userId).map(UserAccount::username);
+    }
+
     default List<UserAccount> findUsers() {
         throw new UnsupportedOperationException("User listing is not implemented");
     }

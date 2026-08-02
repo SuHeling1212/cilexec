@@ -78,6 +78,77 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void execCompilesAVfsPathAndPreservesTheExistingProcessIdentity() {
+        Fixture fixture = new Fixture("process.exec(\"/next.fcl\")\noldTail = 99\n",
+                com.follarce.extension.SourceExtensionIndex.catalog());
+        StoredObject source = StoredObject.create(new BinaryContent(
+                "replacement = plusOne(retained)\n".getBytes(
+                        java.nio.charset.StandardCharsets.UTF_8)),
+                ProgramService.SOURCE_MEDIA_TYPE, NOW);
+        fixture.persistence.vfs.saveObject(source);
+        com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
+                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        fixture.persistence.vfs.insertNode(root);
+        fixture.persistence.vfs.insertNode(new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.of(root.nodeId()), fixture.ownerId, "next.fcl",
+                com.follarce.domain.vfs.VfsNode.Type.FILE, Optional.of(source.objectHash()),
+                java.util.Set.of(), false, NOW, NOW));
+        FclContinuation terminalRuntime = new FclContinuation();
+        terminalRuntime.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
+        terminalRuntime.scope().put(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY,
+                UUID.randomUUID().toString());
+        terminalRuntime.scope().put(com.follarce.fcl.FclPath.SCOPE_KEY, "/");
+        terminalRuntime.scope().put("retained", 41L);
+        terminalRuntime.scope().put(TerminalReplService.LIBRARY_SCOPE_KEY,
+                "func plusOne(value) { return value + 1 }\n");
+        terminalRuntime.scope().put(ProcessInbox.EFFECT_RESULT, "transient");
+        Continuation terminalContinuation = new FclPersistenceBridge(
+                new FclContinuationCodec()).persist(fixture.processUid, fixture.program,
+                initial(fixture.program), terminalRuntime);
+        CilProcess seeded = fixture.persistence.processes.current;
+        fixture.persistence.processes.current = new CilProcess(seeded.identity(), seeded.ownerId(),
+                seeded.status(), seeded.stateVersion(), seeded.executionEpoch(),
+                terminalContinuation, seeded.parentProcessUid(), seeded.createdAt(),
+                seeded.updatedAt());
+        ProcessIdentity originalIdentity = fixture.persistence.processes.current.identity();
+        UUID originalProgramId = fixture.program.programId();
+
+        fixture.executor.executeOne(fixture.claim);
+
+        CilProcess replaced = fixture.persistence.processes.current;
+        assertEquals(originalIdentity, replaced.identity(),
+                "exec must retain PID and process UID");
+        assertNotEquals(originalProgramId, replaced.continuation().programId());
+        assertEquals(0, replaced.continuation().programCounter());
+        assertEquals(CilProcess.Status.READY, replaced.status());
+        FclContinuation replacementState = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(replaced.continuation());
+        assertEquals(true, replacementState.scope()
+                .get(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY));
+        assertEquals("/", replacementState.scope().get(com.follarce.fcl.FclPath.SCOPE_KEY));
+        assertEquals(41L, replacementState.scope().get("retained"));
+        assertFalse(replacementState.scope().contains(ProcessInbox.EFFECT_RESULT));
+        assertFalse(replacementState.scope().contains("oldTail"));
+
+        CilProcess claimed = replaced.claim(replaced.executionEpoch() + 1, NOW);
+        fixture.persistence.processes.current = claimed;
+        fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+        fixture.persistence.scheduler.lease = fixture.claim;
+        fixture.executor.executeOne(fixture.claim);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(42L, restored.scope().get("replacement"));
+        assertEquals(41L, restored.scope().get("retained"));
+        assertFalse(restored.scope().contains("oldTail"));
+        assertEquals(originalIdentity, fixture.persistence.processes.current.identity());
+        assertEquals(CilProcess.Status.PAUSED,
+                fixture.persistence.processes.current.status());
+    }
+
+    @Test
     void failsAnUnknownHashImportWithoutPermanentWaits() {
         Fixture unresolved = new Fixture("import \"" + "f".repeat(64)
                 + "\"\nvalue = 1\n");
@@ -134,7 +205,7 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void linksPinnedPackageExportsAndPersistsTheExactHash() {
+    void linksAliasedPackageExportsAndPersistsTheExactHash() {
         PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
@@ -146,8 +217,7 @@ class ProcessStatementExecutorTest {
                 """.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         var descriptor = new SqlitePackageReader().inspect(database);
         Fixture fixture = new Fixture("import \"" + descriptor.databaseFileHash()
-                + "\"\nresult = " + descriptor.databaseFileHash()
-                + ".greet(\"CilExec\")\n");
+                + "\" as \"helloPackage\"\nresult = helloPackage.greet(\"CilExec\")\n");
         StoredObject object = StoredObject.create(new BinaryContent(database),
                 "application/vnd.sqlite3", NOW);
         fixture.persistence.vfs.saveObject(object);
@@ -175,7 +245,7 @@ class ProcessStatementExecutorTest {
                 .restore(fixture.persistence.processes.current.continuation());
         assertEquals("Hello, CilExec", restored.scope().get("result"));
         assertEquals(release.packageHash().value(), fixture.persistence.processes.current
-                .continuation().packageBindings().get(descriptor.databaseFileHash()));
+                .continuation().packageBindings().get("helloPackage"));
     }
 
     @Test
@@ -252,7 +322,7 @@ class ProcessStatementExecutorTest {
         aliased.executor.executeOne(aliased.claim);
         assertEquals(CilProcess.Status.READY, aliased.persistence.processes.current.status());
         assertTrue(aliased.persistence.packages.findProcessBinding(
-                aliased.processUid, fileHash.value()).isPresent());
+                aliased.processUid, "chosen").isPresent());
 
         Fixture unaliased = new Fixture("import \"" + fileHash.value() + "\"\n");
         unaliased.persistence.packages.releases.put(release.packageHash(), release);
@@ -338,6 +408,53 @@ class ProcessStatementExecutorTest {
         assertEquals("https://example.test", restored.scope().get("configured"));
         assertTrue(restored.scope().get("visible") instanceof Map<?, ?> values
                 && "https://example.test".equals(values.get("MARKET_ORIGIN")));
+    }
+
+    @Test
+    void exposesPwdOnlyThroughTheReadOnlyEnvironmentInterfaceInsideFunctions() {
+        Fixture fixture = new Fixture("""
+                func readWorkingDirectory() { return env.get("PWD") }
+                current = readWorkingDirectory()
+                runtimeUser = env.get("USER")
+                runtimeUserId = env.get("USER_ID")
+                runtimePid = env.get("PID")
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        FclContinuation runtime = new FclContinuation();
+        runtime.scope().put(com.follarce.fcl.FclPath.SCOPE_KEY, "/market");
+        Continuation seededContinuation = new FclPersistenceBridge(new FclContinuationCodec())
+                .persist(fixture.processUid, fixture.program, initial(fixture.program), runtime);
+        CilProcess original = fixture.persistence.processes.current;
+        fixture.persistence.processes.current = new CilProcess(original.identity(),
+                original.ownerId(), original.status(), original.stateVersion(),
+                original.executionEpoch(), seededContinuation, original.parentProcessUid(),
+                original.createdAt(), original.updatedAt());
+
+        int steps = 0;
+        while (!fixture.persistence.processes.current.isTerminal() && steps++ < 20) {
+            if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = fixture.persistence.processes.current.claim(
+                        fixture.persistence.processes.current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                        claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+            fixture.executor.executeOne(fixture.claim);
+        }
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals("/market", restored.scope().get("current"));
+        assertEquals("test", restored.scope().get("runtimeUser"));
+        assertEquals(fixture.ownerId.toString(), restored.scope().get("runtimeUserId"));
+        assertEquals(Long.toString(fixture.persistence.processes.current.identity().pid()),
+                restored.scope().get("runtimePid"));
+
+        Fixture writeAttempt = new Fixture("env.set(\"PWD\", \"/changed\")\n",
+                com.follarce.extension.SourceExtensionIndex.catalog());
+        writeAttempt.executor.executeOne(writeAttempt.claim);
+        assertEquals(CilProcess.Status.FAILED,
+                writeAttempt.persistence.processes.current.status());
     }
 
     @Test

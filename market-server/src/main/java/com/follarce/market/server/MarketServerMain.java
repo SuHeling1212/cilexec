@@ -8,6 +8,10 @@ public final class MarketServerMain {
             ServerOptions options = ServerOptions.parse(arguments);
             MarketRepository repository = new MarketRepository(options.repository(),
                     options.catalog());
+            if (options.checkOnly()) {
+                System.out.println("CilExec market repository is valid");
+                return;
+            }
             MarketHttpServer server = new MarketHttpServer(options, repository);
             Runtime.getRuntime().addShutdownHook(new Thread(server::close,
                     "cilexec-market-shutdown"));

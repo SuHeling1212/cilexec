@@ -77,7 +77,7 @@ public final class TerminalConsole implements Runnable {
                     } else if (line.stripLeading().startsWith(":")) {
                         String commandText = line.stripLeading().substring(1);
                         command = parser.parse(commandText);
-                        remember(line, command);
+                        remember(line);
                         if (command instanceof ShellCommand.Shutdown) {
                             if (!control.canShutdown()) {
                                 throw new IllegalArgumentException(
@@ -91,11 +91,17 @@ public final class TerminalConsole implements Runnable {
                             }
                             return Outcome.EXIT;
                         }
+                        // :exit is a transport-level disconnect. Never delegate it to a
+                        // database-backed control implementation, because disconnecting one
+                        // client must not be able to stop the shared Runtime.
+                        if (command instanceof ShellCommand.Exit) {
+                            return Outcome.EXIT;
+                        }
                         result = control.execute(command);
                     } else if (awaitingAttachedInput) {
                         result = control.submitAttachedInput(line);
                     } else {
-                        remember(line, null);
+                        remember(line);
                         if (line.strip().equals("ls")
                                 || line.strip().equals("cd") || line.strip().startsWith("cd ")) {
                             throw new IllegalArgumentException(
@@ -113,9 +119,6 @@ public final class TerminalConsole implements Runnable {
                     }
                     if (command instanceof ShellCommand.Logout) {
                         return Outcome.LOGOUT;
-                    }
-                    if (command instanceof ShellCommand.Exit) {
-                        return Outcome.EXIT;
                     }
                     previousFailure = null;
                     consecutiveControlFailures = 0;
@@ -156,10 +159,7 @@ public final class TerminalConsole implements Runnable {
                 && java.util.Objects.equals(previous.getMessage(), current.getMessage());
     }
 
-    private void remember(String line, ShellCommand command) {
-        if (command instanceof ShellCommand.StartExport || command instanceof ShellCommand.EndExport) {
-            return;
-        }
+    private void remember(String line) {
         input.rememberHistory(line);
         control.rememberCommand(line);
     }

@@ -104,7 +104,7 @@ class AdminVfsExternalIT {
                     process.identity().processUid(), process.executionEpoch(), at.plusSeconds(5),
                     at).orElseThrow();
             assertEquals(true, transaction.vfs().releaseLock(file.nodeId(), owner.userId(),
-                    process.identity().processUid(), process.executionEpoch(),
+                    process.identity().processUid(), process.executionEpoch() + 1,
                     fileLock.fencingToken()));
             return null;
         });

@@ -76,7 +76,7 @@ public final class TimerService {
             List<ProcessTimer> claimed = transaction.timers().claimDue(runnerId, now, limit);
             int fired = 0;
             for (ProcessTimer timer : claimed) {
-                ProcessTimer completed = timer.fire(now);
+                ProcessTimer completed = fireNotBeforeClaim(timer, now);
                 if (!transaction.timers().update(completed, ProcessTimer.Status.CLAIMED)) {
                     throw new IllegalStateException("Claimed timer lost its ownership");
                 }
@@ -96,6 +96,19 @@ public final class TimerService {
             }
             return fired;
         });
+    }
+
+    /**
+     * PostgreSQL timestamps have lower precision than {@link Instant}. Depending on the JDBC
+     * conversion, the claimed timestamp returned by {@code UPDATE ... RETURNING} can therefore
+     * be rounded a fraction of a microsecond after the Java timestamp supplied to the update.
+     * Preserve the timer's monotonic claim/fire invariant instead of fencing the whole Runtime.
+     */
+    static ProcessTimer fireNotBeforeClaim(ProcessTimer timer, Instant observedAt) {
+        Instant fireAt = timer.claimedAt()
+                .filter(claimedAt -> observedAt.isBefore(claimedAt))
+                .orElse(observedAt);
+        return timer.fire(fireAt);
     }
 
     public Optional<Instant> nextWakeAt() {

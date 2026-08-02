@@ -50,7 +50,8 @@ class TerminalAccessConsoleTest {
         assertTrue(transcript.contains("authenticated as alice"), transcript);
         assertTrue(transcript.contains("logged out"), transcript);
         assertEquals(List.of("alice", "alice"), authenticated);
-        assertEquals(List.of(new ShellCommand.Logout(), new ShellCommand.Exit()), commands);
+        assertEquals(List.of(new ShellCommand.Logout()), commands,
+                ":exit must close only the client transport and never reach Runtime control");
         assertEquals(1, access.registrations);
         assertEquals("operator", access.bootstrapUsername);
         assertTrue(access.receivedPasswords.stream()

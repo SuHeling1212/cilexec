@@ -4,7 +4,7 @@ Runtime requirement: Java 26
 Market server requirement: Java 21 or newer
 Market protocol: cilexec.market/v1
 Built-in client: market.* 2.0.0
-Published packages: cilexec/editor/1.0.8
+Published packages: cilexec/editor/1.0.11, cilexec/editor/1.0.12
 
 Start the market server from this directory:
 

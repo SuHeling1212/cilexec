@@ -273,7 +273,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         SqlitePackageReader reader = new SqlitePackageReader();
         for (Map.Entry<String, ProcessPackageBinding> entry : bindings.entrySet()) {
             List<ImportSpec> matching = imports.stream()
-                    .filter(spec -> spec.target().equals(entry.getKey())).toList();
+                    .filter(spec -> spec.importName().equals(entry.getKey())).toList();
             if (matching.isEmpty()) continue;
             PackageRelease release = transaction.packages().findRelease(entry.getValue().packageHash())
                     .orElseThrow(() -> new IllegalStateException("Pinned package release is missing"));
@@ -577,7 +577,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             return;
         }
         Optional<ProcessPackageBinding> pinned = transaction.packages().findProcessBinding(
-                process.identity().processUid(), target);
+                process.identity().processUid(), importName(wait, target));
         if (pinned.isEmpty()) {
             var environment = PackageEnvironments.ensureDefault(transaction.packages(),
                     process.ownerId(), now);
@@ -589,7 +589,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 return;
             }
             ProcessPackageBinding resolved = new ProcessPackageBinding(
-                    process.identity().processUid(), target, environment.environmentId(),
+                    process.identity().processUid(), importName(wait, target),
+                    environment.environmentId(),
                     release.orElseThrow().packageHash(), now);
             transaction.packages().saveProcessBinding(resolved);
         }
@@ -615,6 +616,11 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     private static boolean isSha256(String target) {
         return target != null && target.matches("(?i)[0-9a-f]{64}");
+    }
+
+    private static String importName(FclContinuation.WaitState wait, String target) {
+        Object alias = wait.payload().get("alias");
+        return alias instanceof String name ? name : target;
     }
 
     private static Continuation withPackageBindings(Continuation continuation,
@@ -651,7 +657,18 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         }
         Program target = transaction.programs().findById(programId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown exec program"));
-        return new ExecutionReplacement(target, new FclContinuation());
+        FclContinuation replacement = new FclContinuation();
+        if (TerminalReplService.isTerminalProcess(continuation)) {
+            // A terminal PID is a durable REPL context, not a disposable command
+            // process. exec replaces only its program and execution frames; the
+            // outermost user scope must remain available to the target and to the
+            // next terminal submission.
+            continuation.globalScope().values().forEach(replacement.scope()::put);
+            ProcessInbox.keys().forEach(name -> {
+                if (replacement.scope().contains(name)) replacement.scope().remove(name);
+            });
+        }
+        return new ExecutionReplacement(target, replacement);
     }
 
     private static Continuation initialContinuation(Program program) {
@@ -698,7 +715,11 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     private record ExecutionReplacement(Program program, FclContinuation continuation) {}
 
-    private record ImportSpec(String target, String alias, boolean wildcard) {}
+    private record ImportSpec(String target, String alias, boolean wildcard) {
+        private String importName() {
+            return alias == null ? target : alias;
+        }
+    }
 
     /** The lease or process epoch no longer authorizes this worker. */
     public static final class StaleClaimException extends IllegalStateException {

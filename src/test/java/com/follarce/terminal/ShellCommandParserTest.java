@@ -17,11 +17,6 @@ class ShellCommandParserTest {
         assertEquals(new ShellCommand.ListDirectory(java.util.Optional.empty()),
                 parser.parse("ls"));
         assertEquals(new ShellCommand.WorkingDirectory(), parser.parse("pwd"));
-        assertEquals(new ShellCommand.StartExport(java.util.Optional.empty()),
-                parser.parse("exp-start"));
-        assertEquals(new ShellCommand.StartExport(java.util.Optional.of("my script.fcl")),
-                parser.parse("exp-start \"my script.fcl\""));
-        assertEquals(new ShellCommand.EndExport(), parser.parse("exp-end"));
     }
 
     @Test
@@ -38,7 +33,7 @@ class ShellCommandParserTest {
     void rejectsIncompleteQuotesAndExtraArguments() {
         assertThrows(IllegalArgumentException.class, () -> parser.parse("cd \"broken"));
         assertThrows(IllegalArgumentException.class, () -> parser.parse("ls / extra"));
-        assertThrows(IllegalArgumentException.class, () -> parser.parse("exp-start one two"));
-        assertThrows(IllegalArgumentException.class, () -> parser.parse("exp-end extra"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("exp-start"));
+        assertThrows(IllegalArgumentException.class, () -> parser.parse("exp-end"));
     }
 }

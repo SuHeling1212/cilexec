@@ -36,6 +36,7 @@ public final class MarketRuntimeFunctions {
     private static final long MAX_PACKAGE_BYTES = 64L * 1024 * 1024;
     private static final Pattern SHA256 = Pattern.compile("[0-9a-f]{64}");
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
+    private static final Pattern WORD_SEPARATOR = Pattern.compile("[^\\p{L}\\p{N}]+");
     private static final Gson JSON = new Gson();
 
     private final Host host;
@@ -438,13 +439,38 @@ public final class MarketRuntimeFunctions {
 
     private static boolean matches(PackageRecord record, String query) {
         if (query.isEmpty()) return true;
-        String searchable = (record.coordinate() + " " + record.kind() + " "
-                + record.summary() + " " + record.description() + " "
-                + String.join(" ", record.tags())).toLowerCase(Locale.ROOT);
         for (String term : query.split("\\s+")) {
-            if (!term.isEmpty() && !searchable.contains(term)) return false;
+            if (!term.isEmpty() && !matchesTerm(record, term)) return false;
         }
         return true;
+    }
+
+    /**
+     * Matches complete values and word prefixes, never arbitrary interior substrings. This keeps
+     * short queries such as {@code ed} useful without making {@code or} match {@code editor} or
+     * making {@code 1} match every 1.x release.
+     */
+    private static boolean matchesTerm(PackageRecord record, String term) {
+        if (prefix(record.name(), term) || prefix(record.namespace(), term)
+                || prefix(record.kind(), term)
+                || (record.namespace() + "/" + record.name())
+                .toLowerCase(Locale.ROOT).startsWith(term)) {
+            return true;
+        }
+        if (term.length() >= 8 && record.sha256().startsWith(term)) return true;
+        if (record.tags().stream().anyMatch(value -> prefix(value, term))) return true;
+        return words(record.summary()).stream().anyMatch(value -> value.startsWith(term))
+                || words(record.description()).stream().anyMatch(value -> value.startsWith(term));
+    }
+
+    private static boolean prefix(String value, String term) {
+        return value.toLowerCase(Locale.ROOT).startsWith(term);
+    }
+
+    private static List<String> words(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        return WORD_SEPARATOR.splitAsStream(value.toLowerCase(Locale.ROOT))
+                .filter(word -> !word.isEmpty()).toList();
     }
 
     private static java.util.Optional<PackageRecord> find(MarketIndex index, String packageId) {

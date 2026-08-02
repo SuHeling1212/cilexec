@@ -5,8 +5,7 @@ import java.util.Optional;
 /** Minimal host-terminal commands; system operations are exposed through FCL functions. */
 public sealed interface ShellCommand permits ShellCommand.Help, ShellCommand.ChangeDirectory,
         ShellCommand.WorkingDirectory, ShellCommand.ListDirectory, ShellCommand.Logout,
-        ShellCommand.StartExport, ShellCommand.EndExport, ShellCommand.Clear, ShellCommand.Exit,
-        ShellCommand.Shutdown {
+        ShellCommand.Clear, ShellCommand.Exit, ShellCommand.Shutdown {
 
     record Help() implements ShellCommand {
     }
@@ -26,15 +25,6 @@ public sealed interface ShellCommand permits ShellCommand.Help, ShellCommand.Cha
         public ListDirectory {
             path = path == null ? Optional.empty() : path;
         }
-    }
-
-    record StartExport(Optional<String> path) implements ShellCommand {
-        public StartExport {
-            path = path == null ? Optional.empty() : path;
-        }
-    }
-
-    record EndExport() implements ShellCommand {
     }
 
     record Logout() implements ShellCommand {

@@ -279,6 +279,13 @@ public final class RuntimeBootstrap {
                                 SchedulerService current = scheduler;
                                 if (current != null) current.wakeInterrupt();
                             }),
+                    (account, contextId) -> DatabaseTerminalControl.headless(
+                            runtimeTransactions, account, contextId, runtimeShutdown,
+                            password -> access.login(account.username(), password).isPresent(),
+                            this::wakeScheduler, () -> {
+                                SchedulerService current = scheduler;
+                                if (current != null) current.wakeInterrupt();
+                            }),
                     terminalSettings.username());
             terminalServer.start();
         }

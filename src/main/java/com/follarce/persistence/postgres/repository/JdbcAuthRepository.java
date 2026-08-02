@@ -36,6 +36,20 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     }
 
     @Override
+    public Optional<String> findVisibleUsername(UUID userId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT auth.visible_username(?)")) {
+            statement.setObject(1, userId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                return Optional.ofNullable(rows.getString(1));
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.findVisibleUsername", exception);
+        }
+    }
+
+    @Override
     public List<UserAccount> findUsers() {
         String sql = "SELECT * FROM auth.user_account ORDER BY lower(username),user_id";
         try (PreparedStatement statement = connection.prepareStatement(sql);

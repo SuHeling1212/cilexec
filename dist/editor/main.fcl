@@ -12,21 +12,31 @@ func ed_max(a, b) {
 
 func ed_fit(value, width) {
     visible = term.sanitize(value)
-    if #visible > width { return text.slice(visible, 0, width) }
-    return visible + text.repeat(" ", width - #visible)
+    visible = term.truncate(visible, width)
+    return visible + text.repeat(" ", width - term.displayWidth(visible))
 }
 
 # The size is sampled at every layout/render pass.  A resize becomes visible on
 # the next key press; no fixed terminal geometry is kept in editor state.
 func ed_width() {
     size = term.getSize()
-    return ed_max(20, size["width"])
+    return ed_max(1, size["width"])
 }
 
 func ed_body_height() {
     size = term.getSize()
     # title + status + footer consume three terminal rows.
     return ed_max(1, size["height"] - 3)
+}
+
+func ed_path(editorPath) {
+    safePath = term.sanitize(editorPath)
+    if path.isAbsolute(safePath) { return path.normalize(safePath) }
+    return path.join(env.get("PWD"), safePath)
+}
+
+func ed_segment_width(line, start, end) {
+    return term.displayWidth(term.sanitize(text.slice(line, start, end)))
 }
 
 func ed_fix(state) {
@@ -43,8 +53,8 @@ func ed_fix(state) {
         state["top"] = state["row"] - height + 1
     }
     if state["col"] < state["left"] { state["left"] = state["col"] }
-    if state["col"] >= state["left"] + width {
-        state["left"] = state["col"] - width + 1
+    while state["left"] < state["col"] and ed_segment_width(line, state["left"], state["col"]) >= width {
+        state["left"] = state["left"] + 1
     }
     if state["top"] < 0 { state["top"] = 0 }
     if state["left"] < 0 { state["left"] = 0 }
@@ -67,19 +77,8 @@ func ed_enter(state) {
     col = state["col"]
     lines = state["lines"]
     line = lines[row]
-    result = []
-    index = 0
-    while index < row {
-        result = result + [lines[index]]
-        index = index + 1
-    }
-    result = result + [text.slice(line, 0, col), text.slice(line, col)]
-    index = row + 1
-    while index < #lines {
-        result = result + [lines[index]]
-        index = index + 1
-    }
-    state["lines"] = result
+    lines[row] = text.slice(line, 0, col)
+    state["lines"] = array.insert(lines, row + 1, text.slice(line, col))
     state["row"] = row + 1
     state["col"] = 0
     state["dirty"] = true
@@ -89,13 +88,7 @@ func ed_enter(state) {
 
 func ed_remove_row(lines, row) {
     if #lines == 1 { return [""] }
-    result = []
-    index = 0
-    while index < #lines {
-        if index != row { result = result + [lines[index]] }
-        index = index + 1
-    }
-    return result
+    return array.removeAt(lines, row)
 }
 
 func ed_backspace(state) {
@@ -329,7 +322,7 @@ func ed_render_help(state) {
     screen = screen + ed_fit("Ctrl-K  Cut current line; Ctrl-U Paste cut line", width) + "\r\n"
     screen = screen + ed_fit("Arrows, Home, End, PageUp, PageDown move", width) + "\r\n"
     screen = screen + ed_fit("Backspace, Delete, Enter and Tab edit", width) + "\r\n\r\n"
-    return screen + ed_fit("Press any key to return", width) + term.showCursor()
+    return screen + ed_fit("Press any key to return", width) + term.hideCursor()
 }
 
 func ed_render(state) {
@@ -345,8 +338,7 @@ func ed_render(state) {
         lineIndex = state["top"] + visibleRow
         line = state["lines"][lineIndex]
         start = ed_min(state["left"], #line)
-        end = ed_min(#line, start + width)
-        screen = screen + ed_fit(text.slice(line, start, end), width)
+        screen = screen + ed_fit(text.slice(line, start), width)
         screen = screen + "\r\n"
         visibleRow = visibleRow + 1
     }
@@ -357,24 +349,34 @@ func ed_render(state) {
     status = " line " + util.toString(state["row"] + 1) + "/" + util.toString(#state["lines"])
     status = status + "  col " + util.toString(state["col"] + 1)
     screen = screen + term.inverse(ed_fit(status, width)) + "\r\n"
+    footerText = ""
     if state["mode"] == "exit" {
-        screen = screen + ed_fit("Save modified buffer?  Y Yes   N No   Esc Cancel", width)
+        footerText = "Save modified buffer?  Y Yes   N No   Esc Cancel"
+        screen = screen + ed_fit(footerText, width)
     } else {
         if state["mode"] == "search" {
-            screen = screen + ed_fit("Search: " + state["query"], width)
+            footerText = "Search: " + state["query"]
+            screen = screen + ed_fit(footerText, width)
         } else {
-            footer = "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
-            if #state["message"] > 0 { footer = state["message"] }
-            screen = screen + ed_fit(footer, width)
+            footerText = "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
+            if #state["message"] > 0 { footerText = state["message"] }
+            screen = screen + ed_fit(footerText, width)
         }
     }
+    if state["mode"] == "exit" { return screen + term.hideCursor() }
+    if state["mode"] == "search" {
+        promptColumn = ed_min(width, term.displayWidth(term.sanitize(footerText)) + 1)
+        return screen + term.cursorTo(height + 3, promptColumn) + term.showCursor()
+    }
     cursorRow = state["row"] - state["top"] + 2
-    cursorCol = state["col"] - state["left"] + 1
+    line = state["lines"][state["row"]]
+    cursorText = text.slice(line, state["left"], state["col"])
+    cursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
     return screen + term.cursorTo(cursorRow, cursorCol) + term.showCursor()
 }
 
 func open(editorPath) {
-    editorPath = term.sanitize(editorPath)
+    editorPath = ed_path(editorPath)
     editorContent = ""
     if file.exists(editorPath) { editorContent = file.read(editorPath) }
     editorState = {

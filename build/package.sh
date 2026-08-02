@@ -72,7 +72,7 @@ cd "$INSTALL_DIR"
 echo "Loading container image..."
 gunzip -c cilexec-local.tar.gz | docker load
 
-chmod +x Install.sh Uninstall.sh Shell.sh
+chmod +x Install.sh Uninstall.sh Shell.sh Headless.sh
 
 echo
 echo "Installation complete!"
@@ -89,6 +89,7 @@ docker save cilexec:local | gzip > "$temp_dir/cilexec-local.tar.gz"
 cp Install.sh "$temp_dir/"
 cp Uninstall.sh "$temp_dir/"
 cp Shell.sh "$temp_dir/"
+cp Headless.sh "$temp_dir/"
 cp compose.yml "$temp_dir/"
 cp Dockerfile "$temp_dir/"
 cp .dockerignore "$temp_dir/"

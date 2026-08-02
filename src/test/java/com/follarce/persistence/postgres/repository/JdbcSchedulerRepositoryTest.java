@@ -34,6 +34,7 @@ class JdbcSchedulerRepositoryTest {
         assertTrue(interrupted.contains("FOR UPDATE OF queue, process SKIP LOCKED"));
         assertTrue(capture.statements.stream().anyMatch(sql ->
                 sql.contains("WITH released AS MATERIALIZED")
+                        && sql.contains("cilexec_scheduler_work")
                         && sql.contains("cilexec_interrupt_work")
                         && sql.contains("interrupt_requested")));
     }

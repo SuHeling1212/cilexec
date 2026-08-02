@@ -59,6 +59,16 @@ class FclSystemFunctionsIT {
     }
 
     @Test
+    void exchangesSwapPoolDataAcrossRealFclProcesses() throws Exception {
+        PGSimpleDataSource source = new PGSimpleDataSource();
+        source.setURL(POSTGRES.getJdbcUrl());
+        source.setUser(POSTGRES.getUsername());
+        source.setPassword(POSTGRES.getPassword());
+        FclSystemFunctionsExternalIT.executeSwapPoolAcrossProcesses(
+                new JdbcTransactionExecutor(source));
+    }
+
+    @Test
     void rotatesApplicationCredentialWithoutDatabaseLoginPassword() throws Exception {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(POSTGRES.getJdbcUrl());

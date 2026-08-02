@@ -10,6 +10,11 @@ import java.util.List;
 public interface TerminalRepository {
     void saveSession(TerminalSession session);
 
+    /** Saves a non-interactive API session without allowing it to become the host shell session. */
+    default void saveApiSession(TerminalSession session) {
+        saveSession(session);
+    }
+
     Optional<TerminalSession> findSession(UUID sessionId);
 
     /** Most recently active durable session for one authenticated user. */
@@ -36,36 +41,6 @@ public interface TerminalRepository {
     default void appendCommandHistory(UUID ownerId, String command, Instant submittedAt,
                                       int limit) {
         throw new UnsupportedOperationException("Terminal command history is not implemented");
-    }
-
-    record ExportCapture(UUID captureId, UUID ownerId, String targetPath,
-                         List<String> operations) {
-        public ExportCapture {
-            operations = List.copyOf(operations);
-        }
-    }
-
-    default boolean startExportCapture(UUID captureId, UUID ownerId, String targetPath,
-                                       Instant startedAt) {
-        throw new UnsupportedOperationException("Terminal export capture is not implemented");
-    }
-
-    /** Appends only while this owner has a CAPTURING export. */
-    default void appendCapturedOperation(UUID ownerId, String operation, Instant submittedAt) {
-        throw new UnsupportedOperationException("Terminal export capture is not implemented");
-    }
-
-    /** Fences new writes and returns the durable snapshot; FINALIZING captures are retryable. */
-    default Optional<ExportCapture> beginExportFinalization(UUID ownerId) {
-        throw new UnsupportedOperationException("Terminal export capture is not implemented");
-    }
-
-    default boolean completeExportCapture(UUID ownerId, UUID captureId) {
-        throw new UnsupportedOperationException("Terminal export capture is not implemented");
-    }
-
-    default boolean resumeExportCapture(UUID ownerId, UUID captureId) {
-        throw new UnsupportedOperationException("Terminal export capture is not implemented");
     }
 
     void appendInput(TerminalSession.Input input);
