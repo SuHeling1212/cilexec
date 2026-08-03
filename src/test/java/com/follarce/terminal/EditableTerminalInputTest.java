@@ -233,6 +233,36 @@ class EditableTerminalInputTest {
                 FclInputBuffer::complete));
     }
 
+    @Test
+    void upArrowAtTheFirstLineOfAMultilineBufferRecallsEarlierHistory() throws Exception {
+        byte[] source = ("first command\n"
+                + "ab{\ncd\u001b[A\u001b[A\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("first command", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+        assertEquals("first command", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void downArrowRestoresTheMultilineDraftAfterBrowsingHistory() throws Exception {
+        byte[] source = ("saved\n"
+                + "ab{\ncd\u001b[A\u001b[A\u001b[B\u001b[B}\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("saved", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+        assertEquals("ab{\ncd}", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
     private static int occurrences(String value, String token) {
         int count = 0;
         int offset = 0;

@@ -158,6 +158,11 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     @Override
+    public String username() {
+        return user.username();
+    }
+
+    @Override
     public void rememberCommand(String command) {
         terminals.rememberCommand(user.userId(), command);
     }

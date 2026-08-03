@@ -145,6 +145,23 @@ class TerminalConsoleTest {
     }
 
     @Test
+    void shutdownPasswordPromptUsesTheAuthenticatedUsername() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+        control.username = "root";
+        String input = ":shutdown\npw\n";
+
+        TerminalConsole.Outcome outcome = new TerminalConsole(new BufferedReader(
+                new InputStreamReader(new ByteArrayInputStream(
+                        input.getBytes(StandardCharsets.UTF_8)), StandardCharsets.UTF_8)),
+                new PrintWriter(output, true, StandardCharsets.UTF_8), control).runSession();
+
+        assertEquals(TerminalConsole.Outcome.EXIT, outcome);
+        assertTrue(control.shutdownRequested);
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("root password> "));
+    }
+
+    @Test
     void rejectsShutdownBeforePromptingAnOrdinaryUserForAPassword() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         RecordingControl control = new RecordingControl();
@@ -191,6 +208,11 @@ class TerminalConsoleTest {
         boolean shutdownRequested;
         boolean shutdownAllowed = true;
         String shutdownPassword;
+        String username = "administrator";
+
+        @Override public String username() {
+            return username;
+        }
 
         @Override public String execute(ShellCommand command) {
             commands.add(command);

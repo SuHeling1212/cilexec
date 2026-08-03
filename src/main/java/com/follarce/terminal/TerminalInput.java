@@ -351,8 +351,8 @@ public interface TerminalInput {
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
-                            } else if (remember && lineCount(value) == 1 && !history.isEmpty()
-                                    && historyIndex > 0) {
+                            } else if (remember && position(value, cursor).line() == 0
+                                    && !history.isEmpty() && historyIndex > 0) {
                                 if (historyIndex == history.size()) draft = value.toString();
                                 replace(value, history.get(--historyIndex));
                                 requireSubmissionLimit(value);
@@ -371,7 +371,8 @@ public interface TerminalInput {
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
-                            } else if (remember && lineCount(value) == 1
+                            } else if (remember && position(value, cursor).line()
+                                    == lineCount(value) - 1
                                     && historyIndex < history.size()) {
                                 historyIndex++;
                                 replace(value, historyIndex == history.size()

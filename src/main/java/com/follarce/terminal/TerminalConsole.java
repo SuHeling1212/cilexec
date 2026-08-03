@@ -84,7 +84,7 @@ public final class TerminalConsole implements Runnable {
                                         "Administrator permission is required");
                             }
                             PasswordPrompt.Secret password = passwords.read(
-                                    "administrator password> ");
+                                    control.username() + " password> ");
                             if (password == null) return Outcome.END_OF_INPUT;
                             try (password) {
                                 control.shutdown(password.value());

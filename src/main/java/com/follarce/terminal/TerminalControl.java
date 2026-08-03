@@ -34,6 +34,11 @@ public interface TerminalControl {
         return "cilexec> ";
     }
 
+    /** Username of the authenticated session, shown when its password is verified. */
+    default String username() {
+        return "administrator";
+    }
+
     /** Persistent command history for the authenticated user, oldest first. */
     default List<String> commandHistory() {
         return List.of();
