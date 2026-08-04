@@ -229,6 +229,8 @@ public final class RuntimeBootstrap {
                     Clock.systemUTC());
             AuditRetentionService auditRetention = new AuditRetentionService(
                     runtimeTransactions, Clock.systemUTC());
+            DeliverySweeper sweeper = new DeliverySweeper(runtimeTransactions,
+                    Clock.systemUTC());
             UUID runnerId = UUID.randomUUID();
             timerLoop = new TimerLoop(() -> {
                 int released = runtimeTransactions.inTransaction(
@@ -236,12 +238,13 @@ public final class RuntimeBootstrap {
                         transaction -> transaction.scheduler().releaseExpired(Instant.now()));
                 int fired = timers.fireDue(runnerId, TIMER_BATCH);
                 int purged = auditRetention.purgeExpired(AUDIT_PURGE_BATCH);
+                int swept = sweeper.sweepOnce();
                 SchedulerService current = scheduler;
                 if (current != null) {
                     current.wake();
                     current.wakeInterrupt();
                 }
-                return released + fired + purged;
+                return released + fired + purged + swept;
             }, () -> timers.deleteFiredExpired(Instant.now().minus(
                     java.time.Duration.ofMinutes(1))), this::nextMaintenanceAt, requireFence());
             timerLoop.start();

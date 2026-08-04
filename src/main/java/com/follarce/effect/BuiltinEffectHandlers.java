@@ -140,8 +140,8 @@ public final class BuiltinEffectHandlers {
                             invalid);
                 }
                 if (!TerminalOutputRouter.publish(routeId, text, newline)) {
-                    throw new IllegalStateException("Output route has no attached terminal: "
-                            + routeId);
+                    throw new IllegalStateException("Output could not be delivered to terminal "
+                            + routeId + " (route has no attached terminal or delivery timed out)");
                 }
             }
             // Detached process output remains in the durable effect result; never leak user

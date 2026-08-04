@@ -61,6 +61,55 @@ public final class JdbcEffectRepository extends JdbcRepositorySupport implements
     }
 
     @Override
+    public List<EffectRequest> reclaimStalePrepared(Instant now, long timeoutMillis, int limit) {
+        String sql = "WITH stale AS (SELECT effect_id FROM effect.effect "
+                + "WHERE status='PREPARED' AND prepared_at<=? "
+                + "ORDER BY prepared_at, effect_id LIMIT ?) "
+                + "UPDATE effect.effect AS candidate SET status='FAILED',failure_code=?,"
+                + "failure_message=?,updated_at=? FROM stale "
+                + "WHERE candidate.effect_id=stale.effect_id RETURNING candidate.*";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(now.minusMillis(timeoutMillis)));
+            statement.setInt(2, limit);
+            statement.setString(3, "PREPARED_RECLAIMED");
+            statement.setString(4, "Prepared effect reclaimed after timeout");
+            statement.setTimestamp(5, java.sql.Timestamp.from(now));
+            try (ResultSet rows = statement.executeQuery()) {
+                List<EffectRequest> effects = new ArrayList<>();
+                while (rows.next()) {
+                    effects.add(mapEffect(rows));
+                }
+                return List.copyOf(effects);
+            }
+        } catch (SQLException exception) {
+            throw failure("effect.reclaimStalePrepared", exception);
+        }
+    }
+
+    @Override
+    public List<EffectRequest> completedButUndelivered(Instant now, long graceMillis, int limit) {
+        String sql = "SELECT candidate.* FROM effect.effect AS candidate "
+                + "JOIN process.process AS process ON process.process_uid=candidate.process_uid "
+                + "WHERE process.status='WAITING_EFFECT' "
+                + "AND candidate.status IN ('COMPLETED','FAILED') "
+                + "AND candidate.updated_at<=? "
+                + "ORDER BY candidate.updated_at, candidate.effect_id LIMIT ?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(now.minusMillis(graceMillis)));
+            statement.setInt(2, limit);
+            try (ResultSet rows = statement.executeQuery()) {
+                List<EffectRequest> effects = new ArrayList<>();
+                while (rows.next()) {
+                    effects.add(mapEffect(rows));
+                }
+                return List.copyOf(effects);
+            }
+        } catch (SQLException exception) {
+            throw failure("effect.completedButUndelivered", exception);
+        }
+    }
+
+    @Override
     public void save(EffectRequest effect) {
         String sql = "INSERT INTO effect.effect(effect_id,process_uid,owner_id,effect_type,"
                 + "idempotency_key,idempotent,remote_status_queryable,retry_policy_json,status,"

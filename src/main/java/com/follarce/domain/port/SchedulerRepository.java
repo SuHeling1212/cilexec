@@ -41,4 +41,12 @@ public interface SchedulerRepository {
     default Optional<Instant> nextReadyAt() {
         return Optional.empty();
     }
+
+    /**
+     * Re-announces READY queue rows that have been unclaimed for longer than {@code
+     * staleAgeMillis} (lost notification safety net); returns the number announced.
+     */
+    default int requeueStale(Instant now, long staleAgeMillis) {
+        return 0;
+    }
 }

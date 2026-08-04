@@ -308,6 +308,50 @@ class EffectWorkerServiceTest {
         assertNull(fatal.get());
     }
 
+    @Test
+    void wakeConflictIsRetriedAndEventuallyDelivers() throws Exception {
+        EffectRequest prepared = prepared(manualPolicy());
+        FlakyWakeProcess processes = new FlakyWakeProcess(prepared.effectId());
+        FakeScheduler scheduler = new FakeScheduler();
+        FakePersistence persistence = new FakePersistence(prepared, processes, scheduler);
+        AtomicReference<Throwable> fatal = new AtomicReference<>();
+
+        try (EffectWorkerService workers = new EffectWorkerService(
+                persistence, persistence, UUID.randomUUID(),
+                new EffectHandlerRegistry(List.of(handler(request ->
+                        value("text/plain", "ok")))), 1, Duration.ofMillis(1), CLOCK,
+                fatal::set)) {
+            workers.start();
+            assertTrue(persistence.completed.await(3, TimeUnit.SECONDS));
+        }
+
+        assertEquals(EffectRequest.Status.COMPLETED, persistence.effects.effect.status());
+        assertTrue(processes.updates.get() >= 2,
+                "wake must retry after a transient conflict, attempts: " + processes.updates.get());
+        assertEquals(1, scheduler.enqueues.get());
+        assertNull(fatal.get());
+    }
+
+    @Test
+    void abandonedWakeAfterRetriesLeavesEffectCompletedAndProcessWaiting() throws Exception {
+        EffectRequest prepared = prepared(manualPolicy());
+        FakePersistence persistence = new FakePersistence(prepared,
+                new WakeConflictProcess(prepared.effectId()));
+        AtomicReference<Throwable> fatal = new AtomicReference<>();
+
+        try (EffectWorkerService workers = new EffectWorkerService(
+                persistence, persistence, UUID.randomUUID(),
+                new EffectHandlerRegistry(List.of(handler(request ->
+                        value("text/plain", "completed")))), 1, Duration.ofMillis(1), CLOCK,
+                fatal::set)) {
+            workers.start();
+            assertTrue(persistence.completed.await(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals(EffectRequest.Status.COMPLETED, persistence.effects.effect.status());
+        assertNull(fatal.get(), "an abandoned wake must never fence the runtime");
+    }
+
     private static EffectWorkerService workers(FakePersistence persistence,
                                                 EffectHandler handler) {
         return new EffectWorkerService(persistence, persistence, UUID.randomUUID(),
@@ -378,16 +422,26 @@ class EffectWorkerServiceTest {
         final FakeEffects effects;
         final CountDownLatch completed = new CountDownLatch(1);
         final ProcessRepository processes;
+        final SchedulerRepository scheduler;
         final AuthRepository auth = new AllowEffectsAuth();
 
         FakePersistence(EffectRequest effect) {
             effects = new FakeEffects(effect, completed);
             processes = new OneProcess(effect.processUid());
+            scheduler = new FakeScheduler();
         }
 
         FakePersistence(EffectRequest effect, ProcessRepository processes) {
             effects = new FakeEffects(effect, completed);
             this.processes = processes;
+            scheduler = new FakeScheduler();
+        }
+
+        FakePersistence(EffectRequest effect, ProcessRepository processes,
+                        SchedulerRepository scheduler) {
+            effects = new FakeEffects(effect, completed);
+            this.processes = processes;
+            this.scheduler = scheduler;
         }
 
         @Override
@@ -397,7 +451,7 @@ class EffectWorkerServiceTest {
 
         @Override public ProgramRepository programs() { return null; }
         @Override public ProcessRepository processes() { return processes; }
-        @Override public SchedulerRepository scheduler() { return null; }
+        @Override public SchedulerRepository scheduler() { return scheduler; }
         @Override public IpcRepository ipc() { return null; }
         @Override public TimerRepository timers() { return null; }
         @Override public VfsRepository vfs() { return null; }
@@ -559,6 +613,58 @@ class EffectWorkerServiceTest {
         @Override public UpdateResult updateClaimed(CilProcess process, long state,
                 com.follarce.domain.scheduler.SchedulerClaim claim) {
             return UpdateResult.VERSION_CONFLICT;
+        }
+    }
+
+    /** Wakes reject the first update (transient conflict) and succeed on the second. */
+    private static final class FlakyWakeProcess implements ProcessRepository {
+        private final CilProcess process;
+        final AtomicInteger updates = new AtomicInteger();
+
+        private FlakyWakeProcess(UUID effectId) {
+            UUID ownerId = UUID.randomUUID();
+            Continuation continuation = new Continuation(UUID.randomUUID(),
+                    new ObjectHash("0".repeat(64)), 0, List.of(), List.of(), List.of(),
+                    List.of(), Optional.of(new Continuation.WaitState(
+                    Continuation.WaitKind.EFFECT, Optional.of(effectId), Optional.empty())),
+                    Map.of(), Map.of(), "1", "1");
+            process = new CilProcess(new ProcessIdentity(UUID.randomUUID(), 1), ownerId,
+                    CilProcess.Status.WAITING_EFFECT, 0, 0, continuation, Optional.empty(),
+                    NOW.minusSeconds(10), NOW.minusSeconds(5));
+        }
+
+        @Override public long allocatePid() { throw new UnsupportedOperationException(); }
+        @Override public Optional<CilProcess> findByUid(UUID processUid) {
+            return Optional.of(process);
+        }
+        @Override public Optional<CilProcess> findByPid(long pid) { return Optional.empty(); }
+        @Override public void insert(CilProcess process) { throw new UnsupportedOperationException(); }
+        @Override public UpdateResult update(CilProcess process, long state, long epoch) {
+            return updates.incrementAndGet() == 1
+                    ? UpdateResult.VERSION_CONFLICT : UpdateResult.UPDATED;
+        }
+        @Override public UpdateResult updateClaimed(CilProcess process, long state,
+                com.follarce.domain.scheduler.SchedulerClaim claim) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    private static final class FakeScheduler implements SchedulerRepository {
+        final AtomicInteger enqueues = new AtomicInteger();
+
+        @Override public void enqueue(com.follarce.domain.scheduler.SchedulerQueueEntry entry) {
+            enqueues.incrementAndGet();
+        }
+
+        @Override public Optional<com.follarce.domain.scheduler.SchedulerClaim> claimNext(
+                UUID runnerId, UUID bootId, Instant now, Duration leaseDuration) {
+            return Optional.empty();
+        }
+
+        @Override public void release(UUID processUid, long executionEpoch) { }
+        @Override public int releaseExpired(Instant now) { return 0; }
+        @Override public boolean heartbeat(com.follarce.domain.scheduler.SchedulerClaim claim) {
+            return true;
         }
     }
 

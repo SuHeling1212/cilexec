@@ -33,6 +33,8 @@ public final class EffectWorkerService implements AutoCloseable {
             org.slf4j.LoggerFactory.getLogger(EffectWorkerService.class);
     private static final Duration STALL_CLAIM_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(30);
+    private static final int WAKE_RETRY_LIMIT = 3;
+    private static final long WAKE_RETRY_BACKOFF_MILLIS = 100;
 
     private final TransactionExecutor effectTransactions;
     private final TransactionExecutor runtimeTransactions;
@@ -47,6 +49,7 @@ public final class EffectWorkerService implements AutoCloseable {
     private final Semaphore workAvailable = new Semaphore(0);
     private final List<UUID> workerIds = new ArrayList<>();
     private final List<Thread> workers = new ArrayList<>();
+    private final AtomicBoolean[] busy;
     private volatile Thread heartbeat;
 
     public EffectWorkerService(TransactionExecutor transactions,
@@ -122,6 +125,10 @@ public final class EffectWorkerService implements AutoCloseable {
         this.fatalFailure = java.util.Objects.requireNonNull(fatalFailure, "fatalFailure");
         this.bootId = java.util.Objects.requireNonNull(bootId, "bootId");
         this.schedulerWake = java.util.Objects.requireNonNull(schedulerWake, "schedulerWake");
+        this.busy = new AtomicBoolean[workerCount];
+        for (int index = 0; index < workerCount; index++) {
+            busy[index] = new AtomicBoolean();
+        }
     }
 
     public synchronized void start() {
@@ -136,9 +143,10 @@ public final class EffectWorkerService implements AutoCloseable {
             registerWorkers(workerIds);
             this.workerIds.addAll(workerIds);
             for (int index = 0; index < workerCount; index++) {
+                int workerIndex = index;
                 UUID workerId = workerIds.get(index);
                 workers.add(Thread.ofVirtual().name("cilexec-effect-" + index)
-                        .start(() -> workerLoop(workerId)));
+                        .start(() -> workerLoop(workerIndex, workerId)));
             }
             heartbeat = Thread.ofVirtual().name("cilexec-effect-heartbeat")
                     .start(this::heartbeatLoop);
@@ -149,8 +157,11 @@ public final class EffectWorkerService implements AutoCloseable {
     }
 
     /**
-     * Refreshes every worker's runner heartbeat while they are idle or executing a long
-     * effect, so {@code claimStalled} never mistakes a still-running effect for a dead one.
+     * Refreshes only idle workers' runner heartbeats. A worker executing an effect is not
+     * refreshed, so {@code claimStalled} can reclaim an execution that is genuinely stuck
+     * (for example blocked forever on a terminal socket write) once its runner heartbeat
+     * expires. Every journaled effect is bounded well below the stall timeout, so healthy
+     * long-running effects are never mistaken for dead ones.
      */
     private void heartbeatLoop() {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
@@ -164,8 +175,10 @@ public final class EffectWorkerService implements AutoCloseable {
             Instant now = clock.instant();
             try {
                 runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
-                    for (UUID workerId : workerIds) {
-                        transaction.effects().heartbeatWorker(workerId, now);
+                    for (int index = 0; index < workerIds.size(); index++) {
+                        if (!busy[index].get()) {
+                            transaction.effects().heartbeatWorker(workerIds.get(index), now);
+                        }
                     }
                     return null;
                 });
@@ -196,12 +209,17 @@ public final class EffectWorkerService implements AutoCloseable {
         return running.get() && workers.stream().allMatch(Thread::isAlive);
     }
 
-    private void workerLoop(UUID workerId) {
+    private void workerLoop(int index, UUID workerId) {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             try {
                 Optional<ClaimedWork> claimed = claimOne(workerId);
                 if (claimed.isPresent()) {
-                    executeOutsideTransaction(claimed.orElseThrow());
+                    busy[index].set(true);
+                    try {
+                        executeOutsideTransaction(claimed.orElseThrow());
+                    } finally {
+                        busy[index].set(false);
+                    }
                     continue;
                 }
                 Optional<EffectRequest> stalled = claimStalled(workerId);
@@ -277,9 +295,21 @@ public final class EffectWorkerService implements AutoCloseable {
         });
     }
 
-    /** A stalled effect may have produced an external side effect, so it resolves as UNKNOWN. */
+    /**
+     * A stalled effect may have produced an external side effect, so it resolves as UNKNOWN.
+     * Manual policies keep the durable row UNKNOWN for human inspection, but the waiting
+     * process must still be woken with a visible failure — otherwise the process freezes
+     * forever on an effect that will never execute again.
+     */
     private void resolveStalled(EffectRequest effect) {
-        if (effect.policy().unknownAction() == EffectRequest.UnknownAction.MANUAL) return;
+        if (effect.policy().unknownAction() == EffectRequest.UnknownAction.MANUAL) {
+            Instant now = clock.instant();
+            wakeProcessAfterPersist(effect,
+                    new Continuation.PersistedValue("error",
+                            "Effect execution stalled; outcome unknown"), now);
+            schedulerWake.run();
+            return;
+        }
         resolveRecoveredUnknown(effect);
     }
 
@@ -515,31 +545,44 @@ public final class EffectWorkerService implements AutoCloseable {
 
     /**
      * Delivers the durable result after the effect row committed, so a process wake conflict
-     * can never roll the result back.
+     * can never roll the result back. Non-fatal wake conflicts (deadlock, serialization, CAS)
+     * are retried with backoff; if they still fail, the delivery sweeper redelivers the
+     * completed effect, so a lost wake can never freeze the process permanently.
      */
     private void wakeProcessAfterPersist(EffectRequest effect,
                                          Continuation.PersistedValue result,
                                          Instant now) {
-        try {
-            runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
-                wakeProcess(transaction, effect, result, now);
-                return null;
-            });
-        } catch (RuntimeException failure) {
-            if (isFatal(failure)) {
-                throw failure;
+        int failures = 0;
+        while (true) {
+            try {
+                runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
+                    wakeProcess(transaction, effect, result, now);
+                    return null;
+                });
+                return;
+            } catch (RuntimeException failure) {
+                if (isFatal(failure)) {
+                    throw failure;
+                }
+                if (++failures >= WAKE_RETRY_LIMIT) {
+                    LOG.error("Effect {} completed but its process {} could not be woken after "
+                                    + "{} attempts: {}; the delivery sweeper will redeliver it",
+                            effect.effectId(), effect.processUid(), failures, safeMessage(failure));
+                    return;
+                }
+                LockSupport.parkNanos(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                        WAKE_RETRY_BACKOFF_MILLIS * failures));
             }
-            LOG.warn("Effect {} completed but its process {} could not be woken: {}",
-                    effect.effectId(), effect.processUid(), safeMessage(failure));
         }
     }
 
-    private static void wakeProcess(com.follarce.domain.port.TransactionContext transaction,
-                                    EffectRequest effect,
-                                    Continuation.PersistedValue result,
-                                    Instant now) {
+    /** Wakes the process waiting on this effect; returns whether a wake was applied. */
+    public static boolean wakeProcess(com.follarce.domain.port.TransactionContext transaction,
+                                      EffectRequest effect,
+                                      Continuation.PersistedValue result,
+                                      Instant now) {
         Optional<CilProcess> loaded = transaction.processes().findByUid(effect.processUid());
-        if (loaded.isEmpty() || !isWaitingFor(loaded.get(), effect.effectId())) return;
+        if (loaded.isEmpty() || !isWaitingFor(loaded.get(), effect.effectId())) return false;
         CilProcess current = loaded.get();
         Map<String, Continuation.PersistedValue> variables =
                 new LinkedHashMap<>(current.continuation().globalVariables());
@@ -560,9 +603,10 @@ public final class EffectWorkerService implements AutoCloseable {
             transaction.scheduler().enqueue(new SchedulerQueueEntry(effect.processUid(), now, now,
                     SchedulerQueueEntry.Status.READY));
         }
+        return true;
     }
 
-    private static boolean isWaitingFor(CilProcess process, UUID effectId) {
+    public static boolean isWaitingFor(CilProcess process, UUID effectId) {
         return (process.status() == CilProcess.Status.WAITING_EFFECT
                 || process.status() == CilProcess.Status.PAUSED)
                 && process.continuation().waitState().map(wait ->

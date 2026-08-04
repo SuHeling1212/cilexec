@@ -44,6 +44,24 @@ public interface EffectRepository {
         return true;
     }
 
+    /**
+     * Reclaims PREPARED effects no worker claimed within the timeout; returns them as
+     * FAILED rows so the caller can wake the waiting process (delivery sweeper).
+     */
+    default List<EffectRequest> reclaimStalePrepared(Instant now, long timeoutMillis,
+                                                     int limit) {
+        return List.of();
+    }
+
+    /**
+     * COMPLETED/FAILED effects whose owning process is still waiting after the grace
+     * window — a lost-wake redelivery candidate (delivery sweeper).
+     */
+    default List<EffectRequest> completedButUndelivered(Instant now, long graceMillis,
+                                                        int limit) {
+        return List.of();
+    }
+
     /** Returns the next number while holding the parent effect row lock. */
     int nextAttemptNumber(UUID effectId);
 

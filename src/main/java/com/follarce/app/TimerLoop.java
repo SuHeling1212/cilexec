@@ -23,6 +23,12 @@ public final class TimerLoop implements AutoCloseable {
             Duration.ofMillis(50).toNanos();
     private static final long RETRY_BACKOFF_NANOS =
             Duration.ofMillis(100).toNanos();
+    /**
+     * Maximum time the loop sleeps without a durable deadline. The maintenance batch (lease
+     * recovery, delivery sweeper) must run even when every wake notification is lost, so
+     * the loop can never block indefinitely on a missing notification.
+     */
+    private static final long MAX_AWAIT_MILLIS = Duration.ofSeconds(5).toMillis();
     private final IntSupplier fireDue;
     private final IntSupplier cleanup;
     private final Supplier<Optional<Instant>> nextWakeAt;
@@ -103,13 +109,13 @@ public final class TimerLoop implements AutoCloseable {
     /** Returns whether the loop waited; a past deadline means nothing to wait for. */
     private boolean awaitChangeOrDeadline() throws InterruptedException {
         Optional<Instant> deadline = nextWakeAt.get();
-        if (deadline.isEmpty()) {
-            changed.acquire();
-            return true;
+        long waitMillis = MAX_AWAIT_MILLIS;
+        if (deadline.isPresent()) {
+            Duration delay = Duration.between(Instant.now(), deadline.orElseThrow());
+            if (delay.isNegative() || delay.isZero()) return false;
+            waitMillis = Math.min(waitMillis, Math.max(1, delay.toMillis()));
         }
-        Duration delay = Duration.between(Instant.now(), deadline.orElseThrow());
-        if (delay.isNegative() || delay.isZero()) return false;
-        changed.tryAcquire(1, Math.max(1, delay.toMillis()), TimeUnit.MILLISECONDS);
+        changed.tryAcquire(1, waitMillis, TimeUnit.MILLISECONDS);
         return true;
     }
 
