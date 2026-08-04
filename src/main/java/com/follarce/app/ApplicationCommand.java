@@ -85,17 +85,16 @@ public enum ApplicationCommand {
 
     public static String hostUsername(String[] arguments) {
         hostArguments(arguments);
-        return arguments.length == 5 ? arguments[4].trim() : "local";
+        return arguments[4].trim();
     }
 
     private static void hostArguments(String[] arguments) {
-        if (arguments == null || (arguments.length != 4 && arguments.length != 5)
+        if (arguments == null || arguments.length != 5
                 || arguments[0] == null || !"host".equalsIgnoreCase(arguments[0])
                 || arguments[1] == null || !"move".equalsIgnoreCase(arguments[1])
                 || arguments[2] == null || arguments[2].isBlank()
                 || arguments[3] == null || arguments[3].isBlank()
-                || (arguments.length == 5
-                && (arguments[4] == null || arguments[4].isBlank()))) {
+                || arguments[4] == null || arguments[4].isBlank()) {
             throw usage();
         }
     }
@@ -124,6 +123,6 @@ public enum ApplicationCommand {
 
     private static IllegalArgumentException usage() {
         return new IllegalArgumentException(
-                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|host move <source-file> <absolute-vfs-path> [username]]");
+                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|host move <source-file> <absolute-vfs-path> <username>]");
     }
 }

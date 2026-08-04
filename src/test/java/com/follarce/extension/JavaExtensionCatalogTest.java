@@ -36,6 +36,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -61,7 +62,8 @@ class JavaExtensionCatalogTest {
                 new FclFunctionRegistry.Invocation(10, continuation)));
         assertEquals(2L, registry.invoke("demo.increment", List.of(),
                 new FclFunctionRegistry.Invocation(11, continuation)));
-        assertEquals(2L, continuation.scope().get("cilexec.extension.example.demo.count"));
+        assertEquals(2L, continuation.scope()
+                .get("cilexec.extension.12.example.demo.count"));
 
         var codec = new FclContinuationCodec();
         Continuation.PersistedValue request = new Continuation.PersistedValue(
@@ -104,6 +106,51 @@ class JavaExtensionCatalogTest {
                 ExtensionEffectPolicy.manual().recovery());
         assertThrows(IllegalArgumentException.class, () ->
                 ExtensionEffectPolicy.retryIdempotent(" "));
+    }
+
+    @Test
+    void installRejectsNamespacesAndBareNamesAlreadyLiveInTheRegistry() {
+        FclContinuation continuation = new FclContinuation();
+        ProcessAndProgram runtime = runtime();
+        FclFunctionRegistry registry = com.follarce.fcl.FclBuiltins.pureRegistry();
+
+        JavaExtensionCatalog catalog = JavaExtensionCatalog.compile(List.of(
+                extension("example.array", registrar ->
+                        registrar.function("array", "extra", _ -> null))));
+        IllegalStateException namespaceConflict = assertThrows(IllegalStateException.class,
+                () -> catalog.installFunctions(registry, new EmptyTransaction(),
+                        runtime.process(), continuation, NOW));
+        assertTrue(namespaceConflict.getMessage().contains("array"));
+
+        JavaExtensionCatalog bare = JavaExtensionCatalog.compile(List.of(
+                extension("example.bare", registrar ->
+                        registrar.function("demo", "insert", _ -> null))));
+        IllegalStateException bareConflict = assertThrows(IllegalStateException.class,
+                () -> bare.installFunctions(registry, new EmptyTransaction(),
+                        runtime.process(), continuation, NOW));
+        assertTrue(bareConflict.getMessage().contains("insert"));
+    }
+
+    @Test
+    void extensionFunctionsReceiveFclNullArguments() throws Exception {
+        JavaExtensionCatalog catalog = JavaExtensionCatalog.compile(List.of(
+                extension("example.null", registrar -> registrar.function("nullDemo", "echo",
+                        context -> {
+                            assertEquals(2, context.arguments().size());
+                            assertTrue(context.arguments().contains(null));
+                            assertEquals(1L, context.argument(1));
+                            assertThrows(IllegalArgumentException.class, () ->
+                                    context.argument(2));
+                            return context.argument(0);
+                        }))));
+        FclContinuation continuation = new FclContinuation();
+        FclFunctionRegistry registry = new FclFunctionRegistry();
+        ProcessAndProgram runtime = runtime();
+        catalog.installFunctions(registry, new EmptyTransaction(), runtime.process(),
+                continuation, NOW);
+        assertNull(registry.invoke("nullDemo.echo",
+                java.util.Arrays.asList(null, 1L),
+                new FclFunctionRegistry.Invocation(20, continuation)));
     }
 
     private static ProcessAndProgram runtime() {

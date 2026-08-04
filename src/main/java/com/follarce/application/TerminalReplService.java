@@ -14,6 +14,7 @@ import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.follarce.fcl.FclExpression;
 import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
@@ -76,12 +77,9 @@ public final class TerminalReplService {
                 || submittedSource.length() > com.follarce.terminal.TerminalInput.MAX_SUBMISSION_CHARACTERS) {
             throw new IllegalArgumentException("FCL submission exceeds 256 Ki characters");
         }
-        String library = library(ownerId, sessionId);
         String workingDirectory = workingDirectory(ownerId, sessionId);
         String expandedSubmission = programs.expandIncludes(ownerId, submittedSource,
                 workingDirectory);
-        PreparedSource prepared = replSource(expandedSubmission, library);
-        Program program = programs.createExpanded(ownerId, prepared.source());
         Instant now = clock.instant();
         Submission submission = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PROCESS_CREATE);
@@ -101,6 +99,17 @@ public final class TerminalReplService {
                         + " must be PAUSED before accepting input; current status is "
                         + previous.orElseThrow().status());
             }
+            String library = accumulatedLibrary(previous);
+            PreparedSource prepared = replSource(expandedSubmission, library);
+            UUID processUid = previous.map(value -> value.identity().processUid())
+                    .orElseGet(UUID::randomUUID);
+            // A submission that imports an unresolvable package must fail here, before the
+            // accumulated library (and the imported statement) is persisted. Otherwise the
+            // broken import is recompiled into every later submission and the terminal is
+            // permanently wedged on "Unresolved package import".
+            validateImports(transaction, processUid, ownerId,
+                    compiler.compile(prepared.source()), now);
+            Program program = programs.compileAndSaveIn(transaction, prepared.source());
 
             FclContinuation runtime = nextSubmission(previous);
             runtime.scope().put(TERMINAL_PROCESS_SCOPE_KEY, true);
@@ -110,8 +119,6 @@ public final class TerminalReplService {
             if (!prepared.library().isEmpty()) {
                 runtime.scope().put(LIBRARY_SCOPE_KEY, prepared.library());
             }
-            UUID processUid = previous.map(value -> value.identity().processUid())
-                    .orElseGet(UUID::randomUUID);
             Continuation pristine = initial(program,
                     previous.map(value -> value.continuation().packageBindings()).orElse(Map.of()));
             Continuation persisted = bridge.persist(processUid, program, pristine, runtime);
@@ -215,27 +222,36 @@ public final class TerminalReplService {
         if (!importedLibrary.isEmpty()) {
             compiler.compile(nextLibrary);
         }
-        if (semantic.size() == 1 && semantic.getFirst() instanceof FclInstruction.Evaluation) {
-            return new PreparedSource(existingLibrary + "return " + source.strip() + "\n",
+        if (semantic.size() == 1
+                && semantic.getFirst() instanceof FclInstruction.Evaluation evaluation) {
+            // A string literal must keep its exact text: stripping would destroy a value
+            // whose content is only whitespace. Other single expressions only strip.
+            boolean stringLiteral = evaluation.expression() instanceof FclExpression.Literal literal
+                    && literal.value() instanceof String;
+            String expression = stringLiteral ? source : source.strip();
+            return new PreparedSource(existingLibrary + "return " + expression + "\n",
                     nextLibrary);
         }
         return new PreparedSource(existingLibrary + normalized, nextLibrary);
     }
 
-    private String library(UUID ownerId, UUID sessionId) {
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
-                transaction.terminal().findActiveAttachment(sessionId)
-                        .flatMap(value -> transaction.processes().findByUid(value.processUid()))
-                        .filter(value -> value.status() == CilProcess.Status.PAUSED)
-                        .map(value -> bridge.restore(value.continuation()))
-                        .filter(value -> value.scope().contains(LIBRARY_SCOPE_KEY))
-                        .map(value -> value.scope().get(LIBRARY_SCOPE_KEY))
-                        .map(value -> {
-                            if (!(value instanceof String text)) {
-                                throw new IllegalStateException("Persisted REPL library is invalid");
-                            }
-                            return text;
-                        }).orElse(""));
+    /**
+     * Reads the accumulated library from the attached process inside the caller's
+     * transaction, so the read-modify-write against the persisted continuation stays
+     * atomic under concurrent submissions to the same session.
+     */
+    private String accumulatedLibrary(Optional<CilProcess> previous) {
+        return previous
+                .filter(value -> value.status() == CilProcess.Status.PAUSED)
+                .map(value -> bridge.restore(value.continuation()))
+                .filter(value -> value.scope().contains(LIBRARY_SCOPE_KEY))
+                .map(value -> value.scope().get(LIBRARY_SCOPE_KEY))
+                .map(value -> {
+                    if (!(value instanceof String text)) {
+                        throw new IllegalStateException("Persisted REPL library is invalid");
+                    }
+                    return text;
+                }).orElse("");
     }
 
     private static boolean librarySubmission(FclProgram program) {
@@ -280,6 +296,41 @@ public final class TerminalReplService {
     private static String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    }
+
+    /**
+     * Rejects a submission whose top-level imports cannot be resolved, mirroring the
+     * runtime directive resolution in ProcessStatementExecutor. Running this inside the
+     * submit transaction guarantees a broken import can never reach the persisted REPL
+     * library, which would otherwise wedge every later command in the same session.
+     */
+    private static void validateImports(com.follarce.domain.port.TransactionContext transaction,
+                                        UUID processUid, UUID ownerId, FclProgram compiled,
+                                        Instant now) {
+        java.util.LinkedHashSet<String> validated = new java.util.LinkedHashSet<>();
+        for (FclInstruction instruction : compiled.instructions()) {
+            if (!(instruction instanceof FclInstruction.Import value)) continue;
+            String target = ProcessStatementExecutor.normalizeImport(value.target());
+            String name = value.alias() != null ? value.alias() : target;
+            if (!validated.add(name)) continue;
+            boolean resolvable = transaction.packages()
+                    .findProcessBinding(processUid, name).isPresent();
+            if (!resolvable) {
+                var environment = com.follarce.package_manager.PackageEnvironments
+                        .ensureDefault(transaction.packages(), ownerId, now);
+                java.util.Optional<com.follarce.domain.packageinfo.PackageRelease> release =
+                        ProcessStatementExecutor.isSha256(target)
+                                ? ProcessStatementExecutor.directRelease(transaction, target)
+                                : ProcessStatementExecutor.bindingRelease(transaction,
+                                        environment.environmentId(), target);
+                resolvable = release.isPresent();
+            }
+            if (!resolvable) {
+                throw new com.follarce.fcl.FclRuntimeException("Unresolved package import: "
+                        + value.target() + "; fix the import or reconnect to start a fresh "
+                        + "terminal session");
+            }
+        }
     }
 
     private static Continuation initial(Program program,

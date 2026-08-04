@@ -3,9 +3,12 @@ package com.follarce.terminal;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintWriter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Optional host console. It delegates every mutation to the database-backed control service. */
 public final class TerminalConsole implements Runnable {
+    private static final Logger LOG = LoggerFactory.getLogger(TerminalConsole.class);
     private static final String RESET_TUI = "\033[?25h\033[2J\033[H";
     enum Outcome { LOGOUT, EXIT, END_OF_INPUT }
 
@@ -38,7 +41,9 @@ public final class TerminalConsole implements Runnable {
         RuntimeException previousFailure = null;
         int consecutiveControlFailures = 0;
         try {
-            while (!Thread.currentThread().isInterrupted()) {
+            // EOF (readLine/readKey returning null) is the authoritative disconnect signal;
+            // the pump thread's wake-up interrupt targets only the database polling loop.
+            while (true) {
                 try {
                     TerminalControl.AttachedInputMode inputMode = control.attachedInputMode();
                     if (inputMode == TerminalControl.AttachedInputMode.KEY) {
@@ -77,8 +82,8 @@ public final class TerminalConsole implements Runnable {
                     } else if (line.stripLeading().startsWith(":")) {
                         String commandText = line.stripLeading().substring(1);
                         command = parser.parse(commandText);
-                        remember(line);
                         if (command instanceof ShellCommand.Shutdown) {
+                            remember(line);
                             if (!control.canShutdown()) {
                                 throw new IllegalArgumentException(
                                         "Administrator permission is required");
@@ -93,10 +98,12 @@ public final class TerminalConsole implements Runnable {
                         }
                         // :exit is a transport-level disconnect. Never delegate it to a
                         // database-backed control implementation, because disconnecting one
-                        // client must not be able to stop the shared Runtime.
+                        // client must not be able to stop the shared Runtime. It is also not
+                        // a command worth restoring through arrow-key history.
                         if (command instanceof ShellCommand.Exit) {
                             return Outcome.EXIT;
                         }
+                        remember(line);
                         result = control.execute(command);
                     } else if (awaitingAttachedInput) {
                         result = control.submitAttachedInput(line);
@@ -125,6 +132,7 @@ public final class TerminalConsole implements Runnable {
                 } catch (IllegalArgumentException exception) {
                     output.println("error: " + exception.getMessage());
                 } catch (RuntimeException exception) {
+                    LOG.warn("Terminal control operation failed", exception);
                     output.println("error: " + describe(exception));
                     if (sameFailure(previousFailure, exception)
                             && ++consecutiveControlFailures >= 2) {
@@ -134,11 +142,11 @@ public final class TerminalConsole implements Runnable {
                     previousFailure = exception;
                     consecutiveControlFailures = 1;
                 } catch (IOException exception) {
-                    output.println("terminal closed: " + exception.getMessage());
+                    LOG.warn("Terminal input failed; closing session", exception);
+                    output.println("terminal closed");
                     return Outcome.END_OF_INPUT;
                 }
             }
-            return Outcome.END_OF_INPUT;
         } finally {
             try {
                 input.finishKeyMode();
@@ -149,9 +157,15 @@ public final class TerminalConsole implements Runnable {
     }
 
     private static String describe(RuntimeException exception) {
-        String message = exception.getMessage();
-        return message == null || message.isBlank()
-                ? exception.getClass().getSimpleName() : message;
+        // Language-level errors carry an actionable message for the FCL author; internal
+        // failures stay opaque so implementation details never leak to the terminal.
+        if (exception instanceof com.follarce.fcl.FclRuntimeException
+                || exception instanceof com.follarce.fcl.FclCompileException) {
+            String message = exception.getMessage();
+            return message == null || message.isBlank()
+                    ? exception.getClass().getSimpleName() : message;
+        }
+        return "Command failed: " + exception.getClass().getSimpleName();
     }
 
     private static boolean sameFailure(RuntimeException previous, RuntimeException current) {

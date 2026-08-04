@@ -6,6 +6,7 @@ import com.google.gson.reflect.TypeToken;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Type;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -237,9 +238,19 @@ public final class FclContinuationCodec {
             encoded.put("value", Double.toHexString(((Number) value).doubleValue()));
             return encoded;
         }
-        if (value instanceof String || value instanceof Character) {
+        if (value instanceof BigInteger bigInteger) {
+            encoded.put("type", "bigint");
+            encoded.put("value", bigInteger.toString());
+            return encoded;
+        }
+        if (value instanceof String text) {
             encoded.put("type", "string");
-            encoded.put("value", value.toString());
+            encoded.put("value", text);
+            return encoded;
+        }
+        if (value instanceof Character character) {
+            encoded.put("type", "char");
+            encoded.put("value", character.toString());
             return encoded;
         }
         if (value instanceof List<?> list) {
@@ -282,7 +293,9 @@ public final class FclContinuationCodec {
             case "bool" -> bool(value.get("value"), "bool value");
             case "long" -> longString(value.get("value"), "long value");
             case "double" -> doubleString(value.get("value"), "double value");
+            case "bigint" -> bigInteger(value.get("value"), "bigint value");
             case "string" -> string(value.get("value"), "string value");
+            case "char" -> charValue(value.get("value"), "char value");
             case "array" -> {
                 List<Object> elements = new ArrayList<>();
                 for (Object item : list(value.get("value"), "array value")) {
@@ -356,6 +369,25 @@ public final class FclContinuationCodec {
         } catch (NumberFormatException failure) {
             throw new IllegalArgumentException(field + " is outside integer range", failure);
         }
+    }
+
+    private static BigInteger bigInteger(Object value, String field) {
+        if (!(value instanceof String text)) {
+            throw new IllegalArgumentException(field + " must be an encoded integer");
+        }
+        try {
+            return new BigInteger(text);
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException(field + " is not an integer", failure);
+        }
+    }
+
+    private static Character charValue(Object value, String field) {
+        String text = string(value, field);
+        if (text.length() != 1) {
+            throw new IllegalArgumentException(field + " must be a single character");
+        }
+        return text.charAt(0);
     }
 
     private static double doubleString(Object value, String field) {

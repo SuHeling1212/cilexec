@@ -34,7 +34,7 @@ class TerminalConsoleTest {
         assertEquals(List.of("func twice(value) {\nreturn value * 2\n}", "twice(21)"),
                 control.sources);
         assertEquals(List.of(":pwd", "func twice(value) {\nreturn value * 2\n}",
-                "twice(21)", ":exit"), control.remembered);
+                "twice(21)"), control.remembered);
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("...> "));
     }
 
@@ -51,8 +51,8 @@ class TerminalConsoleTest {
                 control).run();
 
         assertEquals(List.of("hello from terminal"), control.attachedInputs);
-        assertEquals(List.of(":exit"), control.remembered,
-                "attached process input must not enter command history");
+        assertEquals(List.of(), control.remembered,
+                "neither attached process input nor :exit may enter command history");
     }
 
     @Test
@@ -193,7 +193,7 @@ class TerminalConsoleTest {
 
         String transcript = output.toString(StandardCharsets.UTF_8);
         assertEquals(TerminalConsole.Outcome.END_OF_INPUT, outcome);
-        assertTrue(transcript.contains("error: NullPointerException"), transcript);
+        assertTrue(transcript.contains("error: Command failed: NullPointerException"), transcript);
         assertTrue(transcript.contains("terminal stopped after repeated control failures"),
                 transcript);
     }

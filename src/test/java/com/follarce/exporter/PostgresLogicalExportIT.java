@@ -153,7 +153,8 @@ class PostgresLogicalExportIT {
 
     private static String scalar(Path database, String query) throws Exception {
         try (Connection connection = DriverManager.getConnection(
-                "jdbc:sqlite:file:" + database.toAbsolutePath() + "?mode=ro&immutable=1");
+                "jdbc:sqlite:" + database.toAbsolutePath().normalize().toUri().toASCIIString()
+                        + "?mode=ro&immutable=1");
              Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(query)) {
             assertTrue(rows.next());

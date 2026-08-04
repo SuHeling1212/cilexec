@@ -76,19 +76,11 @@ final class FclExpressionEvaluator {
             List<Object> arguments = new ArrayList<>(call.arguments().size());
             for (FclExpression argument : call.arguments()) arguments.add(evaluate(argument));
             FclProgram.Function userFunction = program.function(call.name());
-            if (!call.name().contains(".") && userFunction != null) {
+            if (userFunction != null) {
                 throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments));
             }
-            Object value;
-            if (call.name().contains(".") && functions.hasQualified(call.name())) {
-                value = functions.invoke(call.name(), arguments,
-                        new FclFunctionRegistry.Invocation(call.id(), continuation));
-            } else if (userFunction != null) {
-                throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments));
-            } else {
-                value = functions.invoke(call.name(), arguments,
-                        new FclFunctionRegistry.Invocation(call.id(), continuation));
-            }
+            Object value = functions.invoke(call.name(), arguments,
+                    new FclFunctionRegistry.Invocation(call.id(), continuation));
             FclContinuation.PendingStatement current = continuation.pendingStatement();
             if (current == null) {
                 current = new FclContinuation.PendingStatement(continuation.programCounter());

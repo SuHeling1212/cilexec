@@ -78,6 +78,18 @@ public final class ProgramService {
                 transaction -> compileAndSave(transaction, expandedSource));
     }
 
+    /**
+     * Compiles and persists the program inside the caller's already-open transaction.
+     * Nested independent transactions are unsafe here: a SERIALIZABLE caller snapshot
+     * taken before the nested commit cannot see the new program row, so a later
+     * process insert referencing it fails the foreign key (SQLSTATE 23503).
+     */
+    Program compileAndSaveIn(com.follarce.domain.port.TransactionContext transaction,
+                             String expandedSource) {
+        Objects.requireNonNull(expandedSource, "expandedSource");
+        return compileAndSave(transaction, expandedSource);
+    }
+
     private Program compileAndSave(com.follarce.domain.port.TransactionContext transaction,
                                    String source) {
         FclProgram compiled = compiler.compile(source);

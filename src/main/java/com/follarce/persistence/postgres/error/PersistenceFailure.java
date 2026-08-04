@@ -25,6 +25,7 @@ public class PersistenceFailure extends RuntimeException {
         SERIALIZATION_CONFLICT,
         DEADLOCK,
         DATABASE_UNAVAILABLE,
+        RETRYABLE_TRANSIENT,
         RUNTIME_FENCED,
         OPTIMISTIC_CONFLICT,
         GENERAL

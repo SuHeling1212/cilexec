@@ -54,17 +54,23 @@ public final class HostVfsImportService {
         if (target.equals("/")) throw new IllegalArgumentException(
                 "VFS target must include a file name");
         String ownerName = UsernamePolicy.normalize(username);
+        if (ownerName.equals("local")) {
+            throw new IllegalArgumentException(
+                    "host move to the local superuser is not allowed; import to a named user "
+                            + "that holds VFS_MOUNT_HOST");
+        }
         UUID ownerId = transactions.inTransaction(Isolation.READ_COMMITTED, transaction ->
                 transaction.auth().findUser(ownerName)
                         .filter(account -> account.status() == UserAccount.Status.ACTIVE)
                         .orElseThrow(() -> new IllegalArgumentException(
                                 "Unknown or disabled CilExec user: " + ownerName)).userId());
+        precheckTarget(ownerId, target);
         String mediaType = mediaType(input);
         ObjectHash objectHash = streamObject(ownerId, input, mediaType, expectedSize);
         Instant now = clock.instant();
         VfsNode node = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE,
                 transaction -> {
-                    Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
+                    requireMountCapabilities(transaction, ownerId);
                     Target resolved = resolveTarget(transaction, ownerId, target);
                     if (transaction.vfs().findChild(ownerId,
                             Optional.of(resolved.parent().nodeId()), resolved.name()).isPresent()) {
@@ -87,6 +93,24 @@ public final class HostVfsImportService {
         return new ImportReport(node.nodeId(), ownerName, target, expectedSize, objectHash);
     }
 
+    private void precheckTarget(UUID ownerId, String target) {
+        transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
+            requireMountCapabilities(transaction, ownerId);
+            Target resolved = resolveTarget(transaction, ownerId, target);
+            if (transaction.vfs().findChild(ownerId,
+                    Optional.of(resolved.parent().nodeId()), resolved.name()).isPresent()) {
+                throw new IllegalArgumentException("VFS target already exists: " + target);
+            }
+            return null;
+        });
+    }
+
+    private static void requireMountCapabilities(
+            com.follarce.domain.port.TransactionContext transaction, UUID ownerId) {
+        Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
+        Authorization.require(transaction, ownerId, Capability.VFS_MOUNT_HOST);
+    }
+
     private ObjectHash streamObject(UUID ownerId, Path source, String mediaType,
                                     long expectedSize) {
         ObjectHash current = null;
@@ -106,7 +130,7 @@ public final class HostVfsImportService {
                 ObjectHash previous = current;
                 current = transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
                         transaction -> {
-                            Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
+                            requireMountCapabilities(transaction, ownerId);
                             if (previous == null) {
                                 StoredObject first = StoredObject.create(new BinaryContent(chunk),
                                         mediaType, clock.instant());
@@ -125,7 +149,7 @@ public final class HostVfsImportService {
         }
         if (current != null) return current;
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
+            requireMountCapabilities(transaction, ownerId);
             StoredObject empty = StoredObject.create(new BinaryContent(new byte[0]), mediaType,
                     clock.instant());
             transaction.vfs().saveObject(empty);

@@ -1,5 +1,6 @@
 package com.follarce.application;
 
+import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.packageinfo.PackageIndex;
@@ -13,6 +14,7 @@ import com.follarce.domain.scheduler.SchedulerClaim;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.fcl.FclBuiltins;
+import com.follarce.fcl.FclCompileException;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclInstruction;
@@ -20,6 +22,7 @@ import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramLinker;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
+import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
@@ -54,6 +57,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private final UserTransactionExecutor transactions;
     private final FclRuntime fixedRuntime;
     private final FclProgramCodec programCodec;
+    private final FclContinuationCodec continuationCodec;
     private final FclPersistenceBridge continuationBridge;
     private final Clock clock;
     private final JavaExtensionCatalog extensions;
@@ -106,6 +110,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         this.extensions = Objects.requireNonNull(extensions, "extensions");
         this.fixedRuntime = runtime;
         this.programCodec = Objects.requireNonNull(programCodec, "programCodec");
+        this.continuationCodec = Objects.requireNonNull(continuationCodec, "continuationCodec");
         this.continuationBridge = new FclPersistenceBridge(
                 Objects.requireNonNull(continuationCodec, "continuationCodec"));
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -129,11 +134,20 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             CilProcess current = transaction.processes().findByUid(claim.processUid())
                     .orElseThrow(() -> new StaleClaimException("Claimed process no longer exists"));
             validateClaim(current, claim);
-            Program program = transaction.programs()
-                    .findById(current.continuation().programId())
-                    .orElseThrow(() -> new IllegalStateException("Process program no longer exists"));
-            FclPersistenceBridge.ensureProgramIdentity(program, current.continuation());
-            FclContinuation continuation = continuationBridge.restore(current.continuation());
+            Program program;
+            FclContinuation continuation;
+            try {
+                program = transaction.programs()
+                        .findById(current.continuation().programId())
+                        .orElseThrow(() -> new IllegalStateException(
+                                "Process program no longer exists"));
+                FclPersistenceBridge.ensureProgramIdentity(program, current.continuation());
+                continuation = continuationBridge.restore(current.continuation());
+            } catch (IllegalArgumentException | IllegalStateException
+                    | FclRuntimeException | FclCompileException failure) {
+                failDeterministic(transaction, current, claim, failure, now);
+                return PostCommitSignal.NONE;
+            }
             boolean terminalProcess = TerminalReplService.isTerminalProcess(continuation);
             if (transaction.terminal().consumeInterrupt(current.identity().processUid())) {
                 if (terminalProcess) {
@@ -143,8 +157,15 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 terminateAtSafePoint(transaction, current, claim, now);
                 return PostCommitSignal.NONE;
             }
-            FclProgram compiled = loadProgram(transaction, program);
-            compiled = linkPackages(transaction, current, compiled, program);
+            FclProgram compiled;
+            try {
+                compiled = loadProgram(transaction, program);
+                compiled = linkPackages(transaction, current, compiled, program);
+            } catch (IllegalArgumentException | IllegalStateException
+                    | FclRuntimeException | FclCompileException failure) {
+                failDeterministic(transaction, current, claim, failure, now);
+                return PostCommitSignal.NONE;
+            }
 
             FclRuntime statementRuntime = fixedRuntime != null ? fixedRuntime
                     : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program,
@@ -156,8 +177,14 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             long sliceStarted = System.nanoTime();
             for (int executed = 0; executed < stepLimit; executed++) {
                 step = statementRuntime.executeOne(compiled, continuation);
-                ExecutionReplacement replacement = resolveExecutionReplacement(transaction,
-                        continuation);
+                ExecutionReplacement replacement;
+                try {
+                    replacement = resolveExecutionReplacement(transaction, continuation);
+                } catch (IllegalArgumentException | IllegalStateException
+                        | FclRuntimeException | FclCompileException failure) {
+                    failDeterministic(transaction, current, claim, failure, now);
+                    return PostCommitSignal.NONE;
+                }
                 if (replacement != null) {
                     committedProgram = replacement.program();
                     continuation = replacement.continuation();
@@ -542,6 +569,86 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
     }
 
+    /**
+     * Commits a deterministic program load/link/exec failure as a durable FAILED state so
+     * the claim is released and the scheduler never re-claims the broken process. Only
+     * IllegalArgumentException and IllegalStateException reach this path; database
+     * conflicts still propagate and retry through the transaction executor.
+     */
+    private void failDeterministic(
+            com.follarce.domain.port.TransactionContext transaction,
+            CilProcess current,
+            SchedulerClaim claim,
+            RuntimeException failure,
+            Instant now
+    ) {
+        Continuation failedContinuation = failedContinuation(current, failure);
+        CilProcess failed = current.commitStatement(failedContinuation, CilProcess.Status.FAILED,
+                current.stateVersion(), claim.executionEpoch(), now);
+        ProcessRepository.UpdateResult update = transaction.processes().updateClaimed(
+                failed, current.stateVersion(), claim);
+        if (update != ProcessRepository.UpdateResult.UPDATED) {
+            throw new StaleClaimException("Failure commit was fenced: " + update);
+        }
+        transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
+        transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
+                current.ownerId().toString(), "process.failed", "process",
+                current.identity().processUid().toString(), AuditEvent.Result.FAILED,
+                Map.of("pid", Long.toString(current.identity().pid()),
+                        "message", failureMessage(failure)), now));
+    }
+
+    private Continuation failedContinuation(CilProcess current, RuntimeException failure) {
+        Continuation previous = current.continuation();
+        Map<String, Continuation.PersistedValue> globals =
+                new LinkedHashMap<>(previous.globalVariables());
+        ProcessInbox.keys().forEach(globals::remove);
+        globals.put(FclPersistenceBridge.ENVELOPE_KEY, new Continuation.PersistedValue(
+                FclPersistenceBridge.ENVELOPE_TYPE,
+                continuationCodec.toJson(failedFclContinuation(failure))));
+        UUID rootScopeId = UUID.nameUUIDFromBytes((current.identity().processUid()
+                + ":" + previous.programId() + ":scope:0").getBytes(StandardCharsets.UTF_8));
+        return new Continuation(previous.programId(), previous.programHash(), 0,
+                List.of(), List.of(new Continuation.ScopeFrame(rootScopeId,
+                        Optional.empty(), Map.of())),
+                List.of(), List.of(), Optional.empty(), Map.copyOf(globals),
+                previous.packageBindings(), previous.languageVersion(),
+                previous.runtimeFormatVersion());
+    }
+
+    private FclContinuation failedFclContinuation(RuntimeException failure) {
+        String message = failureMessage(failure);
+        Map<String, Object> exception = new LinkedHashMap<>();
+        exception.put("instructionPointer", 0);
+        exception.put("sourceLine", -1);
+        exception.put("type", failure.getClass().getSimpleName());
+        exception.put("message", message);
+        exception.put("callDepth", 0);
+        Map<String, Object> wait = new LinkedHashMap<>();
+        wait.put("kind", FclContinuation.WaitKind.NONE.name());
+        wait.put("key", null);
+        wait.put("payload", Map.of("type", "map", "value", List.of()));
+        Map<String, Object> encoded = new LinkedHashMap<>();
+        encoded.put("formatVersion", FclContinuation.FORMAT_VERSION);
+        encoded.put("programCounter", 0);
+        encoded.put("scope", Map.of("type", "map", "value", List.of()));
+        encoded.put("callStack", List.of());
+        encoded.put("exceptionStack", List.of(exception));
+        encoded.put("loopState", List.of());
+        encoded.put("branchState", List.of());
+        encoded.put("waitState", wait);
+        encoded.put("pendingStatement", null);
+        encoded.put("halted", true);
+        encoded.put("failed", true);
+        encoded.put("result", Map.of("type", "string", "value", message));
+        return continuationCodec.decode(encoded);
+    }
+
+    private static String failureMessage(RuntimeException failure) {
+        return failure.getMessage() == null
+                ? failure.getClass().getSimpleName() : failure.getMessage();
+    }
+
     private static void deliverPendingTerminalInput(
             com.follarce.domain.port.TransactionContext transaction,
             CilProcess process,
@@ -597,7 +704,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         continuation.clearWait();
     }
 
-    private static Optional<PackageRelease> bindingRelease(
+    static Optional<PackageRelease> bindingRelease(
             com.follarce.domain.port.TransactionContext transaction,
             UUID environmentId,
             String target
@@ -607,14 +714,14 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 .flatMap(binding -> transaction.packages().findRelease(binding.packageHash()));
     }
 
-    private static Optional<PackageRelease> directRelease(
+    static Optional<PackageRelease> directRelease(
             com.follarce.domain.port.TransactionContext transaction, String target) {
         if (!isSha256(target)) return Optional.empty();
         return transaction.packages().findReleaseByDatabaseFileHash(new ObjectHash(
                 target.toLowerCase(java.util.Locale.ROOT)));
     }
 
-    private static boolean isSha256(String target) {
+    static boolean isSha256(String target) {
         return target != null && target.matches("(?i)[0-9a-f]{64}");
     }
 
@@ -635,7 +742,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 continuation.languageVersion(), continuation.runtimeFormatVersion());
     }
 
-    private static String normalizeImport(String target) {
+    static String normalizeImport(String target) {
         String normalized = target != null && target.endsWith(".*")
                 ? target.substring(0, target.length() - 2) : target;
         return isSha256(normalized)
@@ -687,15 +794,17 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         if (continuation.halted()) {
             return terminalProcess ? CilProcess.Status.PAUSED : CilProcess.Status.TERMINATED;
         }
+        // FclStepResult.Status.FAILED cannot reach this switch: the runtime only reports a
+        // failed step after marking the continuation failed, and that branch returned above.
         return switch (step.status()) {
-            case FAILED -> terminalProcess ? CilProcess.Status.PAUSED
-                    : CilProcess.Status.FAILED;
             case COMPLETED -> terminalProcess ? CilProcess.Status.PAUSED
                     : CilProcess.Status.TERMINATED;
             case WAITING, DIRECTIVE -> continuation.waitState().kind()
                     == FclContinuation.WaitKind.NONE
                     ? CilProcess.Status.READY : waitingStatus(continuation.waitState());
             case ADVANCED, CALL_ENTERED, RETURNED -> CilProcess.Status.READY;
+            default -> throw new IllegalStateException(
+                    "Runtime reported FAILED without a failed continuation");
         };
     }
 

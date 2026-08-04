@@ -25,6 +25,9 @@ public final class JavaExtensionCatalog {
     private static final Pattern NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final Pattern EFFECT_TYPE = Pattern.compile(
             "[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_-]*)+");
+    // Compile-time guard; keep in sync with the namespaces actually registered by
+    // FclRuntimeFunctions.register() (and FclBuiltins.pureRegistry()), because
+    // installFunctions additionally rejects any namespace already live in the registry.
     private static final Set<String> RESERVED_NAMESPACES = Set.of(
             "math", "util", "text", "path", "term", "file", "io", "process", "user",
             "swapPool", "network", "socket", "package", "system");
@@ -90,13 +93,29 @@ public final class JavaExtensionCatalog {
         Objects.requireNonNull(process, "process");
         Objects.requireNonNull(continuation, "continuation");
         Objects.requireNonNull(now, "now");
+        // Snapshot the pre-existing (built-in) registrations once so sibling extensions in this
+        // catalog may still share namespaces and bare spellings already proven non-conflicting.
+        Set<String> existingQualified = registry.qualifiedNames();
         for (RegisteredFunction definition : functions) {
+            if (existingQualified.stream().anyMatch(
+                    qualified -> namespaceOf(qualified).equals(definition.namespace()))) {
+                throw new IllegalStateException("Java extension namespace conflicts with an "
+                        + "existing FCL namespace: " + definition.namespace());
+            }
             for (String qualified : definition.qualifiedSpellings()) {
-                if (registry.hasQualified(qualified)) {
+                if (existingQualified.contains(qualified)) {
                     throw new IllegalStateException("Java extension function conflicts with an "
                             + "existing FCL function: " + qualified);
                 }
+                String bare = bareName(qualified);
+                if (existingQualified.stream().anyMatch(
+                        existing -> bareName(existing).equals(bare))) {
+                    throw new IllegalStateException("Java extension function conflicts with an "
+                            + "existing FCL bare name: " + bare + " (from " + qualified + ")");
+                }
             }
+        }
+        for (RegisteredFunction definition : functions) {
             registry.registerContextual(definition.namespace(), definition.name(),
                     (arguments, invocation) -> definition.function().invoke(
                             new ExtensionFunctionInvocation(definition.extension().id(),
@@ -104,6 +123,14 @@ public final class JavaExtensionCatalog {
                                     transaction, process, now)),
                     definition.aliases().toArray(String[]::new));
         }
+    }
+
+    private static String namespaceOf(String qualified) {
+        return qualified.substring(0, qualified.indexOf('.'));
+    }
+
+    private static String bareName(String qualified) {
+        return qualified.substring(qualified.indexOf('.') + 1);
     }
 
     private record RegisteredFunction(ExtensionDescriptor extension, String namespace,
@@ -131,6 +158,7 @@ public final class JavaExtensionCatalog {
         private final List<EffectHandler> effects = new ArrayList<>();
         private final Set<String> extensionIds = new LinkedHashSet<>();
         private final Set<String> qualifiedFunctions = new LinkedHashSet<>();
+        private final Set<String> bareFunctions = new LinkedHashSet<>();
         private final Set<String> effectTypes = new LinkedHashSet<>();
         private final Set<String> namespaces = new LinkedHashSet<>();
         private ExtensionDescriptor current;
@@ -173,6 +201,10 @@ public final class JavaExtensionCatalog {
                 if (!qualifiedFunctions.add(qualified)) {
                     throw new IllegalArgumentException("Duplicate Java extension function: "
                             + qualified);
+                }
+                if (!bareFunctions.add(qualified.substring(qualified.indexOf('.') + 1))) {
+                    throw new IllegalArgumentException("Duplicate Java extension bare name: "
+                            + qualified.substring(qualified.indexOf('.') + 1));
                 }
             }
             namespaces.add(namespace);

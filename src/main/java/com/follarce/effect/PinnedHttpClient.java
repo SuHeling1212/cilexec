@@ -24,10 +24,16 @@ import java.util.Optional;
 final class PinnedHttpClient {
     private static final int CONNECT_TIMEOUT_MILLIS = 15_000;
     private static final int REQUEST_TIMEOUT_MILLIS = 30_000;
+    /** Total cap on one effect HTTP exchange; per-read timeouts alone allow slowloris trickles. */
+    private static final long TOTAL_EXCHANGE_DEADLINE_NANOS =
+            java.util.concurrent.TimeUnit.SECONDS.toNanos(120);
 
     static {
-        // The request URL contains the pinned IP. This URLConnection switch permits the
-        // original authority to remain in Host, including for name-based virtual hosting.
+        // This switch is required for DNS pinning: the request URL carries the validated IP
+        // while the original authority must still reach the server as the Host header (and
+        // name-based virtual hosts). The property is JVM-global, so every URLConnection on
+        // this JVM may set "restricted" headers (Host, Connection, etc.); that is the accepted
+        // price of pinning without a custom protocol handler.
         System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
     }
 
@@ -35,6 +41,7 @@ final class PinnedHttpClient {
 
     static Response send(URI uri, String method, Optional<String> body,
                          Map<String, String> headers) throws IOException {
+        long startedAtNanos = System.nanoTime();
         NetworkTargetPolicy.ResolvedHttpTarget target =
                 NetworkTargetPolicy.resolveHttpTarget(uri);
         HttpURLConnection connection = (HttpURLConnection) target.pinnedUri().toURL()
@@ -64,7 +71,9 @@ final class PinnedHttpClient {
             connection.disconnect();
             throw new IllegalArgumentException("Unsupported pinned HTTP method: " + method);
         }
+        enforceDeadline(startedAtNanos);
         int status = connection.getResponseCode();
+        enforceDeadline(startedAtNanos);
         Map<String, List<String>> responseHeaders = new LinkedHashMap<>();
         connection.getHeaderFields().forEach((name, values) -> {
             if (name != null && values != null) {
@@ -83,7 +92,8 @@ final class PinnedHttpClient {
         }
         if (stream == null) stream = new ByteArrayInputStream(new byte[0]);
         return new Response(status, Map.copyOf(responseHeaders),
-                new DisconnectingInputStream(stream, connection));
+                new DeadlineInputStream(new DisconnectingInputStream(stream, connection),
+                        startedAtNanos));
     }
 
     record Response(int statusCode, Map<String, List<String>> headers, InputStream body) {
@@ -109,6 +119,41 @@ final class PinnedHttpClient {
                 super.close();
             } finally {
                 connection.disconnect();
+            }
+        }
+    }
+
+    /** Fails fast once the overall exchange deadline has passed, before/after header reads. */
+    private static void enforceDeadline(long startedAtNanos) throws IOException {
+        if (System.nanoTime() - startedAtNanos > TOTAL_EXCHANGE_DEADLINE_NANOS) {
+            throw new IOException("HTTP exchange exceeded the 120-second total deadline");
+        }
+    }
+
+    /** Bounds the whole body read to the overall exchange deadline, not just one read. */
+    private static final class DeadlineInputStream extends FilterInputStream {
+        private final long startedAtNanos;
+
+        private DeadlineInputStream(InputStream input, long startedAtNanos) {
+            super(input);
+            this.startedAtNanos = startedAtNanos;
+        }
+
+        @Override
+        public int read() throws IOException {
+            checkDeadline();
+            return super.read();
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            checkDeadline();
+            return super.read(bytes, offset, length);
+        }
+
+        private void checkDeadline() throws IOException {
+            if (System.nanoTime() - startedAtNanos > TOTAL_EXCHANGE_DEADLINE_NANOS) {
+                throw new IOException("HTTP response exceeded the 120-second total deadline");
             }
         }
     }

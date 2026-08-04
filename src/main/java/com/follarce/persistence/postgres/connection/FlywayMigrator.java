@@ -14,9 +14,14 @@ public final class FlywayMigrator {
     }
 
     public MigrateResult migrate() {
-        return flyway().migrate();
+        MigrateResult result = flyway().migrate();
+        if (!result.success) {
+            throw new IllegalStateException("Flyway migration did not complete successfully");
+        }
+        return result;
     }
 
+    /** validateOnMigrate is enabled, so migrate() already validates; kept for existing callers. */
     public void validate() {
         flyway().validate();
     }

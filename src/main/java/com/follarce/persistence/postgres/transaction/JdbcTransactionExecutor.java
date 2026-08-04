@@ -16,9 +16,15 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
 import javax.sql.DataSource;
 
-/** Explicit outer transaction with bounded retry only for replay-safe database conflicts. */
+/**
+ * Explicit outer transaction with bounded retry only for replay-safe database conflicts.
+ * Work lambdas must be replay-safe: a serialization conflict or deadlock replays the entire
+ * work lambda, so work must not perform side effects outside the database.
+ */
 public final class JdbcTransactionExecutor implements TransactionExecutor, UserTransactionExecutor {
     private static final int MAX_CONFLICT_ATTEMPTS = 3;
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(JdbcTransactionExecutor.class);
     private final DataSource dataSource;
     private final JsonCodec json = new JsonCodec();
 
@@ -41,10 +47,20 @@ public final class JdbcTransactionExecutor implements TransactionExecutor, UserT
 
     private <T> T execute(Isolation isolation, UUID userId, TransactionWork<T> work) {
         for (int attempt = 1; attempt <= MAX_CONFLICT_ATTEMPTS; attempt++) {
-            try (Connection connection = dataSource.getConnection()) {
-                prepare(connection, isolation);
-                if (userId != null) {
-                    applyUserIdentity(connection, userId);
+            Connection connection;
+            try {
+                connection = dataSource.getConnection();
+            } catch (SQLException exception) {
+                throw SqlStateClassifier.classify("transaction.acquire", exception);
+            }
+            try (Connection ignored = connection) {
+                try {
+                    prepare(connection, isolation);
+                    if (userId != null) {
+                        applyUserIdentity(connection, userId);
+                    }
+                } catch (SQLException exception) {
+                    throw SqlStateClassifier.classify("transaction.begin", exception);
                 }
                 try (JdbcTransactionContext transaction = new JdbcTransactionContext(connection, json)) {
                     T result = work.execute(transaction);
@@ -58,16 +74,22 @@ public final class JdbcTransactionExecutor implements TransactionExecutor, UserT
                     throw failure;
                 }
             } catch (PersistenceFailure failure) {
-                if (!isConflict(failure) || attempt == MAX_CONFLICT_ATTEMPTS) {
-                    throw failure;
+                if (isConflict(failure) && attempt < MAX_CONFLICT_ATTEMPTS) {
+                    LOG.warn("Replaying transaction work after {} (attempt {}/{})",
+                            failure.kind(), attempt, MAX_CONFLICT_ATTEMPTS);
+                    jitter(attempt);
+                    continue;
                 }
-                jitter(attempt);
+                throw failure;
             } catch (SQLException exception) {
-                PersistenceFailure failure = SqlStateClassifier.classify("transaction.begin", exception);
-                if (!isConflict(failure) || attempt == MAX_CONFLICT_ATTEMPTS) {
-                    throw failure;
+                PersistenceFailure failure = SqlStateClassifier.classify("transaction.work", exception);
+                if (isConflict(failure) && attempt < MAX_CONFLICT_ATTEMPTS) {
+                    LOG.warn("Replaying transaction work after {} (attempt {}/{})",
+                            failure.kind(), attempt, MAX_CONFLICT_ATTEMPTS);
+                    jitter(attempt);
+                    continue;
                 }
-                jitter(attempt);
+                throw failure;
             }
         }
         throw new AssertionError("bounded transaction loop did not terminate");

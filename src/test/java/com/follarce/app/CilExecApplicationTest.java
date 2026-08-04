@@ -164,7 +164,7 @@ class CilExecApplicationTest {
     }
 
     private static CilExecConfig config() {
-        DatabaseConfig runtime = database("runtime", "/secrets/runtime", 4);
+        DatabaseConfig runtime = database("runtime", "/secrets/runtime", 6);
         DatabaseConfig effects = database("effect", "/secrets/effect", 1);
         DatabaseConfig migrator = database("migrator", "/secrets/migrator", 1);
         return new CilExecConfig("primary", 42L, runtime, effects, migrator,

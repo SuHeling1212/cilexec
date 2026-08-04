@@ -35,13 +35,20 @@ public final class SchedulerService implements AutoCloseable {
     public SchedulerService(TransactionExecutor transactions, ClaimedProcessHandler handler,
                             UUID bootId, int workerCount, Duration leaseDuration,
                             Duration errorBackoff, Consumer<Throwable> fatalFailure) {
-        this.transactions = transactions;
-        this.handler = handler;
-        this.bootId = bootId;
+        this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
+        this.handler = java.util.Objects.requireNonNull(handler, "handler");
+        this.bootId = java.util.Objects.requireNonNull(bootId, "bootId");
+        if (workerCount < 1) throw new IllegalArgumentException("workerCount must be positive");
         this.workerCount = workerCount;
-        this.leaseDuration = leaseDuration;
-        this.errorBackoff = errorBackoff;
-        this.fatalFailure = fatalFailure;
+        this.leaseDuration = java.util.Objects.requireNonNull(leaseDuration, "leaseDuration");
+        if (leaseDuration.isZero() || leaseDuration.isNegative()) {
+            throw new IllegalArgumentException("leaseDuration must be positive");
+        }
+        this.errorBackoff = java.util.Objects.requireNonNull(errorBackoff, "errorBackoff");
+        if (errorBackoff.isZero() || errorBackoff.isNegative()) {
+            throw new IllegalArgumentException("errorBackoff must be positive");
+        }
+        this.fatalFailure = java.util.Objects.requireNonNull(fatalFailure, "fatalFailure");
     }
 
     public synchronized void start() {
@@ -144,7 +151,8 @@ public final class SchedulerService implements AutoCloseable {
     }
 
     private static boolean isFatal(Throwable failure) {
-        return failure instanceof com.follarce.persistence.postgres.error.PersistenceFailure persistence
+        return failure instanceof Error
+                || failure instanceof com.follarce.persistence.postgres.error.PersistenceFailure persistence
                 && (persistence.kind() == com.follarce.persistence.postgres.error.PersistenceFailure.Kind.DATABASE_UNAVAILABLE
                 || persistence.kind() == com.follarce.persistence.postgres.error.PersistenceFailure.Kind.RUNTIME_FENCED);
     }
@@ -155,9 +163,11 @@ public final class SchedulerService implements AutoCloseable {
         workAvailable.release(workerCount);
         interruptAvailable.release();
         // Give workers a brief window to finish their current transaction cleanly.
+        long gracefulWindowMillis = Math.min(Math.min(errorBackoff.toMillis(), 5_000) * 2,
+                10_000);
         for (Thread worker : workers) {
             try {
-                worker.join(errorBackoff.toMillis() * 2);
+                worker.join(gracefulWindowMillis);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 return;

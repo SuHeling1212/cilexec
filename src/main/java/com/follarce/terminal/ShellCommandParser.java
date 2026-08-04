@@ -13,7 +13,7 @@ public final class ShellCommandParser {
         }
         return switch (words.getFirst().toLowerCase(Locale.ROOT)) {
             case "help" -> exact(words, 1, new ShellCommand.Help());
-            case "cd" -> exact(words, 2, new ShellCommand.ChangeDirectory(words.get(1)));
+            case "cd" -> changeDirectory(words);
             case "pwd" -> exact(words, 1, new ShellCommand.WorkingDirectory());
             case "ls" -> listDirectory(words);
             case "clear", "cls" -> exact(words, 1, new ShellCommand.Clear());
@@ -54,6 +54,13 @@ public final class ShellCommandParser {
             result.add(current.toString());
         }
         return List.copyOf(result);
+    }
+
+    private static ShellCommand.ChangeDirectory changeDirectory(List<String> words) {
+        if (words.size() != 2) {
+            throw new IllegalArgumentException("Unexpected command arguments");
+        }
+        return new ShellCommand.ChangeDirectory(words.get(1));
     }
 
     private static ShellCommand listDirectory(List<String> words) {

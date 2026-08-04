@@ -132,7 +132,7 @@ public record PackageManifest(
 
     private static String component(String value, String name) {
         value = text(value, name);
-        if (!value.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")) {
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) {
             throw new IllegalArgumentException("Unsupported " + name + ": " + value);
         }
         return value;

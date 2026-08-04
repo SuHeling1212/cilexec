@@ -30,6 +30,39 @@ public final class BuiltinEffectHandlers {
 
     private BuiltinEffectHandlers() {}
 
+    /** Exact long conversion: doubles lose precision above 2^53, so never compare via double. */
+    static long exactLong(Object value, String field) {
+        if (!(value instanceof Number number)) {
+            throw new IllegalArgumentException(field + " must be an integer");
+        }
+        if (number instanceof Long || number instanceof Integer || number instanceof Short
+                || number instanceof Byte) {
+            return number.longValue();
+        }
+        if (number instanceof java.math.BigInteger bigInteger) {
+            try {
+                return bigInteger.longValueExact();
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException(field + " must be an integer in long range");
+            }
+        }
+        if (number instanceof java.math.BigDecimal decimal) {
+            try {
+                return decimal.longValueExact();
+            } catch (ArithmeticException invalid) {
+                throw new IllegalArgumentException(field + " must be an integer in long range");
+            }
+        }
+        double asDouble = number.doubleValue();
+        // (double) Long.MAX_VALUE rounds up to 2^63, so "> Long.MAX_VALUE" would let 2^63
+        // through and saturate it to Long.MAX_VALUE; 2^63 is not representable as a long.
+        if (!Double.isFinite(asDouble) || asDouble != Math.rint(asDouble)
+                || asDouble < -0x1p63 || asDouble >= 0x1p63) {
+            throw new IllegalArgumentException(field + " must be an integer in long range");
+        }
+        return (long) asDouble;
+    }
+
     public static List<EffectHandler> defaults() {
         return defaults(commandAllowlist());
     }
@@ -95,9 +128,22 @@ public final class BuiltinEffectHandlers {
             String text = text(map, "text");
             boolean newline = Boolean.TRUE.equals(map.get("newline"));
             Object route = map.get("routeId");
-            boolean delivered = route instanceof String routeText
-                    && TerminalOutputRouter.publish(java.util.UUID.fromString(routeText), text,
-                    newline);
+            if (route != null) {
+                if (!(route instanceof String routeText)) {
+                    throw new IllegalArgumentException("Effect field must be a string: routeId");
+                }
+                java.util.UUID routeId;
+                try {
+                    routeId = java.util.UUID.fromString(routeText);
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException("Effect field must be a UUID string: routeId",
+                            invalid);
+                }
+                if (!TerminalOutputRouter.publish(routeId, text, newline)) {
+                    throw new IllegalStateException("Output route has no attached terminal: "
+                            + routeId);
+                }
+            }
             // Detached process output remains in the durable effect result; never leak user
             // content into a different session or the container log.
             return null;
@@ -124,8 +170,12 @@ public final class BuiltinEffectHandlers {
             URI uri = URI.create(text(map, "url"));
             Optional<String> body = method.equals("POST")
                     ? Optional.of(text(map, "body")) : Optional.empty();
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("User-Agent", "CilExec-FCL/1");
+            idempotencyKey.filter(key -> !key.isBlank())
+                    .ifPresent(key -> headers.put("Idempotency-Key", key));
             PinnedHttpClient.Response response = PinnedHttpClient.send(uri, method, body,
-                    Map.of("User-Agent", "CilExec-FCL/1"));
+                    headers);
             requireNoRedirect(response.statusCode());
             byte[] responseBody;
             try (InputStream input = response.body()) {
@@ -164,6 +214,8 @@ public final class BuiltinEffectHandlers {
             }
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("User-Agent", "CilExec-FCL/1");
+            idempotencyKey.filter(key -> !key.isBlank())
+                    .ifPresent(key -> headers.put("Idempotency-Key", key));
             headers.put("Range", "bytes=" + offset + "-"
                     + Math.addExact(offset, maximum - 1L));
             Object validator = map.get("validator");
@@ -277,19 +329,19 @@ public final class BuiltinEffectHandlers {
         }
 
         private static int positiveInt(Object value, String field) {
-            if (!(value instanceof Number number) || number.doubleValue() != number.intValue()
-                    || number.intValue() < 1) {
+            long exact = exactLong(value, field);
+            if (exact < 1 || exact > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException(field + " must be a positive integer");
             }
-            return number.intValue();
+            return (int) exact;
         }
 
         private static long nonNegativeLong(Object value, String field) {
-            if (!(value instanceof Number number) || number.doubleValue() != number.longValue()
-                    || number.longValue() < 0) {
+            long exact = exactLong(value, field);
+            if (exact < 0) {
                 throw new IllegalArgumentException(field + " must be a non-negative integer");
             }
-            return number.longValue();
+            return exact;
         }
 
         private record Range(long offset, long totalBytes, boolean complete) { }
@@ -389,6 +441,9 @@ public final class BuiltinEffectHandlers {
             if (value instanceof String text) {
                 String trimmed = text.trim();
                 if (trimmed.isEmpty()) throw new IllegalArgumentException("Command is empty");
+                if (trimmed.indexOf('\0') >= 0) {
+                    throw new IllegalArgumentException("Command string must not contain NUL");
+                }
                 // No shell is involved: string form deliberately supports only whitespace tokens.
                 return List.of(trimmed.split("\\s+"));
             }
@@ -561,11 +616,11 @@ public final class BuiltinEffectHandlers {
         }
 
         private static int positiveInt(Object value, String field) {
-            if (!(value instanceof Number number) || number.doubleValue() != number.intValue()
-                    || number.intValue() < 1) {
+            long exact = exactLong(value, field);
+            if (exact < 1 || exact > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException(field + " must be a positive integer");
             }
-            return number.intValue();
+            return (int) exact;
         }
 
         private static void requireBoundedPayload(int maximum) {

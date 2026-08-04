@@ -30,6 +30,20 @@ public interface EffectRepository {
         return List.of();
     }
 
+    /**
+     * Reclaims EXECUTING work whose runner stopped heartbeating inside the current boot;
+     * no-op by default.
+     */
+    default List<EffectRequest> claimStalled(UUID workerId, Instant now,
+                                             long stallTimeoutMillis, int limit) {
+        return List.of();
+    }
+
+    /** Refreshes a worker runner's heartbeat so long-running effects are not reclaimed. */
+    default boolean heartbeatWorker(UUID workerId, Instant now) {
+        return true;
+    }
+
     /** Returns the next number while holding the parent effect row lock. */
     int nextAttemptNumber(UUID effectId);
 

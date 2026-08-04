@@ -8,7 +8,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
-/** Polls durable due timers; the thread is disposable and never owns timer truth. */
+/**
+ * Polls durable due timers; the thread is disposable and never owns timer truth.
+ * Retained as the reference worker shape, but production wiring drives timers through
+ * {@code com.follarce.app.TimerLoop} instead; this class is not constructed at runtime.
+ */
 public final class TimerWorkerService implements AutoCloseable {
     private final TimerService timers;
     private final int batchSize;

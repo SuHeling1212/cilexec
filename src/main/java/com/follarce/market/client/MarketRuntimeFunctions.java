@@ -153,26 +153,58 @@ public final class MarketRuntimeFunctions {
             update(List.of(), invocation);
             invocation.continuation().scope().put(stateKey, true);
         }
-        MarketIndex index = loadIndex();
-        List<Map<String, Object>> outcomes = new ArrayList<>();
-        for (Receipt receipt : List.copyOf(receipts())) {
-            PackageRecord latest = latest(index, receipt.namespace(), receipt.name());
-            if (latest == null || latest.sha256().equals(receipt.sha256())) continue;
-            prepareInstall(index, latest.sha256(), new LinkedHashSet<>(), invocation);
-            host.removeBinding(receipt.environmentId(), receipt.binding());
-            try {
-                Map<String, Object> outcome = installExact(index, latest.sha256(),
-                        new LinkedHashSet<>(), invocation);
-                outcomes.add(outcome);
-            } catch (FclSuspension suspension) {
-                throw suspension;
-            } catch (RuntimeException failure) {
-                host.pin(receipt.environmentId(), receipt.binding(), receipt.packageHash());
-                throw failure;
+        try {
+            MarketIndex index = loadIndex();
+            List<Map<String, Object>> outcomes = new ArrayList<>();
+            for (Receipt receipt : List.copyOf(receipts())) {
+                PackageRecord latest = latest(index, receipt.namespace(), receipt.name());
+                if (latest == null || latest.sha256().equals(receipt.sha256())) continue;
+                prepareInstall(index, latest.sha256(), new LinkedHashSet<>(), invocation);
+                host.removeBinding(receipt.environmentId(), receipt.binding());
+                try {
+                    Map<String, Object> outcome = installExact(index, latest.sha256(),
+                            new LinkedHashSet<>(), invocation);
+                    rebind(receipt, outcome);
+                    outcomes.add(outcome);
+                } catch (FclSuspension suspension) {
+                    throw suspension;
+                } catch (RuntimeException failure) {
+                    rollbackBinding(receipt, failure);
+                    throw failure;
+                }
             }
+            invocation.continuation().scope().remove(stateKey);
+            return Map.of("ok", true, "upgraded", List.copyOf(outcomes));
+        } catch (FclSuspension suspension) {
+            throw suspension;
+        } catch (RuntimeException failure) {
+            invocation.continuation().scope().remove(stateKey);
+            throw failure;
         }
-        invocation.continuation().scope().remove(stateKey);
-        return Map.of("ok", true, "upgraded", List.copyOf(outcomes));
+    }
+
+    /** Restores the binding that was removed before an upgrade onto the installed release. */
+    private void rebind(Receipt receipt, Map<String, Object> outcome) {
+        String hash = null;
+        if (outcome.get("installed") instanceof Map<?, ?> installed
+                && installed.get("hash") instanceof String value) {
+            hash = value;
+        } else if (outcome.get("receipt") instanceof Map<?, ?> installedReceipt
+                && installedReceipt.get("packageHash") instanceof String value) {
+            hash = value;
+        }
+        if (hash != null) {
+            host.pin(receipt.environmentId(), receipt.binding(), hash);
+        }
+    }
+
+    /** Re-pins the previous release, preserving the original failure when the rollback conflicts. */
+    private void rollbackBinding(Receipt receipt, RuntimeException failure) {
+        try {
+            host.pin(receipt.environmentId(), receipt.binding(), receipt.packageHash());
+        } catch (RuntimeException rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+        }
     }
 
     /** Downloads the new release and installs its dependencies before replacing an old binding. */
@@ -212,6 +244,7 @@ public final class MarketRuntimeFunctions {
         Receipt existing = receipts().stream()
                 .filter(receipt -> receipt.sha256().equals(packageId)).findFirst().orElse(null);
         if (existing != null) {
+            host.pin(existing.environmentId(), existing.binding(), existing.packageHash());
             return Map.of("ok", true, "alreadyInstalled", true,
                     "receipt", existing.asMap());
         }
@@ -431,6 +464,10 @@ public final class MarketRuntimeFunctions {
                     || (uri.getRawPath() != null && !uri.getRawPath().isEmpty())) {
                 throw new FclRuntimeException("Market origin must be an http:// or https:// origin");
             }
+            int port = uri.getPort();
+            if (port != -1 && (port < 1 || port > 65535)) {
+                throw new FclRuntimeException("Market origin port must be between 1 and 65535");
+            }
             return uri.toASCIIString();
         } catch (URISyntaxException invalid) {
             throw new FclRuntimeException("Market origin is invalid", invalid);
@@ -539,8 +576,42 @@ public final class MarketRuntimeFunctions {
     }
 
     private static long integer(Object value, String field) {
-        if (!(value instanceof Number number) || !Double.isFinite(number.doubleValue())
-                || number.doubleValue() != number.longValue()) {
+        if (!(value instanceof Number number)) {
+            throw new FclRuntimeException(field + " must be an integer");
+        }
+        if (number instanceof Long || number instanceof Integer || number instanceof Short
+                || number instanceof Byte) {
+            return number.longValue();
+        }
+        if (number instanceof java.math.BigInteger bigInteger) {
+            try {
+                return bigInteger.longValueExact();
+            } catch (ArithmeticException outOfRange) {
+                throw new FclRuntimeException(field + " must be an integer");
+            }
+        }
+        if (number instanceof java.math.BigDecimal decimal) {
+            try {
+                return decimal.toBigIntegerExact().longValueExact();
+            } catch (ArithmeticException notIntegral) {
+                throw new FclRuntimeException(field + " must be an integer");
+            }
+        }
+        if (number instanceof Double || number instanceof Float) {
+            double decimal = number.doubleValue();
+            if (!Double.isFinite(decimal) || decimal != Math.rint(decimal)) {
+                throw new FclRuntimeException(field + " must be an integer");
+            }
+            try {
+                return java.math.BigDecimal.valueOf(decimal).toBigIntegerExact()
+                        .longValueExact();
+            } catch (ArithmeticException outOfRange) {
+                throw new FclRuntimeException(field + " must be an integer");
+            }
+        }
+        double decimal = number.doubleValue();
+        if (!Double.isFinite(decimal) || decimal != Math.rint(decimal)
+                || decimal < (double) Long.MIN_VALUE || decimal >= 9.223372036854776E18) {
             throw new FclRuntimeException(field + " must be an integer");
         }
         return number.longValue();

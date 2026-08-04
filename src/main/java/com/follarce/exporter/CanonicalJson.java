@@ -7,7 +7,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
+import java.math.BigDecimal;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -28,7 +30,7 @@ final class CanonicalJson {
                 throw new LogicalExportException("Export rows must be JSON objects");
             }
             return WRITER.toJson(sort(parsed));
-        } catch (JsonParseException | IllegalStateException failure) {
+        } catch (JsonParseException | IllegalStateException | NumberFormatException failure) {
             throw new LogicalExportException("Export row is not valid JSON", failure);
         }
     }
@@ -46,6 +48,11 @@ final class CanonicalJson {
             JsonArray result = new JsonArray();
             value.getAsJsonArray().forEach(element -> result.add(sort(element)));
             return result;
+        }
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isNumber()) {
+            BigDecimal normalized = value.getAsJsonPrimitive().getAsBigDecimal()
+                    .stripTrailingZeros();
+            return new JsonPrimitive(new BigDecimal(normalized.toPlainString()));
         }
         return value.deepCopy();
     }

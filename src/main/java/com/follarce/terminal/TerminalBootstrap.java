@@ -34,10 +34,13 @@ public final class TerminalBootstrap {
                     + account.username());
         }
         transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
-            if (!transaction.auth().capabilities(account.userId())
-                    .contains(Capability.SYSTEM_ADMIN)) {
-                transaction.auth().replaceCapabilities(account.userId(),
-                        Set.of(Capability.SYSTEM_ADMIN));
+            Set<Capability> current = transaction.auth().capabilities(account.userId());
+            if (!current.contains(Capability.SYSTEM_ADMIN)) {
+                // Union with the current grants instead of replacing them, so this
+                // bootstrap never deletes capabilities assigned through other channels.
+                Set<Capability> merged = new java.util.LinkedHashSet<>(current);
+                merged.add(Capability.SYSTEM_ADMIN);
+                transaction.auth().replaceCapabilities(account.userId(), Set.copyOf(merged));
             }
             return null;
         });

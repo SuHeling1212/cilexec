@@ -7,6 +7,7 @@ import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.FlywayMigrator;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.host.HostVfsImportService;
+import com.follarce.persistence.postgres.error.PersistenceFailure;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
@@ -41,7 +42,9 @@ public final class CilExecApplication {
         this(configSource, buildSource, runtime, migration, export,
                 (source, output) -> {
                     throw new AssertionError("package build action was not configured");
-                }, runtime);
+                }, (config, build) -> {
+                    throw new AssertionError("terminal action was not configured");
+                });
     }
 
     CilExecApplication(
@@ -52,7 +55,10 @@ public final class CilExecApplication {
             ExportAction export,
             PackageBuildAction packageBuild
     ) {
-        this(configSource, buildSource, runtime, migration, export, packageBuild, runtime);
+        this(configSource, buildSource, runtime, migration, export, packageBuild,
+                (config, build) -> {
+                    throw new AssertionError("terminal action was not configured");
+                });
     }
 
     CilExecApplication(
@@ -149,6 +155,12 @@ public final class CilExecApplication {
             Thread.currentThread().interrupt();
             lifecycle.shutdown("main thread interrupted");
             return RUNTIME_FAILURE;
+        } catch (PersistenceFailure failure) {
+            if (failure.kind() == PersistenceFailure.Kind.RUNTIME_FENCED) {
+                LOG.warn("Runtime was fenced by another CilExec Runtime", failure);
+                return RUNTIME_FAILURE;
+            }
+            throw failure;
         } finally {
             try {
                 runtime.removeShutdownHook(shutdownHook);

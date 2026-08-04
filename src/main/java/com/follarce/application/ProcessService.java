@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /** Process lifecycle use cases, each completed in one explicit database transaction. */
@@ -50,6 +51,7 @@ public final class ProcessService {
             Authorization.require(transaction, ownerId, Capability.PROCESS_CREATE);
             CilProcess parent = transaction.processes().findByPid(parentPid)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown parent PID " + parentPid));
+            requireForkable(parent, ownerId);
             long pid = transaction.processes().allocatePid();
             CilProcess child = new CilProcess(new ProcessIdentity(UUID.randomUUID(), pid), ownerId,
                     CilProcess.Status.READY, 0, 0, forkContinuation(parent.continuation()),
@@ -65,9 +67,9 @@ public final class ProcessService {
     public CilProcess pause(UUID ownerId, long pid) {
         Instant requestedAt = Instant.now();
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            Authorization.require(transaction, ownerId, Capability.PROCESS_CONTROL_OWN);
             CilProcess current = transaction.processes().findByPid(pid)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown PID " + pid));
+            requireControl(transaction, current, ownerId, "pause");
             Instant now = notBefore(requestedAt, current.updatedAt());
             CilProcess paused = current.transitionTo(CilProcess.Status.PAUSED, now);
             requireUpdated(transaction.processes().update(paused,
@@ -82,9 +84,9 @@ public final class ProcessService {
     public CilProcess resume(UUID ownerId, long pid) {
         Instant requestedAt = Instant.now();
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            Authorization.require(transaction, ownerId, Capability.PROCESS_CONTROL_OWN);
             CilProcess current = transaction.processes().findByPid(pid)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown PID " + pid));
+            requireControl(transaction, current, ownerId, "resume");
             Instant now = notBefore(requestedAt, current.updatedAt());
             CilProcess.Status target = CilProcess.statusFor(current.continuation().waitState());
             CilProcess resumed = current.transitionTo(target, now);
@@ -103,9 +105,9 @@ public final class ProcessService {
     public CilProcess terminate(UUID ownerId, long pid) {
         Instant requestedAt = Instant.now();
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            Authorization.require(transaction, ownerId, Capability.PROCESS_CONTROL_OWN);
             CilProcess current = transaction.processes().findByPid(pid)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown PID " + pid));
+            requireControl(transaction, current, ownerId, "terminate");
             Instant now = notBefore(requestedAt, current.updatedAt());
             Continuation stoppedContinuation = current.continuation()
                     .withoutWait().withoutTransientInbox();
@@ -150,6 +152,28 @@ public final class ProcessService {
     private static void requireUpdated(ProcessRepository.UpdateResult result) {
         if (result != ProcessRepository.UpdateResult.UPDATED) {
             throw new IllegalStateException("Concurrent process update rejected: " + result);
+        }
+    }
+
+    private static void requireForkable(CilProcess process, UUID ownerId) {
+        if (!process.ownerId().equals(ownerId)) {
+            throw new SecurityException("Process " + process.identity().pid()
+                    + " is not owned by the caller");
+        }
+    }
+
+    /** Mirrors FclRuntimeFunctions.targetProcess: same-owner needs PROCESS_CONTROL_OWN,
+     *  cross-owner needs PROCESS_CONTROL_ANY, SYSTEM_ADMIN always allowed. */
+    private static void requireControl(com.follarce.domain.port.TransactionContext transaction,
+                                       CilProcess process, UUID ownerId, String operation) {
+        boolean owned = process.ownerId().equals(ownerId);
+        Set<Capability> capabilities = transaction.auth().capabilities(ownerId);
+        boolean allowed = capabilities.contains(Capability.SYSTEM_ADMIN)
+                || (owned ? capabilities.contains(Capability.PROCESS_CONTROL_OWN)
+                          : capabilities.contains(Capability.PROCESS_CONTROL_ANY));
+        if (!allowed) {
+            throw new SecurityException("Missing process control capability for " + operation
+                    + " on process " + process.identity().pid());
         }
     }
 

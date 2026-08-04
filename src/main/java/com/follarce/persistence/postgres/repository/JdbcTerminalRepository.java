@@ -146,24 +146,19 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
     public void appendCommandHistory(UUID ownerId, String command,
                                      java.time.Instant submittedAt, int limit) {
         if (limit <= 0) throw new IllegalArgumentException("History limit must be positive");
-        String latest = "SELECT command_text FROM terminal.command_history "
-                + "WHERE owner_id=? ORDER BY history_id DESC LIMIT 1";
-        try (PreparedStatement statement = connection.prepareStatement(latest)) {
-            statement.setObject(1, ownerId);
-            try (ResultSet rows = statement.executeQuery()) {
-                if (rows.next() && command.equals(rows.getString(1))) return;
-            }
-        } catch (SQLException exception) {
-            throw failure("terminal.findLatestCommand", exception);
-        }
-
-        try (PreparedStatement statement = connection.prepareStatement(
-                "INSERT INTO terminal.command_history(owner_id,command_text,submitted_at) "
-                        + "VALUES (?,?,?)")) {
+        String insert = "INSERT INTO terminal.command_history(owner_id,command_text,submitted_at) "
+                + "SELECT ?,?,? WHERE NOT EXISTS (SELECT 1 FROM terminal.command_history current "
+                + "WHERE current.owner_id=? AND current.history_id=(SELECT max(latest.history_id) "
+                + "FROM terminal.command_history latest WHERE latest.owner_id=?) "
+                + "AND current.command_text=?)";
+        try (PreparedStatement statement = connection.prepareStatement(insert)) {
             statement.setObject(1, ownerId);
             statement.setString(2, command);
             statement.setTimestamp(3, java.sql.Timestamp.from(submittedAt));
-            requireOne("terminal.appendCommandHistory", statement.executeUpdate());
+            statement.setObject(4, ownerId);
+            statement.setObject(5, ownerId);
+            statement.setString(6, command);
+            if (statement.executeUpdate() == 0) return;
         } catch (SQLException exception) {
             throw failure("terminal.appendCommandHistory", exception);
         }
@@ -203,6 +198,7 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
     @Override
     public void saveAttachment(TerminalSession.Attachment attachment) {
         if (attachment.detachedAt().isEmpty()) {
+            lockSession(attachment.sessionId());
             detachPreviousAttachment(attachment);
         }
         String sql = "INSERT INTO terminal.attachment(attachment_id,session_id,process_uid,owner_id,status,"
@@ -221,6 +217,18 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
             requireOne("terminal.saveAttachment", statement.executeUpdate());
         } catch (SQLException exception) {
             throw failure("terminal.saveAttachment", exception);
+        }
+    }
+
+    private void lockSession(UUID sessionId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM terminal.session WHERE session_id=? FOR UPDATE")) {
+            statement.setObject(1, sessionId);
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+            }
+        } catch (SQLException exception) {
+            throw failure("terminal.lockSession", exception);
         }
     }
 

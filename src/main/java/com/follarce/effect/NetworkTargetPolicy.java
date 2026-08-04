@@ -45,8 +45,7 @@ final class NetworkTargetPolicy {
         if (suppliedHost == null || suppliedHost.isBlank() || suppliedHost.indexOf('\0') >= 0) {
             throw new IllegalArgumentException("Network host is missing or invalid");
         }
-        String host = IDN.toASCII(suppliedHost, IDN.USE_STD3_ASCII_RULES)
-                .toLowerCase(Locale.ROOT);
+        String host = asciiHost(suppliedHost);
         boolean explicitlyAllowed = explicitlyAllowedOrigin
                 || EXPLICIT_PRIVATE_HOSTS.contains(host);
         if (!explicitlyAllowed && (host.equals("localhost") || host.endsWith(".localhost")
@@ -66,11 +65,23 @@ final class NetworkTargetPolicy {
 
     private static String normalizedHttpOrigin(URI uri) {
         String scheme = uri.getScheme().toLowerCase(Locale.ROOT);
-        String host = IDN.toASCII(uri.getHost(), IDN.USE_STD3_ASCII_RULES)
-                .toLowerCase(Locale.ROOT);
+        String host = asciiHost(uri.getHost());
         int port = uri.getPort();
         int effectivePort = port >= 0 ? port : scheme.equals("https") ? 443 : 80;
         return scheme + "://" + host + ":" + effectivePort;
+    }
+
+    /** IDN-encodes a DNS name; IPv6 literals (bare or bracketed) skip IDN entirely. */
+    private static String asciiHost(String supplied) {
+        String candidate = supplied.trim();
+        if (candidate.indexOf(':') >= 0) {
+            if (candidate.startsWith("[") && candidate.endsWith("]")) {
+                candidate = candidate.substring(1, candidate.length() - 1);
+            }
+            return candidate.toLowerCase(Locale.ROOT);
+        }
+        return IDN.toASCII(candidate, IDN.USE_STD3_ASCII_RULES)
+                .toLowerCase(Locale.ROOT);
     }
 
     private static boolean blocked(InetAddress address) {
@@ -101,7 +112,7 @@ final class NetworkTargetPolicy {
             if (prefix(bytes, new byte[]{0x20, 0x02}, 16)) return true; // 6to4
             if (first == 0x20 && (bytes[1] & 0xff) == 0x01
                     && (bytes[2] & 0xff) == 0x0d && (bytes[3] & 0xff) == 0xb8) return true;
-            if (prefix(bytes, new byte[]{0x3f, (byte) 0xff, 0x00}, 20)) return true;
+            if (prefix(bytes, new byte[]{0x3f, (byte) 0xfe}, 16)) return true; // 6bone deprecated
             // Reject IPv4-mapped addresses when their embedded address is not public.
             byte[] prefix = Arrays.copyOf(bytes, 12);
             boolean mapped = Arrays.equals(prefix,
@@ -143,8 +154,7 @@ final class NetworkTargetPolicy {
         for (String item : configured.split(",")) {
             String value = item.trim();
             if (!value.isEmpty()) {
-                result.add(IDN.toASCII(value, IDN.USE_STD3_ASCII_RULES)
-                        .toLowerCase(Locale.ROOT));
+                result.add(asciiHost(value));
             }
         }
         return Set.copyOf(result);
@@ -196,7 +206,8 @@ final class NetworkTargetPolicy {
 
         String hostHeader() {
             String host = originalUri.getHost();
-            if (host.indexOf(':') >= 0) host = "[" + host + "]";
+            // JDK 22+ already returns IPv6 literals with brackets; never wrap twice.
+            if (host.indexOf(':') >= 0 && !host.startsWith("[")) host = "[" + host + "]";
             int port = originalUri.getPort();
             boolean defaultPort = port < 0
                     || originalUri.getScheme().equalsIgnoreCase("http") && port == 80

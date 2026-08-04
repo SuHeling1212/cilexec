@@ -958,6 +958,277 @@ GRANT EXECUTE ON FUNCTION vfs.admin_delete_as(
     name, text, uuid, uuid, uuid, uuid, timestamptz
 ) TO PUBLIC;
 
+-- Capability-checked cross-user VFS path resolution. The FCL administrator path
+-- resolves another owner's tree segment by segment; RLS hides those nodes from the
+-- verified *_as identity, so each lookup must go through this SECURITY DEFINER view.
+-- name: vfs.admin_find_child_as
+CREATE FUNCTION vfs.admin_find_child_as(
+    p_database_role name,
+    p_claim text,
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_parent_node_id uuid,
+    p_node_name text
+)
+RETURNS SETOF vfs.node
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, auth, vfs
+AS $function$
+BEGIN
+    PERFORM vfs.require_admin_target(
+        p_database_role, p_claim, p_administrator_id, p_target_user_id
+    );
+    RETURN QUERY
+    SELECT candidate.*
+    FROM vfs.node AS candidate
+    WHERE candidate.owner_id = p_target_user_id
+      AND candidate.parent_node_id IS NOT DISTINCT FROM p_parent_node_id
+      AND candidate.node_name = p_node_name;
+END
+$function$;
+
+-- name: vfs.admin_find_child
+CREATE FUNCTION vfs.admin_find_child(
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_parent_node_id uuid,
+    p_node_name text
+)
+RETURNS SETOF vfs.node
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, auth, vfs
+AS $function$
+    SELECT * FROM vfs.admin_find_child_as(
+        current_user::name,
+        NULLIF(current_setting('app.cilexec_user_id', true), ''),
+        p_administrator_id, p_target_user_id, p_parent_node_id, p_node_name
+    )
+$function$;
+
+-- An administrator object read is scoped to the verified target user: the object
+-- must be the current content of one of the target's nodes or a part of that
+-- node's chunked manifest chain. This mirrors read_object_as reachability without
+-- the store-wide administrator bypass.
+-- name: object_store.admin_object_reachable_as
+CREATE FUNCTION object_store.admin_object_reachable_as(
+    p_database_role name,
+    p_claim text,
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_object_hash bytea
+)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, auth, object_store, vfs
+AS $function$
+DECLARE
+    reachable boolean;
+BEGIN
+    PERFORM vfs.require_admin_target(
+        p_database_role, p_claim, p_administrator_id, p_target_user_id
+    );
+    WITH RECURSIVE chain AS (
+        SELECT manifest.manifest_hash, manifest.previous_manifest_hash,
+               manifest.base_object_hash, manifest.tail_object_hash
+        FROM object_store.chunk_manifest AS manifest
+        JOIN vfs.node AS node ON node.current_object_hash = manifest.manifest_hash
+        WHERE node.owner_id = p_target_user_id
+        UNION ALL
+        SELECT parent.manifest_hash, parent.previous_manifest_hash,
+               parent.base_object_hash, parent.tail_object_hash
+        FROM object_store.chunk_manifest AS parent
+        JOIN chain AS child ON parent.manifest_hash = child.previous_manifest_hash
+    )
+    SELECT (EXISTS (
+        SELECT 1 FROM vfs.node AS node
+        WHERE node.owner_id = p_target_user_id
+          AND node.current_object_hash = p_object_hash
+    ) OR EXISTS (
+        SELECT 1 FROM chain
+        WHERE chain.base_object_hash = p_object_hash
+           OR chain.tail_object_hash = p_object_hash
+    ))
+    INTO reachable;
+    RETURN reachable;
+END
+$function$;
+
+-- name: object_store.admin_logical_object_size_as
+CREATE FUNCTION object_store.admin_logical_object_size_as(
+    p_database_role name,
+    p_claim text,
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_object_hash bytea
+)
+RETURNS bigint
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, auth, object_store, vfs
+AS $function$
+DECLARE
+    result bigint;
+BEGIN
+    IF NOT object_store.admin_object_reachable_as(
+            p_database_role, p_claim, p_administrator_id, p_target_user_id, p_object_hash) THEN
+        RETURN NULL;
+    END IF;
+    SELECT COALESCE(manifest.total_size, stored.byte_size)
+    INTO result
+    FROM object_store.object AS stored
+    LEFT JOIN object_store.chunk_manifest AS manifest
+      ON manifest.manifest_hash = stored.object_hash
+    WHERE stored.object_hash = p_object_hash;
+    RETURN result;
+END
+$function$;
+
+-- name: object_store.admin_logical_object_size
+CREATE FUNCTION object_store.admin_logical_object_size(
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_object_hash bytea
+)
+RETURNS bigint
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, auth, object_store, vfs
+AS $function$
+    SELECT object_store.admin_logical_object_size_as(
+        current_user::name,
+        NULLIF(current_setting('app.cilexec_user_id', true), ''),
+        p_administrator_id, p_target_user_id, p_object_hash)
+$function$;
+
+-- Bounded random-access read of one target user's object; the chunked manifest
+-- recursion mirrors read_object_range_as with the reachability check scoped to
+-- the verified administrator and target user.
+-- name: object_store.admin_read_object_range_as
+CREATE FUNCTION object_store.admin_read_object_range_as(
+    p_database_role name,
+    p_claim text,
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_object_hash bytea,
+    p_offset bigint,
+    p_maximum integer
+)
+RETURNS bytea
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, auth, object_store, vfs
+AS $function$
+DECLARE
+    result bytea;
+BEGIN
+    IF p_offset < 0 OR p_maximum < 0 OR p_maximum > 67108864 THEN
+        RAISE EXCEPTION 'invalid bounded object range' USING ERRCODE = '22023';
+    END IF;
+    IF NOT object_store.admin_object_reachable_as(
+            p_database_role, p_claim, p_administrator_id, p_target_user_id, p_object_hash) THEN
+        RETURN NULL;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM object_store.chunk_manifest
+                   WHERE manifest_hash = p_object_hash) THEN
+        IF p_offset > 2147483646 THEN
+            RETURN ''::bytea;
+        END IF;
+        SELECT substring(content FROM (p_offset + 1)::integer FOR p_maximum)
+        INTO result FROM object_store.object WHERE object_hash = p_object_hash;
+        RETURN COALESCE(result, ''::bytea);
+    END IF;
+
+    WITH RECURSIVE chain AS (
+        SELECT manifest_hash, previous_manifest_hash, base_object_hash,
+               tail_object_hash, total_size, tail_size
+        FROM object_store.chunk_manifest WHERE manifest_hash = p_object_hash
+        UNION ALL
+        SELECT parent.manifest_hash, parent.previous_manifest_hash, parent.base_object_hash,
+               parent.tail_object_hash, parent.total_size, parent.tail_size
+        FROM object_store.chunk_manifest AS parent
+        JOIN chain AS child ON parent.manifest_hash = child.previous_manifest_hash
+    ), parts AS (
+        SELECT base_object_hash AS part_hash, 0::bigint AS part_offset
+        FROM chain WHERE base_object_hash IS NOT NULL
+        UNION ALL
+        SELECT tail_object_hash, total_size - tail_size
+        FROM chain
+    ), overlapping AS (
+        SELECT part.part_offset, stored.content,
+               GREATEST(p_offset - part.part_offset, 0)::integer AS local_offset,
+               LEAST(stored.byte_size - GREATEST(p_offset - part.part_offset, 0),
+                     p_offset + p_maximum - GREATEST(part.part_offset, p_offset))::integer AS take
+        FROM parts AS part
+        JOIN object_store.object AS stored ON stored.object_hash = part.part_hash
+        WHERE part.part_offset < p_offset + p_maximum
+          AND part.part_offset + stored.byte_size > p_offset
+    )
+    SELECT string_agg(substring(content FROM local_offset + 1 FOR take), ''::bytea
+                      ORDER BY part_offset)
+    INTO result FROM overlapping WHERE take > 0;
+    RETURN COALESCE(result, ''::bytea);
+END
+$function$;
+
+-- name: object_store.admin_read_object_range
+CREATE FUNCTION object_store.admin_read_object_range(
+    p_administrator_id uuid,
+    p_target_user_id uuid,
+    p_object_hash bytea,
+    p_offset bigint,
+    p_maximum integer
+)
+RETURNS bytea
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = pg_catalog, auth, object_store, vfs
+AS $function$
+    SELECT object_store.admin_read_object_range_as(
+        current_user::name,
+        NULLIF(current_setting('app.cilexec_user_id', true), ''),
+        p_administrator_id, p_target_user_id, p_object_hash, p_offset, p_maximum)
+$function$;
+
+REVOKE ALL ON FUNCTION vfs.admin_find_child_as(
+    name, text, uuid, uuid, uuid, text
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION object_store.admin_object_reachable_as(
+    name, text, uuid, uuid, bytea
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION object_store.admin_logical_object_size_as(
+    name, text, uuid, uuid, bytea
+) FROM PUBLIC;
+REVOKE ALL ON FUNCTION object_store.admin_read_object_range_as(
+    name, text, uuid, uuid, bytea, bigint, integer
+) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION vfs.admin_find_child(uuid, uuid, uuid, text) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION object_store.admin_logical_object_size(uuid, uuid, bytea) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION object_store.admin_read_object_range(
+    uuid, uuid, bytea, bigint, integer
+) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION vfs.admin_find_child_as(name, text, uuid, uuid, uuid, text) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION object_store.admin_object_reachable_as(
+    name, text, uuid, uuid, bytea
+) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION object_store.admin_logical_object_size_as(
+    name, text, uuid, uuid, bytea
+) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION object_store.admin_read_object_range_as(
+    name, text, uuid, uuid, bytea, bigint, integer
+) TO PUBLIC;
+
 SELECT meta.assert_security_invariants();
 
 RESET ROLE;

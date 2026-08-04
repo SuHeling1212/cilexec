@@ -50,6 +50,23 @@ class FclCodecAndRegistryTest {
     }
 
     @Test
+    void roundTripsCharactersAndBigIntegersAsDistinctCodecTypes() {
+        FclContinuationCodec codec = new FclContinuationCodec();
+        assertEquals("char", codec.valueType('b'));
+        String charJson = codec.valueToJson('b');
+        assertEquals('b', codec.valueFromJson(charJson));
+        assertEquals(charJson, codec.valueToJson(codec.valueFromJson(charJson)));
+        assertFalse(codec.valueFromJson(charJson) instanceof String,
+                "a persisted character must decode back to Character, not String");
+
+        java.math.BigInteger large = new java.math.BigInteger("12345678901234567890");
+        assertEquals("bigint", codec.valueType(large));
+        String bigJson = codec.valueToJson(large);
+        assertEquals(large, codec.valueFromJson(bigJson));
+        assertEquals(bigJson, codec.valueToJson(codec.valueFromJson(bigJson)));
+    }
+
+    @Test
     void persistsImportAndIncludeAsWaitableDirectives() {
         FclProgram program = new FclCompiler().compile("""
                 import "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as "numbers"

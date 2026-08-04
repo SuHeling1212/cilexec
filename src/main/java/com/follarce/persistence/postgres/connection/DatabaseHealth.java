@@ -14,10 +14,12 @@ public final class DatabaseHealth {
     }
 
     public boolean isAvailable() {
-        try (Connection connection = dataSource.getConnection();
-             Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery("SELECT 1")) {
-            boolean available = result.next() && result.getInt(1) == 1;
+        try (Connection connection = dataSource.getConnection()) {
+            boolean available;
+            try (Statement statement = connection.createStatement();
+                 ResultSet result = statement.executeQuery("SELECT 1")) {
+                available = result.next() && result.getInt(1) == 1;
+            }
             connection.rollback();
             return available;
         } catch (SQLException exception) {

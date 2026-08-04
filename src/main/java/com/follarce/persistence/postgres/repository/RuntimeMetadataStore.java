@@ -40,7 +40,7 @@ public final class RuntimeMetadataStore {
                 statement.setString(3, runtimeVersion);
                 statement.setInt(4, fclFormatVersion);
                 statement.setString(5, hostname());
-                statement.setString(6, System.getenv("HOSTNAME"));
+                statement.setString(6, containerIdentity());
                 statement.setTimestamp(7, java.sql.Timestamp.from(now));
                 statement.setTimestamp(8, java.sql.Timestamp.from(now));
                 statement.executeUpdate();
@@ -184,6 +184,11 @@ public final class RuntimeMetadataStore {
         } catch (UnknownHostException exception) {
             return "unknown";
         }
+    }
+
+    private static String containerIdentity() {
+        String hostname = System.getenv("HOSTNAME");
+        return hostname == null || hostname.isBlank() ? hostname() : hostname;
     }
 
     public record BootIdentity(UUID instanceId, UUID runtimeId, UUID bootId) {

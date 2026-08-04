@@ -27,7 +27,7 @@ public final class DockerSecretLoader {
             if (Files.size(path) > MAX_SECRET_BYTES) {
                 throw new ConfigException("Secret file exceeds 64 KiB: " + path);
             }
-            bytes = Files.readAllBytes(path);
+            bytes = readAllBytesWithoutFollowingLinks(path);
             if (bytes.length > MAX_SECRET_BYTES) {
                 throw new ConfigException("Secret file exceeds 64 KiB: " + path);
             }
@@ -51,6 +51,29 @@ public final class DockerSecretLoader {
             throw new ConfigException("Cannot read secret file: " + path, exception);
         } finally {
             if (bytes != null) Arrays.fill(bytes, (byte) 0);
+        }
+    }
+
+    /** Reads via a NOFOLLOW_LINKS channel so a symlink swap cannot redirect the read. */
+    private static byte[] readAllBytesWithoutFollowingLinks(Path path) throws IOException {
+        try (java.nio.channels.SeekableByteChannel channel = Files.newByteChannel(path,
+                java.nio.file.StandardOpenOption.READ,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            if (channel.size() > MAX_SECRET_BYTES) {
+                throw new ConfigException("Secret file exceeds 64 KiB: " + path);
+            }
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream(
+                    Math.toIntExact(Math.min(channel.size(), MAX_SECRET_BYTES)));
+            java.nio.ByteBuffer chunk = java.nio.ByteBuffer.allocate(8192);
+            while (channel.read(chunk) > 0) {
+                chunk.flip();
+                bytes.write(chunk.array(), 0, chunk.limit());
+                chunk.clear();
+                if (bytes.size() > MAX_SECRET_BYTES) {
+                    throw new ConfigException("Secret file exceeds 64 KiB: " + path);
+                }
+            }
+            return bytes.toByteArray();
         }
     }
 

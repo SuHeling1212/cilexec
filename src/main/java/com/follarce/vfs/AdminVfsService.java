@@ -159,6 +159,13 @@ public final class AdminVfsService {
             if (node.parentNodeId().isEmpty()) {
                 throw new IllegalArgumentException("The target user's root cannot be renamed");
             }
+            VfsNodeChecks.requireSafeNodeName(replacementName);
+            VfsNode sibling = transaction.vfs().findChild(targetUserId, node.parentNodeId(),
+                    replacementName).orElse(null);
+            if (sibling != null && !sibling.nodeId().equals(nodeId)) {
+                throw new IllegalArgumentException(
+                        "A VFS node with that name already exists");
+            }
             if (!transaction.vfs().renameNode(nodeId, targetUserId, replacementName, now)) {
                 throw new IllegalStateException("Concurrent administrator VFS rename rejected");
             }

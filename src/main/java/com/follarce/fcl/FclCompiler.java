@@ -12,6 +12,10 @@ public final class FclCompiler {
     private static final int MAX_OPERATOR_CHAIN = 256;
     private static final java.util.regex.Pattern SIMPLE_IDENTIFIER =
             java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    private static final java.util.Set<String> RESERVED_WORDS = java.util.Set.of(
+            "func", "if", "else", "while", "break", "continue", "return",
+            "import", "include", "as", "and", "or",
+            "true", "false", "null");
     public FclProgram compile(String source) {
         Objects.requireNonNull(source, "source");
         return new Parser(source, new Lexer(source).scan()).compile();
@@ -92,10 +96,7 @@ public final class FclCompiler {
                     if (match('/')) skipComment();
                     else add(Type.SLASH);
                 }
-                case '#' -> {
-                    if (identifierStart(peek())) add(Type.HASH);
-                    else skipComment();
-                }
+                case '#' -> add(Type.HASH);
                 case '"' -> string();
                 default -> {
                     if (digit(character)) number();
@@ -158,8 +159,18 @@ public final class FclCompiler {
             StringBuilder value = new StringBuilder();
             while (!atEnd() && peek() != '"') {
                 char character = advance();
-                if (character == '\n' || character == '\r') {
-                    error("String literal cannot cross a line");
+                if (character == '\r') {
+                    if (peek() == '\n') advance();
+                    line++;
+                    column = 1;
+                    value.append('\n');
+                    continue;
+                }
+                if (character == '\n') {
+                    line++;
+                    column = 1;
+                    value.append(character);
+                    continue;
                 }
                 if (character != '\\') {
                     value.append(character);
@@ -173,7 +184,10 @@ public final class FclCompiler {
                     case 't' -> '\t';
                     case '"' -> '"';
                     case '\\' -> '\\';
-                    default -> escaped;
+                    default -> {
+                        error("Unknown escape sequence '\\" + escaped + "'");
+                        throw new AssertionError("unreachable");
+                    }
                 });
             }
             if (atEnd()) error("Unterminated string literal");
@@ -311,10 +325,12 @@ public final class FclCompiler {
                 return;
             }
             if (word("import")) {
+                if (!topLevel) fail(start, "import/include must be at the top level");
                 importInstruction(start);
                 return;
             }
             if (word("include")) {
+                if (!topLevel) fail(start, "import/include must be at the top level");
                 includeInstruction(start);
                 return;
             }
@@ -367,8 +383,13 @@ public final class FclCompiler {
                 int jumpPointer = instructions.size();
                 instructions.add(new FclInstruction.Jump(start.line(), -1));
                 int falseTarget = instructions.size();
-                openBlock("Expected '{' after else");
-                block(loopDepth, functionDepth);
+                skipSeparators();
+                if (word("if")) {
+                    conditional(start, loopDepth, functionDepth);
+                } else {
+                    openBlock("Expected '{' after else");
+                    block(loopDepth, functionDepth);
+                }
                 int endTarget = instructions.size();
                 instructions.set(conditionalPointer, new FclInstruction.Conditional(
                         start.line(), condition, falseTarget, endTarget));
@@ -601,7 +622,11 @@ public final class FclCompiler {
             if (word("false")) return literal(false);
             if (word("null")) return literal(null);
             if (match(Type.IDENTIFIER)) {
-                return new FclExpression.Variable(nextId(), previous().text());
+                Token identifier = previous();
+                if (RESERVED_WORDS.contains(identifier.text())) {
+                    fail(identifier, identifier.text() + " is a reserved word");
+                }
+                return new FclExpression.Variable(nextId(), identifier.text());
             }
             if (match(Type.LEFT_PAREN)) {
                 FclExpression expression = expression();
@@ -663,6 +688,9 @@ public final class FclCompiler {
         }
 
         private void requireBindableIdentifier(Token token, String description) {
+            if (RESERVED_WORDS.contains(token.text())) {
+                fail(token, token.text() + " is a reserved word");
+            }
             if (!simpleBindableIdentifier(token.text())) {
                 fail(token, description + " must be a simple non-reserved identifier");
             }
@@ -670,8 +698,7 @@ public final class FclCompiler {
 
         private static boolean simpleBindableIdentifier(String value) {
             return SIMPLE_IDENTIFIER.matcher(value).matches()
-                    && !value.equals("true") && !value.equals("false")
-                    && !value.equals("null");
+                    && !RESERVED_WORDS.contains(value);
         }
 
         private void finishSimple() {

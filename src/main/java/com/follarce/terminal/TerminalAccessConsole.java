@@ -50,7 +50,9 @@ public final class TerminalAccessConsole implements Runnable {
             return;
         }
         output.println("CilExec access; choose login, create, or disconnect");
-        while (!Thread.currentThread().isInterrupted()) {
+        // EOF (readLine returning null) is the authoritative disconnect signal; the pump
+        // thread's wake-up interrupt only targets the database polling loop (await).
+        while (true) {
             try {
                 String choice = input.readLine(output, "access> ", false);
                 if (choice == null) return;
@@ -85,7 +87,7 @@ public final class TerminalAccessConsole implements Runnable {
         if (!access.isFirstUse()) return;
         output.println("First time setup - create the administrator account");
         output.println("Username: " + administratorUsername);
-        while (!Thread.currentThread().isInterrupted()) {
+        while (true) {
             PasswordPrompt.Secret password = passwords.read("Password (" + PasswordPolicy.MINIMUM_LENGTH
                     + "+ characters)> ");
             if (password == null) return;

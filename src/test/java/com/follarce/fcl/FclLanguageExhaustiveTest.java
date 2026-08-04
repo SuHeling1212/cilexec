@@ -148,6 +148,27 @@ class FclLanguageExhaustiveTest {
         }
     }
 
+    @Test
+    void supportsMultilineStringLiterals() {
+        FclContinuation state = run("""
+                literal = "first line
+                second line"
+                crlf = "a
+                b"
+                joined = "l1
+                " + "l2"
+                """);
+        assertEquals("first line\nsecond line", state.scope().get("literal"));
+        assertEquals("a\nb", state.scope().get("crlf"));
+        assertEquals("l1\nl2", state.scope().get("joined"));
+    }
+
+    @Test
+    void reportsErrorsAfterAMultilineStringOnTheCorrectLine() {
+        assertThrows(FclCompileException.class, () -> compiler.compile(
+                "text = \"line1\nline2\"\nvalue = @\n"));
+    }
+
     private FclContinuation run(String source) {
         FclProgram program = compiler.compile(source);
         FclContinuation continuation = new FclContinuation();

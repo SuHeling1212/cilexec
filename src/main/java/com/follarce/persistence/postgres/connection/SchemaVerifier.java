@@ -23,7 +23,8 @@ public final class SchemaVerifier {
     public int verify() {
         String sql = "SELECT current_setting('server_version_num')::integer, "
                 + "(SELECT version FROM flyway.flyway_schema_history WHERE success "
-                + "ORDER BY installed_rank DESC LIMIT 1)";
+                + "ORDER BY installed_rank DESC LIMIT 1), "
+                + "EXISTS(SELECT 1 FROM flyway.flyway_schema_history WHERE NOT success)";
         try (Connection connection = dataSource.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql);
              ResultSet rows = statement.executeQuery()) {
@@ -31,6 +32,9 @@ public final class SchemaVerifier {
                 throw new IllegalStateException("Database version query returned no row");
             }
             requireSecurePostgresql(rows.getInt(1));
+            if (rows.getBoolean(3)) {
+                throw new IllegalStateException("Database contains failed Flyway migrations");
+            }
             if (rows.getString(2) == null) {
                 throw new IllegalStateException("Database has no successful CilExec migration");
             }

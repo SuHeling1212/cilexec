@@ -39,6 +39,16 @@ final class VfsNodeChecks {
         }
     }
 
+    /** Mirrors the SQL-side node-name rules (vfs.admin_rename_as) plus control-char rejection. */
+    static String requireSafeNodeName(String name) {
+        if (name == null || name.isBlank() || name.equals(".")
+                || name.equals("..") || name.contains("/")
+                || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("Invalid VFS node name: " + name);
+        }
+        return name;
+    }
+
     static VfsNode requireContent(VfsRepository vfs, UUID nodeId, UUID ownerId,
                                   String ownerMessage) {
         VfsNode node = requireOwned(requireNode(vfs, nodeId), ownerId, ownerMessage);

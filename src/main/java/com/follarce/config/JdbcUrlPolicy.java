@@ -38,7 +38,8 @@ public final class JdbcUrlPolicy {
             } catch (IllegalArgumentException invalid) {
                 throw new IllegalArgumentException("PostgreSQL JDBC URL query is invalid", invalid);
             }
-            if (java.util.Set.of("user", "password", "sslpassword", "loggerfile")
+            if (java.util.Set.of("user", "password", "sslpassword", "loggerfile",
+                    "options", "sslcert", "sslkey", "sslrootcert")
                     .contains(name)) {
                 throw new IllegalArgumentException(
                         "PostgreSQL credentials and output paths must use dedicated configuration");

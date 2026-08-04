@@ -19,4 +19,14 @@ public interface TimerRepository {
     }
 
     boolean update(ProcessTimer timer, ProcessTimer.Status expectedStatus);
+
+    /** Removes fired timer rows older than {@code before}; returns the number removed. */
+    default int deleteFiredExpired(Instant before) {
+        return 0;
+    }
+
+    /** Removes every timer row owned by {@code processUid}; returns the number removed. */
+    default int deleteForProcess(UUID processUid) {
+        return 0;
+    }
 }

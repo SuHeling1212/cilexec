@@ -48,6 +48,19 @@ public final class JdbcEffectRepository extends JdbcRepositorySupport implements
     }
 
     @Override
+    public boolean heartbeatWorker(UUID workerId, Instant now) {
+        String sql = "UPDATE scheduler.runner SET heartbeat_at=? "
+                + "WHERE runner_id=? AND runner_kind='EFFECT'";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(now));
+            statement.setObject(2, workerId);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("effect.heartbeatWorker", exception);
+        }
+    }
+
+    @Override
     public void save(EffectRequest effect) {
         String sql = "INSERT INTO effect.effect(effect_id,process_uid,owner_id,effect_type,"
                 + "idempotency_key,idempotent,remote_status_queryable,retry_policy_json,status,"
@@ -185,6 +198,64 @@ public final class JdbcEffectRepository extends JdbcRepositorySupport implements
             }
         } catch (SQLException exception) {
             throw failure("effect.claimRecoverableUnknown", exception);
+        }
+    }
+
+    @Override
+    public List<EffectRequest> claimStalled(UUID workerId, Instant now,
+                                            long stallTimeoutMillis, int limit) {
+        String sql = "WITH stalled AS (SELECT candidate.effect_id FROM effect.effect AS candidate "
+                + "WHERE candidate.status='EXECUTING' AND candidate.executing_at<? "
+                + "AND NOT EXISTS (SELECT 1 FROM scheduler.runner AS runner "
+                + "WHERE runner.runner_id=candidate.claimed_by AND runner.heartbeat_at>?) "
+                + "ORDER BY candidate.executing_at,candidate.effect_id "
+                + "FOR UPDATE OF candidate SKIP LOCKED LIMIT ?) "
+                + "UPDATE effect.effect AS candidate SET status='UNKNOWN',failure_code=?,"
+                + "failure_message=?,claimed_by=?,claimed_at=?,updated_at=? "
+                + "FROM stalled WHERE candidate.effect_id=stalled.effect_id RETURNING candidate.*";
+        Instant cutoff = now.minusMillis(stallTimeoutMillis);
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(cutoff));
+            statement.setTimestamp(2, java.sql.Timestamp.from(cutoff));
+            statement.setInt(3, limit);
+            statement.setString(4, "EFFECT_STALLED");
+            statement.setString(5, "Effect execution stalled; outcome unknown");
+            statement.setObject(6, workerId);
+            statement.setTimestamp(7, java.sql.Timestamp.from(now));
+            statement.setTimestamp(8, java.sql.Timestamp.from(now));
+            try (ResultSet rows = statement.executeQuery()) {
+                List<EffectRequest> effects = new ArrayList<>();
+                List<UUID> effectIds = new ArrayList<>();
+                while (rows.next()) {
+                    effects.add(mapEffect(rows));
+                    effectIds.add(rows.getObject("effect_id", UUID.class));
+                }
+                if (!effectIds.isEmpty()) {
+                    closeStalledAttempts(effectIds, now);
+                }
+                return List.copyOf(effects);
+            }
+        } catch (SQLException exception) {
+            throw failure("effect.claimStalled", exception);
+        }
+    }
+
+    /**
+     * Closes the abandoned EXECUTING attempt rows of reclaimed effects so the attempt
+     * journal reflects the same outcome as the effect row (audit-data consistency).
+     */
+    private void closeStalledAttempts(List<UUID> effectIds, Instant now) throws SQLException {
+        String sql = "UPDATE effect.attempt SET status='UNKNOWN',finished_at=?,"
+                + "error_code=?,error_message=? WHERE effect_id=? AND status='EXECUTING'";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(now));
+            statement.setString(2, "EFFECT_STALLED");
+            statement.setString(3, "Effect execution stalled; outcome unknown");
+            for (UUID effectId : effectIds) {
+                statement.setObject(4, effectId);
+                statement.addBatch();
+            }
+            statement.executeBatch();
         }
     }
 

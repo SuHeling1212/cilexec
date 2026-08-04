@@ -132,6 +132,7 @@ public final class TerminalService {
                 Isolation.SERIALIZABLE, transaction -> {
             TerminalSession current = transaction.terminal().findSession(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
+            requireOwner(current, ownerId);
             TerminalSession.Input input = current.commitInput(completeInput, now);
             Optional<TerminalSession.Attachment> attachment =
                     transaction.terminal().findActiveAttachment(sessionId);
@@ -168,11 +169,15 @@ public final class TerminalService {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
             TerminalSession session = transaction.terminal().findSession(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
+            requireOwner(session, ownerId);
             if (session.status() != TerminalSession.Status.OPEN) {
                 throw new IllegalStateException("Terminal is closed");
             }
             CilProcess process = transaction.processes().findByPid(pid)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown PID"));
+            if (!process.ownerId().equals(ownerId)) {
+                throw new IllegalArgumentException("Unknown PID");
+            }
             TerminalSession.Attachment attachment = new TerminalSession.Attachment(
                     UUID.randomUUID(), sessionId, process.identity().processUid(), now,
                     Optional.empty());
@@ -188,7 +193,8 @@ public final class TerminalService {
                 transaction -> {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
             Optional<CilProcess> process = transaction.processes().findByPid(pid);
-            if (process.isEmpty() || process.get().isTerminal()) return false;
+            if (process.isEmpty() || !process.orElseThrow().ownerId().equals(ownerId)
+                    || process.get().isTerminal()) return false;
             CilProcess current = process.orElseThrow();
             transaction.terminal().requestInterrupt(new TerminalSession.Interrupt(
                     current.identity().processUid(), now, Optional.empty()));
@@ -245,10 +251,17 @@ public final class TerminalService {
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             TerminalSession current = transaction.terminal().findSession(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
+            requireOwner(current, ownerId);
             TerminalSession closed = current.close(now);
             transaction.terminal().saveSession(closed);
             return closed;
         });
+    }
+
+    private static void requireOwner(TerminalSession session, UUID ownerId) {
+        if (!session.ownerId().equals(ownerId)) {
+            throw new IllegalArgumentException("Unknown terminal session");
+        }
     }
 
     private static AuditEvent audit(UUID ownerId, String action, UUID sessionId, Instant now) {

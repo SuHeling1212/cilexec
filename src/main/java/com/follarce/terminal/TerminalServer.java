@@ -13,6 +13,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -26,14 +27,22 @@ import java.util.function.BooleanSupplier;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.BiFunction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Lightweight multi-user terminal transport owned by the one active Runtime JVM.
  * Connections authenticate independently; no connection owns or stops the Runtime.
  */
 public final class TerminalServer implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(TerminalServer.class);
     private static final int MAX_CONNECTIONS = 128;
     private static final int MAX_BUFFERED_INPUT_BYTES = 64 * 1024;
+    private static final int TERMINAL_IDLE_TIMEOUT_MILLIS = 60_000;
+    private static final long TERMINAL_IDLE_DISCONNECT_NANOS =
+            java.util.concurrent.TimeUnit.MINUTES.toNanos(10);
+    private static final long MIN_ACCEPT_BACKOFF_MILLIS = 250;
+    private static final long MAX_ACCEPT_BACKOFF_MILLIS = 5_000;
     private final int port;
     private final TerminalAccess access;
     private final Function<UserAccount, TerminalControl> controls;
@@ -41,6 +50,7 @@ public final class TerminalServer implements AutoCloseable {
     private final String administratorUsername;
     private final AtomicBoolean running = new AtomicBoolean();
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
+    private final Set<Thread> sessionThreads = ConcurrentHashMap.newKeySet();
     private final Semaphore connectionSlots = new Semaphore(MAX_CONNECTIONS);
     private volatile ServerSocket server;
     private volatile Thread acceptor;
@@ -87,31 +97,53 @@ public final class TerminalServer implements AutoCloseable {
     }
 
     private void acceptLoop() {
-        try {
-            while (running.get()) {
-                Socket client = server.accept();
-                if (!connectionSlots.tryAcquire()) {
-                    client.close();
-                    continue;
-                }
-                client.setTcpNoDelay(true);
-                clients.add(client);
+        long backoffMillis = MIN_ACCEPT_BACKOFF_MILLIS;
+        while (running.get()) {
+            Socket client;
+            try {
+                client = server.accept();
+            } catch (IOException failure) {
+                if (!running.get()) return;
+                LOG.warn("Terminal accept failed; retrying", failure);
+                backoffMillis = Math.min(MAX_ACCEPT_BACKOFF_MILLIS, backoffMillis * 2);
                 try {
-                    Thread.ofVirtual().name("cilexec-terminal-session").start(
-                            () -> serve(client));
-                } catch (RuntimeException failure) {
-                    clients.remove(client);
-                    connectionSlots.release();
-                    client.close();
-                    throw failure;
+                    Thread.sleep(backoffMillis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
                 }
+                continue;
             }
-        } catch (IOException failure) {
-            if (running.get()) running.set(false);
+            backoffMillis = MIN_ACCEPT_BACKOFF_MILLIS;
+            if (!connectionSlots.tryAcquire()) {
+                closeClient(client);
+                continue;
+            }
+            try {
+                client.setTcpNoDelay(true);
+                client.setSoTimeout(TERMINAL_IDLE_TIMEOUT_MILLIS);
+            } catch (IOException failure) {
+                connectionSlots.release();
+                closeClient(client);
+                continue;
+            }
+            clients.add(client);
+            try {
+                Thread.ofVirtual().name("cilexec-terminal-session").start(
+                        () -> serve(client));
+            } catch (RuntimeException failure) {
+                clients.remove(client);
+                connectionSlots.release();
+                closeClient(client);
+                LOG.warn("Terminal session thread could not be started; connection closed",
+                        failure);
+            }
         }
     }
 
     private void serve(Socket client) {
+        Thread session = Thread.currentThread();
+        sessionThreads.add(session);
         PrintWriter output = null;
         try (client) {
             output = new LockedPrintWriter(new OutputStreamWriter(client.getOutputStream(),
@@ -132,6 +164,7 @@ public final class TerminalServer implements AutoCloseable {
                 return;
             }
             DimensionInputStream transported = new DimensionInputStream(connection);
+            transported.onDisconnect(session::interrupt);
             TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
             PrintWriter sessionOutput = output;
             new TerminalAccessConsole(input, output, access, account -> {
@@ -145,6 +178,7 @@ public final class TerminalServer implements AutoCloseable {
         } catch (IOException ignored) {
             // Disconnecting a host terminal ends only this authenticated connection.
         } finally {
+            sessionThreads.remove(Thread.currentThread());
             clients.remove(client);
             connectionSlots.release();
             if (output != null) TerminalOutputRouter.detachAll(output);
@@ -173,6 +207,7 @@ public final class TerminalServer implements AutoCloseable {
             if (result != null && !result.isEmpty()) output.println(result);
             return result != null && result.startsWith("error") ? 1 : 0;
         } catch (RuntimeException failure) {
+            LOG.warn("Headless terminal submission failed", failure);
             output.println("error: " + describe(failure));
             return 1;
         } finally {
@@ -261,8 +296,15 @@ public final class TerminalServer implements AutoCloseable {
     }
 
     private static String describe(RuntimeException failure) {
-        return failure.getMessage() == null || failure.getMessage().isBlank()
-                ? failure.getClass().getSimpleName() : failure.getMessage();
+        // Language-level errors carry an actionable message for the FCL author; internal
+        // failures stay opaque so implementation details never leak to the terminal.
+        if (failure instanceof com.follarce.fcl.FclRuntimeException
+                || failure instanceof com.follarce.fcl.FclCompileException) {
+            String message = failure.getMessage();
+            return message == null || message.isBlank()
+                    ? failure.getClass().getSimpleName() : message;
+        }
+        return "Command failed: " + failure.getClass().getSimpleName();
     }
 
     private enum ConnectionMode { INTERACTIVE, HEADLESS, CLOSED }
@@ -294,6 +336,7 @@ public final class TerminalServer implements AutoCloseable {
     public synchronized void close() {
         if (!running.getAndSet(false)) return;
         closeServer();
+        sessionThreads.forEach(Thread::interrupt);
         clients.forEach(this::closeClient);
         clients.clear();
         if (acceptor != null) {
@@ -330,6 +373,11 @@ public final class TerminalServer implements AutoCloseable {
         private volatile java.util.UUID ownerId;
         private volatile TerminalDimensions.Size size = new TerminalDimensions.Size(80, 24);
         private volatile BooleanSupplier interrupt = () -> false;
+        private final AtomicBoolean receivedAnyByte = new AtomicBoolean();
+        private final AtomicBoolean disconnected = new AtomicBoolean();
+        private final java.util.concurrent.atomic.AtomicLong lastActivityNanos =
+                new java.util.concurrent.atomic.AtomicLong();
+        private volatile Runnable disconnectListener = () -> { };
         private final ArrayBlockingQueue<Integer> input =
                 new ArrayBlockingQueue<>(MAX_BUFFERED_INPUT_BYTES);
 
@@ -344,29 +392,59 @@ public final class TerminalServer implements AutoCloseable {
             TerminalDimensions.update(ownerId, size);
         }
 
+        /** Wakes the owning session thread once the socket has ended, so a blocked await()
+         *  polling loop cannot keep its connection slot and transaction rate alive. */
+        void onDisconnect(Runnable listener) {
+            disconnectListener = java.util.Objects.requireNonNull(listener, "listener");
+        }
+
         private int width() {
             return size.width();
         }
 
         @Override
         public int read() throws IOException {
-            try {
-                int value = input.take();
-                if (value == END_OF_STREAM && !input.offer(END_OF_STREAM)) {
-                    throw new IOException("Terminal end-of-stream marker was lost");
+            while (true) {
+                try {
+                    int value = input.take();
+                    if (value == END_OF_STREAM && !input.offer(END_OF_STREAM)) {
+                        throw new IOException("Terminal end-of-stream marker was lost");
+                    }
+                    return value;
+                } catch (InterruptedException interrupted) {
+                    if (!disconnected.get()) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Terminal input interrupted", interrupted);
+                    }
+                    // A disconnect wake-up interrupted this read. The end-of-stream marker
+                    // queued by the pump is the authoritative signal, so clear the interrupt
+                    // flag and keep consuming buffered input instead of aborting mid-line.
+                    Thread.interrupted();
                 }
-                return value;
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Terminal input interrupted", interrupted);
             }
         }
 
         private void pump() {
             try {
                 while (true) {
-                    int value = in.read();
+                    int value;
+                    try {
+                        value = in.read();
+                    } catch (SocketTimeoutException idle) {
+                        // Never-disconnecting idle sessions must still yield their slot: a
+                        // local process that sent a single byte could otherwise pin a
+                        // connection forever. Bytes keep the session alive; total inactivity
+                        // beyond the disconnect threshold closes it.
+                        long lastActivity = lastActivityNanos.get();
+                        if (!receivedAnyByte.get() || System.nanoTime() - lastActivity
+                                > TERMINAL_IDLE_DISCONNECT_NANOS) {
+                            break;
+                        }
+                        continue;
+                    }
                     if (value < 0) break;
+                    receivedAnyByte.set(true);
+                    lastActivityNanos.set(System.nanoTime());
                     if (value == 0) readFrame();
                     else input.put(value);
                 }
@@ -375,10 +453,19 @@ public final class TerminalServer implements AutoCloseable {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } finally {
+                disconnected.set(true);
                 try {
                     input.put(END_OF_STREAM);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
+                }
+                Runnable listener = disconnectListener;
+                if (listener != null) {
+                    try {
+                        listener.run();
+                    } catch (RuntimeException ignored) {
+                        // The session thread may already be gone; the disconnect is final.
+                    }
                 }
             }
         }

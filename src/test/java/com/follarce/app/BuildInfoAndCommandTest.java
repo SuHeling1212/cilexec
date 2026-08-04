@@ -86,12 +86,14 @@ class BuildInfoAndCommandTest {
         assertThrows(IllegalArgumentException.class, () -> ApplicationCommand.parse(
                 new String[]{"package", "install", "hello", "hello.db"}));
         assertEquals(java.nio.file.Path.of("/tmp/source"), ApplicationCommand.hostSourcePath(
-                new String[]{"host", "move", "/tmp/source", "/documents/source"}));
+                new String[]{"host", "move", "/tmp/source", "/documents/source", "alice"}));
         assertEquals("/documents/source", ApplicationCommand.hostTargetPath(
-                new String[]{"host", "move", "/tmp/source", "/documents/source"}));
-        assertEquals("local", ApplicationCommand.hostUsername(
+                new String[]{"host", "move", "/tmp/source", "/documents/source", "alice"}));
+        assertEquals("alice", ApplicationCommand.hostUsername(
+                new String[]{"host", "move", "/tmp/source", "/documents/source", "alice"}));
+        assertThrows(IllegalArgumentException.class, () -> ApplicationCommand.parse(
                 new String[]{"host", "move", "/tmp/source", "/documents/source"}));
         assertThrows(IllegalArgumentException.class, () -> ApplicationCommand.parse(
-                new String[]{"host", "move", "/tmp/source", "relative"}));
+                new String[]{"host", "move", "/tmp/source", "relative", "alice"}));
     }
 }

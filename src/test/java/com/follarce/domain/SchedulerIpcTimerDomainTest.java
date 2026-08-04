@@ -105,6 +105,20 @@ class SchedulerIpcTimerDomainTest {
     }
 
     @Test
+    void deadAcceptsNullReasonButRejectsUnstartedDeliveries() {
+        IpcDelivery reserved = IpcDelivery.pending(
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+                .reserve(UUID.randomUUID(), T0);
+        IpcDelivery dead = reserved.dead(T0.plusSeconds(1), null);
+
+        assertEquals(IpcDelivery.Status.DEAD, dead.status());
+        assertTrue(dead.failureReason().isEmpty());
+        assertThrows(IllegalStateException.class, () ->
+                IpcDelivery.pending(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())
+                        .dead(T0, null));
+    }
+
+    @Test
     void timerTruthSurvivesWithoutAnInMemoryWait() {
         ProcessTimer timer = new ProcessTimer(UUID.randomUUID(), UUID.randomUUID(),
                 T0.plusSeconds(10), ProcessTimer.Status.SCHEDULED, T0,

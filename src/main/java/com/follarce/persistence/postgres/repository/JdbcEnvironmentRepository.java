@@ -89,13 +89,24 @@ public final class JdbcEnvironmentRepository extends JdbcRepositorySupport
             if (names == null) throw new IllegalStateException(
                     "Shared environment policy names are missing");
             String[] values = (String[]) names.getArray();
-            return new SharedPolicy(SharedPolicy.Mode.valueOf(rows.getString(1)),
+            return new SharedPolicy(mode(rows.getString(1)),
                     java.util.Arrays.stream(values).collect(
                             java.util.stream.Collectors.toUnmodifiableSet()));
         } catch (SQLException exception) {
             throw failure("environment.sharedPolicy", exception);
         } finally {
             if (names != null) try { names.free(); } catch (SQLException ignored) { }
+        }
+    }
+
+    private static SharedPolicy.Mode mode(String value) {
+        try {
+            return SharedPolicy.Mode.valueOf(value);
+        } catch (IllegalArgumentException unknownMode) {
+            throw new com.follarce.persistence.postgres.error.PersistenceFailure(
+                    com.follarce.persistence.postgres.error.PersistenceFailure.Kind.GENERAL,
+                    false, "environment.sharedPolicy: unknown policy mode '" + value + "'",
+                    unknownMode);
         }
     }
 
@@ -121,7 +132,7 @@ public final class JdbcEnvironmentRepository extends JdbcRepositorySupport
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             binder.bind(statement);
             try (ResultSet rows = statement.executeQuery()) {
-                return rows.next() ? Optional.of(rows.getString(1)) : Optional.empty();
+                return rows.next() ? Optional.ofNullable(rows.getString(1)) : Optional.empty();
             }
         } catch (SQLException exception) { throw failure(operation, exception); }
     }

@@ -5,6 +5,9 @@ import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.program.Program;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -188,11 +191,46 @@ final class FclPersistenceBridge {
             case "null", "bool", "long", "double", "string", "array", "map" ->
                     codec.valueFromJson(value.canonicalPayload());
             case "json", "application/json" ->
-                    codec.documentFromJson(value.canonicalPayload());
+                    decodeDocument(value.canonicalPayload());
             default -> value.type().endsWith("+json")
-                    ? codec.documentFromJson(value.canonicalPayload())
+                    ? decodeDocument(value.canonicalPayload())
                     : value.canonicalPayload();
         };
+    }
+
+    /**
+     * Decodes a raw JSON document losslessly like the typed codec: integral numbers
+     * become Long, everything else becomes Double, so large integers survive.
+     */
+    private Object decodeDocument(String json) {
+        return convert(JsonParser.parseString(json));
+    }
+
+    private static Object convert(JsonElement element) {
+        if (element.isJsonNull()) return null;
+        if (element.isJsonPrimitive()) return convertPrimitive(element.getAsJsonPrimitive());
+        if (element.isJsonArray()) {
+            List<Object> values = new ArrayList<>();
+            element.getAsJsonArray().forEach(item -> values.add(convert(item)));
+            return values;
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        element.getAsJsonObject().entrySet().forEach(entry ->
+                values.put(entry.getKey(), convert(entry.getValue())));
+        return values;
+    }
+
+    private static Object convertPrimitive(JsonPrimitive primitive) {
+        if (primitive.isBoolean()) return primitive.getAsBoolean();
+        if (primitive.isString()) return primitive.getAsString();
+        if (primitive.isNumber()) {
+            try {
+                return primitive.getAsBigDecimal().longValueExact();
+            } catch (ArithmeticException nonIntegralOrOverflow) {
+                return primitive.getAsDouble();
+            }
+        }
+        return primitive.getAsString();
     }
 
     private void restoreAuthoritativeScopes(Continuation persisted,

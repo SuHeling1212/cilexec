@@ -1,20 +1,20 @@
-# 发布 CilExec
+# Releasing CilExec
 
-## 本地一键发布
+## Local One-Command Release
 
-在项目根目录执行：
+Run from the project root:
 
 ```bash
 ./build/release.sh
 ```
 
-Windows 执行：
+Windows runs:
 
 ```bat
 build\release.bat
 ```
 
-默认流程会运行全部 Maven 测试并生成：
+The default flow runs the full Maven test suite and produces:
 
 - `dist/cilexec-app.jar`
 - `dist/cilexec-market-server.jar`
@@ -22,38 +22,54 @@ build\release.bat
 - `dist/catalog.json`
 - `dist/SHA256SUMS`
 
-流程在临时目录中完成 JAR、SQLite 包、市场清单和 SHA-256 的交叉验证。只有全部验证
-通过后才替换现有发布物。Git 提交号会写入 Runtime；不在 Git 工作树中构建时，必须
-通过 `CILEXEC_BUILD_REVISION` 提供提交号。本地工作树含未提交改动时，自动记录为
-`<commit>-dirty`，避免把不可复现的本地构建误认为该提交的正式成品。
+The flow cross-validates JARs, SQLite packages, the market catalog, and SHA-256 sums in a
+temporary directory. Existing artifacts are replaced only after all validations pass. The
+Git commit id is baked into the Runtime; when building outside a Git working tree, provide
+it via `CILEXEC_BUILD_REVISION`. A local working tree with uncommitted changes is recorded
+as `<commit>-dirty` so an unreproducible local build is never mistaken for a formal release
+of that commit.
 
-可选参数：
+Optional flags:
 
 ```bash
-# CI 已先执行完整测试时使用
+# Use when CI has already run the full test suite
 ./build/release.sh --skip-tests
 
-# 不构建，只复核 dist 中已有的全部发布物
+# Do not build; only recheck all existing artifacts in dist
 ./build/release.sh --verify-only
 ```
 
-`--skip-tests` 只适用于同一次可信 CI 任务已经完成测试的情况，不应作为人工正式发布的
-默认选项。
+`--skip-tests` only applies when a trusted CI job in the same run has already executed the
+tests; it should not be the default for manual formal releases.
+
+## Runtime Configuration Defaults
+
+The release Runtime reads its defaults from `cilexec-defaults.properties`, overridable via
+`CILEXEC_*` environment variables and Docker secrets. Notable defaults:
+
+- `runtime.pool.max=20` for the HikariCP runtime pool. The invariant at config load is
+  `runtime.pool.max >= scheduler.workers + effect.workers + 2`; with the defaults
+  (10 scheduler workers, 6 effect workers) the pool must be at least 18, and it is.
+- `database.migrate-on-start` (`CILEXEC_MIGRATE_ON_START`, default `false`) is honored at
+  startup: when enabled, the Runtime applies pending Flyway migrations itself during boot
+  instead of requiring the one-shot `migrate` command.
 
 ## GitHub Actions
 
-普通 push 和 pull request 会运行 Java、市场服务端、宿主脚本、Docker 镜像以及完整发布
-目录验证。推送 `v*` 标签或手动运行 `release-artifacts` workflow 会执行完整发布流程，
-并上传 `cilexec-release.tar.gz`。归档中包含两个 JAR、市场仓库、清单、说明和校验文件，
-不包含源码目录或构建缓存。
+Ordinary pushes and pull requests run validation of Java, the market server, the host
+scripts, the Docker image, and the full release directory. Pushing a `v*` tag or manually
+running the `release-artifacts` workflow runs the full release flow and uploads
+`cilexec-release.tar.gz`. The archive contains the two JARs, the market repository, the
+catalog, the readme, and the checksum files; it does not contain source directories or
+build caches.
 
-下载归档后先在解压目录验证：
+After downloading the archive, verify it in the extraction directory:
 
 ```bash
 sha256sum -c SHA256SUMS
 ```
 
-macOS 可使用：
+On macOS:
 
 ```bash
 shasum -a 256 -c SHA256SUMS

@@ -60,12 +60,25 @@ public final class JdbcProgramRepository extends JdbcRepositorySupport implement
             if (statement.executeUpdate() == 1) {
                 return program;
             }
-            return findByIdentity(program.programHash(), program.languageVersion(),
+            return findOwnedByIdentity(program.programHash(), program.languageVersion(),
                     program.runtimeFormatVersion()).orElseThrow(
-                    () -> new IllegalStateException("Program conflict did not expose existing row"));
+                    () -> com.follarce.persistence.postgres.error.SqlStateClassifier
+                            .optimisticConflict("program.saveIfAbsent"));
         } catch (SQLException exception) {
             throw failure("program.saveIfAbsent", exception);
         }
+    }
+
+    private Optional<Program> findOwnedByIdentity(ObjectHash programHash, String languageVersion,
+                                                  int runtimeFormatVersion) {
+        return find("program.findByIdentity", "SELECT " + COLUMNS
+                        + " FROM program.program WHERE program_hash=? AND language_version=? "
+                        + "AND runtime_format_version=? AND owner_id=auth.current_cilexec_user_id()",
+                statement -> {
+                    statement.setBytes(1, JdbcValues.hash(programHash));
+                    statement.setString(2, languageVersion);
+                    statement.setInt(3, runtimeFormatVersion);
+                });
     }
 
     private Optional<Program> find(String operation, String sql, Binder binder) {

@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.time.Instant;
 
 public final class JdbcIpcRepository extends JdbcRepositorySupport implements IpcRepository {
+    private static final int TOPIC_RECEIVER_LIMIT = 4096;
     public JdbcIpcRepository(Connection connection) {
         super(connection);
     }
@@ -126,12 +127,17 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
     public List<UUID> findTopicReceivers(UUID topicId) {
         String sql = "SELECT subscriber_process_uid FROM ipc.subscription "
                 + "WHERE source_kind='TOPIC' AND topic_id=? AND status='ACTIVE' "
-                + "ORDER BY created_at,subscription_id";
+                + "ORDER BY created_at,subscription_id LIMIT " + (TOPIC_RECEIVER_LIMIT + 1);
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, topicId);
             try (ResultSet rows = statement.executeQuery()) {
                 List<UUID> receivers = new ArrayList<>();
                 while (rows.next()) receivers.add(rows.getObject(1, UUID.class));
+                if (receivers.size() > TOPIC_RECEIVER_LIMIT) {
+                    throw new IllegalStateException("Topic has more than "
+                            + TOPIC_RECEIVER_LIMIT + " active subscribers; refusing to "
+                            + "silently truncate the broadcast");
+                }
                 return List.copyOf(receivers);
             }
         } catch (SQLException exception) {
@@ -191,6 +197,7 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
             }
             int[] affected = statement.executeBatch();
             for (int count : affected) {
+                if (count == 0) continue;
                 requireOne("ipc.saveDelivery", count);
             }
         } catch (SQLException exception) {
@@ -356,10 +363,11 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                                                                    String variableName,
                                                                    Instant at) {
         String sql = "SELECT value.pool_id,value.value_type,value.value_payload,"
-                + "value.retention_mode,value.remaining_reads,value.changed "
+                + "value.retention_mode,value.remaining_reads "
                 + "FROM ipc.swap_value value JOIN ipc.swap_pool pool USING (pool_id,owner_id) "
                 + "WHERE value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
-                + "AND (value.lock_process_uid IS NULL OR value.lease_until<=?) FOR UPDATE";
+                + "AND (value.lock_process_uid IS NULL OR value.lease_until<=?) "
+                + "AND (value.retention_mode<>'SYNC' OR value.changed) FOR UPDATE";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, ownerId);
             statement.setString(2, poolName);
@@ -368,7 +376,6 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) return Optional.empty();
                 String mode = rows.getString("retention_mode");
-                if (mode.equals("SYNC") && !rows.getBoolean("changed")) return Optional.empty();
                 Continuation.PersistedValue value = new Continuation.PersistedValue(
                         rows.getString("value_type"), rows.getString("value_payload"));
                 UUID poolId = rows.getObject("pool_id", UUID.class);
@@ -402,7 +409,7 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                 + "AND value.owner_id=pool.owner_id AND value.owner_id=? AND pool.pool_name=? "
                 + "AND value.variable_name=? AND (value.lock_process_uid IS NULL "
                 + "OR value.lease_until<=? OR (value.lock_process_uid=? "
-                + "AND value.fencing_token=?))";
+                + "AND value.lock_execution_epoch=? AND value.fencing_token=?))";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, value.type());
             statement.setString(2, value.canonicalPayload());
@@ -412,8 +419,9 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
             statement.setString(6, variableName);
             statement.setTimestamp(7, java.sql.Timestamp.from(at));
             statement.setObject(8, processUid);
-            if (fencingToken.isPresent()) statement.setLong(9, fencingToken.orElseThrow());
-            else statement.setLong(9, -1);
+            statement.setLong(9, executionEpoch);
+            if (fencingToken.isPresent()) statement.setLong(10, fencingToken.orElseThrow());
+            else statement.setLong(10, -1);
             return statement.executeUpdate() == 1;
         } catch (SQLException exception) {
             throw failure("ipc.updateSwapValue", exception);
@@ -428,14 +436,16 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                 + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
                 + "AND value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
                 + "AND (value.lock_process_uid IS NULL OR value.lease_until<=clock_timestamp() "
-                + "OR (value.lock_process_uid=? AND value.fencing_token=?))";
+                + "OR (value.lock_process_uid=? AND value.lock_execution_epoch=? "
+                + "AND value.fencing_token=?))";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, ownerId);
             statement.setString(2, poolName);
             statement.setString(3, variableName);
             statement.setObject(4, processUid);
-            if (fencingToken.isPresent()) statement.setLong(5, fencingToken.orElseThrow());
-            else statement.setLong(5, -1);
+            statement.setLong(5, executionEpoch);
+            if (fencingToken.isPresent()) statement.setLong(6, fencingToken.orElseThrow());
+            else statement.setLong(6, -1);
             return statement.executeUpdate() == 1;
         } catch (SQLException exception) {
             throw failure("ipc.removeSwapValue", exception);
@@ -509,13 +519,15 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                 + "lock_execution_epoch=NULL,lease_until=NULL FROM ipc.swap_pool pool "
                 + "WHERE value.pool_id=pool.pool_id AND value.owner_id=pool.owner_id "
                 + "AND value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
-                + "AND value.lock_process_uid=? AND value.fencing_token=?";
+                + "AND value.lock_process_uid=? AND value.lock_execution_epoch=? "
+                + "AND value.fencing_token=?";
         return change("ipc.releaseSwapLock", sql, statement -> {
             statement.setObject(1, ownerId);
             statement.setString(2, poolName);
             statement.setString(3, variableName);
             statement.setObject(4, processUid);
-            statement.setLong(5, fencingToken);
+            statement.setLong(5, executionEpoch);
+            statement.setLong(6, fencingToken);
         }) == 1;
     }
 

@@ -20,6 +20,7 @@ import com.follarce.fcl.FclScope;
 import com.follarce.fcl.FclSuspension;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,7 +53,7 @@ final class ExtensionFunctionInvocation implements ExtensionFunctionContext {
         this.extensionId = Objects.requireNonNull(extensionId, "extensionId");
         this.qualifiedFunctionName = Objects.requireNonNull(
                 qualifiedFunctionName, "qualifiedFunctionName");
-        this.arguments = List.copyOf(arguments);
+        this.arguments = Collections.unmodifiableList(new ArrayList<>(arguments));
         this.invocation = Objects.requireNonNull(invocation, "invocation");
         this.transactionContext = Objects.requireNonNull(transaction, "transaction");
         this.process = Objects.requireNonNull(process, "process");
@@ -125,7 +126,8 @@ final class ExtensionFunctionInvocation implements ExtensionFunctionContext {
         private final FclScope scope;
 
         private DurableState(String extensionId, FclScope scope) {
-            prefix = "cilexec.extension." + extensionId + ".";
+            // Length prefix keeps dotted ids like "a" and "a.b" prefix-independent.
+            prefix = "cilexec.extension." + extensionId.length() + "." + extensionId + ".";
             this.scope = scope;
         }
 

@@ -29,6 +29,9 @@ public record DatabaseConfig(
                 || validationTimeout.isNegative() || validationTimeout.isZero()) {
             throw new ConfigException("Database timeouts must be positive");
         }
+        if (validationTimeout.compareTo(connectionTimeout) > 0) {
+            throw new ConfigException("validationTimeout must not exceed connectionTimeout");
+        }
     }
 
     private static String requireText(String value, String name) {

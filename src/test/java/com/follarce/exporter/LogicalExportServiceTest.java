@@ -1,6 +1,7 @@
 package com.follarce.exporter;
 
 import com.follarce.app.BuildInfo;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -100,6 +101,59 @@ class LogicalExportServiceTest {
     }
 
     @Test
+    void exportsToTargetsWithUriSpecialCharactersInFileName() throws Exception {
+        Path probe = temporaryDirectory.resolve("probe?.db");
+        try {
+            Files.createFile(probe);
+        } catch (java.io.IOException unsupported) {
+            Assumptions.abort("Filesystem does not allow '?' in file names");
+        }
+        Files.delete(probe);
+
+        Path target = temporaryDirectory.resolve("backup?2026-08-03.db");
+        LogicalExportService service = service(LogicalExportServiceTest::writeSnapshot);
+
+        LogicalExportReport report = service.export(target, BUILD);
+
+        assertEquals(target.toAbsolutePath(), report.database());
+        assertEquals("ok", scalar(target, "PRAGMA integrity_check"));
+        assertEquals("3", scalar(target, "SELECT metadata_value FROM export_metadata "
+                + "WHERE metadata_key='export.row_count'"));
+        assertReadOnly(target);
+    }
+
+    @Test
+    void rejectsNullableRowJsonColumnDefinition() throws Exception {
+        Path database = temporaryDirectory.resolve("schema-tampered.db");
+        try (SqliteLogicalExportWriter writer = new SqliteLogicalExportWriter(database)) {
+            writeSnapshot(writer, BUILD, EXPORTED_AT);
+        }
+        Map<String, String> guards = SqliteLogicalExportWriter.readOnlyTriggers();
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database);
+             Statement statement = connection.createStatement()) {
+            statement.execute("DROP TABLE export_row");
+            statement.execute("CREATE TABLE export_row("
+                    + "table_name TEXT NOT NULL,"
+                    + "row_number INTEGER NOT NULL,"
+                    + "row_json TEXT,"
+                    + "row_sha256 TEXT NOT NULL,"
+                    + "PRIMARY KEY(table_name,row_number),"
+                    + "FOREIGN KEY(table_name) REFERENCES export_table(table_name) "
+                    + "ON UPDATE RESTRICT ON DELETE RESTRICT "
+                    + "DEFERRABLE INITIALLY DEFERRED) STRICT, WITHOUT ROWID");
+            statement.executeUpdate("INSERT INTO export_row(table_name,row_number,row_json,"
+                    + "row_sha256) VALUES ('auth.user_account',1,NULL,'"
+                    + "0".repeat(64) + "')");
+            statement.execute(guards.get("guard_export_row_insert"));
+            statement.execute(guards.get("guard_export_row_update"));
+            statement.execute(guards.get("guard_export_row_delete"));
+        }
+
+        assertThrows(LogicalExportException.class,
+                () -> new SqliteLogicalExportVerifier().verify(database));
+    }
+
+    @Test
     void rejectsImplicitFormatAndDetectsContentTampering() throws Exception {
         LogicalExportService service = service(LogicalExportServiceTest::writeSnapshot);
         assertThrows(IllegalArgumentException.class,
@@ -152,7 +206,8 @@ class LogicalExportServiceTest {
 
     private static String scalar(Path database, String query) throws SQLException {
         try (Connection connection = DriverManager.getConnection(
-                "jdbc:sqlite:file:" + database.toAbsolutePath() + "?mode=ro&immutable=1");
+                "jdbc:sqlite:" + database.toAbsolutePath().normalize().toUri().toASCIIString()
+                        + "?mode=ro&immutable=1");
              Statement statement = connection.createStatement();
              ResultSet rows = statement.executeQuery(query)) {
             assertTrue(rows.next());

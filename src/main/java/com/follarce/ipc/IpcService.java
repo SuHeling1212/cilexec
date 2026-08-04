@@ -228,17 +228,9 @@ public final class IpcService {
         UUID receiver = delivery.receiverProcessUid();
         CilProcess current = requireProcess(transaction, receiver);
         if (!isWaitingFor(current, delivery, message)) return;
-        // The fast path delivers directly into the durable process inbox. Reserve and
-        // consume the receiver-specific row in the same transaction before waking the
-        // process, so the ordinary polling path can never observe the same delivery.
-        IpcDelivery reserved = delivery.reserve(receiver, now);
-        if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
-            throw new IllegalStateException("Concurrent IPC delivery reservation rejected");
-        }
-        IpcDelivery consumed = reserved.consume(now);
-        if (!transaction.ipc().updateDelivery(consumed, IpcDelivery.Status.RESERVED)) {
-            throw new IllegalStateException("Concurrent IPC delivery consumption rejected");
-        }
+        // The fast path delivers directly into the durable process inbox. The process row is
+        // updated first so a concurrent modification leaves the delivery PENDING for the
+        // polling path; a lost wake must never roll back the persisted send.
         Continuation source = current.continuation();
         Map<String, Continuation.PersistedValue> variables =
                 new java.util.LinkedHashMap<>(source.globalVariables());
@@ -251,7 +243,15 @@ public final class IpcService {
         ProcessRepository.UpdateResult updated = transaction.processes().update(ready,
                 current.stateVersion(), current.executionEpoch());
         if (updated != ProcessRepository.UpdateResult.UPDATED) {
-            throw new IllegalStateException("Concurrent IPC wake rejected: " + updated);
+            return;
+        }
+        IpcDelivery reserved = delivery.reserve(receiver, now);
+        if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
+            return;
+        }
+        IpcDelivery consumed = reserved.consume(now);
+        if (!transaction.ipc().updateDelivery(consumed, IpcDelivery.Status.RESERVED)) {
+            return;
         }
         if (ready.status() == CilProcess.Status.READY) {
             transaction.scheduler().enqueue(new SchedulerQueueEntry(receiver, now, now,

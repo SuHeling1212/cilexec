@@ -18,6 +18,10 @@ import java.util.concurrent.locks.LockSupport;
 /** Authenticates terminal users against application-owned credential verifiers. */
 public final class TerminalAccessService implements TerminalAccess {
     private static final int MAX_CONCURRENT_CREDENTIAL_CHECKS = 8;
+    private static final long MAX_LOGIN_DELAY_MILLIS = 30_000;
+    // The shared <unknown> bucket accumulates every unknown-name lookup, so it keeps its own
+    // lower ceiling to prevent one attacker from slowing unrelated unknown-username logins.
+    private static final long MAX_UNKNOWN_LOGIN_DELAY_MILLIS = 10_000;
     private static final String UNKNOWN_PRINCIPAL = "<unknown>";
     private static final String DUMMY_CREDENTIAL = com.follarce.auth.PasswordPolicy.hash(
             "invalid-terminal-credential".toCharArray());
@@ -122,10 +126,19 @@ public final class TerminalAccessService implements TerminalAccess {
     }
 
     private boolean verifyAdministratorPassword(char[] password) {
+        applyLoginDelay(administratorUsername);
         Optional<UserAccount> administrator = transactions.inTransaction(Isolation.READ_COMMITTED,
                 transaction -> transaction.auth().findUser(administratorUsername));
-        if (administrator.isEmpty()) return false;
-        return principalAccepts(administrator.orElseThrow(), password);
+        if (administrator.isEmpty()) {
+            recordLoginFailure(administratorUsername);
+            return false;
+        }
+        if (!principalAccepts(administrator.orElseThrow(), password)) {
+            recordLoginFailure(administratorUsername);
+            return false;
+        }
+        loginFailures.remove(administratorUsername);
+        return true;
     }
 
     private boolean principalAccepts(UserAccount account, char[] password) {
@@ -155,7 +168,9 @@ public final class TerminalAccessService implements TerminalAccess {
     private void applyLoginDelay(String username) {
         LoginFailure failure = loginFailures.get(username);
         if (failure == null) return;
-        long delayMillis = Math.min(10_000L, 250L << Math.min(5, failure.count() - 1));
+        long capMillis = username.equals(UNKNOWN_PRINCIPAL)
+                ? MAX_UNKNOWN_LOGIN_DELAY_MILLIS : MAX_LOGIN_DELAY_MILLIS;
+        long delayMillis = Math.min(capMillis, 250L << Math.min(7, failure.count() - 1));
         long elapsed = java.time.Duration.between(failure.at(), clock.instant()).toMillis();
         if (elapsed < delayMillis) {
             LockSupport.parkNanos(java.time.Duration.ofMillis(delayMillis - elapsed).toNanos());

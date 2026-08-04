@@ -79,17 +79,6 @@ public final class FclRuntimeFunctions {
     private static final EffectRequest.Policy MANUAL_EFFECT = new EffectRequest.Policy(
             false, Optional.empty(), false, false, EffectRequest.UnknownAction.MANUAL);
 
-    @FunctionalInterface
-    public interface LocalPasswordVerifier {
-        boolean verify(char[] password);
-    }
-
-    private static volatile LocalPasswordVerifier passwordVerifier;
-
-    public static void setPasswordVerifier(LocalPasswordVerifier verifier) {
-        passwordVerifier = java.util.Objects.requireNonNull(verifier, "passwordVerifier");
-    }
-
     private final TransactionContext transaction;
     private final CilProcess process;
     private final Program program;
@@ -516,15 +505,19 @@ public final class FclRuntimeFunctions {
                     String path = string(args.getFirst(), "file.size path");
                     RoutedPath routed = route(path, owner(args, 1));
                     VfsNode node = resolveFileNode(routed.path(), routed.ownerId());
-                    return transaction.vfs().logicalObjectSize(
-                            node.currentObjectHash().orElseThrow());
+                    ObjectHash hash = node.currentObjectHash().orElseThrow();
+                    return routed.ownerId().equals(process.ownerId())
+                            ? transaction.vfs().logicalObjectSize(hash)
+                            : transaction.vfs().logicalObjectSizeByAdministrator(
+                            process.ownerId(), routed.ownerId(), hash);
                 })
                 .register("file", "exists", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.exists expects path and optional target user");
                     RoutedPath routed = route(string(args.getFirst(), "file.exists path"),
                             owner(args, 1));
-                    requireFileAccess(routed.ownerId(), Capability.VFS_READ);
+                    requireFileAccess(routed.ownerId(), Capability.VFS_READ,
+                            Capability.VFS_WRITE);
                     return resolve(routed.path(), routed.ownerId())
                             .isPresent();
                 })
@@ -615,7 +608,12 @@ public final class FclRuntimeFunctions {
                     arity(args, 2, "file.link");
                     String linkPath = string(args.get(0), "file.link path");
                     String target = normalize(string(args.get(1), "file.link target"));
-                    return createContentNode(linkPath, target.getBytes(StandardCharsets.UTF_8),
+                    byte[] content = target.getBytes(StandardCharsets.UTF_8);
+                    if (content.length > MAX_LINK_TARGET_BYTES) {
+                        throw new FclRuntimeException("file.link target exceeds "
+                                + MAX_LINK_TARGET_BYTES + " bytes");
+                    }
+                    return createContentNode(linkPath, content,
                             VfsNode.Type.SYMLINK, false).nodeId().toString();
                 })
                 .register("file", "lock", args -> {
@@ -1115,6 +1113,9 @@ public final class FclRuntimeFunctions {
                 .filter(value -> value.name().equals(entrypointName)).findFirst()
                 .orElseThrow(() -> new FclRuntimeException("Unknown package entrypoint: "
                         + entrypointName));
+        if (!isSafeFclIdentifier(entrypoint.name())) {
+            throw new FclRuntimeException("Invalid entrypoint name");
+        }
         String importHash = release.databaseFileHash().value();
         String source = "import \"" + escapeFcl(importHash)
                 + "\" as \"__package_entry\"\n"
@@ -1265,6 +1266,17 @@ public final class FclRuntimeFunctions {
     private static String escapeFcl(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "\\r");
+    }
+
+    private static boolean isSafeFclIdentifier(String value) {
+        return value != null
+                && value.matches("[A-Za-z_][A-Za-z0-9_]*")
+                && !value.equals("func") && !value.equals("if") && !value.equals("else")
+                && !value.equals("while") && !value.equals("break")
+                && !value.equals("continue") && !value.equals("return")
+                && !value.equals("import") && !value.equals("include")
+                && !value.equals("as") && !value.equals("and") && !value.equals("or")
+                && !value.equals("true") && !value.equals("false") && !value.equals("null");
     }
 
     private void registerSwapPool() {
@@ -1477,10 +1489,26 @@ public final class FclRuntimeFunctions {
                 .register("system", "forceRemove", args -> {
                     Authorization.requireAdministrator(transaction, process.ownerId());
                     if (args.size() == 1) {
-                        VfsNode node = requireNode(string(args.getFirst(),
-                                "system.forceRemove path"));
-                        return deletePath(string(args.getFirst(), "system.forceRemove path"),
-                                node.type());
+                        String path = string(args.getFirst(), "system.forceRemove path");
+                        VfsNode node = requireNode(path);
+                        if (!transaction.vfs().findChildren(node.ownerId(),
+                                Optional.of(node.nodeId())).isEmpty()
+                                || !transaction.vfs().findRevisions(node.nodeId()).isEmpty()) {
+                            throw new FclRuntimeException(
+                                    "system.forceRemove cannot remove a non-empty directory or "
+                                            + "versioned file at " + normalize(path)
+                                            + "; the two-argument form (target user, node ID) "
+                                            + "has the same restriction");
+                        }
+                        boolean removed = transaction.vfs().deleteByAdministrator(
+                                process.ownerId(), node.ownerId(), node.nodeId(),
+                                UUID.randomUUID(), now);
+                        if (!removed) {
+                            throw new FclRuntimeException(
+                                    "system.forceRemove was rejected; the node is a root, mount, "
+                                            + "or was concurrently changed: " + normalize(path));
+                        }
+                        return true;
                     }
                     if (args.size() == 2) {
                         return transaction.vfs().deleteByAdministrator(process.ownerId(),
@@ -1545,7 +1573,17 @@ public final class FclRuntimeFunctions {
         String url = string(args.get(0), "network.download url");
         String path = string(args.get(1), "network.download destination");
         FclScope scope = invocation.continuation().scope();
-        String state = "cilexec.download." + invocation.expressionId() + ".";
+        String expression = "cilexec.download." + invocation.expressionId();
+        String identity = downloadIdentity(url, path);
+        if (scope.contains(expression + ".target")) {
+            String previous = string(scope.get(expression + ".target"),
+                    "network.download identity");
+            if (!previous.equals(identity)) {
+                clearDownloadState(scope, expression + "." + previous + ".");
+            }
+        }
+        scope.put(expression + ".target", identity);
+        String state = expression + "." + identity + ".";
         long offset = scope.contains(state + "offset")
                 ? integer(scope.get(state + "offset"), "network.download offset") : 0L;
         Optional<ObjectHash> currentHash = scope.contains(state + "hash")
@@ -1672,6 +1710,16 @@ public final class FclRuntimeFunctions {
         }
     }
 
+    /**
+     * Stable identity of a download attempt so terminal resubmissions cannot reuse stale
+     * offset state. The destination path is part of the identity: resuming with the same
+     * URL but a different target must not append new chunks to the old object.
+     */
+    private static String downloadIdentity(String url, String destinationPath) {
+        return sha256((url + "\0" + destinationPath).getBytes(StandardCharsets.UTF_8))
+                .substring(0, 16);
+    }
+
     private EffectRequest.Policy idempotentPolicy(FclFunctionRegistry.Invocation invocation,
                                                    String operation) {
         // A terminal process is deliberately reused across commands. Expression identifiers
@@ -1705,26 +1753,33 @@ public final class FclRuntimeFunctions {
      */
     private VfsNode resolveFileNode(String path, UUID owner) {
         requireFileAccess(owner, Capability.VFS_READ);
+        boolean administrative = !owner.equals(process.ownerId());
         Set<String> visited = new java.util.HashSet<>();
         VfsNode node = requireNode(path, owner);
         while (node.type() == VfsNode.Type.SYMLINK) {
             if (!visited.add(normalize(path))) {
                 throw new FclRuntimeException("Symbolic link cycle at: " + normalize(path));
             }
-            if (visited.size() > MAX_SYMLINK_DEPTH) {
+            if (visited.size() >= MAX_SYMLINK_DEPTH) {
                 throw new FclRuntimeException(
                         "Symbolic link chain exceeds " + MAX_SYMLINK_DEPTH + " links");
             }
             ObjectHash hash = node.currentObjectHash().orElseThrow();
-            long size = transaction.vfs().logicalObjectSize(hash);
+            long size = administrative
+                    ? transaction.vfs().logicalObjectSizeByAdministrator(
+                    process.ownerId(), owner, hash)
+                    : transaction.vfs().logicalObjectSize(hash);
             if (size > MAX_LINK_TARGET_BYTES) {
                 throw new FclRuntimeException("Symbolic link target is too long");
             }
             java.io.ByteArrayOutputStream target = new java.io.ByteArrayOutputStream((int) size);
             long offset = 0;
             while (offset < size) {
-                byte[] chunk = transaction.vfs().readObjectRange(hash, offset,
-                        (int) Math.min(DOWNLOAD_CHUNK_BYTES, size - offset));
+                int request = (int) Math.min(DOWNLOAD_CHUNK_BYTES, size - offset);
+                byte[] chunk = administrative
+                        ? transaction.vfs().readObjectRangeByAdministrator(
+                        process.ownerId(), owner, hash, offset, request)
+                        : transaction.vfs().readObjectRange(hash, offset, request);
                 if (chunk.length == 0) {
                     throw new FclRuntimeException("Symbolic link ended before its target");
                 }
@@ -1749,24 +1804,30 @@ public final class FclRuntimeFunctions {
         RoutedPath routed = route(path, owner);
         path = routed.path();
         owner = routed.ownerId();
+        boolean administrative = !owner.equals(process.ownerId());
         VfsNode node = resolveFileNode(path, owner);
         ObjectHash hash = node.currentObjectHash().orElseThrow();
-        if (!owner.equals(process.ownerId())) {
-            transaction.vfs().readFileByAdministrator(process.ownerId(), owner,
-                    node.nodeId(), UUID.randomUUID(), now);
-        }
-        long size = transaction.vfs().logicalObjectSize(hash);
+        long size = administrative
+                ? transaction.vfs().logicalObjectSizeByAdministrator(
+                process.ownerId(), owner, hash)
+                : transaction.vfs().logicalObjectSize(hash);
         if (size > MAX_IN_MEMORY_READ_BYTES) throw new FclRuntimeException(
                 "File exceeds the 16 MiB in-memory read limit; use file.readChunk");
         java.io.ByteArrayOutputStream result = new java.io.ByteArrayOutputStream((int) size);
         long offset = 0;
         while (offset < size) {
             int request = (int) Math.min(4L * 1024 * 1024, size - offset);
-            byte[] chunk = transaction.vfs().readObjectRange(hash, offset, request);
+            byte[] chunk = administrative
+                    ? transaction.vfs().readObjectRangeByAdministrator(
+                    process.ownerId(), owner, hash, offset, request)
+                    : transaction.vfs().readObjectRange(hash, offset, request);
             if (chunk.length == 0) throw new FclRuntimeException(
                     "File content ended before its declared size: " + path);
             result.writeBytes(chunk);
             offset += chunk.length;
+        }
+        if (administrative) {
+            audit("vfs.admin.read", node.nodeId(), Map.of("path", normalize(path)));
         }
         return result.toByteArray();
     }
@@ -1819,13 +1880,40 @@ public final class FclRuntimeFunctions {
         RoutedPath routed = route(path, owner);
         path = routed.path();
         owner = routed.ownerId();
+        boolean administrative = !owner.equals(process.ownerId());
         VfsNode node = resolveFileNode(path, owner);
-        if (!owner.equals(process.ownerId())) {
-            transaction.vfs().readFileByAdministrator(process.ownerId(), owner,
-                    node.nodeId(), UUID.randomUUID(), now);
-        }
-        return transaction.vfs().readObjectRange(node.currentObjectHash().orElseThrow(),
+        byte[] chunk = administrative
+                ? transaction.vfs().readObjectRangeByAdministrator(process.ownerId(), owner,
+                node.currentObjectHash().orElseThrow(), offset, maximum)
+                : transaction.vfs().readObjectRange(node.currentObjectHash().orElseThrow(),
                 offset, maximum);
+        if (administrative) {
+            audit("vfs.admin.read", node.nodeId(), Map.of("path", normalize(path)));
+        }
+        return chunk;
+    }
+
+    /**
+     * Bounded whole-object read through the administrator path. The 16 MiB in-memory
+     * cap is enforced before any bytes are materialized, so chunked manifests are
+     * never loaded into one JVM array.
+     */
+    private byte[] readObjectByAdministrator(ObjectHash hash, UUID owner, String limitMessage) {
+        long size = transaction.vfs().logicalObjectSizeByAdministrator(
+                process.ownerId(), owner, hash);
+        if (size > MAX_IN_MEMORY_READ_BYTES) throw new FclRuntimeException(limitMessage);
+        java.io.ByteArrayOutputStream result = new java.io.ByteArrayOutputStream((int) size);
+        long offset = 0;
+        while (offset < size) {
+            int request = (int) Math.min(4L * 1024 * 1024, size - offset);
+            byte[] chunk = transaction.vfs().readObjectRangeByAdministrator(
+                    process.ownerId(), owner, hash, offset, request);
+            if (chunk.length == 0) throw new FclRuntimeException(
+                    "File content ended before its declared size");
+            result.writeBytes(chunk);
+            offset += chunk.length;
+        }
+        return result.toByteArray();
     }
 
     private String writeText(String source, String content, boolean append) {
@@ -1847,18 +1935,24 @@ public final class FclRuntimeFunctions {
         requireType(current, VfsNode.Type.FILE, "file.write");
         byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
         VfsFileLimits.requireWithinLimit(bytes.length);
-        if (append) {
+        StoredObject object;
+        if (!append) {
+            object = StoredObject.create(new BinaryContent(bytes), TEXT, now);
+        } else if (!owner.equals(process.ownerId())) {
+            byte[] existingBytes = readObjectByAdministrator(
+                    current.currentObjectHash().orElseThrow(), owner,
+                    "Cross-user append is limited to files up to 16 MiB");
+            VfsFileLimits.checkedAppendSize(existingBytes.length, bytes.length);
+            byte[] combined = java.util.Arrays.copyOf(existingBytes,
+                    Math.addExact(existingBytes.length, bytes.length));
+            System.arraycopy(bytes, 0, combined, existingBytes.length, bytes.length);
+            object = StoredObject.create(new BinaryContent(combined), TEXT, now);
+        } else {
             VfsFileLimits.checkedAppendSize(transaction.vfs().logicalObjectSize(
                     current.currentObjectHash().orElseThrow()), bytes.length);
-            if (!owner.equals(process.ownerId())) {
-                transaction.vfs().readFileByAdministrator(process.ownerId(), owner,
-                        current.nodeId(), UUID.randomUUID(), now);
-            }
+            object = transaction.vfs().appendChunkedObject(
+                    current.currentObjectHash().orElseThrow(), bytes, TEXT, now);
         }
-        StoredObject object = append
-                ? transaction.vfs().appendChunkedObject(
-                current.currentObjectHash().orElseThrow(), bytes, TEXT, now)
-                : StoredObject.create(new BinaryContent(bytes), TEXT, now);
         if (owner.equals(process.ownerId())) {
             transaction.vfs().saveObject(object);
             if (!transaction.vfs().replaceContent(current.nodeId(), current.currentObjectHash(),
@@ -1959,28 +2053,40 @@ public final class FclRuntimeFunctions {
         owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         ParentAndName parent = parentAndName(source, owner);
-        if (transaction.vfs().findChild(owner, Optional.of(parent.parent().nodeId()),
-                parent.name()).isPresent()) {
+        if (existingChild(owner, parent).isPresent()) {
             throw new FclRuntimeException("Path already exists: " + normalize(source));
         }
         StoredObject object = StoredObject.create(new BinaryContent(bytes), mediaType, now);
         if (!owner.equals(process.ownerId())) {
             if (type != VfsNode.Type.FILE) throw new FclRuntimeException(
                     "Cross-user content creation supports files only");
-            return transaction.vfs().createFileByAdministrator(process.ownerId(), owner,
-                    UUID.randomUUID(), parent.parent().nodeId(), parent.name(), object, revisions,
-                    UUID.randomUUID(), UUID.randomUUID(), now);
+            try {
+                return transaction.vfs().createFileByAdministrator(process.ownerId(), owner,
+                        UUID.randomUUID(), parent.parent().nodeId(), parent.name(), object,
+                        revisions, UUID.randomUUID(), UUID.randomUUID(), now);
+            } catch (RuntimeException conflict) {
+                return existingChildAfterConflict(source, owner, parent, conflict);
+            }
         }
         transaction.vfs().saveObject(object);
         VfsNode node = new VfsNode(UUID.randomUUID(), Optional.of(parent.parent().nodeId()),
                 owner, parent.name(), type, Optional.of(object.objectHash()), Set.of(),
                 revisions, now, now);
-        transaction.vfs().insertNode(node);
-        if (revisions) {
+        boolean inserted;
+        try {
+            transaction.vfs().insertNode(node);
+            inserted = true;
+        } catch (RuntimeException conflict) {
+            node = existingChildAfterConflict(source, owner, parent, conflict);
+            inserted = false;
+        }
+        if (inserted && revisions) {
             transaction.vfs().appendRevision(UUID.randomUUID(), node.nodeId(), owner,
                     object.objectHash(), process.ownerId(), now);
         }
-        audit("vfs.file.create", node.nodeId(), Map.of("path", normalize(source)));
+        if (inserted) {
+            audit("vfs.file.create", node.nodeId(), Map.of("path", normalize(source)));
+        }
         return node;
     }
 
@@ -1994,21 +2100,60 @@ public final class FclRuntimeFunctions {
         owner = routed.ownerId();
         requireFileAccess(owner, Capability.VFS_WRITE);
         ParentAndName parent = parentAndName(source, owner);
-        if (transaction.vfs().findChild(owner, Optional.of(parent.parent().nodeId()),
-                parent.name()).isPresent()) {
+        if (existingChild(owner, parent).isPresent()) {
             throw new FclRuntimeException("Path already exists: " + normalize(source));
         }
+        VfsNode node;
+        boolean inserted;
         if (!owner.equals(process.ownerId())) {
-            return transaction.vfs().createDirectoryByAdministrator(process.ownerId(), owner,
-                    UUID.randomUUID(), parent.parent().nodeId(), parent.name(), UUID.randomUUID(), now)
-                    .nodeId().toString();
+            try {
+                node = transaction.vfs().createDirectoryByAdministrator(process.ownerId(), owner,
+                        UUID.randomUUID(), parent.parent().nodeId(), parent.name(),
+                        UUID.randomUUID(), now);
+                inserted = true;
+            } catch (RuntimeException conflict) {
+                node = existingChildAfterConflict(source, owner, parent, conflict);
+                inserted = false;
+            }
+        } else {
+            VfsNode candidate = new VfsNode(UUID.randomUUID(),
+                    Optional.of(parent.parent().nodeId()), owner, parent.name(),
+                    VfsNode.Type.DIRECTORY, Optional.empty(), Set.of(), false, now, now);
+            try {
+                transaction.vfs().insertNode(candidate);
+                node = candidate;
+                inserted = true;
+            } catch (RuntimeException conflict) {
+                node = existingChildAfterConflict(source, owner, parent, conflict);
+                inserted = false;
+            }
         }
-        VfsNode node = new VfsNode(UUID.randomUUID(), Optional.of(parent.parent().nodeId()),
-                owner, parent.name(), VfsNode.Type.DIRECTORY, Optional.empty(),
-                Set.of(), false, now, now);
-        transaction.vfs().insertNode(node);
-        audit("vfs.directory.create", node.nodeId(), Map.of("path", normalize(source)));
+        if (inserted) {
+            audit("vfs.directory.create", node.nodeId(), Map.of("path", normalize(source)));
+        }
         return node.nodeId().toString();
+    }
+
+    private VfsNode existingChildAfterConflict(String source, UUID owner, ParentAndName parent,
+                                               RuntimeException conflict) {
+        if (!(conflict instanceof com.follarce.persistence.postgres.error.PersistenceFailure
+                failure)
+                || failure.kind()
+                != com.follarce.persistence.postgres.error.PersistenceFailure.Kind.UNIQUE_CONFLICT) {
+            throw conflict;
+        }
+        return existingChild(owner, parent)
+                .orElseThrow(() -> new FclRuntimeException(
+                        "A node already exists at this path: " + normalize(source)));
+    }
+
+    private Optional<VfsNode> existingChild(UUID owner, ParentAndName parent) {
+        if (owner.equals(process.ownerId())) {
+            return transaction.vfs().findChild(owner,
+                    Optional.of(parent.parent().nodeId()), parent.name());
+        }
+        return transaction.vfs().findChildByAdministrator(process.ownerId(), owner,
+                Optional.of(parent.parent().nodeId()), parent.name());
     }
 
     private boolean deletePath(String source, VfsNode.Type expected) {
@@ -2063,14 +2208,20 @@ public final class FclRuntimeFunctions {
 
     private Optional<VfsNode> resolve(String source, UUID owner) {
         String path = normalize(source);
-        Optional<VfsNode> current = transaction.vfs().findChild(owner,
-                Optional.empty(), "/");
+        boolean administrative = !owner.equals(process.ownerId());
+        Optional<VfsNode> current = administrative
+                ? transaction.vfs().findChildByAdministrator(process.ownerId(), owner,
+                Optional.empty(), "/")
+                : transaction.vfs().findChild(owner, Optional.empty(), "/");
         if (path.equals("/")) return current;
         for (String part : path.substring(1).split("/")) {
             if (current.isEmpty() || current.get().type() != VfsNode.Type.DIRECTORY) {
                 return Optional.empty();
             }
-            current = transaction.vfs().findChild(owner,
+            current = administrative
+                    ? transaction.vfs().findChildByAdministrator(process.ownerId(), owner,
+                    Optional.of(current.get().nodeId()), part)
+                    : transaction.vfs().findChild(owner,
                     Optional.of(current.get().nodeId()), part);
         }
         return current;
@@ -2115,6 +2266,19 @@ public final class FclRuntimeFunctions {
 
     private void requireFileAccess(UUID owner, Capability capability) {
         Authorization.require(transaction, process.ownerId(), capability);
+        if (!owner.equals(process.ownerId())) {
+            Authorization.requireAdministrator(transaction, process.ownerId());
+        }
+    }
+
+    private void requireFileAccess(UUID owner, Capability primary, Capability alternative) {
+        java.util.Set<Capability> capabilities = transaction.auth()
+                .capabilities(process.ownerId());
+        if (!capabilities.contains(Capability.SYSTEM_ADMIN)
+                && !capabilities.contains(primary) && !capabilities.contains(alternative)) {
+            throw new SecurityException("Missing CilExec capability: " + primary.name()
+                    + " or " + alternative.name());
+        }
         if (!owner.equals(process.ownerId())) {
             Authorization.requireAdministrator(transaction, process.ownerId());
         }
@@ -2234,6 +2398,7 @@ public final class FclRuntimeFunctions {
         requireUpdated(transaction.processes().update(terminated, terminating.stateVersion(),
                 terminating.executionEpoch()), "process.kill");
         transaction.scheduler().release(target.identity().processUid(), target.executionEpoch());
+        transaction.timers().deleteForProcess(target.identity().processUid());
         audit("process.kill", target.identity().processUid(), Map.of("pid", Long.toString(pid)));
         return true;
     }
@@ -2299,10 +2464,20 @@ public final class FclRuntimeFunctions {
     }
 
     private void audit(String action, UUID resourceId, Map<String, String> details) {
+        String resourceType;
+        if (action.startsWith("effect")) {
+            resourceType = "effect.effect";
+        } else if (action.startsWith("process")) {
+            resourceType = "process.process";
+        } else if (action.startsWith("network.")) {
+            resourceType = "network.request";
+        } else if (action.startsWith("package.")) {
+            resourceType = "package.binding";
+        } else {
+            resourceType = "vfs.node";
+        }
         transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
-                process.ownerId().toString(), action,
-                action.startsWith("effect") ? "effect.effect"
-                        : action.startsWith("process") ? "process.process" : "vfs.node",
+                process.ownerId().toString(), action, resourceType,
                 resourceId.toString(), AuditEvent.Result.SUCCEEDED, details, now));
     }
 
@@ -2328,10 +2503,32 @@ public final class FclRuntimeFunctions {
     }
 
     private static long integer(Object value, String field) {
-        if (!(value instanceof Number number) || number.doubleValue() != number.longValue()) {
-            throw new FclRuntimeException(field + " must be an integer");
+        if (value instanceof Long || value instanceof Integer || value instanceof Short
+                || value instanceof Byte) {
+            return ((Number) value).longValue();
         }
-        return number.longValue();
+        if (value instanceof java.math.BigInteger whole) {
+            try {
+                return whole.longValueExact();
+            } catch (ArithmeticException outOfRange) {
+                throw new FclRuntimeException(field + " must be an integer");
+            }
+        }
+        if (value instanceof java.math.BigDecimal decimal) {
+            try {
+                return decimal.longValueExact();
+            } catch (ArithmeticException outOfRange) {
+                throw new FclRuntimeException(field + " must be an integer");
+            }
+        }
+        if (value instanceof Number number) {
+            double converted = number.doubleValue();
+            if (converted == Math.rint(converted)
+                    && Math.abs(converted) <= (double) Long.MAX_VALUE) {
+                return (long) converted;
+            }
+        }
+        throw new FclRuntimeException(field + " must be an integer");
     }
 
     private static UUID uuid(Object value, String field) {

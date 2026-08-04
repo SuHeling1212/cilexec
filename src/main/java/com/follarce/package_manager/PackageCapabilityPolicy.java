@@ -20,7 +20,8 @@ import java.util.Set;
 public final class PackageCapabilityPolicy {
     private static final Set<String> KNOWN = Set.of(
             "vfs.read", "vfs.write", "terminal.raw_input", "network.http",
-            "network.socket", "process.create", "package.manage", "system.admin");
+            "network.socket", "process.create", "process.control", "package.manage",
+            "system.admin");
     private static final Map<String, Set<Capability>> APPLICATION = Map.of(
             "vfs.read", Set.of(Capability.VFS_READ),
             "vfs.write", Set.of(Capability.VFS_WRITE),
@@ -28,6 +29,7 @@ public final class PackageCapabilityPolicy {
             "network.http", Set.of(Capability.EFFECT_REQUEST),
             "network.socket", Set.of(Capability.EFFECT_REQUEST),
             "process.create", Set.of(Capability.PROCESS_CREATE),
+            "process.control", Set.of(Capability.PROCESS_CONTROL_OWN),
             "package.manage", Set.of(Capability.PACKAGE_IMPORT, Capability.PACKAGE_BIND),
             "system.admin", Set.of(Capability.SYSTEM_ADMIN));
 
@@ -132,8 +134,13 @@ public final class PackageCapabilityPolicy {
     }
 
     private static java.util.Optional<String> capability(String call) {
+        if (call.startsWith("system.") && !call.equals("system.ls")
+                && !call.equals("system.extensions")) {
+            return java.util.Optional.of("system.admin");
+        }
         if (call.equals("socket.bind") || call.equals("socket.accept")
-                || call.startsWith("system.") || call.equals("user.removeUser")) {
+                || call.equals("user.removeUser") || call.equals("user.validateUser")
+                || call.equals("user.getListOfUsers")) {
             return java.util.Optional.of("system.admin");
         }
         if (call.startsWith("network.")) return java.util.Optional.of("network.http");
@@ -145,13 +152,23 @@ public final class PackageCapabilityPolicy {
             return java.util.Optional.of(Set.of("bind", "accept").contains(call)
                     ? "system.admin" : "network.socket");
         }
-        if (call.equals("io.input") || call.equals("io.readKey")
-                || call.equals("io.readChar") || call.equals("input")
-                || call.equals("readKey") || call.equals("readChar")) {
+        if (Set.of("io.input", "util.input", "io.readKey", "io.readChar",
+                "input", "readKey", "readChar").contains(call)) {
             return java.util.Optional.of("terminal.raw_input");
         }
+        if (call.equals("io.readFile")) return java.util.Optional.of("vfs.read");
+        if (call.equals("io.writeFile")) return java.util.Optional.of("vfs.write");
         if (call.equals("process.fork") || call.equals("fork")) {
             return java.util.Optional.of("process.create");
+        }
+        if (Set.of("process.exec", "process.kill", "process.pause", "process.continue",
+                "process.getList", "process.getListOfProcess", "process.getListOfChildProcess",
+                "process.getPPID").contains(call)) {
+            return java.util.Optional.of("process.control");
+        }
+        if (call.startsWith("market.") && !Set.of("market.origin", "market.search",
+                "market.info", "market.list", "market.help", "market.run").contains(call)) {
+            return java.util.Optional.of("package.manage");
         }
         if (call.startsWith("package.") && !call.equals("package.info")
                 && !call.equals("package.list") && !call.equals("package.verify")
@@ -178,6 +195,7 @@ public final class PackageCapabilityPolicy {
             case "network_http" -> "network.http";
             case "network_socket" -> "network.socket";
             case "process_create" -> "process.create";
+            case "process_control" -> "process.control";
             case "package_manage" -> "package.manage";
             case "system_admin" -> "system.admin";
             default -> key;

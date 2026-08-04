@@ -11,7 +11,13 @@ import java.util.Objects;
 
 /** Stable source-plus-hash persistence format for compiled programs. */
 public final class FclProgramCodec {
-    public static final int FORMAT_VERSION = 1;
+    /**
+     * Compiled artifact format version. Bump whenever compiler semantics change so
+     * previously persisted programs are rejected instead of silently miscompiled.
+     * Version 2: '#' is the length operator only, statement keywords are reserved,
+     * else-if chains are supported, and top-level return is rejected.
+     */
+    public static final int FORMAT_VERSION = 2;
 
     private static final Type MAP_TYPE = new TypeToken<LinkedHashMap<String, Object>>() { }
             .getType();

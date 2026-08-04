@@ -29,6 +29,11 @@ import java.util.function.Consumer;
 
 /** Bounded workers that execute journaled effects strictly outside database transactions. */
 public final class EffectWorkerService implements AutoCloseable {
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(EffectWorkerService.class);
+    private static final Duration STALL_CLAIM_TIMEOUT = Duration.ofMinutes(5);
+    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(30);
+
     private final TransactionExecutor effectTransactions;
     private final TransactionExecutor runtimeTransactions;
     private final EffectHandlerRegistry handlers;
@@ -40,7 +45,9 @@ public final class EffectWorkerService implements AutoCloseable {
     private final Runnable schedulerWake;
     private final AtomicBoolean running = new AtomicBoolean();
     private final Semaphore workAvailable = new Semaphore(0);
+    private final List<UUID> workerIds = new ArrayList<>();
     private final List<Thread> workers = new ArrayList<>();
+    private volatile Thread heartbeat;
 
     public EffectWorkerService(TransactionExecutor transactions,
                                EffectHandlerRegistry handlers,
@@ -127,14 +134,50 @@ public final class EffectWorkerService implements AutoCloseable {
         }
         try {
             registerWorkers(workerIds);
+            this.workerIds.addAll(workerIds);
             for (int index = 0; index < workerCount; index++) {
                 UUID workerId = workerIds.get(index);
                 workers.add(Thread.ofVirtual().name("cilexec-effect-" + index)
                         .start(() -> workerLoop(workerId)));
             }
+            heartbeat = Thread.ofVirtual().name("cilexec-effect-heartbeat")
+                    .start(this::heartbeatLoop);
         } catch (RuntimeException failure) {
             running.set(false);
             throw failure;
+        }
+    }
+
+    /**
+     * Refreshes every worker's runner heartbeat while they are idle or executing a long
+     * effect, so {@code claimStalled} never mistakes a still-running effect for a dead one.
+     */
+    private void heartbeatLoop() {
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            try {
+                Thread.sleep(HEARTBEAT_INTERVAL.toMillis());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (workerIds.isEmpty()) continue;
+            Instant now = clock.instant();
+            try {
+                runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
+                    for (UUID workerId : workerIds) {
+                        transaction.effects().heartbeatWorker(workerId, now);
+                    }
+                    return null;
+                });
+            } catch (RuntimeException failure) {
+                if (!isFatal(failure)) {
+                    continue;
+                }
+                if (!running.get()) return;
+                running.set(false);
+                fatalFailure.accept(failure);
+                return;
+            }
         }
     }
 
@@ -159,6 +202,11 @@ public final class EffectWorkerService implements AutoCloseable {
                 Optional<ClaimedWork> claimed = claimOne(workerId);
                 if (claimed.isPresent()) {
                     executeOutsideTransaction(claimed.orElseThrow());
+                    continue;
+                }
+                Optional<EffectRequest> stalled = claimStalled(workerId);
+                if (stalled.isPresent()) {
+                    resolveStalled(stalled.orElseThrow());
                     continue;
                 }
                 Optional<EffectRequest> recovered = claimRecoverableUnknown(workerId);
@@ -218,6 +266,21 @@ public final class EffectWorkerService implements AutoCloseable {
                     .claimRecoverableUnknown(workerId, now, 1);
             return claimed.isEmpty() ? Optional.empty() : Optional.of(claimed.getFirst());
         });
+    }
+
+    private Optional<EffectRequest> claimStalled(UUID workerId) {
+        Instant now = clock.instant();
+        return effectTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
+            List<EffectRequest> claimed = transaction.effects().claimStalled(workerId, now,
+                    STALL_CLAIM_TIMEOUT.toMillis(), 1);
+            return claimed.isEmpty() ? Optional.empty() : Optional.of(claimed.getFirst());
+        });
+    }
+
+    /** A stalled effect may have produced an external side effect, so it resolves as UNKNOWN. */
+    private void resolveStalled(EffectRequest effect) {
+        if (effect.policy().unknownAction() == EffectRequest.UnknownAction.MANUAL) return;
+        resolveRecoveredUnknown(effect);
     }
 
     private void resolveRecoveredUnknown(EffectRequest effect) {
@@ -291,9 +354,9 @@ public final class EffectWorkerService implements AutoCloseable {
             if (!transaction.effects().update(completed, EffectRequest.Status.UNKNOWN)) {
                 throw new IllegalStateException("Recovered effect completion was fenced");
             }
-            wakeProcess(transaction, completed, result.deliveryValue(), now);
             return null;
         });
+        wakeProcessAfterPersist(completed, result.deliveryValue(), now);
         schedulerWake.run();
     }
 
@@ -422,9 +485,9 @@ public final class EffectWorkerService implements AutoCloseable {
             }
             requireAttemptUpdated(transaction.effects().updateAttempt(succeeded,
                     EffectAttempt.Status.EXECUTING), "Effect attempt completion was fenced");
-            wakeProcess(transaction, completed, result.deliveryValue(), now);
             return null;
         });
+        wakeProcessAfterPersist(completed, result.deliveryValue(), now);
         schedulerWake.run();
     }
 
@@ -441,13 +504,34 @@ public final class EffectWorkerService implements AutoCloseable {
             }
             requireAttemptUpdated(transaction.effects().updateAttempt(failedAttempt,
                     EffectAttempt.Status.EXECUTING), "Effect attempt failure was fenced");
-            if (!unknown) {
-                wakeProcess(transaction, failed,
-                        new Continuation.PersistedValue("error", reason), now);
-            }
             return null;
         });
-        if (!unknown) schedulerWake.run();
+        if (!unknown) {
+            wakeProcessAfterPersist(failed,
+                    new Continuation.PersistedValue("error", reason), now);
+            schedulerWake.run();
+        }
+    }
+
+    /**
+     * Delivers the durable result after the effect row committed, so a process wake conflict
+     * can never roll the result back.
+     */
+    private void wakeProcessAfterPersist(EffectRequest effect,
+                                         Continuation.PersistedValue result,
+                                         Instant now) {
+        try {
+            runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
+                wakeProcess(transaction, effect, result, now);
+                return null;
+            });
+        } catch (RuntimeException failure) {
+            if (isFatal(failure)) {
+                throw failure;
+            }
+            LOG.warn("Effect {} completed but its process {} could not be woken: {}",
+                    effect.effectId(), effect.processUid(), safeMessage(failure));
+        }
     }
 
     private static void wakeProcess(com.follarce.domain.port.TransactionContext transaction,
@@ -547,5 +631,16 @@ public final class EffectWorkerService implements AutoCloseable {
             }
         }
         workers.clear();
+        Thread heartbeat = this.heartbeat;
+        this.heartbeat = null;
+        if (heartbeat != null) {
+            heartbeat.interrupt();
+            try {
+                heartbeat.join(Duration.ofSeconds(1));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        workerIds.clear();
     }
 }

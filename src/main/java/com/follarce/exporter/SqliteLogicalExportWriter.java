@@ -24,6 +24,7 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
 
     private static final Set<String> RESERVED_METADATA = Set.of(
             "export.table_count", "export.row_count", "export.manifest.sha256");
+    private static final int ROW_BATCH_SIZE = 500;
 
     private final Connection connection;
     private final PreparedStatement insertRow;
@@ -33,13 +34,15 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
     private String activeTable;
     private MessageDigest activeTableDigest;
     private long activeRowCount;
+    private int pendingRows;
     private long totalRows;
     private boolean complete;
 
     SqliteLogicalExportWriter(Path database) {
         Objects.requireNonNull(database, "database");
         try {
-            connection = DriverManager.getConnection("jdbc:sqlite:" + database.toAbsolutePath());
+            connection = DriverManager.getConnection(
+                    "jdbc:sqlite:" + database.toAbsolutePath().normalize().toUri().toASCIIString());
         } catch (SQLException failure) {
             throw new LogicalExportException("Cannot open SQLite logical export", failure);
         }
@@ -112,7 +115,8 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
             insertRow.setLong(2, activeRowCount);
             insertRow.setString(3, canonical);
             insertRow.setString(4, rowHash);
-            insertRow.executeUpdate();
+            insertRow.addBatch();
+            if (++pendingRows >= ROW_BATCH_SIZE) flushRows();
         } catch (SQLException failure) {
             throw new LogicalExportException("Cannot append logical export row", failure);
         }
@@ -125,6 +129,7 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
                 activeTable, activeRowCount, hash);
         try (PreparedStatement insert = connection.prepareStatement(
                 "INSERT INTO export_table(table_name,row_count,content_sha256) VALUES (?,?,?)")) {
+            flushRows();
             insert.setString(1, summary.tableName());
             insert.setLong(2, summary.rowCount());
             insert.setString(3, summary.contentSha256());
@@ -136,6 +141,13 @@ final class SqliteLogicalExportWriter implements AutoCloseable {
             activeTable = null;
             activeTableDigest = null;
             activeRowCount = 0;
+        }
+    }
+
+    private void flushRows() throws SQLException {
+        if (pendingRows > 0) {
+            insertRow.executeBatch();
+            pendingRows = 0;
         }
     }
 

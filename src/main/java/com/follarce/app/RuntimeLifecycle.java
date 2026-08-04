@@ -34,11 +34,12 @@ public final class RuntimeLifecycle implements AutoCloseable {
         }
         hooks.phase(HealthState.RuntimePhase.STARTING);
         try {
-            int schemaVersion = startupStep(hooks::verifySchema);
             startupStep(() -> {
                 hooks.acquireControl(this::fence);
                 controlAcquired.set(true);
             });
+            startupStep(hooks::migrate);
+            int schemaVersion = startupStep(hooks::verifySchema);
             startupStep(() -> {
                 hooks.beginBoot(schemaVersion);
                 bootStarted.set(true);
@@ -211,6 +212,8 @@ public final class RuntimeLifecycle implements AutoCloseable {
         int verifySchema();
 
         void acquireControl(Consumer<Throwable> onFence);
+
+        void migrate();
 
         void beginBoot(int schemaVersion);
 

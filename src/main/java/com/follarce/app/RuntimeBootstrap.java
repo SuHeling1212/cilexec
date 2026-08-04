@@ -14,6 +14,7 @@ import com.follarce.health.HealthState;
 import com.follarce.persistence.postgres.connection.ControlLock;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.DatabaseHealth;
+import com.follarce.persistence.postgres.connection.FlywayMigrator;
 import com.follarce.persistence.postgres.connection.SchemaVerifier;
 import com.follarce.persistence.postgres.connection.PostgresWorkListener;
 import com.follarce.persistence.postgres.repository.RecoveryCoordinator;
@@ -158,6 +159,14 @@ public final class RuntimeBootstrap {
         }
 
         @Override
+        public void migrate() {
+            if (!config.migrateOnStart()) return;
+            FlywayMigrator migrator = new FlywayMigrator(config.migratorDatabase());
+            migrator.migrate();
+            migrator.validate();
+        }
+
+        @Override
         public void beginBoot(int schemaVersion) {
             boot = metadata.beginBoot(config.instanceName(), config.advisoryLockKey(),
                     buildInfo.applicationVersion() + "+" + buildInfo.revision(), schemaVersion,
@@ -189,7 +198,7 @@ public final class RuntimeBootstrap {
             scheduler = new SchedulerService(runtimeTransactions, processHandler,
                     requireBoot().bootId(), config.schedulerWorkers(), config.leaseDuration(),
                     config.schedulerErrorBackoff(), requireFence());
-            workListener = new PostgresWorkListener(runtimeDataSource,
+            workListener = new PostgresWorkListener(config.runtimeDatabase(),
                     this::wakeScheduler, this::wakeEffects, () -> {
                         TimerLoop current = timerLoop;
                         if (current != null) current.wake();
@@ -233,7 +242,8 @@ public final class RuntimeBootstrap {
                     current.wakeInterrupt();
                 }
                 return released + fired + purged;
-            }, this::nextMaintenanceAt, requireFence());
+            }, () -> timers.deleteFiredExpired(Instant.now().minus(
+                    java.time.Duration.ofMinutes(1))), this::nextMaintenanceAt, requireFence());
             timerLoop.start();
         }
 
@@ -269,8 +279,6 @@ public final class RuntimeBootstrap {
                     .ifPresent(_ -> {});
             var access = new TerminalAccessService(runtimeTransactions,
                     config.runtimeDatabase().jdbcUrl(), clock, terminalSettings.username());
-            com.follarce.application.FclRuntimeFunctions.setPasswordVerifier(
-                    password -> access.login(terminalSettings.username(), password).isPresent());
             terminalServer = new TerminalServer(terminalSettings.port(), access,
                     account -> new DatabaseTerminalControl(runtimeTransactions, account,
                             runtimeShutdown,

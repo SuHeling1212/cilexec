@@ -1,48 +1,55 @@
-# CilExec Java 源码扩展开发
+# Developing CilExec Java Source Extensions
 
-## 1. 这套扩展系统解决什么问题
+## 1. What This Extension System Solves
 
-CilExec 允许有能力的开发者在**仍持有项目源代码时**加入 Java 扩展。扩展可以：
+CilExec lets a capable developer add Java extensions **while the project source is still
+in hand**. Extensions can:
 
-- 注册新的 FCL 命名空间和函数；
-- 注册函数所需的外部副作用处理器；
-- 在当前 FCL 语句的 PostgreSQL 事务内读写 CilExec 仓储；
-- 把自己的状态写入当前进程的持久化 continuation；
-- 通过 effect journal 等待外部操作，恢复后继续同一个表达式。
+- register new FCL namespaces and functions;
+- register the external-side-effect handlers those functions require;
+- read and write CilExec repositories inside the PostgreSQL transaction of the current
+  FCL statement;
+- persist their own state in the current process's durable continuation;
+- wait on external operations through the effect journal and resume the same expression
+  when the outcome arrives.
 
-它不是运行期插件系统。CilExec 不扫描插件目录，不使用 `ServiceLoader` 发现扩展，
-不接收 JAR 路径，也没有安装、卸载、热更新 Java 扩展的终端函数。唯一入口是源码中的
-[`SourceExtensionIndex.java`](../src/main/java/com/follarce/extension/SourceExtensionIndex.java)。
-索引在 JVM 初始化时被编译成一个不可变清单。
+It is not a runtime plugin system. CilExec scans no plugin directories, does not use
+`ServiceLoader`, accepts no JAR paths, and exposes no terminal functions to install,
+uninstall, or hot-reload Java extensions. The single entry point is the source file
+[`SourceExtensionIndex.java`](../src/main/java/com/follarce/extension/SourceExtensionIndex.java).
+The index is compiled into an immutable catalog when the JVM initializes.
 
-因此，扩展加入成品的流程固定为：
+The flow for adding an extension to a release is therefore fixed:
 
 ```text
-编写 Java 源码 → 在 SourceExtensionIndex 显式登记 → 测试 → 重新构建 JAR/镜像
+write Java source → register explicitly in SourceExtensionIndex → test → rebuild JAR/image
 ```
 
-JAR 或镜像形成后，CilExec 自身没有再修改扩展集合的能力。需要增删扩展时必须回到源码，
-重新测试并构建新的系统版本。
+Once the JAR or image is built, CilExec itself has no way to modify the extension set.
+Adding or removing an extension means going back to the source, re-testing, and building a
+new system version.
 
-> “封闭”指没有受支持的运行期加载入口，不是对宿主机管理员的防篡改承诺。能替换 JAR、
-> 改写镜像层或控制容器运行参数的人仍能替换整个程序。正式部署应使用只读容器文件系统、
-> 镜像 digest 和受控镜像仓库。
+> "Closed" means there is no supported runtime loading path, not that it is tamper-proof
+> against host administrators. Anyone who can replace the JAR, rewrite the image layers, or
+> control container runtime arguments can replace the whole program. Production deployments
+> should use a read-only container filesystem, image digests, and a controlled registry.
 
-## 2. 目录和职责
+## 2. Directories and Responsibilities
 
-| 位置 | 职责 |
+| Location | Responsibility |
 | --- | --- |
-| `com.follarce.extension.api` | 扩展开发者使用的公开 Java 契约。 |
-| `JavaExtensionCatalog` | 校验声明、冻结清单，并把函数/副作用接入 Runtime。 |
-| `SourceExtensionIndex` | 唯一的生产扩展源码清单。 |
-| 扩展自己的包 | 扩展实现；建议使用组织名，例如 `com.acme.cilexec`。 |
+| `com.follarce.extension.api` | The public Java contracts used by extension developers. |
+| `JavaExtensionCatalog` | Validates declarations, freezes the catalog, and wires functions/effects into the Runtime. |
+| `SourceExtensionIndex` | The only production source list of extensions. |
+| The extension's own package | The extension implementation; an organization name such as `com.acme.cilexec` is recommended. |
 
-一个扩展实现 `CilExecExtension`，返回固定描述并在 `register` 中声明函数和副作用。
-扩展实例及副作用处理器可能被多个虚拟线程同时使用，类字段必须不可变或线程安全。
+An extension implements `CilExecExtension`, returns a fixed descriptor, and declares
+functions and effects in `register`. Extension instances and effect handlers may be used by
+multiple virtual threads at once; class fields must be immutable or thread-safe.
 
-## 3. 最小函数扩展
+## 3. Minimal Function Extension
 
-新建 `src/main/java/com/acme/cilexec/GreetingExtension.java`：
+Create `src/main/java/com/acme/cilexec/GreetingExtension.java`:
 
 ```java
 package com.acme.cilexec;
@@ -71,7 +78,7 @@ public final class GreetingExtension implements CilExecExtension {
 }
 ```
 
-然后只在 `SourceExtensionIndex.sourceExtensions()` 中加入构造器：
+Then add exactly one constructor entry to `SourceExtensionIndex.sourceExtensions()`:
 
 ```java
 private static List<CilExecExtension> sourceExtensions() {
@@ -81,32 +88,39 @@ private static List<CilExecExtension> sourceExtensions() {
 }
 ```
 
-重新构建后函数已经注册到 Runtime，可直接在 FCL 中使用；`import` 专用于按
-`.db` 文件 SHA-256 导入 FCL 包，不能用于 Java 扩展：
+After a rebuild the functions are registered with the Runtime and can be called directly
+from FCL; `import` is reserved for importing FCL packages by `.db` file SHA-256 and cannot
+load Java extensions:
 
 ```fcl
 message = greeting.hello("CilExec")
 shortMessage = greeting.hi("developer")
 ```
 
-扩展命名空间不能占用 CilExec 内置命名空间，也不能与另一扩展的限定函数名或别名重复。
-非法名称和重复注册会在清单构造或 Runtime 绑定时直接失败，不会静默覆盖原函数。
+Installation is rejected if an extension namespace collides with a CilExec built-in
+namespace, with another extension's qualified function name or alias, or with an existing
+**bare** function name (the unqualified spelling used without a namespace). Invalid names
+and duplicate registrations fail at catalog construction or Runtime binding time; an
+original function is never silently overwritten.
 
-## 4. 持久化状态和数据库写入
+Extension function arguments are positional and may be `null`: FCL `null` is a first-class
+value, so the argument list handed to the callback may contain `null` elements.
 
-`ExtensionFunctionContext` 提供：
+## 4. Persistent State and Database Writes
 
-| API | 含义 |
+`ExtensionFunctionContext` provides:
+
+| API | Meaning |
 | --- | --- |
-| `arguments()` / `argument(i)` | 当前 FCL 参数。 |
-| `processUid()` / `pid()` / `ownerId()` | 当前持久进程和用户身份。 |
-| `expressionId()` / `executionEpoch()` | 当前表达式和执行围栏身份。 |
-| `now()` | 本语句固定使用的 Runtime 时间。 |
-| `state()` | 扩展私有、随 continuation 持久化的状态。 |
-| `transaction()` | 当前语句事务的仓储视图，没有 `commit`、`rollback`、`close`。 |
-| `awaitEffect(...)` | 持久登记外部副作用，暂停并在结果到达后恢复。 |
+| `arguments()` / `argument(i)` | The current FCL arguments. |
+| `processUid()` / `pid()` / `ownerId()` | The current durable process and user identity. |
+| `expressionId()` / `executionEpoch()` | The current expression and execution-fence identity. |
+| `now()` | The Runtime time fixed for this statement. |
+| `state()` | Extension-private state persisted with the continuation. |
+| `transaction()` | Repository view of the current statement transaction, without `commit`, `rollback`, or `close`. |
+| `awaitEffect(...)` | Durably registers an external effect, suspends, and resumes when the outcome arrives. |
 
-持久计数器示例：
+Persistent counter example:
 
 ```java
 registrar.function("counter", "next", context -> {
@@ -121,18 +135,26 @@ registrar.function("counter", "next", context -> {
 });
 ```
 
-`state()` 自动以扩展 ID 隔离键名，并由现有 continuation 编码器保存。允许的值与 FCL
-值相同：`null`、字符串、布尔值、数字、数组和字符串键对象。不要放入连接、流、线程、
-文件句柄、任意 Java 对象或只能在内存中识别的实例。
+`state()` keys are namespaced per extension and saved by the existing continuation codec.
+Each key is stored under the format
+`cilexec.extension.<extensionId.length>.<extensionId>.<key>`; the length prefix on the
+extension ID keeps keys of different extensions from colliding. Allowed values are the same
+as FCL values: `null`, strings, booleans, numbers, arrays, and string-keyed objects. Do not
+store connections, streams, threads, file handles, arbitrary Java objects, or instances
+that only make sense in memory.
 
-`transaction()` 暴露现有 domain repository，但不允许扩展自己结束事务。通过它完成的数据库
-写入与 continuation、进程状态、调度队列在同一次提交中可见。事务回滚时这些写入也一起回滚。
-扩展仍须使用当前 `ownerId` 做授权和资源归属，不得绕过 capability、RLS 或审计。
+`transaction()` exposes the existing domain repositories but does not let an extension end
+the transaction itself. Writes made through it become visible in the same commit as the
+continuation, process state, and scheduler queue; a rollback undoes them as well. Extensions
+must still use the current `ownerId` for authorization and resource ownership and must not
+bypass capabilities, RLS, or audit.
 
-## 5. 外部副作用
+## 5. External Effects
 
-网络请求、宿主文件、消息发送、子进程等数据库外操作不能直接写在 FCL 函数回调中。
-正确方式是让函数调用 `awaitEffect`，并登记匹配的 `ExtensionEffectHandler`：
+Operations outside the database — network requests, host files, message sending, child
+processes — must not be written directly inside an FCL function callback. The correct
+approach is to have the function call `awaitEffect` and register a matching
+`ExtensionEffectHandler`:
 
 ```java
 import com.follarce.extension.api.ExtensionEffectHandler;
@@ -157,47 +179,68 @@ registrar.effect(new ExtensionEffectHandler() {
 
     @Override
     public Object execute(Object request, Optional<String> idempotencyKey) throws Exception {
-        // 在这里调用真正的外部系统，并返回可持久化的 FCL 值。
+        // Call the real external system here and return a persistable FCL value.
         return Map.of("accepted", true);
     }
 });
 ```
 
-效果请求、进程的 `WAITING_EFFECT` 状态和 continuation 在一个数据库事务中提交；提交前
-effect worker 看不到请求。处理器在数据库事务之外运行，结果重新写入 effect journal，随后
-投递给同一个持久进程。表达式恢复后，再次调用 `awaitEffect` 会消费已投递结果，不会新建请求。
+The effect request, the process's `WAITING_EFFECT` state, and the continuation are committed
+in one database transaction; effect workers cannot see the request before the commit. The
+handler runs outside the transaction, its result is written back to the effect journal, and
+then delivered to the same durable process. When the expression resumes, a second call to
+`awaitEffect` consumes the delivered result instead of creating a new request.
 
-恢复策略：
+The handler's return value **must be encodable as an FCL value**; an unencodable return
+(streams, threads, arbitrary Java objects, and so on) is recorded as `UNKNOWN` rather than
+`FAILED`, so the configured recovery path is preserved instead of failing the effect
+permanently. Extension effects also do not support object-backed (large-object) payloads;
+request and result are limited to regular JSON-encodable values.
 
-| 策略 | 崩溃后的行为 | 适用条件 |
+Recovery policies:
+
+| Policy | Behavior after a crash | When to use |
 | --- | --- | --- |
-| `manual()` | 已开始但结果未知时不自动重试；保留 `UNKNOWN`。 | 宁可人工处理，也不能自动重复。 |
-| `retryIdempotent(key)` | 结果未知时允许自动重试。 | 远端必须真实保存并去重这个 key。只在本地声明不算幂等。 |
-| `queryRemote()` | 先调用处理器的 `queryOutcome` 查询远端结果。 | 远端必须能按持久身份确认原操作结果。 |
+| `manual()` | No automatic retry when an effect started but its outcome is unknown; the effect stays `UNKNOWN`. | Manual handling is preferable to automatic duplication. |
+| `retryIdempotent(key)` | Automatic retry is allowed when the outcome is unknown. | The remote side must truly persist and deduplicate this key. Declaring idempotency locally is not enough. |
+| `queryRemote()` | Calls the handler's `queryOutcome` to check the remote outcome first. | The remote side must be able to confirm the original operation's result by durable identity. |
 
-不能在任意两个独立系统之间仅靠本地 Java 代码保证“恰好一次”。若远端没有幂等键或结果查询，
-应使用 `manual()`：它避免自动重复，但崩溃窗口内可能需要管理员确认成功或失败。
+"Exactly once" cannot be guaranteed between two independent systems with local Java code
+alone. If the remote side has no idempotency key or outcome query, use `manual()`: it avoids
+automatic duplication, but an administrator may need to confirm success or failure during a
+crash window.
 
-## 6. 持久化开发规范
+## 6. Persistence Development Rules
 
-CilExec 无法从语言层面证明第三方 Java 代码遵守持久化模型，所以扩展作者必须遵守以下规则：
+CilExec cannot prove from the language level that third-party Java code respects the
+persistence model, so extension authors must follow these rules:
 
-1. `register` 只能声明函数和处理器，不得联网、写文件、启动线程或读取变化中的环境状态。
-2. FCL 函数回调可能因事务冲突或崩溃而重新执行；除 `state()` 和 `transaction()` 内操作外，
-   应当把它当作可重放计算。
-3. 禁止用 `static` 字段、实例字段、`ThreadLocal`、缓存或后台线程保存语义状态。
-4. 数据库外操作必须使用 `awaitEffect`，不得直接在函数回调里发送请求或执行命令。
-5. 仓储写入、状态更新和审计应留在同一个语句事务中；不要自行获取 JDBC 连接。
-6. 返回值、副作用请求、副作用结果和扩展状态都必须是可编码的 FCL 值。
-7. 处理器必须线程安全，并设置明确的超时和数据量上限；不可无限等待或无限读入内存。
-8. 处理器收到幂等键时，只有把它传给远端并由远端去重后，才能声明可重试幂等。
-9. 扩展升级若改变持久状态格式，应保留向后读取或提供受测试的数据库迁移。
-10. 扩展不得依赖未提交数据在其他线程、连接或外部系统中立即可见。
+1. `register` may only declare functions and handlers: no networking, file writes, thread
+   starts, or reads of changing environment state.
+2. FCL function callbacks may re-execute because of transaction conflicts or crashes; apart
+   from `state()` and `transaction()` operations, treat them as replayable computations.
+3. Never hold semantic state in `static` fields, instance fields, `ThreadLocal`, caches, or
+   background threads.
+4. Out-of-database operations must go through `awaitEffect`; never send requests or run
+   commands directly inside a function callback.
+5. Repository writes, state updates, and audit stay in the same statement transaction; do
+   not acquire JDBC connections yourself.
+6. Return values, effect requests, effect results, and extension state must all be
+   encodable FCL values.
+7. Handlers must be thread-safe and set explicit timeouts and data-size limits; never wait
+   indefinitely or read unbounded data into memory.
+8. When a handler receives an idempotency key, it may claim retryable idempotency only if
+   the key is passed to the remote side and deduplicated there.
+9. If an extension upgrade changes the persistent state format, keep backward reading or
+   ship a tested database migration.
+10. Extensions must not rely on uncommitted data being immediately visible to other
+    threads, connections, or external systems.
 
-## 7. 依赖、构建和发布
+## 7. Dependencies, Build, and Release
 
-扩展需要第三方库时，把依赖作为普通 Maven 依赖加入项目 `pom.xml`。它会随 CilExec 一起锁定、
-测试并打入最终 shaded JAR；不要在运行期下载 Java 依赖。推荐流程：
+Add third-party library requirements as ordinary Maven dependencies in the project
+`pom.xml`. They are locked, tested, and packaged into the final shaded JAR together with
+CilExec; do not download Java dependencies at runtime. Recommended flow:
 
 ```bash
 mvn clean test
@@ -205,21 +248,27 @@ mvn clean package
 java -jar target/cilexec-app.jar terminal
 ```
 
-使用容器时必须显式重建：
+When using a container, rebuild explicitly:
 
 ```bash
 ./Install.sh --rebuild
 ```
 
-`system.extensions()` 返回本构建已经封装的扩展 ID、版本和说明；`system.ls()` 返回包含扩展在内
-的实际函数名称。扩展版本应该随行为或持久格式变化而更新，并和 CilExec 镜像 digest 一起记录。
+`system.extensions()` returns the extension IDs, versions, and descriptions sealed into the
+current build; `system.ls()` returns the actual function names, including extensions.
+Bump the extension version when behavior or the persistent format changes, and record it
+together with the CilExec image digest.
 
-## 8. 发布前检查表
+## 8. Pre-Release Checklist
 
-- 扩展 ID、函数命名空间、函数名、副作用类型稳定且没有冲突；
-- 普通路径、参数错误、权限拒绝、事务回滚和 Runtime 崩溃均有测试；
-- 不存在内存语义状态或函数内直接外部副作用；
-- `manual`、`retryIdempotent`、`queryRemote` 的选择与远端真实能力一致；
-- 处理器线程安全、有超时和大小限制；
-- 数据库写入使用当前用户身份并保留必要审计；
-- `mvn clean test` 通过，镜像按 digest 发布并以只读文件系统运行。
+- Extension ID, function namespace, function names, and effect types are stable and
+  conflict-free (including against built-in namespaces and bare names);
+- Tests cover the happy path, argument errors, permission denials, transaction rollbacks,
+  and Runtime crashes;
+- No in-memory semantic state and no direct external effects inside functions;
+- The choice among `manual`, `retryIdempotent`, and `queryRemote` matches the remote side's
+  real capabilities;
+- Handlers are thread-safe with timeouts and size limits;
+- Database writes use the current user identity and keep the necessary audit;
+- `mvn clean test` passes, the image is published by digest, and it runs with a read-only
+  filesystem.

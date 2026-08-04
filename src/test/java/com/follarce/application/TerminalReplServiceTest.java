@@ -18,6 +18,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TerminalReplServiceTest {
@@ -196,12 +198,44 @@ class TerminalReplServiceTest {
                 new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
 
         String packageId = "a".repeat(64);
-        repl.submit(owner, sessionId, "value = 1; import \"" + packageId + "\" as \"m\"");
-        run(persistence, executor, owner);
+        com.follarce.domain.vfs.ObjectHash hash = new com.follarce.domain.vfs.ObjectHash(packageId);
+        persistence.packages.releases.put(new com.follarce.domain.packageinfo.PackageRelease.Hash(hash),
+                new com.follarce.domain.packageinfo.PackageRelease(
+                        new com.follarce.domain.packageinfo.PackageRelease.Coordinate(
+                                "demo", "pkg", "1.0.0"),
+                        new com.follarce.domain.packageinfo.PackageRelease.Hash(hash),
+                        hash, hash, NOW));
 
-        TerminalReplService.Submission next = repl.submit(owner, sessionId, "value + 1");
-        assertTrue(next.source().startsWith("import \"" + packageId + "\" as \"m\"\n"),
-                next.source());
+        TerminalReplService.Submission first =
+                repl.submit(owner, sessionId, "value = 1; import \"" + packageId + "\" as \"m\"");
+        com.follarce.fcl.FclContinuation restored =
+                new com.follarce.application.FclPersistenceBridge(
+                        new FclContinuationCodec()).restore(first.process().continuation());
+        Object library = restored.scope().get(TerminalReplService.LIBRARY_SCOPE_KEY);
+        assertTrue(library instanceof String text && text.contains(packageId)
+                && text.contains("import"), String.valueOf(library));
+
+    }
+
+    @Test
+    void rejectsAnUnresolvableImportWithoutWedgingTheSession() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+
+        String missing = "b".repeat(64);
+        assertThrows(com.follarce.fcl.FclRuntimeException.class,
+                () -> repl.submit(owner, sessionId, "import \"" + missing + "\" as \"e2\""));
+
+        TerminalReplService.Submission next = repl.submit(owner, sessionId, "1 + 1");
+        assertFalse(next.source().contains(missing), next.source());
+        assertTrue(next.source().endsWith("return 1 + 1\n"), next.source());
     }
 
     private static void run(ProgramServiceTest.TestPersistence persistence,

@@ -3,6 +3,7 @@ package com.follarce.persistence.postgres.error;
 import java.sql.SQLException;
 import java.sql.SQLNonTransientConnectionException;
 import java.sql.SQLRecoverableException;
+import java.sql.SQLTimeoutException;
 import java.sql.SQLTransientConnectionException;
 
 /** The sole SQLSTATE-to-domain error mapping in the PostgreSQL adapter. */
@@ -23,6 +24,14 @@ public final class SqlStateClassifier {
         }
         if ("40P01".equals(state)) {
             return failure(PersistenceFailure.Kind.DEADLOCK, true, operation, exception);
+        }
+        if (exception instanceof SQLTimeoutException
+                || "57014".equals(state)
+                || "57P01".equals(state)) {
+            return failure(PersistenceFailure.Kind.RETRYABLE_TRANSIENT, true, operation, exception);
+        }
+        if ("08P01".equals(state)) {
+            return failure(PersistenceFailure.Kind.GENERAL, false, operation, exception);
         }
         if ((state != null && state.startsWith("08"))
                 || exception instanceof SQLTransientConnectionException

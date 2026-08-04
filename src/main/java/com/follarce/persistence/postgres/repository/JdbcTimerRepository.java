@@ -27,7 +27,8 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
     public void save(ProcessTimer timer) {
         String sql = "INSERT INTO process.timer(timer_id,process_uid,owner_id,wake_at,status,claimed_by,"
                 + "claimed_at,created_at,fired_at,cancelled_at,payload_json) "
-                + "SELECT ?,?,owner_id,?,?,?,?,?,?,?,? FROM process.process WHERE process_uid=? "
+                + "SELECT ?,?,owner_id,?,?,?,?,?,?,CASE WHEN ?='CANCELLED' THEN clock_timestamp() "
+                + "ELSE NULL END,? FROM process.process WHERE process_uid=? "
                 + "ON CONFLICT (timer_id) DO UPDATE SET status=EXCLUDED.status,claimed_by=EXCLUDED.claimed_by,"
                 + "claimed_at=EXCLUDED.claimed_at,fired_at=EXCLUDED.fired_at,cancelled_at=EXCLUDED.cancelled_at";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -39,11 +40,7 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
             JdbcValues.nullableInstant(statement, 6, timer.claimedAt());
             statement.setTimestamp(7, java.sql.Timestamp.from(timer.createdAt()));
             JdbcValues.nullableInstant(statement, 8, timer.firedAt());
-            if (timer.status() == ProcessTimer.Status.CANCELLED) {
-                statement.setTimestamp(9, java.sql.Timestamp.from(timer.claimedAt().orElse(timer.createdAt())));
-            } else {
-                statement.setNull(9, java.sql.Types.TIMESTAMP_WITH_TIMEZONE);
-            }
+            statement.setString(9, timer.status().name());
             statement.setObject(10, JdbcValues.json(json.write(timer.payload().orElse(null))));
             statement.setObject(11, timer.processUid());
             requireOne("timer.save", statement.executeUpdate());
@@ -52,6 +49,27 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
             }
         } catch (SQLException exception) {
             throw failure("timer.save", exception);
+        }
+    }
+
+    public int deleteFiredExpired(Instant before) {
+        String sql = "DELETE FROM process.timer WHERE status='FIRED' "
+                + "AND COALESCE(fired_at,created_at)<?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(before));
+            return statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("timer.deleteFiredExpired", exception);
+        }
+    }
+
+    public int deleteForProcess(UUID processUid) {
+        String sql = "DELETE FROM process.timer WHERE process_uid=?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, processUid);
+            return statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("timer.deleteForProcess", exception);
         }
     }
 

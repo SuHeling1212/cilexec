@@ -109,13 +109,15 @@ public final class VfsService {
             byte[] replacement,
             String mediaType
     ) {
+        if (expectedHash == null) {
+            throw new IllegalArgumentException("expectedHash must not be null");
+        }
         VfsFileLimits.requireWithinLimit(replacement.length);
         Instant now = clock.instant();
         StoredObject object = StoredObject.create(new BinaryContent(replacement), mediaType, now);
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.VFS_WRITE);
-            VfsNode current = VfsNodeChecks.requireOwned(
-                    VfsNodeChecks.requireNode(transaction.vfs(), nodeId), ownerId,
+            VfsNode current = VfsNodeChecks.requireContent(transaction.vfs(), nodeId, ownerId,
                     "Only the owner may replace VFS content");
             if (!current.currentObjectHash().equals(Optional.of(expectedHash))) {
                 throw new IllegalStateException("VFS object version conflict");

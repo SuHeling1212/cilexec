@@ -165,16 +165,16 @@ public final class FclRuntime {
                 payload.put("alias", importInstruction.alias());
             }
             payload.put("wildcard", importInstruction.wildcard());
+            advance(program, continuation, pointer + 1);
             continuation.waitState(FclContinuation.WaitState.directive(
                     FclContinuation.WaitKind.IMPORT, importInstruction.target(), payload));
-            advanceWithoutClearingWait(program, continuation, pointer + 1);
             return result(FclStepResult.Status.DIRECTIVE, pointer, continuation,
                     importInstruction.line(), importInstruction.target());
         }
         if (instruction instanceof FclInstruction.Include includeInstruction) {
+            advance(program, continuation, pointer + 1);
             continuation.waitState(FclContinuation.WaitState.directive(
                     FclContinuation.WaitKind.INCLUDE, includeInstruction.target(), Map.of()));
-            advanceWithoutClearingWait(program, continuation, pointer + 1);
             return result(FclStepResult.Status.DIRECTIVE, pointer, continuation,
                     includeInstruction.line(), includeInstruction.target());
         }
@@ -255,15 +255,11 @@ public final class FclRuntime {
     }
 
     private static void advance(FclProgram program, FclContinuation continuation, int target) {
-        continuation.pendingStatement(null);
-        continuation.programCounter(target);
-        normalizePointer(program, continuation);
-        pruneState(continuation);
-    }
-
-    private static void advanceWithoutClearingWait(FclProgram program,
-                                                   FclContinuation continuation,
-                                                   int target) {
+        if (continuation.waitState().kind() != FclContinuation.WaitKind.NONE
+                && !continuation.halted()) {
+            throw new IllegalStateException(
+                    "A host function set a wait state without suspending execution");
+        }
         continuation.pendingStatement(null);
         continuation.programCounter(target);
         normalizePointer(program, continuation);

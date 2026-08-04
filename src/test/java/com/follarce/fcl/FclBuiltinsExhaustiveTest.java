@@ -54,8 +54,17 @@ class FclBuiltinsExhaustiveTest {
         assertEquals(Math.E, call("math.e"));
 
         assertEquals("{\"a\":[1,true]}", call("util.toJson", Map.of("a", List.of(1L, true))));
-        assertEquals(Map.of("a", List.of(1.0d, true)),
+        assertEquals(Map.of("a", List.of(1L, true)),
                 call("util.fromJson", "{\"a\":[1,true]}"));
+        assertEquals(1L, call("util.fromJson", "1"));
+        assertEquals(1.0d, call("util.fromJson", "1.0"));
+        assertEquals(1000.0d, call("util.fromJson", "1e3"));
+        assertEquals(new java.math.BigInteger("12345678901234567890"),
+                call("util.fromJson", "12345678901234567890"));
+        assertEquals("12345678901234567890",
+                call("util.toJson", call("util.fromJson", "12345678901234567890")));
+        assertEquals("{\"a\":[1,true]}",
+                call("util.toJson", call("util.fromJson", "{\"a\":[1,true]}")));
         assertEquals("array", call("util.typeOf", List.of()));
         assertEquals(true, call("util.isArray", List.of()));
         assertEquals(true, call("util.isMap", Map.of()));
@@ -81,9 +90,18 @@ class FclBuiltinsExhaustiveTest {
 
         assertEquals("/a/c", call("path.normalize", "/a//b/../c"));
         assertEquals("a/c", call("path.resolve", "a/./b/../c"));
+        assertEquals("..", call("path.normalize", ".."));
+        assertEquals("../b", call("path.normalize", "../a/../b"));
+        assertEquals("..", call("path.normalize", "a/../.."));
+        assertEquals("/a", call("path.normalize", "/../a"));
         assertEquals("c.txt", call("path.getFileName", "/a/c.txt"));
         assertEquals("/a", call("path.getParentPath", "/a/c.txt"));
         assertEquals("/a", call("path.getParent", "/a/c.txt"));
+        assertEquals(".", call("path.getParentPath", "c.txt"));
+        assertEquals("a", call("path.getParentPath", "a/b.txt"));
+        assertEquals("/", call("path.getParentPath", "/c.txt"));
+        assertEquals("../a", call("path.getParentPath", "../a/b"));
+        assertEquals("../a/b", call("path.getParentPath", "../a/b/c.txt"));
         assertEquals(true, call("path.isAbsolute", "\\a"));
         assertEquals("/a/c", call("path.join", "/a", "b", "..", "c"));
 
@@ -118,6 +136,8 @@ class FclBuiltinsExhaustiveTest {
         assertFailure("math.log", 0L);
         assertFailure("math.abs", Long.MIN_VALUE);
         assertFailure("math.pow", 1L);
+        assertFailure("math.pow", 0L, -1L);
+        assertFailure("math.pow", 10L, 400L);
         assertFailure("util.fromJson", "{");
         assertEquals(0L, call("util.length", (Object) null));
         assertFailure("array.insert", List.of(), -1L, "x");

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -111,6 +112,52 @@ class MarketRuntimeFunctionsTest {
         assertEquals(0, host.downloads);
     }
 
+    @Test
+    void upgradeRestoresRemovedBindingsOntoTheNewRelease() {
+        String oldId = "a".repeat(64);
+        String newId = "b".repeat(64);
+        FakeHost host = new FakeHost(new byte[]{1}, newId);
+        host.index = "{\"apiVersion\":\"cilexec.market/v1\",\"packages\":["
+                + record("editor", "1.0.0", oldId, false) + ","
+                + record("editor", "1.0.1", newId, true) + "]}";
+        FclFunctionRegistry registry = new FclFunctionRegistry();
+        new MarketRuntimeFunctions(host).register(registry);
+        FclFunctionRegistry.Invocation invocation = new FclFunctionRegistry.Invocation(3,
+                new FclContinuation());
+        registry.invoke("market.configure", List.of("https://market.example"), invocation);
+        String oldEnvironment = "00000000-0000-4000-8000-000000000001";
+        String newEnvironment = "00000000-0000-4000-8000-000000000002";
+        host.writeText("/market/installed.json", "["
+                + receipt(oldId, "cilexec/editor/1.0.0", "editor", oldEnvironment,
+                "c".repeat(64)) + ","
+                + receipt(newId, "cilexec/editor/1.0.1", "editor2", newEnvironment,
+                "d".repeat(64)) + "]");
+        host.bindings.put(oldEnvironment + "\n" + "editor", "c".repeat(64));
+        host.bindings.put(newEnvironment + "\n" + "editor2", "d".repeat(64));
+
+        Object upgraded = registry.invoke("market.upgrade", List.of(), invocation);
+
+        assertEquals(1, ((List<?>) ((Map<?, ?>) upgraded).get("upgraded")).size());
+        assertEquals("d".repeat(64), host.bindings.get(oldEnvironment + "\n" + "editor"),
+                "the removed binding must be restored onto the new release");
+        assertTrue(host.pins.contains(oldEnvironment + "\n" + "editor\n" + "d".repeat(64)));
+        assertTrue(host.pins.contains(newEnvironment + "\n" + "editor2\n" + "d".repeat(64)));
+    }
+
+    @Test
+    void rejectsOutOfRangeMarketOriginPorts() {
+        FakeHost host = new FakeHost(new byte[]{1}, "0".repeat(64));
+        FclFunctionRegistry registry = new FclFunctionRegistry();
+        new MarketRuntimeFunctions(host).register(registry);
+        FclFunctionRegistry.Invocation invocation = new FclFunctionRegistry.Invocation(4,
+                new FclContinuation());
+
+        assertThrows(FclRuntimeException.class, () -> registry.invoke("market.configure",
+                List.of("http://market.example:0"), invocation));
+        assertThrows(FclRuntimeException.class, () -> registry.invoke("market.configure",
+                List.of("http://market.example:70000"), invocation));
+    }
+
     private static String record(String name, String sha256, String dependency) {
         return "{\"namespace\":\"test\",\"name\":\"" + name
                 + "\",\"version\":\"1.0.0\",\"kind\":\"application\","
@@ -121,6 +168,25 @@ class MarketRuntimeFunctionsTest {
                 + "\",\"optional\":false}],\"latest\":true}";
     }
 
+    private static String record(String name, String version, String sha256, boolean latest) {
+        return "{\"namespace\":\"cilexec\",\"name\":\"" + name
+                + "\",\"version\":\"" + version + "\",\"kind\":\"application\","
+                + "\"coordinate\":\"cilexec/" + name + "/" + version + "\","
+                + "\"download\":\"/market/v1/" + sha256 + "\","
+                + "\"sha256\":\"" + sha256 + "\",\"bytes\":1,"
+                + "\"dependencies\":[],\"latest\":" + latest + "}";
+    }
+
+    private static String receipt(String sha256, String coordinate, String binding,
+                                  String environmentId, String packageHash) {
+        String[] parts = coordinate.split("/");
+        return "{\"sha256\":\"" + sha256 + "\",\"coordinate\":\"" + coordinate
+                + "\",\"namespace\":\"" + parts[0] + "\",\"name\":\"" + parts[1]
+                + "\",\"version\":\"" + parts[2] + "\",\"binding\":\"" + binding
+                + "\",\"environmentId\":\"" + environmentId + "\",\"packageHash\":\""
+                + packageHash + "\"}";
+    }
+
     private static String hex(byte[] bytes) {
         return java.util.HexFormat.of().formatHex(bytes);
     }
@@ -128,6 +194,8 @@ class MarketRuntimeFunctionsTest {
     private static final class FakeHost implements MarketRuntimeFunctions.Host {
         private final Map<String, String> environment = new LinkedHashMap<>();
         private final Map<String, String> files = new LinkedHashMap<>();
+        private final Map<String, String> bindings = new LinkedHashMap<>();
+        private final List<String> pins = new ArrayList<>();
         private final byte[] packageBytes;
         private final String packageId;
         private String index;
@@ -171,13 +239,24 @@ class MarketRuntimeFunctionsTest {
         }
         @Override public Map<String, Object> install(String path, String binding) {
             installs++;
+            bindings.put("00000000-0000-4000-8000-000000000001\n" + binding,
+                    "1".repeat(64));
             return Map.of("sha256", packageId, "coordinate", "cilexec/editor/1.0.0",
                     "binding", binding, "environmentId",
                     "00000000-0000-4000-8000-000000000001", "hash", "1".repeat(64));
         }
         @Override public boolean removeBinding(String environmentId, String binding) {
-            return true;
+            return bindings.remove(environmentId + "\n" + binding) != null;
         }
-        @Override public void pin(String environmentId, String binding, String packageHash) { }
+        @Override public void pin(String environmentId, String binding, String packageHash) {
+            pins.add(environmentId + "\n" + binding + "\n" + packageHash);
+            String key = environmentId + "\n" + binding;
+            String existing = bindings.get(key);
+            if (existing != null && !existing.equals(packageHash)) {
+                throw new FclRuntimeException(
+                        "Package binding is already used by another release: " + binding);
+            }
+            bindings.put(key, packageHash);
+        }
     }
 }

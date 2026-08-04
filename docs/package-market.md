@@ -1,19 +1,20 @@
-# CilExec Java 市场
+# CilExec Java Market
 
-市场由两个 Java 程序组成，不再分发 `market.db`，也不再需要导入 `mkt`：
+The market consists of two Java programs. There is no longer a distributed `market.db` and
+no `mkt` import:
 
 ```text
-CilExec Runtime（内置 market.*）        cilexec-market-server.jar
-──────────────────────────────          ─────────────────────────
-用户 VFS 缓存完整索引                    读取明确发布的 catalog.json
-自然语言本地搜索                         校验只读 SQLite package.db
-按 SHA-256 下载、安装和升级      ◄────►  提供索引、HEAD 和 Range 下载
+CilExec Runtime (built-in market.*)        cilexec-market-server.jar
+──────────────────────────────             ─────────────────────────
+Caches the full index in user VFS          Serves the explicit catalog.json
+Local natural-language search              Validates read-only SQLite package.db
+SHA-256 download, install, upgrade  ◄────►  Serves index and HEAD/Range downloads
 ```
 
-客户端随 `cilexec-app.jar` 一起发布。服务端是独立胖 JAR，macOS、Linux 和 Windows
-均以 `java -jar` 运行，不依赖 Python、Bash 或 Docker。
+The client ships with `cilexec-app.jar`. The server is a standalone fat JAR that runs on
+macOS, Linux, and Windows with `java -jar` and depends on neither Python, Bash, nor Docker.
 
-## 构建与启动服务端
+## Building and Starting the Server
 
 ```bash
 java --enable-native-access=ALL-UNNAMED \
@@ -22,7 +23,7 @@ java --enable-native-access=ALL-UNNAMED \
   --catalog dist/catalog.json
 ```
 
-Windows PowerShell 使用同一 JAR：
+Windows PowerShell uses the same JAR:
 
 ```powershell
 java --enable-native-access=ALL-UNNAMED `
@@ -31,8 +32,8 @@ java --enable-native-access=ALL-UNNAMED `
   --catalog dist\catalog.json
 ```
 
-默认只监听 `127.0.0.1:8787`。需要让 Docker 容器访问时，应显式监听宿主接口并只放行
-实际的容器网段：
+By default the server listens only on `127.0.0.1:8787`. To make it reachable from Docker
+containers, bind an explicit host interface and allow only the actual container network:
 
 ```bash
 java --enable-native-access=ALL-UNNAMED \
@@ -41,62 +42,69 @@ java --enable-native-access=ALL-UNNAMED \
   --bind 0.0.0.0 --port 8787 --allow-cidr 172.20.0.0/16
 ```
 
-完整参数可用 `java -jar ... --help` 查看。`--allow-cidr` 可重复使用；回环网络始终允许。
-部署前可添加 `--check` 只校验仓库和清单并立即退出，不会监听任何端口。
+Run `java -jar ... --help` for the full parameter list. `--allow-cidr` is repeatable; the
+loopback network is always allowed. Before deploying, add `--check` to validate the
+repository and catalog and exit immediately without listening on any port.
 
-## HTTP 协议
+## HTTP Protocol
 
-| 请求 | 作用 |
+| Request | Purpose |
 | --- | --- |
-| `GET/HEAD /market/v1/index.json` | 返回全部已发布包的索引。 |
-| `GET/HEAD /market/v1/{sha256}` | 下载完整 SHA-256 指定的不可变 `.db`。 |
+| `GET/HEAD /market/v1/index.json` | Returns the index of all published packages. |
+| `GET/HEAD /market/v1/{sha256}` | Downloads the immutable `.db` identified by a full SHA-256. |
 
-包下载支持单个显式 `Range: bytes=start-end`、`ETag`、`If-Range`、`Content-Length` 和
-`416` 结束探测，正好对应 Runtime 的 4 MiB 持久化分块下载。`v1` 是市场 HTTP 协议
-主版本，不是软件包版本。
+Package downloads support a single explicit `Range: bytes=start-end`, `ETag`, `If-Range`,
+`Content-Length`, and `416` end-of-file probing, matching the Runtime's 4 MiB persisted
+chunked download. `v1` is the market HTTP protocol major version, not a package version.
 
-`dist/catalog.json` 是唯一发布清单。仓库里存在但未写入清单的文件不会上架。服务端
-启动时会拒绝符号链接、路径逃逸、超过 64 MiB 的包、格式不是 2 的 SQLite 数据库、
-坐标与路径不一致、非法依赖哈希和重复哈希。下载前还会重新核对大小和 SHA-256。
+`dist/catalog.json` is the only publication manifest. Files present in the repository but
+not listed in the manifest are never listed for sale. On startup the server rejects
+symlinks, path escapes, packages larger than 64 MiB, SQLite databases that are not format 2,
+coordinates that disagree with their path, invalid dependency hashes, and duplicate
+hashes. Size and SHA-256 are rechecked before every download.
 
-服务端不需要为新包重启。每次请求索引时都会重新读取并完整验证仓库，然后原子替换
-内存快照。发布者必须先把新的 `.db` 放到最终版本目录，最后再以原子重命名更新
-`catalog.json`；不能覆盖已经发布的内容哈希文件。验证失败时索引请求返回 `503`，已有
-有效快照不会被半成品替换，正在进行的 SHA-256 下载也不会切换文件。
+The server does not need a restart for new packages. Every index request re-reads and fully
+validates the repository, then atomically replaces the in-memory snapshot. A publisher must
+first place the new `.db` in its final version directory and only then update
+`catalog.json` with an atomic rename; published content-hash files must never be
+overwritten. If validation fails, index requests return `503`, an existing valid snapshot
+is never replaced by a half-built one, and in-flight SHA-256 downloads do not switch files.
 
-索引中的 `sha256` 是完整 `.db` 文件的 64 位小写 SHA-256，同时也是包 ID、下载路径和
-依赖 ID。它是内容标识，不是签名或发布者身份。
+The `sha256` in the index is the 64-digit lowercase SHA-256 of the complete `.db` file and
+doubles as package ID, download path, and dependency ID. It is a content identity, not a
+signature or publisher identity.
 
-## 内置客户端
+## Built-in Client
 
-首次使用先为当前用户配置唯一镜像源：
+Configure a unique mirror origin for the current user first:
 
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
 ```
 
-镜像源保存在当前用户持久化 FCL 环境变量 `MARKET_ORIGIN` 中。管理员可通过
-`env.setShared("MARKET_ORIGIN", "https://market.example.com")` 提供共享默认值，用户
-自己的值优先。客户端不会在执行途中突然进入交互输入；未配置时会明确提示调用
-`market.configure(...)`。
+The origin is stored in the current user's persisted FCL environment variable
+`MARKET_ORIGIN`. Administrators can provide a shared default via
+`env.setShared("MARKET_ORIGIN", "https://market.example.com")`; the user's own value takes
+precedence. The client never drops into interactive input mid-script; when unconfigured it
+tells you explicitly to call `market.configure(...)`.
 
-| 函数 | 功能 |
+| Function | Purpose |
 | --- | --- |
-| `market.configure(origin)` | 设置当前用户的 HTTP/HTTPS 镜像 origin。 |
-| `market.origin()` | 查看当前生效的镜像源。 |
-| `market.update()` | 下载、验证并持久化完整索引。 |
-| `market.search(text)` | 按包名、命名空间、类型、标签和说明词前缀搜索；版本号不参与搜索。 |
-| `market.info(sha256)` | 查询一个完整包记录，不存在时返回 `null`。 |
-| `market.download(sha256)` | 分块下载并重新计算完整文件 SHA-256。 |
-| `market.install(sha256)` | 递归安装精确哈希依赖并建立默认绑定。 |
-| `market.list()` | 查看由市场管理的包名、绑定和 SHA-256。 |
-| `market.upgrade()` | 更新索引并升级所有存在新版本的市场安装。 |
-| `market.uninstall(sha256)` | 解除对应绑定并移除市场下载文件。 |
-| `market.help()` | 返回函数帮助。 |
-| `market.run()` | 返回客户端版本和帮助，不要求配置镜像。 |
+| `market.configure(origin)` | Sets the current user's HTTP/HTTPS mirror origin. |
+| `market.origin()` | Shows the effective mirror origin. |
+| `market.update()` | Downloads, verifies, and persists the full index. |
+| `market.search(text)` | Prefix-searches package name, namespace, type, tags, and description words; versions do not participate in search. |
+| `market.info(sha256)` | Returns one full package record, or `null` if absent. |
+| `market.download(sha256)` | Downloads in chunks and recomputes the full-file SHA-256. |
+| `market.install(sha256)` | Recursively installs exact-hash dependencies and creates default bindings. |
+| `market.list()` | Lists market-managed package names, bindings, and SHA-256s. |
+| `market.upgrade()` | Updates the index and upgrades every market install with a newer version. |
+| `market.uninstall(sha256)` | Removes the binding and the market-downloaded file. |
+| `market.help()` | Returns function help. |
+| `market.run()` | Returns the client version and help without requiring a configured origin. |
 
-安装编辑器的完整流程：
+Installing an editor end to end:
 
 ```fcl
 market.configure("http://host.docker.internal:8787")
@@ -107,39 +115,74 @@ import "editor"
 editor.open("notes.txt")
 ```
 
-索引缓存位于当前用户 VFS 的 `/market/index.json`，下载包位于
-`/market/packages/{sha256}.db`，市场安装凭据位于 `/market/installed.json`。普通用户
-看不到其他用户的这三类数据。
+The index cache lives at `/market/index.json` in the current user's VFS, downloads at
+`/market/packages/{sha256}.db`, and market install credentials at
+`/market/installed.json`. Ordinary users cannot see these three kinds of data of other
+users.
 
-下载分块先作为不可变对象写入对象存储，只有最后一块完成后才把目标 VFS 节点发布。
-客户端随后按 4 MiB 重新读取整个逻辑文件，复核索引声明的大小与 SHA-256。安装时
-Runtime 还会重新验证 SQLite 结构、包内部哈希、能力声明和精确依赖图。市场包上限为
-64 MiB；普通 VFS 单文件上限仍为 1 GiB。
+Download chunks are first written to the object store as immutable objects; the target VFS
+node is published only after the last chunk completes. The client then re-reads the whole
+logical file in 4 MiB units and rechecks the declared size and SHA-256. On install the
+Runtime additionally revalidates the SQLite structure, package-internal hashes, capability
+declaration, and the exact dependency graph. The market package limit is 64 MiB; the
+ordinary single-VFS-file limit remains 1 GiB.
 
-## 发布包
+## Package Capabilities
 
-正式发布从项目根目录执行：
+`package.run` executes an application package through its declared entrypoints. The
+entrypoint name — `package.run(binding, entrypoint)` — must be a valid FCL identifier; an
+invalid or reserved name is rejected at manifest validation time. Coordinate segments
+(namespace, name, and version parts) must be canonical: segments of `"."` or `".."` are
+rejected.
+
+Packages declare the capabilities they need in their manifest. The Runtime audits every
+call in the package source against the declaration and rejects the package if the source
+uses a capability that was not declared. The audit covers the following mapping:
+
+| Function calls | Required package capability |
+| --- | --- |
+| `io.readFile`, `file.*` read operations | `vfs.read` |
+| `io.writeFile`, `file.*` write operations | `vfs.write` |
+| `util.input`, `io.input`, `io.readKey`, `io.readChar` | `terminal.raw_input` |
+| `market.configure`, `market.update`, `market.download`, `market.install`, `market.upgrade`, `market.uninstall` | `package.manage` |
+| `process.exec`, `process.kill`, `process.pause`, `process.continue`, `process.getList` | `process.control` |
+| `user.validateUser`, `user.getListOfUsers`, `user.removeUser` | `system.admin` |
+
+Query-only market functions (`market.origin`, `market.search`, `market.info`, `market.list`,
+`market.help`, `market.run`) require no capability. `system.ls` and `system.extensions` are
+read-only and do **not** require `system.admin`; the remaining `system.*` management calls
+do. Bare spellings (`input`, `readFile`, `fork`, `webget`, ...) are mapped by the same
+rules. A capability declaration must list every capability key the package source uses;
+undeclared usage fails the audit.
+
+## Publishing Packages
+
+A formal release is built from the project root:
 
 ```bash
 ./build/release.sh
 ```
 
-Windows 执行 `build\release.bat`。该流程运行 Runtime 和市场服务端测试，构建两个独立
-JAR，扫描带有 `package.json` 和 `market.json` 的 `dist/*/` 包源码，按坐标生成市场仓库
-与 `catalog.json`，最后重新生成并复核 `SHA256SUMS`。所有暂存产物验证通过后才会替换
-`dist` 中的发布物。CI 已经运行过完整测试时，可使用 `--skip-tests`；仅复核现有成品时
-使用 `--verify-only`。
+Windows runs `build\release.bat`. The flow runs the Runtime and market-server tests, builds
+the two JARs, scans package sources in `dist/*/` that carry a `package.json` and
+`market.json`, generates the market repository and `catalog.json` from their coordinates,
+then regenerates and rechecks `SHA256SUMS`. Only after all staged artifacts validate are
+the release artifacts in `dist` replaced. Use `--skip-tests` when CI has already run the
+full test suite; use `--verify-only` to only recheck the existing artifacts.
 
-编辑器源码位于 `dist/editor/`。只构建单个 `.db` 时可使用独立的单文件构建器：
+The editor source lives in `dist/editor/`. To build a single `.db` use the standalone
+single-file builder:
 
 ```bash
 python3 PackageBuild.py dist/editor editor.db
 ```
 
-构建器不依赖 CilExec JAR、Docker 或数据库服务，会生成不可变 `editor.db`；它不会自动
-上架。正式仓库路径和清单应交给发布流程生成。同一坐标内容变化时必须增加包版本。
+The builder depends on neither the CilExec JAR, Docker, nor a database service and produces
+an immutable `editor.db`; it does not publish anything. Let the release flow generate the
+official repository path and catalog. When the content at the same coordinate changes, the
+package version must be incremented.
 
-每项依赖都必须是精确分发文件 SHA-256：
+Every dependency is an exact distribution-file SHA-256:
 
 ```json
 "dependencies": [
@@ -147,15 +190,22 @@ python3 PackageBuild.py dist/editor editor.db
 ]
 ```
 
-客户端会先递归安装必需依赖，拒绝循环和超过 64 层的依赖链。可选依赖不会自动安装。
-包模块通过完整依赖哈希调用导出函数，坐标和绑定名不参与依赖解析。
+The client installs required dependencies recursively first, and rejects cycles and
+dependency chains deeper than 64 levels. Optional dependencies are never installed
+automatically. Package modules call exported functions through the full dependency hash;
+coordinates and binding names do not participate in dependency resolution.
 
-## 安全与部署说明
+## Security and Deployment Notes
 
-- 公网部署应使用 HTTPS 反向代理；内置服务端本身不终止 TLS。
-- 不要把 `--allow-cidr 0.0.0.0/0` 当作开发捷径。
-- Runtime 的私网 HTTP 策略仍必须允许配置的私有 origin；市场配置不会绕过网络策略。
-- 服务端并发数默认 16，可用 `--workers 1..256` 调整；超过上限立即返回 `503`。
-- 服务端只读仓库，不提供上传、删除、登录或动态上架接口。
-- 包签名系统已完全移除；安全边界是受控发布清单、HTTPS、精确 SHA-256 和 Runtime
-  的包结构/能力校验。
+- Public deployments should sit behind an HTTPS reverse proxy; the built-in server does not
+  terminate TLS.
+- Do not treat `--allow-cidr 0.0.0.0/0` as a development shortcut.
+- The Runtime's private-network HTTP policy must still permit the configured private
+  origin; market configuration does not bypass the network policy.
+- The server concurrency defaults to 16 and is tunable with `--workers 1..256`; exceeding
+  the limit returns `503` immediately.
+- The server repository is read-only: there are no upload, delete, login, or dynamic
+  publishing endpoints.
+- The package signature system has been fully removed; the security boundary is the
+  controlled publication manifest, HTTPS, exact SHA-256, and the Runtime's package
+  structure/capability validation.

@@ -12,6 +12,10 @@ public interface ExtensionFunctionContext {
 
     String qualifiedFunctionName();
 
+    /**
+     * The positional arguments of this call, in declaration order. FCL null is a first-class
+     * value, so elements may be null.
+     */
     List<Object> arguments();
 
     long expressionId();
@@ -36,8 +40,19 @@ public interface ExtensionFunctionContext {
      */
     Object awaitEffect(String effectType, Object request, ExtensionEffectPolicy policy);
 
+    /**
+     * Returns the argument at {@code index}, which may be null.
+     *
+     * @throws IllegalArgumentException when the index is outside the received argument range
+     */
     default Object argument(int index) {
-        return arguments().get(index);
+        List<Object> arguments = arguments();
+        if (index < 0 || index >= arguments.size()) {
+            throw new IllegalArgumentException(qualifiedFunctionName() + " argument index "
+                    + index + " is out of bounds; the function received " + arguments.size()
+                    + " arguments");
+        }
+        return arguments.get(index);
     }
 
     default void requireArity(int expected) {

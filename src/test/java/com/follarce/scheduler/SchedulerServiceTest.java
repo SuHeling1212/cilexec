@@ -17,9 +17,12 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SchedulerServiceTest {
@@ -113,6 +116,60 @@ class SchedulerServiceTest {
             assertEquals(normalBeforeInterruptWake, normalClaims.get(),
                     "interrupt notification must not wake the normal worker pool");
         }
+    }
+
+    @Test
+    void reportsJvmErrorsAsFatal() throws Exception {
+        Error failure = new AssertionError("runtime broken");
+        AtomicReference<Throwable> reported = new AtomicReference<>();
+        CountDownLatch fatal = new CountDownLatch(1);
+        SchedulerRepository scheduler = new SchedulerRepository() {
+            @Override public void enqueue(SchedulerQueueEntry entry) { }
+            @Override public Optional<SchedulerClaim> claimNext(UUID runnerId, UUID bootId,
+                    Instant now, Duration leaseDuration) {
+                throw failure;
+            }
+            @Override public boolean heartbeat(SchedulerClaim claim) { return false; }
+            @Override public void release(UUID processUid, long executionEpoch) { }
+            @Override public int releaseExpired(Instant now) { return 0; }
+        };
+        TransactionContext context = contextWith(scheduler);
+        TransactionExecutor transactions = new TransactionExecutor() {
+            @Override public <T> T inTransaction(Isolation isolation,
+                                                  TransactionWork<T> work) {
+                return work.execute(context);
+            }
+        };
+
+        SchedulerService service = new SchedulerService(transactions, claim -> { },
+                UUID.randomUUID(), 1, Duration.ofSeconds(5), Duration.ofMillis(1), actual -> {
+                    reported.set(actual);
+                    fatal.countDown();
+                });
+        service.start();
+        assertTrue(fatal.await(1, TimeUnit.SECONDS));
+        service.close();
+        assertSame(failure, reported.get());
+        assertFalse(service.isRunning());
+    }
+
+    @Test
+    void rejectsInvalidConstructionParameters() {
+        TransactionExecutor transactions = new TransactionExecutor() {
+            @Override public <T> T inTransaction(Isolation isolation,
+                                                  TransactionWork<T> work) {
+                return work.execute(contextWith(emptyScheduler(() -> { })));
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> new SchedulerService(transactions,
+                claim -> { }, UUID.randomUUID(), 0, Duration.ofSeconds(5),
+                Duration.ofMillis(1), failure -> { }));
+        assertThrows(IllegalArgumentException.class, () -> new SchedulerService(transactions,
+                claim -> { }, UUID.randomUUID(), 1, Duration.ZERO,
+                Duration.ofMillis(1), failure -> { }));
+        assertThrows(IllegalArgumentException.class, () -> new SchedulerService(transactions,
+                claim -> { }, UUID.randomUUID(), 1, Duration.ofSeconds(5),
+                Duration.ZERO, failure -> { }));
     }
 
     private static SchedulerRepository emptyScheduler(Runnable onClaim) {

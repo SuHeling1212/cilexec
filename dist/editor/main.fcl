@@ -1,4 +1,4 @@
-# CilEdit: the full-screen editor distributed through the CilExec package market.
+// CilEdit: the full-screen editor distributed through the CilExec package market.
 
 func ed_min(a, b) {
     if a < b { return a }
@@ -16,8 +16,8 @@ func ed_fit(value, width) {
     return visible + text.repeat(" ", width - term.displayWidth(visible))
 }
 
-# The size is sampled at every layout/render pass.  A resize becomes visible on
-# the next key press; no fixed terminal geometry is kept in editor state.
+// The size is sampled at every layout/render pass.  A resize becomes visible on
+// the next key press; no fixed terminal geometry is kept in editor state.
 func ed_width() {
     size = term.getSize()
     return ed_max(1, size["width"])
@@ -25,7 +25,7 @@ func ed_width() {
 
 func ed_body_height() {
     size = term.getSize()
-    # title + status + footer consume three terminal rows.
+    // title + status + footer consume three terminal rows.
     return ed_max(1, size["height"] - 3)
 }
 
@@ -403,7 +403,7 @@ func open(editorPath) {
     return null
 }
 
-# Universal zero-argument application entrypoint used by package.run("editor").
+// Universal zero-argument application entrypoint used by package.run("editor").
 func run() {
     return open("untitled.txt")
 }

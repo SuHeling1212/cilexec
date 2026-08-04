@@ -96,6 +96,26 @@ class PackageBuilderTest {
                 () -> new PackageManifest.Dependency("demo/library/1.0.0", false));
     }
 
+    @Test
+    void rejectsDotComponentsInNamespaceAndName() {
+        PackageManifest base = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
+                List.of(), List.of(new PackageManifest.Entrypoint("run", "main", "run")),
+                List.of(), List.of());
+        assertThrows(IllegalArgumentException.class, () -> new PackageManifest(
+                ".", base.name(), base.version(), base.languageVersion(), base.modules(),
+                base.resources(), base.dependencies(), base.entrypoints(), base.exports(),
+                base.capabilities()));
+        assertThrows(IllegalArgumentException.class, () -> new PackageManifest(
+                base.namespace(), "..", base.version(), base.languageVersion(), base.modules(),
+                base.resources(), base.dependencies(), base.entrypoints(), base.exports(),
+                base.capabilities()));
+        assertThrows(IllegalArgumentException.class, () -> new PackageManifest(
+                "demo.pkg", base.name(), base.version(), base.languageVersion(), base.modules(),
+                base.resources(), base.dependencies(), base.entrypoints(), base.exports(),
+                base.capabilities()));
+    }
+
     private PackageManifest manifest() {
         return new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")),

@@ -148,6 +148,63 @@ class BuiltinEffectHandlersTest {
         }
     }
 
+    @Test
+    void forwardsTheIdempotencyKeyHeaderWhenProvided() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> idempotency =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/idempotent", exchange -> {
+            idempotency.set(exchange.getRequestHeaders().getFirst("Idempotency-Key"));
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.http-get");
+            handler.execute(typed(Map.of("url", "http://localhost:" + port + "/idempotent")),
+                    Optional.of("retry-42"));
+            assertEquals("retry-42", idempotency.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void failsOutputWhenTheRouteHasNoAttachedTerminal() {
+        EffectHandlerRegistry handlers = new EffectHandlerRegistry(
+                BuiltinEffectHandlers.defaults());
+        Continuation.PersistedValue output = typed(Map.of("text", "hello",
+                "routeId", java.util.UUID.randomUUID().toString()));
+        assertThrows(IllegalStateException.class,
+                () -> handlers.require("io.output").execute(output, Optional.empty()));
+    }
+
+    @Test
+    void rejectsNulInStringFormCommands() {
+        EffectHandlerRegistry handlers = new EffectHandlerRegistry(
+                BuiltinEffectHandlers.defaults());
+        assertThrows(IllegalArgumentException.class,
+                () -> handlers.require("system.exec").execute(
+                        typed(Map.of("command", "/bin/true\u0000echo hacked")),
+                        Optional.empty()));
+    }
+
+    @Test
+    void validatesNumbersExactlyBeyondDoublePrecision() {
+        assertEquals(9007199254740993L, BuiltinEffectHandlers.exactLong(
+                new java.math.BigDecimal("9007199254740993"), "offset"));
+        assertEquals(9007199254740993L, BuiltinEffectHandlers.exactLong(
+                new java.math.BigInteger("9007199254740993"), "offset"));
+        assertThrows(IllegalArgumentException.class,
+                () -> BuiltinEffectHandlers.exactLong(1.5, "offset"));
+        assertThrows(IllegalArgumentException.class,
+                () -> BuiltinEffectHandlers.exactLong(Double.POSITIVE_INFINITY, "offset"));
+        assertThrows(IllegalArgumentException.class,
+                () -> BuiltinEffectHandlers.exactLong(new java.math.BigDecimal("2.5"), "offset"));
+    }
+
     private Continuation.PersistedValue typed(Object value) {
         return new Continuation.PersistedValue(codec.valueType(value), codec.valueToJson(value));
     }

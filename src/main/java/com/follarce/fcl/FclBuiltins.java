@@ -1,11 +1,15 @@
 package com.follarce.fcl;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonSyntaxException;
 
+import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -57,7 +61,11 @@ public final class FclBuiltins {
                 .register("math", "ceil", args -> Math.ceil(number(args, 0, 1, "ceil")))
                 .register("math", "pow", args -> {
                     arity(args, 2, "pow");
-                    return Math.pow(numberAt(args, 0, "pow"), numberAt(args, 1, "pow"));
+                    double power = Math.pow(numberAt(args, 0, "pow"), numberAt(args, 1, "pow"));
+                    if (!Double.isFinite(power)) {
+                        throw new FclRuntimeException("math.pow produced a non-finite result");
+                    }
+                    return power;
                 })
                 .register("math", "max", args -> {
                     arity(args, 2, "max");
@@ -90,7 +98,7 @@ public final class FclBuiltins {
                     }
                     requireTextSize(text.length(), "fromJson input");
                     try {
-                        return gson.fromJson(text, Object.class);
+                        return convertJsonElement(gson.fromJson(text, JsonElement.class));
                     } catch (JsonSyntaxException failure) {
                         throw new FclRuntimeException("Invalid JSON: " + failure.getMessage(), failure);
                     }
@@ -149,7 +157,8 @@ public final class FclBuiltins {
                     arity(args, 1, "getParentPath");
                     String normalized = normalizePath(stringAt(args, 0, "getParentPath"));
                     int slash = normalized.lastIndexOf('/');
-                    if (slash <= 0) return "/";
+                    if (slash < 0) return ".";
+                    if (slash == 0) return "/";
                     return normalized.substring(0, slash);
                 }, "getParent")
                 .register("path", "isAbsolute", args -> {
@@ -389,7 +398,11 @@ public final class FclBuiltins {
         for (String part : path.split("/+")) {
             if (part.isEmpty() || part.equals(".")) continue;
             if (part.equals("..")) {
-                if (!parts.isEmpty()) parts.removeLast();
+                if (!parts.isEmpty() && !parts.getLast().equals("..")) {
+                    parts.removeLast();
+                } else if (!absolute) {
+                    parts.addLast(part);
+                }
                 continue;
             }
             parts.addLast(part);
@@ -397,6 +410,40 @@ public final class FclBuiltins {
         String joined = String.join("/", parts);
         if (absolute) return joined.isEmpty() ? "/" : "/" + joined;
         return joined.isEmpty() ? "." : joined;
+    }
+
+    private static Object convertJsonElement(JsonElement element) {
+        if (element.isJsonNull()) return null;
+        if (element.isJsonArray()) {
+            List<Object> result = new ArrayList<>();
+            element.getAsJsonArray().forEach(item -> result.add(convertJsonElement(item)));
+            return result;
+        }
+        if (element.isJsonObject()) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            element.getAsJsonObject().entrySet().forEach(entry ->
+                    result.put(entry.getKey(), convertJsonElement(entry.getValue())));
+            return result;
+        }
+        JsonPrimitive primitive = element.getAsJsonPrimitive();
+        if (primitive.isBoolean()) return primitive.getAsBoolean();
+        if (primitive.isString()) return primitive.getAsString();
+        if (primitive.isNumber()) {
+            BigDecimal value = primitive.getAsBigDecimal();
+            if (isIntegerToken(primitive.getAsString())) {
+                try {
+                    return value.longValueExact();
+                } catch (ArithmeticException overflow) {
+                    return value.toBigIntegerExact();
+                }
+            }
+            return value.doubleValue();
+        }
+        throw new JsonSyntaxException("Unsupported JSON value");
+    }
+
+    private static boolean isIntegerToken(String token) {
+        return token.indexOf('.') < 0 && token.indexOf('e') < 0 && token.indexOf('E') < 0;
     }
 
     private static Number numericArgument(List<Object> args, int index, int count,
@@ -447,7 +494,7 @@ public final class FclBuiltins {
 
     private static long replacedLength(String value, String target, String replacement) {
         if (target.isEmpty()) {
-            return (long) value.length() + (long) (value.length() + 1) * replacement.length();
+            return (long) value.length() + ((long) value.length() + 1) * replacement.length();
         }
         long occurrences = 0;
         int from = 0;

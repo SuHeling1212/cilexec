@@ -13,6 +13,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -109,12 +110,20 @@ public final class PackageBuilder {
         if (fileName == null || !fileName.toString().endsWith(".db")) {
             throw new IllegalArgumentException("Package output must end with .db");
         }
-        if (Files.exists(absolute)) throw new IllegalArgumentException("Package output already exists: " + absolute);
         Path parent = absolute.getParent();
         if (parent == null || !Files.isDirectory(parent)) {
             throw new IllegalArgumentException("Package output directory does not exist");
         }
+        Path placeholder;
+        try {
+            placeholder = Files.createFile(absolute);
+        } catch (FileAlreadyExistsException alreadyExists) {
+            throw new IllegalArgumentException("Package output already exists: " + absolute);
+        } catch (IOException failure) {
+            throw new IllegalStateException("Cannot publish package database", failure);
+        }
         Path temporary = null;
+        boolean published = false;
         try {
             temporary = Files.createTempFile(parent, ".cilexec-package-", ".tmp");
             Files.write(temporary, database);
@@ -124,6 +133,7 @@ public final class PackageBuilder {
                 Files.move(temporary, absolute);
             }
             temporary = null;
+            published = true;
             return reader.inspect(database);
         } catch (IOException failure) {
             throw new IllegalStateException("Cannot publish package database", failure);
@@ -133,6 +143,13 @@ public final class PackageBuilder {
                     Files.deleteIfExists(temporary);
                 } catch (IOException ignored) {
                     temporary.toFile().deleteOnExit();
+                }
+            }
+            if (!published) {
+                try {
+                    Files.deleteIfExists(absolute);
+                } catch (IOException ignored) {
+                    absolute.toFile().deleteOnExit();
                 }
             }
         }

@@ -1,6 +1,8 @@
 package com.follarce.exporter;
 
 import com.follarce.app.BuildInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -16,6 +18,7 @@ import java.util.Set;
 
 /** Creates, verifies, hardens, and atomically publishes one logical export. */
 public final class LogicalExportService {
+    private static final Logger LOG = LoggerFactory.getLogger(LogicalExportService.class);
     private static final Set<PosixFilePermission> READ_ONLY_PERMISSIONS = Set.of(
             PosixFilePermission.OWNER_READ);
 
@@ -42,15 +45,21 @@ public final class LogicalExportService {
         Path temporary = null;
         try {
             temporary = Files.createTempFile(parent,
-                    "." + fileName + "-", ".tmp");
+                    ".cilexec-export-" + LogicalExportHashes.sha256(fileName.toString())
+                            .substring(0, 8) + "-", ".tmp");
             try (SqliteLogicalExportWriter writer = new SqliteLogicalExportWriter(temporary)) {
                 snapshot.writeSnapshot(writer, buildInfo, clock.instant());
             }
             LogicalExportReport verified = verifier.verify(temporary);
-            makeReadOnly(temporary);
             publishByHardLink(temporary, target);
-            Files.delete(temporary);
-            temporary = null;
+            try {
+                Files.delete(temporary);
+                temporary = null;
+            } catch (IOException cleanupFailure) {
+                LOG.warn("Logical export published but temporary file could not be removed: {}",
+                        temporary, cleanupFailure);
+            }
+            makeReadOnly(target);
             return new LogicalExportReport(target, verified.tableCount(), verified.rowCount(),
                     verified.manifestSha256());
         } catch (FileAlreadyExistsException exists) {
@@ -111,6 +120,7 @@ public final class LogicalExportService {
             try {
                 Files.deleteIfExists(candidate);
             } catch (IOException ignored) {
+                // Fallback for a JVM that stays resident: delete at exit.
                 candidate.toFile().deleteOnExit();
             }
         }

@@ -11,9 +11,13 @@ import java.util.Objects;
  * Complete persisted state required to resume FCL at a statement boundary.
  *
  * <p>The state deliberately contains no thread, callback, JDBC object, or host handle.
+ *
+ * <p>Keep this version in lockstep with {@code FclProgramCodec.FORMAT_VERSION}: the
+ * continuation stores the compiled program's format version, and a mismatch is a hard
+ * failure (see FclPersistenceBridge.ensureProgramIdentity).
  */
 public final class FclContinuation {
-    public static final int FORMAT_VERSION = 1;
+    public static final int FORMAT_VERSION = 2;
 
     public enum WaitKind {
         NONE,
@@ -54,7 +58,7 @@ public final class FclContinuation {
                             PendingStatement callerPending, long callExpressionId,
                             String functionName) {
         public CallFrame {
-            callerScope = Objects.requireNonNull(callerScope, "callerScope").copy();
+            callerScope = Objects.requireNonNull(callerScope, "callerScope");
             callerPending = callerPending == null ? null
                     : new PendingStatement(callerPending.instructionPointer(),
                     callerPending.callResults());
@@ -132,7 +136,7 @@ public final class FclContinuation {
         this.scope = Objects.requireNonNull(scope, "scope").copy();
         this.callStack = new ArrayList<>();
         for (CallFrame frame : callStack) {
-            this.callStack.add(new CallFrame(frame.returnPointer(), frame.callerScope(),
+            this.callStack.add(new CallFrame(frame.returnPointer(), frame.callerScope().copy(),
                     frame.callerPending(), frame.callExpressionId(), frame.functionName()));
         }
         this.exceptionStack = new ArrayList<>(exceptionStack);
@@ -274,7 +278,15 @@ public final class FclContinuation {
                 List.of(), List.of(), WaitState.ready(), null, false, false, null);
     }
 
-    /** Cancels the current terminal submission while retaining only its durable global scope. */
+    /**
+     * Cancels the current terminal submission while retaining only its durable global scope.
+     *
+     * <p>Unlike {@link #nextSubmission()}, this may be called while the process is still
+     * waiting for host input (for example by
+     * {@code ProcessStatementExecutor.cancelTerminalSubmission}): the pending submission and
+     * any in-flight call frames are discarded and the continuation is returned in a halted
+     * terminal state.
+     */
     public FclContinuation cancelSubmission() {
         FclScope global = globalScope();
         return new FclContinuation(formatVersion, 0, global, List.of(), List.of(),

@@ -25,7 +25,11 @@ public interface VfsRepository {
                 new IllegalArgumentException("Unknown object")).byteSize();
     }
 
-    /** Bounded random-access read used for files that cannot be materialized as one array. */
+    /**
+     * Bounded random-access read used for files that cannot be materialized as one array.
+     * Callers should prefer this over {@link #findObject} for partial reads; this default
+     * implementation materializes the whole object and must stay within the array limit.
+     */
     default byte[] readObjectRange(ObjectHash objectHash, long offset, int maximumBytes) {
         if (offset < 0 || maximumBytes < 0) {
             throw new IllegalArgumentException("Invalid object range");
@@ -34,7 +38,11 @@ public interface VfsRepository {
                 new IllegalArgumentException("Unknown object")).content().bytes();
         if (offset >= bytes.length) return new byte[0];
         int start = Math.toIntExact(offset);
-        return Arrays.copyOfRange(bytes, start, Math.min(bytes.length, start + maximumBytes));
+        // Compute the exclusive end in long before clamping: start + maximumBytes can
+        // overflow int (start near 1.5 GiB plus a full maximumBytes), which would make
+        // copyOfRange throw IllegalArgumentException for a valid request.
+        long end = Math.min((long) bytes.length, (long) start + maximumBytes);
+        return Arrays.copyOfRange(bytes, start, (int) end);
     }
 
     /** Appends one bounded chunk without materializing the existing logical file. */
@@ -60,12 +68,26 @@ public interface VfsRepository {
 
     Optional<VfsNode> findChild(UUID ownerId, Optional<UUID> parentNodeId, String name);
 
+    /**
+     * Capability-checked cross-user child lookup in the caller's current user
+     * transaction (administrator path). Owner-scoped RLS hides another user's tree,
+     * so administrative path resolution must use this bounded SQL entry point
+     * instead of {@link #findChild}.
+     */
+    default Optional<VfsNode> findChildByAdministrator(UUID administratorId, UUID targetUserId,
+                                                       Optional<UUID> parentNodeId, String nodeName) {
+        throw new UnsupportedOperationException("Atomic administrator VFS child lookup is not implemented");
+    }
+
     /** Lists one owner's direct children. RLS still scopes calls made as a user principal. */
     default List<VfsNode> findChildren(UUID ownerId, Optional<UUID> parentNodeId) {
         throw new UnsupportedOperationException("VFS child listing is not implemented");
     }
 
-    /** Lists every node owned by one user. Intended for the administrator application path. */
+    /**
+     * Lists every node owned by one user. Intended for the administrator application
+     * path; implementations cap the result (bounded, non-paginated read).
+     */
     default List<VfsNode> findAllNodes(UUID ownerId) {
         throw new UnsupportedOperationException("VFS owner listing is not implemented");
     }
@@ -82,6 +104,21 @@ public interface VfsRepository {
         throw new UnsupportedOperationException("Atomic administrator VFS read is not implemented");
     }
 
+    /**
+     * Capability-checked bounded cross-user object range read in the current user
+     * transaction (administrator path); never materializes a whole chunked file.
+     */
+    default byte[] readObjectRangeByAdministrator(UUID administratorId, UUID targetUserId,
+                                                  ObjectHash hash, long offset, int maximumBytes) {
+        throw new UnsupportedOperationException("Atomic administrator object range read is not implemented");
+    }
+
+    /** Capability-checked cross-user logical object size in the current user transaction. */
+    default long logicalObjectSizeByAdministrator(UUID administratorId, UUID targetUserId,
+                                                  ObjectHash hash) {
+        throw new UnsupportedOperationException("Atomic administrator object size read is not implemented");
+    }
+
     void insertNode(VfsNode node);
 
     default boolean renameNode(UUID nodeId, UUID ownerId, String replacementName,
@@ -89,10 +126,21 @@ public interface VfsRepository {
         throw new UnsupportedOperationException("VFS rename is not implemented");
     }
 
+    /**
+     * Deletes one empty, non-root content node. MOUNT nodes and any protected node are
+     * rejected: the JDBC implementation throws {@code IllegalStateException} when the
+     * node still exists but cannot be deleted, and returns false only when no matching
+     * node remains.
+     */
     default boolean deleteNode(UUID nodeId, UUID ownerId) {
         throw new UnsupportedOperationException("VFS deletion is not implemented");
     }
 
+    /**
+     * Content CAS on one file or symlink. Implementations retry bounded in-transaction
+     * races and surface a moved expectation as PersistenceFailure with kind
+     * OPTIMISTIC_CONFLICT rather than silently overwriting a concurrent commit.
+     */
     boolean replaceContent(
             UUID nodeId,
             Optional<ObjectHash> expectedObjectHash,

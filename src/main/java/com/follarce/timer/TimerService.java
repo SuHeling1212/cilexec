@@ -116,6 +116,12 @@ public final class TimerService {
                 transaction -> transaction.timers().nextScheduledWakeAt());
     }
 
+    /** Deletes fired timer rows whose retention window has expired; returns rows removed. */
+    public int deleteFiredExpired(Instant olderThan) {
+        return runtimeTransactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.timers().deleteFiredExpired(olderThan));
+    }
+
     public boolean cancel(UUID ownerId, UUID timerId) {
         Instant now = clock.instant();
         return userTransactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {

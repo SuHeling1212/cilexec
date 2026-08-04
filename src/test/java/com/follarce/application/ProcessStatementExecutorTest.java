@@ -655,7 +655,7 @@ class ProcessStatementExecutorTest {
     private static Continuation initial(Program program) {
         return new Continuation(program.programId(), program.programHash(), 0,
                 List.of(), List.of(), List.of(), List.of(), Optional.empty(), Map.of(), Map.of(),
-                program.languageVersion(), "1");
+                program.languageVersion(), Integer.toString(program.runtimeFormatVersion()));
     }
 
     private static final class Fixture {

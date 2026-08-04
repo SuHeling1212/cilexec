@@ -56,7 +56,11 @@ public final class JsonCodec {
 
         @Override
         public Instant deserialize(JsonElement json, Type type, JsonDeserializationContext context) {
-            return Instant.parse(json.getAsString());
+            try {
+                return Instant.parse(json.getAsString());
+            } catch (java.time.format.DateTimeParseException exception) {
+                throw new JsonParseException("Invalid persisted Instant: " + json, exception);
+            }
         }
     }
 

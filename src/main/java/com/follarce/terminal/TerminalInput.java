@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.io.PushbackInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -131,7 +132,11 @@ public interface TerminalInput {
         }
 
         EditableTerminalInput(InputStream stream, Console console, IntSupplier terminalWidth) {
-            this.stream = stream;
+            // A single-byte pushback lets malformed UTF-8 continuation bytes be re-read as
+            // ordinary input instead of being silently consumed.
+            InputStream source = java.util.Objects.requireNonNull(stream, "stream");
+            this.stream = source instanceof PushbackInputStream pushback
+                    ? pushback : new PushbackInputStream(source, 1);
             this.console = console;
             this.terminalWidth = java.util.Objects.requireNonNull(terminalWidth,
                     "terminalWidth");
@@ -275,6 +280,8 @@ public interface TerminalInput {
                 int character = stream.read();
                 if (character < 0) return value.isEmpty() ? null : value.toString();
                 if (character == '\r' || character == '\n') return value.toString();
+                if (character == 3) return ""; // Ctrl-C cancels the current line.
+                if (character == 4) return value.isEmpty() ? null : value.toString(); // Ctrl-D is EOF.
                 if (character == 127 || character == 8) {
                     if (!value.isEmpty()) {
                         int previous = value.offsetByCodePoints(value.length(), -1);
@@ -340,89 +347,96 @@ public interface TerminalInput {
                 }
                 if (character == 27) {
                     int bracket = stream.read();
-                    int direction = stream.read();
-                    if ((bracket != '[' && bracket != 'O') || direction < 0) continue;
-                    switch (direction) {
-                        case 'A' -> { // Up
-                            int moved = moveVertical(value, cursor, -1);
-                            if (moved != cursor) {
-                                cursor = moved;
+                    if (bracket == '[' || bracket == 'O') {
+                        int direction = stream.read();
+                        if (direction < 0) continue;
+                        switch (direction) {
+                            case 'A' -> { // Up
+                                int moved = moveVertical(value, cursor, -1);
+                                if (moved != cursor) {
+                                    cursor = moved;
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                    renderedLines = state.renderedLines();
+                                } else if (remember && position(value, cursor).line() == 0
+                                        && !history.isEmpty() && historyIndex > 0) {
+                                    if (historyIndex == history.size()) draft = value.toString();
+                                    replace(value, history.get(--historyIndex));
+                                    requireSubmissionLimit(value);
+                                    cursor = value.length();
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                    renderedLines = state.renderedLines();
+                                }
+                            }
+                            case 'B' -> { // Down
+                                int moved = moveVertical(value, cursor, 1);
+                                if (moved != cursor) {
+                                    cursor = moved;
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                    renderedLines = state.renderedLines();
+                                } else if (remember && position(value, cursor).line()
+                                        == lineCount(value) - 1
+                                        && historyIndex < history.size()) {
+                                    historyIndex++;
+                                    replace(value, historyIndex == history.size()
+                                            ? draft : history.get(historyIndex));
+                                    requireSubmissionLimit(value);
+                                    cursor = value.length();
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                    renderedLines = state.renderedLines();
+                                }
+                            }
+                            case 'C' -> { // Right
+                                if (cursor < value.length()) {
+                                    cursor = value.offsetByCodePoints(cursor, 1);
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                }
+                            }
+                            case 'D' -> { // Left
+                                if (cursor > 0) {
+                                    cursor = value.offsetByCodePoints(cursor, -1);
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                }
+                            }
+                            case 'H' -> { // Home
+                                int target = cursor;
+                                while (target > 0 && value.charAt(target - 1) != '\n') target--;
+                                if (target != cursor) {
+                                    cursor = target;
+                                    RenderState state = render(output, prompt, continuationPrompt,
+                                            value, cursor, screenCursorLine, renderedLines);
+                                    screenCursorLine = state.cursorLine();
+                                }
+                            }
+                            case 'F' -> { // End
+                                while (cursor < value.length() && value.charAt(cursor) != '\n') {
+                                    cursor++;
+                                }
                                 RenderState state = render(output, prompt, continuationPrompt,
                                         value, cursor, screenCursorLine, renderedLines);
                                 screenCursorLine = state.cursorLine();
                                 renderedLines = state.renderedLines();
-                            } else if (remember && position(value, cursor).line() == 0
-                                    && !history.isEmpty() && historyIndex > 0) {
-                                if (historyIndex == history.size()) draft = value.toString();
-                                replace(value, history.get(--historyIndex));
-                                requireSubmissionLimit(value);
-                                cursor = value.length();
-                                RenderState state = render(output, prompt, continuationPrompt,
-                                        value, cursor, screenCursorLine, renderedLines);
-                                screenCursorLine = state.cursorLine();
-                                renderedLines = state.renderedLines();
                             }
+                            default -> { }
                         }
-                        case 'B' -> { // Down
-                            int moved = moveVertical(value, cursor, 1);
-                            if (moved != cursor) {
-                                cursor = moved;
-                                RenderState state = render(output, prompt, continuationPrompt,
-                                        value, cursor, screenCursorLine, renderedLines);
-                                screenCursorLine = state.cursorLine();
-                                renderedLines = state.renderedLines();
-                            } else if (remember && position(value, cursor).line()
-                                    == lineCount(value) - 1
-                                    && historyIndex < history.size()) {
-                                historyIndex++;
-                                replace(value, historyIndex == history.size()
-                                        ? draft : history.get(historyIndex));
-                                requireSubmissionLimit(value);
-                                cursor = value.length();
-                                RenderState state = render(output, prompt, continuationPrompt,
-                                        value, cursor, screenCursorLine, renderedLines);
-                                screenCursorLine = state.cursorLine();
-                                renderedLines = state.renderedLines();
-                            }
-                        }
-                        case 'C' -> { // Right
-                            if (cursor < value.length()) {
-                                cursor = value.offsetByCodePoints(cursor, 1);
-                                RenderState state = render(output, prompt, continuationPrompt,
-                                        value, cursor, screenCursorLine, renderedLines);
-                                screenCursorLine = state.cursorLine();
-                            }
-                        }
-                        case 'D' -> { // Left
-                            if (cursor > 0) {
-                                cursor = value.offsetByCodePoints(cursor, -1);
-                                RenderState state = render(output, prompt, continuationPrompt,
-                                        value, cursor, screenCursorLine, renderedLines);
-                                screenCursorLine = state.cursorLine();
-                            }
-                        }
-                        case 'H' -> { // Home
-                            int target = cursor;
-                            while (target > 0 && value.charAt(target - 1) != '\n') target--;
-                            if (target != cursor) {
-                                cursor = target;
-                                RenderState state = render(output, prompt, continuationPrompt,
-                                        value, cursor, screenCursorLine, renderedLines);
-                                screenCursorLine = state.cursorLine();
-                            }
-                        }
-                        case 'F' -> { // End
-                            while (cursor < value.length() && value.charAt(cursor) != '\n') {
-                                cursor++;
-                            }
-                            RenderState state = render(output, prompt, continuationPrompt,
-                                    value, cursor, screenCursorLine, renderedLines);
-                            screenCursorLine = state.cursorLine();
-                            renderedLines = state.renderedLines();
-                        }
-                        default -> { }
+                        continue;
                     }
-                    continue;
+                    // A lone ESC cancels the line like Ctrl-C; a non-[ / non-O prefix byte is
+                    // pushed back so it reaches the editor as ordinary input.
+                    if (bracket >= 0) unread(bracket);
+                    finish(output, screenCursorLine, renderedLines);
+                    return "";
                 }
                 if (character >= 32 && character != 127) {
                     String typed = decodeUtf8(character);
@@ -462,20 +476,62 @@ public interface TerminalInput {
 
         private String decodeUtf8(int first) throws IOException {
             if (first < 0x80) return String.valueOf((char) first);
-            int length;
-            if ((first & 0xE0) == 0xC0) length = 2;
-            else if ((first & 0xF0) == 0xE0) length = 3;
-            else if ((first & 0xF8) == 0xF0) length = 4;
-            else return "\uFFFD";
-            byte[] encoded = new byte[length];
-            encoded[0] = (byte) first;
-            for (int index = 1; index < length; index++) {
-                int next = stream.read();
-                if (next < 0) return "\uFFFD";
-                if ((next & 0xC0) != 0x80) return "\uFFFD";
-                encoded[index] = (byte) next;
+            if ((first & 0xE0) == 0xC0) {
+                if (first < 0xC2) return "\uFFFD"; // 0xC0/0xC1 can only encode overlong forms.
+                int second = stream.read();
+                if (second < 0) return "\uFFFD";
+                if ((second & 0xC0) != 0x80) {
+                    unread(second);
+                    return "\uFFFD";
+                }
+                return new String(new byte[]{(byte) first, (byte) second},
+                        StandardCharsets.UTF_8);
             }
-            return new String(encoded, StandardCharsets.UTF_8);
+            if ((first & 0xF0) == 0xE0) {
+                int second = stream.read();
+                if (second < 0) return "\uFFFD";
+                if ((second & 0xC0) != 0x80 || (first == 0xE0 && second < 0xA0)) {
+                    unread(second);
+                    return "\uFFFD";
+                }
+                int third = stream.read();
+                if (third < 0) return "\uFFFD";
+                if ((third & 0xC0) != 0x80) {
+                    unread(third);
+                    return "\uFFFD";
+                }
+                return new String(new byte[]{(byte) first, (byte) second, (byte) third},
+                        StandardCharsets.UTF_8);
+            }
+            if ((first & 0xF8) == 0xF0) {
+                if (first > 0xF4) return "\uFFFD"; // RFC 3629 stops at U+10FFFF.
+                int second = stream.read();
+                if (second < 0) return "\uFFFD";
+                if ((second & 0xC0) != 0x80 || (first == 0xF0 && second < 0x90)
+                        || (first == 0xF4 && second > 0x8F)) {
+                    unread(second);
+                    return "\uFFFD";
+                }
+                int third = stream.read();
+                if (third < 0) return "\uFFFD";
+                if ((third & 0xC0) != 0x80) {
+                    unread(third);
+                    return "\uFFFD";
+                }
+                int fourth = stream.read();
+                if (fourth < 0) return "\uFFFD";
+                if ((fourth & 0xC0) != 0x80) {
+                    unread(fourth);
+                    return "\uFFFD";
+                }
+                return new String(new byte[]{(byte) first, (byte) second, (byte) third,
+                        (byte) fourth}, StandardCharsets.UTF_8);
+            }
+            return "\uFFFD";
+        }
+
+        private void unread(int value) throws IOException {
+            ((PushbackInputStream) stream).unread(value);
         }
 
         private void remember(String value) {
@@ -636,6 +692,10 @@ public interface TerminalInput {
 
     private static String decodeKey(int first, KeyReader input) throws IOException {
         if (first < 0) return null;
+        while (first == 0) { // NUL is transport framing, never a key token.
+            first = input.read();
+            if (first < 0) return null;
+        }
         if (first == '\r' || first == '\n') return "ENTER";
         if (first == '\t') return "TAB";
         if (first == 127 || first == 8) return "BACKSPACE";

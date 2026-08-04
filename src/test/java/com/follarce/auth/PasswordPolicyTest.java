@@ -22,4 +22,12 @@ class PasswordPolicyTest {
         assertTrue(PasswordPolicy.matches(password, first));
         assertFalse(PasswordPolicy.matches("87654321".toCharArray(), first));
     }
+
+    @Test
+    void oversizedPasswordsShortCircuitWithoutHashing() {
+        char[] password = new char[PasswordPolicy.MAXIMUM_LENGTH + 1];
+        java.util.Arrays.fill(password, 'x');
+        assertFalse(PasswordPolicy.matches(password,
+                PasswordPolicy.hash("12345678".toCharArray())));
+    }
 }

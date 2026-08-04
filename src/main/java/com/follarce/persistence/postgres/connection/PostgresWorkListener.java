@@ -4,7 +4,6 @@ import com.follarce.persistence.postgres.error.SqlStateClassifier;
 import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
 
-import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -21,17 +20,23 @@ public final class PostgresWorkListener implements AutoCloseable {
     public static final String TIMER = "cilexec_timer_work";
     public static final String INTERRUPT = "cilexec_interrupt_work";
 
-    private final DataSource dataSource;
+    private final com.follarce.config.DatabaseConfig database;
     private final Map<String, Runnable> handlers;
     private final Consumer<Throwable> fatalFailure;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile Connection connection;
     private volatile Thread worker;
 
-    public PostgresWorkListener(DataSource dataSource, Runnable scheduler, Runnable effect,
+    /**
+     * The listener holds one dedicated connection for the whole Runtime lifetime; it is
+     * deliberately created outside the pool so a long-lived LISTEN never occupies a pool
+     * slot or trips Hikari's leak detection.
+     */
+    public PostgresWorkListener(com.follarce.config.DatabaseConfig database,
+                                Runnable scheduler, Runnable effect,
                                 Runnable timer, Runnable interrupt,
                                 Consumer<Throwable> fatalFailure) {
-        this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+        this.database = Objects.requireNonNull(database, "database");
         this.handlers = Map.of(SCHEDULER, Objects.requireNonNull(scheduler, "scheduler"),
                 EFFECT, Objects.requireNonNull(effect, "effect"),
                 TIMER, Objects.requireNonNull(timer, "timer"),
@@ -45,7 +50,7 @@ public final class PostgresWorkListener implements AutoCloseable {
             throw new IllegalStateException("PostgreSQL work listener already started");
         }
         try {
-            Connection opened = dataSource.getConnection();
+            Connection opened = openConnection();
             connection = opened;
             opened.setAutoCommit(true);
             try (Statement statement = opened.createStatement()) {
@@ -65,6 +70,21 @@ public final class PostgresWorkListener implements AutoCloseable {
     public boolean isRunning() {
         Thread current = worker;
         return running.get() && current != null && current.isAlive();
+    }
+
+    private Connection openConnection() throws SQLException {
+        java.util.Properties properties = new java.util.Properties();
+        properties.setProperty("user", database.username());
+        properties.setProperty("ApplicationName", database.applicationName() + "-work-listener");
+        properties.setProperty("tcpKeepAlive", "true");
+        // connectTimeout bounds the TCP connect and handshake; socketTimeout is deliberately
+        // absent because the listener relies on an indefinite notification read.
+        properties.setProperty("connectTimeout", "15");
+        try (com.follarce.config.DockerSecretLoader.SecretValue secret =
+                     com.follarce.config.DockerSecretLoader.read(database.passwordFile())) {
+            properties.setProperty("password", secret.exposeForDriver());
+        }
+        return java.sql.DriverManager.getConnection(database.jdbcUrl(), properties);
     }
 
     private void listen() {
@@ -113,11 +133,20 @@ public final class PostgresWorkListener implements AutoCloseable {
         connection = null;
         if (current == null) return;
         if (abort) {
+            // A pooled Connection.close() merely returns the socket to Hikari and does not unblock
+            // PGConnection.getNotifications(0). Abort first so the socket can never be reused
+            // while the listener still owns its blocking read, and never return an aborted
+            // connection to the pool; the pool is shut down immediately after the listener.
             try {
                 current.abort(Runnable::run);
             } catch (SQLException ignored) {
-                // Fall through to the normal close path.
+                try {
+                    current.close();
+                } catch (SQLException closeFailure) {
+                    // Shutdown is already in progress.
+                }
             }
+            return;
         }
         try {
             current.close();

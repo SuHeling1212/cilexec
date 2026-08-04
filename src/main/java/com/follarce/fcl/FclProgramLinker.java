@@ -62,7 +62,13 @@ public final class FclProgramLinker {
             long maximum = maximumExpressionId(compiled.instructions());
             contexts.add(new Context(module, compiled, expressionOffset,
                     internalPrefix(module, index)));
-            expressionOffset = Math.addExact(expressionOffset, maximum);
+            try {
+                expressionOffset = Math.addExact(expressionOffset, maximum);
+            } catch (ArithmeticException overflow) {
+                throw new FclRuntimeException(
+                        "Linked package expression identifiers exceed the supported range",
+                        overflow);
+            }
         }
 
         Map<String, Map<String, String>> internalNames = internalNames(contexts);
@@ -101,7 +107,7 @@ public final class FclProgramLinker {
         instructions.set(exitJump, new FclInstruction.Jump(-1, instructions.size()));
         StringBuilder linkedSource = new StringBuilder(base.source());
         for (Context context : contexts) {
-            linkedSource.append("\n# linked ").append(context.module().packageIdentity())
+            linkedSource.append("\n// linked ").append(context.module().packageIdentity())
                     .append('/').append(context.module().moduleName()).append('\n')
                     .append(context.module().source());
         }
@@ -166,7 +172,13 @@ public final class FclProgramLinker {
                                                 Context context,
                                                 Map<String, Map<String, String>> allNames,
                                                 Map<String, String> localNames) {
-        long id = Math.addExact(expression.id(), offset);
+        final long id;
+        try {
+            id = Math.addExact(expression.id(), offset);
+        } catch (ArithmeticException overflow) {
+            throw new FclRuntimeException(
+                    "Linked package expression identifiers exceed the supported range", overflow);
+        }
         if (expression instanceof FclExpression.Literal value) {
             return new FclExpression.Literal(id, value.value());
         }

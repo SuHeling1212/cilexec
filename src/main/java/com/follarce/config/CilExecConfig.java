@@ -38,8 +38,10 @@ public record CilExecConfig(
         if (schedulerWorkers < 1 || effectWorkers < 1) {
             throw new ConfigException("Worker counts must be positive");
         }
-        if (schedulerWorkers + 2 > runtimeDatabase.maximumPoolSize()) {
-            throw new ConfigException("Runtime pool must reserve connections beyond scheduler workers");
+        if (schedulerWorkers + effectWorkers + 2 > runtimeDatabase.maximumPoolSize()) {
+            throw new ConfigException("Runtime pool must reserve connections beyond scheduler and "
+                    + "effect workers: need at least " + (schedulerWorkers + effectWorkers + 2)
+                    + ", got " + runtimeDatabase.maximumPoolSize() + "; increase runtime.pool.max");
         }
         if (effectWorkers > effectDatabase.maximumPoolSize()) {
             throw new ConfigException("Effect workers exceed their connection pool");

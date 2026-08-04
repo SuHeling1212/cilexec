@@ -213,6 +213,101 @@ class EffectWorkerServiceTest {
         }
     }
 
+    @Test
+    void stalledExecutingEffectIsRecoveredThroughIdempotentRetry() throws Exception {
+        FakePersistence persistence = new FakePersistence(stalled(retryPolicy()));
+        AtomicInteger executions = new AtomicInteger();
+        EffectHandler handler = handler(request -> {
+            executions.incrementAndGet();
+            return value("text/plain", "recovered");
+        });
+
+        try (EffectWorkerService workers = workers(persistence, handler)) {
+            workers.start();
+            assertTrue(persistence.completed.await(3, TimeUnit.SECONDS));
+        }
+
+        assertEquals(1, executions.get());
+        assertEquals(EffectRequest.Status.COMPLETED, persistence.effects.effect.status());
+        assertEquals(List.of(EffectAttempt.Status.SUCCEEDED),
+                persistence.effects.attempts.stream().map(EffectAttempt::status).toList());
+    }
+
+    @Test
+    void stalledQueryableEffectQueriesOutcomeWithoutReexecuting() throws Exception {
+        FakePersistence persistence = new FakePersistence(stalled(queryPolicy()));
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger queries = new AtomicInteger();
+        EffectHandler handler = new EffectHandler() {
+            @Override public String effectType() { return "test.effect"; }
+
+            @Override
+            public Continuation.PersistedValue execute(
+                    Continuation.PersistedValue request,
+                    Optional<String> idempotencyKey
+            ) {
+                executions.incrementAndGet();
+                throw new AssertionError("QUERY_REMOTE must not execute the effect again");
+            }
+
+            @Override
+            public Optional<Continuation.PersistedValue> queryOutcome(EffectRequest request) {
+                queries.incrementAndGet();
+                return Optional.of(value("text/plain", "already-completed"));
+            }
+        };
+
+        try (EffectWorkerService workers = workers(persistence, handler)) {
+            workers.start();
+            assertTrue(persistence.completed.await(3, TimeUnit.SECONDS));
+        }
+
+        assertEquals(0, executions.get());
+        assertEquals(1, queries.get());
+        assertEquals(EffectRequest.Status.COMPLETED, persistence.effects.effect.status());
+    }
+
+    @Test
+    void stalledManualEffectIsLeftAsUnknownForManualResolution() throws Exception {
+        FakePersistence persistence = new FakePersistence(stalled(manualPolicy()));
+        AtomicInteger executions = new AtomicInteger();
+        EffectHandler handler = handler(request -> {
+            executions.incrementAndGet();
+            return value("text/plain", "must-not-run");
+        });
+
+        try (EffectWorkerService workers = workers(persistence, handler)) {
+            workers.start();
+            assertFalse(persistence.completed.await(100, TimeUnit.MILLISECONDS));
+        }
+
+        assertEquals(0, executions.get());
+        assertEquals(EffectRequest.Status.UNKNOWN, persistence.effects.effect.status());
+        assertTrue(persistence.effects.attempts.isEmpty());
+    }
+
+    @Test
+    void wakeConflictDoesNotRollBackCompletedEffectResult() throws Exception {
+        EffectRequest prepared = prepared(manualPolicy());
+        FakePersistence persistence = new FakePersistence(prepared,
+                new WakeConflictProcess(prepared.effectId()));
+        AtomicReference<Throwable> fatal = new AtomicReference<>();
+
+        try (EffectWorkerService workers = new EffectWorkerService(
+                persistence, persistence, UUID.randomUUID(),
+                new EffectHandlerRegistry(List.of(handler(request ->
+                        value("text/plain", "completed")))), 1, Duration.ofMillis(1), CLOCK,
+                fatal::set)) {
+            workers.start();
+            assertTrue(persistence.completed.await(3, TimeUnit.SECONDS));
+        }
+
+        assertEquals(EffectRequest.Status.COMPLETED, persistence.effects.effect.status());
+        assertEquals(EffectAttempt.Status.SUCCEEDED,
+                persistence.effects.attempts.getFirst().status());
+        assertNull(fatal.get());
+    }
+
     private static EffectWorkerService workers(FakePersistence persistence,
                                                 EffectHandler handler) {
         return new EffectWorkerService(persistence, persistence, UUID.randomUUID(),
@@ -223,6 +318,14 @@ class EffectWorkerServiceTest {
     private static EffectRequest prepared(EffectRequest.Policy policy) {
         return EffectRequest.prepare(UUID.randomUUID(), UUID.randomUUID(), "test.effect",
                 value("json", "{\"request\":true}"), policy, NOW);
+    }
+
+    private static EffectRequest stalled(EffectRequest.Policy policy) {
+        EffectRequest request = EffectRequest.prepare(UUID.randomUUID(), UUID.randomUUID(),
+                "test.effect", value("json", "{\"request\":true}"), policy,
+                NOW.minusSeconds(20));
+        return request.claim(UUID.randomUUID(), NOW.minusSeconds(10))
+                .start(NOW.minusSeconds(10));
     }
 
     private static EffectRequest unknown(EffectRequest.Policy policy) {
@@ -280,6 +383,11 @@ class EffectWorkerServiceTest {
         FakePersistence(EffectRequest effect) {
             effects = new FakeEffects(effect, completed);
             processes = new OneProcess(effect.processUid());
+        }
+
+        FakePersistence(EffectRequest effect, ProcessRepository processes) {
+            effects = new FakeEffects(effect, completed);
+            this.processes = processes;
         }
 
         @Override
@@ -388,6 +496,17 @@ class EffectWorkerServiceTest {
             return List.of(effect);
         }
 
+        @Override
+        public List<EffectRequest> claimStalled(UUID workerId, Instant now,
+                                                long stallTimeoutMillis, int limit) {
+            if (effect.status() != EffectRequest.Status.EXECUTING) return List.of();
+            effect = effect.unknown("EFFECT_STALLED", now);
+            if (effect.policy().unknownAction() != EffectRequest.UnknownAction.MANUAL) {
+                effect = effect.claimRecoveredUnknown(workerId, now);
+            }
+            return List.of(effect);
+        }
+
         @Override public int nextAttemptNumber(UUID effectId) { return attempts.size() + 1; }
         @Override public void saveAttempt(EffectAttempt attempt) { attempts.add(attempt); }
 
@@ -410,6 +529,36 @@ class EffectWorkerServiceTest {
                 }
             }
             return false;
+        }
+    }
+
+    private static final class WakeConflictProcess implements ProcessRepository {
+        private final CilProcess process;
+
+        private WakeConflictProcess(UUID effectId) {
+            UUID ownerId = UUID.randomUUID();
+            Continuation continuation = new Continuation(UUID.randomUUID(),
+                    new ObjectHash("0".repeat(64)), 0, List.of(), List.of(), List.of(),
+                    List.of(), Optional.of(new Continuation.WaitState(
+                    Continuation.WaitKind.EFFECT, Optional.of(effectId), Optional.empty())),
+                    Map.of(), Map.of(), "1", "1");
+            process = new CilProcess(new ProcessIdentity(UUID.randomUUID(), 1), ownerId,
+                    CilProcess.Status.WAITING_EFFECT, 0, 0, continuation, Optional.empty(),
+                    NOW.minusSeconds(10), NOW.minusSeconds(5));
+        }
+
+        @Override public long allocatePid() { throw new UnsupportedOperationException(); }
+        @Override public Optional<CilProcess> findByUid(UUID processUid) {
+            return Optional.of(process);
+        }
+        @Override public Optional<CilProcess> findByPid(long pid) { return Optional.empty(); }
+        @Override public void insert(CilProcess process) { throw new UnsupportedOperationException(); }
+        @Override public UpdateResult update(CilProcess process, long state, long epoch) {
+            return UpdateResult.VERSION_CONFLICT;
+        }
+        @Override public UpdateResult updateClaimed(CilProcess process, long state,
+                com.follarce.domain.scheduler.SchedulerClaim claim) {
+            return UpdateResult.VERSION_CONFLICT;
         }
     }
 

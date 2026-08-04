@@ -1,6 +1,7 @@
 package com.follarce.fcl;
 
 import java.lang.reflect.Array;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,7 +24,7 @@ final class FclValues {
         }
         if (value instanceof Map<?, ?> map) {
             Map<Object, Object> copy = new LinkedHashMap<>();
-            map.forEach((key, item) -> copy.put(deepCopy(key), deepCopy(item)));
+            map.forEach((key, item) -> copy.put(normalizeKey(deepCopy(key)), deepCopy(item)));
             return copy;
         }
         if (value.getClass().isArray()) {
@@ -40,7 +41,10 @@ final class FclValues {
     static boolean truthy(Object value) {
         if (value == null) return false;
         if (value instanceof Boolean bool) return bool;
-        if (value instanceof Number number) return number.doubleValue() != 0.0d;
+        if (value instanceof Number number) {
+            double numeric = number.doubleValue();
+            return numeric != 0.0d && !Double.isNaN(numeric);
+        }
         if (value instanceof String text) return !text.isEmpty();
         if (value instanceof List<?> list) return !list.isEmpty();
         if (value instanceof Map<?, ?> map) return !map.isEmpty();
@@ -79,10 +83,11 @@ final class FclValues {
             return deepCopy(list.get(position));
         }
         if (target instanceof Map<?, ?> map) {
-            if (!map.containsKey(index)) {
+            Object key = normalizeKey(index);
+            if (!map.containsKey(key)) {
                 throw new FclRuntimeException("Map key does not exist: " + display(index));
             }
-            return deepCopy(map.get(index));
+            return deepCopy(map.get(key));
         }
         if (target instanceof String text) {
             int position = listIndex(index, text.length());
@@ -107,7 +112,7 @@ final class FclValues {
             return;
         }
         if (target instanceof Map<?, ?> rawMap) {
-            ((Map<Object, Object>) rawMap).put(deepCopy(finalIndex), deepCopy(value));
+            ((Map<Object, Object>) rawMap).put(normalizeKey(deepCopy(finalIndex)), deepCopy(value));
             return;
         }
         throw new FclRuntimeException("Value is not assignable by index: " + typeOf(target));
@@ -159,15 +164,30 @@ final class FclValues {
             throw new FclRuntimeException("Division by zero");
         }
         if (integral && !operator.equals("/")) {
+            if (leftNumber instanceof BigInteger || rightNumber instanceof BigInteger) {
+                BigInteger a = toBigInteger(leftNumber);
+                BigInteger b = toBigInteger(rightNumber);
+                return switch (operator) {
+                    case "+" -> a.add(b);
+                    case "-" -> a.subtract(b);
+                    case "*" -> a.multiply(b);
+                    case "%" -> a.remainder(b);
+                    default -> throw new FclRuntimeException("Unsupported numeric operator: " + operator);
+                };
+            }
             long a = leftNumber.longValue();
             long b = rightNumber.longValue();
-            return switch (operator) {
-                case "+" -> a + b;
-                case "-" -> a - b;
-                case "*" -> a * b;
-                case "%" -> a % b;
-                default -> throw new FclRuntimeException("Unsupported numeric operator: " + operator);
-            };
+            try {
+                return switch (operator) {
+                    case "+" -> Math.addExact(a, b);
+                    case "-" -> Math.subtractExact(a, b);
+                    case "*" -> Math.multiplyExact(a, b);
+                    case "%" -> a % b;
+                    default -> throw new FclRuntimeException("Unsupported numeric operator: " + operator);
+                };
+            } catch (ArithmeticException overflow) {
+                throw new FclRuntimeException("Integer overflow in " + operator);
+            }
         }
         double a = leftNumber.doubleValue();
         double b = rightNumber.doubleValue();
@@ -182,7 +202,15 @@ final class FclValues {
     }
 
     private static Object negate(Number number) {
-        return isIntegral(number) ? -number.longValue() : -number.doubleValue();
+        if (number instanceof BigInteger big) return big.negate();
+        if (isIntegral(number)) {
+            long value = number.longValue();
+            if (value == Long.MIN_VALUE) {
+                throw new FclRuntimeException("Integer overflow in unary -");
+            }
+            return -value;
+        }
+        return -number.doubleValue();
     }
 
     private static long length(Object value) {
@@ -198,6 +226,12 @@ final class FclValues {
         if (left instanceof Number a && right instanceof Number b) {
             return compareNumbers(a, b) == 0;
         }
+        if (left instanceof Character character && right instanceof String text) {
+            return text.length() == 1 && text.charAt(0) == character;
+        }
+        if (left instanceof String text && right instanceof Character character) {
+            return text.length() == 1 && text.charAt(0) == character;
+        }
         return Objects.equals(left, right);
     }
 
@@ -208,6 +242,10 @@ final class FclValues {
         }
         if (left == null || right == null) {
             throw new FclRuntimeException("null cannot be ordered");
+        }
+        if ((left instanceof Number && right instanceof String)
+                || (left instanceof String && right instanceof Number)) {
+            throw new FclRuntimeException("Cannot compare string and number");
         }
         if (left.getClass().isInstance(right) && left instanceof Comparable comparable) {
             return comparable.compareTo(right);
@@ -220,12 +258,35 @@ final class FclValues {
             return list.get(listIndex(index, list.size()));
         }
         if (target instanceof Map<?, ?> map) {
-            if (!map.containsKey(index)) {
+            Object key = normalizeKey(index);
+            if (!map.containsKey(key)) {
                 throw new FclRuntimeException("Map key does not exist: " + display(index));
             }
-            return map.get(index);
+            return map.get(key);
         }
         throw new FclRuntimeException("Value is not indexable: " + typeOf(target));
+    }
+
+    private static Object normalizeKey(Object key) {
+        if (key instanceof Number number) {
+            if (number instanceof Long || number instanceof Integer || number instanceof Short
+                    || number instanceof Byte) {
+                return number.longValue();
+            }
+            if (number instanceof java.math.BigInteger bigInteger) {
+                try {
+                    return bigInteger.longValueExact();
+                } catch (ArithmeticException overflow) {
+                    return key;
+                }
+            }
+            double value = number.doubleValue();
+            if (Double.isFinite(value) && value == Math.rint(value)
+                    && value >= -9007199254740992.0 && value <= 9007199254740992.0) {
+                return (long) value;
+            }
+        }
+        return key;
     }
 
     private static int listIndex(Object value, int size) {
@@ -239,11 +300,28 @@ final class FclValues {
 
     private static boolean isIntegral(Number number) {
         return number instanceof Byte || number instanceof Short || number instanceof Integer
-                || number instanceof Long;
+                || number instanceof Long || number instanceof BigInteger;
+    }
+
+    private static BigInteger toBigInteger(Number number) {
+        if (number instanceof BigInteger big) return big;
+        return BigInteger.valueOf(number.longValue());
+    }
+
+    private static java.math.BigDecimal exactDecimal(Number number) {
+        if (number instanceof BigInteger bigInteger) {
+            return new java.math.BigDecimal(bigInteger);
+        }
+        return isIntegral(number)
+                ? java.math.BigDecimal.valueOf(number.longValue())
+                : java.math.BigDecimal.valueOf(number.doubleValue());
     }
 
     private static int compareNumbers(Number left, Number right) {
         if (isIntegral(left) && isIntegral(right)) {
+            if (left instanceof BigInteger || right instanceof BigInteger) {
+                return toBigInteger(left).compareTo(toBigInteger(right));
+            }
             return Long.compare(left.longValue(), right.longValue());
         }
         double leftValue = left.doubleValue();
@@ -251,12 +329,6 @@ final class FclValues {
         if (!Double.isFinite(leftValue) || !Double.isFinite(rightValue)) {
             return Double.compare(leftValue, rightValue);
         }
-        java.math.BigDecimal exactLeft = isIntegral(left)
-                ? java.math.BigDecimal.valueOf(left.longValue())
-                : java.math.BigDecimal.valueOf(leftValue);
-        java.math.BigDecimal exactRight = isIntegral(right)
-                ? java.math.BigDecimal.valueOf(right.longValue())
-                : java.math.BigDecimal.valueOf(rightValue);
-        return exactLeft.compareTo(exactRight);
+        return exactDecimal(left).compareTo(exactDecimal(right));
     }
 }

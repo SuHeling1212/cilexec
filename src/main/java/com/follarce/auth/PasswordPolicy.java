@@ -46,6 +46,7 @@ public final class PasswordPolicy {
 
     public static boolean matches(char[] password, String encoded) {
         if (password == null || encoded == null) return false;
+        if (password.length > MAXIMUM_LENGTH) return false;
         String[] parts = encoded.split("\\$", -1);
         if (parts.length != 4 || !PREFIX.equals(parts[0])) return false;
         final int iterations;

@@ -84,6 +84,8 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
 
     @Override
     public boolean heartbeat(SchedulerClaim claim) {
+        Duration extension = Duration.between(claim.heartbeatAt(), claim.expiresAt());
+        Instant now = Instant.now();
         String sql = "SELECT scheduler.heartbeat_process(?,?,?,?,?,?,?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, claim.processUid());
@@ -91,8 +93,8 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
             statement.setObject(3, claim.runnerId());
             statement.setObject(4, claim.bootId());
             statement.setLong(5, claim.executionEpoch());
-            statement.setTimestamp(6, java.sql.Timestamp.from(claim.heartbeatAt()));
-            statement.setTimestamp(7, java.sql.Timestamp.from(claim.expiresAt()));
+            statement.setTimestamp(6, java.sql.Timestamp.from(now));
+            statement.setTimestamp(7, java.sql.Timestamp.from(now.plus(extension)));
             try (ResultSet rows = statement.executeQuery()) {
                 return rows.next() && rows.getBoolean(1);
             }
@@ -120,10 +122,7 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
             statement.setObject(3, processUid);
             statement.setObject(4, processUid);
             try (ResultSet rows = statement.executeQuery()) {
-                if (!rows.next() || rows.getInt(1) != 1) {
-                    throw new SQLException("Scheduler release function was not evaluated",
-                            "40001");
-                }
+                rows.next();
             }
         } catch (SQLException exception) {
             throw failure("scheduler.release", exception);

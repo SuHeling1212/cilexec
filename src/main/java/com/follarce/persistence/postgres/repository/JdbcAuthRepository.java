@@ -19,6 +19,11 @@ import java.util.ArrayList;
 import java.util.UUID;
 
 public final class JdbcAuthRepository extends JdbcRepositorySupport implements AuthRepository {
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(JdbcAuthRepository.class);
+    private static final String DUMMY_HASH = "pbkdf2-sha256$310000$obLD1OX2BxgpOktcbX6PkA$"
+            + "65Go+4TMaXlW4AXWWhtvlPP024odJEz0wJwg86MC9o8";
+
     public JdbcAuthRepository(Connection connection) {
         super(connection);
     }
@@ -185,7 +190,12 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
                         + "WHERE credential.user_id=? AND account.status='ACTIVE'")) {
             statement.setObject(1, userId);
             try (ResultSet rows = statement.executeQuery()) {
-                return rows.next() && PasswordPolicy.matches(password, rows.getString(1));
+                String hash = rows.next() ? rows.getString(1) : null;
+                if (hash == null) {
+                    PasswordPolicy.matches(password, DUMMY_HASH);
+                    return false;
+                }
+                return PasswordPolicy.matches(password, hash);
             }
         } catch (SQLException exception) {
             throw failure("auth.credentialMatches", exception);
@@ -214,7 +224,12 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
             try (ResultSet rows = statement.executeQuery()) {
                 Set<Capability> result = new LinkedHashSet<>();
                 while (rows.next()) {
-                    result.add(Capability.valueOf(rows.getString(1).toUpperCase(java.util.Locale.ROOT)));
+                    String key = rows.getString(1).toUpperCase(java.util.Locale.ROOT);
+                    try {
+                        result.add(Capability.valueOf(key));
+                    } catch (IllegalArgumentException unknownKey) {
+                        LOG.warn("Ignoring unknown capability key from schema: {}", rows.getString(1));
+                    }
                 }
                 return Set.copyOf(result);
             }

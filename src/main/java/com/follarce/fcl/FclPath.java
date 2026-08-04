@@ -18,9 +18,7 @@ public final class FclPath {
         if (!processScope.contains(SCOPE_KEY)) return "/";
         Object value = processScope.get(SCOPE_KEY);
         if (value == null) return "/";
-        if (!(value instanceof String path) || !path.startsWith("/")) {
-            throw new FclRuntimeException("Persisted working directory is invalid");
-        }
+        if (!(value instanceof String path) || !path.startsWith("/")) return "/";
         return normalizeAbsolute(path);
     }
 

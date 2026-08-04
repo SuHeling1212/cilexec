@@ -8,6 +8,7 @@ import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsMount;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.domain.vfs.VfsFileLimits;
+import com.follarce.persistence.postgres.error.SqlStateClassifier;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import com.follarce.persistence.postgres.mapper.JsonCodec;
 import com.google.gson.reflect.TypeToken;
@@ -24,6 +25,7 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class JdbcVfsRepository extends JdbcRepositorySupport implements VfsRepository {
+    private static final int NODE_LIST_LIMIT = 10000;
     private static final String CHUNK_MANIFEST_MEDIA_TYPE =
             "application/vnd.cilexec.chunk-manifest;version=1";
     private final JsonCodec json;
@@ -33,6 +35,12 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
         this.json = json;
     }
 
+    /**
+     * Persists one immutable content-addressed object. The SQL function resolves the
+     * actor from the {@code app.cilexec_user_id} transaction-local claim, so this method
+     * MUST run inside a user transaction ({@code inUserTransaction}); a pure runtime
+     * transaction raises SQLSTATE 42501 ("a verified CilExec user identity is required").
+     */
     @Override
     public void saveObject(StoredObject object) {
         VfsFileLimits.requireWithinLimit(object.byteSize());
@@ -51,6 +59,11 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
         }
     }
 
+    /**
+     * Materializes one object's full content (bounded by the 1 GiB file limit). Callers
+     * that only need a slice MUST prefer {@link #readObjectRange} so huge chunked
+     * manifests are never loaded into one JVM array.
+     */
     @Override
     public Optional<StoredObject> findObject(ObjectHash objectHash) {
         String sql = "SELECT object_hash,byte_size,media_type,content,created_at "
@@ -110,6 +123,49 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     }
 
     @Override
+    public byte[] readObjectRangeByAdministrator(UUID administratorId, UUID targetUserId,
+                                                 ObjectHash hash, long offset, int maximumBytes) {
+        if (offset < 0 || maximumBytes < 0 || maximumBytes > 4 * 1024 * 1024) {
+            throw new IllegalArgumentException("Invalid bounded object range");
+        }
+        String sql = "SELECT object_store.admin_read_object_range(?,?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, targetUserId);
+            statement.setBytes(3, JdbcValues.hash(hash));
+            statement.setLong(4, offset);
+            statement.setInt(5, maximumBytes);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getBytes(1) == null) {
+                    throw new IllegalArgumentException("Unknown or inaccessible object");
+                }
+                return rows.getBytes(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.adminReadRange", exception);
+        }
+    }
+
+    @Override
+    public long logicalObjectSizeByAdministrator(UUID administratorId, UUID targetUserId,
+                                                 ObjectHash hash) {
+        String sql = "SELECT object_store.admin_logical_object_size(?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, targetUserId);
+            statement.setBytes(3, JdbcValues.hash(hash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getObject(1) == null) {
+                    throw new IllegalArgumentException("Unknown or inaccessible object");
+                }
+                return rows.getLong(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.adminLogicalSize", exception);
+        }
+    }
+
+    @Override
     public StoredObject appendChunkedObject(ObjectHash currentObjectHash, byte[] tail,
                                             String mediaType, Instant at) {
         StoredObject chunk = StoredObject.create(new BinaryContent(tail), mediaType, at);
@@ -129,7 +185,11 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             statement.setBytes(3, JdbcValues.hash(chunk.objectHash()));
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next() || rows.getLong(1) != total) {
-                    throw new IllegalStateException("Object store did not confirm chunk append");
+                    // A concurrent append committed between our size read and this
+                    // statement: the manifest row records the chain as it stands now,
+                    // so our computed total is stale. Surface it as an optimistic
+                    // conflict so the caller can re-read and retry the append.
+                    throw SqlStateClassifier.optimisticConflict("object_store.appendChunk");
                 }
             }
         } catch (SQLException exception) {
@@ -177,6 +237,18 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     }
 
     @Override
+    public Optional<VfsNode> findChildByAdministrator(UUID administratorId, UUID targetUserId,
+                                                      Optional<UUID> parentNodeId, String nodeName) {
+        String sql = "SELECT * FROM vfs.admin_find_child(?,?,?,?)";
+        return find("vfs.findChildByAdministrator", sql, statement -> {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, targetUserId);
+            JdbcValues.nullableUuid(statement, 3, parentNodeId);
+            statement.setString(4, nodeName);
+        });
+    }
+
+    @Override
     public List<VfsNode> findChildren(UUID ownerId, Optional<UUID> parentNodeId) {
         String sql = "SELECT * FROM vfs.node WHERE owner_id=? "
                 + "AND parent_node_id IS NOT DISTINCT FROM ? ORDER BY node_name,node_id";
@@ -193,15 +265,25 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
         }
     }
 
+    /**
+     * Bounded whole-tree listing for the administrator application path: the result is
+     * deliberately capped at 10,000 rows so a pathological tree is never materialized in
+     * one JVM list. Exceeding the cap is an explicit error, never a silent truncation.
+     */
     @Override
     public List<VfsNode> findAllNodes(UUID ownerId) {
         String sql = "SELECT * FROM vfs.node WHERE owner_id=? "
-                + "ORDER BY parent_node_id NULLS FIRST,node_name,node_id";
+                + "ORDER BY parent_node_id NULLS FIRST,node_name,node_id LIMIT "
+                + (NODE_LIST_LIMIT + 1);
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, ownerId);
             try (ResultSet rows = statement.executeQuery()) {
                 List<VfsNode> nodes = new ArrayList<>();
                 while (rows.next()) nodes.add(map(rows));
+                if (nodes.size() > NODE_LIST_LIMIT) {
+                    throw new IllegalStateException("VFS tree exceeds the administrative "
+                            + "listing limit of " + NODE_LIST_LIMIT + " nodes");
+                }
                 return List.copyOf(nodes);
             }
         } catch (SQLException exception) {
@@ -209,10 +291,15 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
         }
     }
 
+    /**
+     * Capability-checked cross-user listing, bounded the same way as {@link #findAllNodes}.
+     * This implementation currently has no in-tree callers; it is retained because the
+     * method is part of the {@link VfsRepository} contract.
+     */
     @Override
     public List<VfsNode> findAllNodesByAdministrator(UUID administratorId, UUID ownerId,
                                                      UUID auditEventId, Instant at) {
-        String sql = "SELECT * FROM vfs.admin_list_nodes(?,?,?,?)";
+        String sql = "SELECT * FROM vfs.admin_list_nodes(?,?,?,?) LIMIT " + (NODE_LIST_LIMIT + 1);
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, administratorId);
             statement.setObject(2, ownerId);
@@ -221,6 +308,10 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             try (ResultSet rows = statement.executeQuery()) {
                 List<VfsNode> nodes = new ArrayList<>();
                 while (rows.next()) nodes.add(map(rows));
+                if (nodes.size() > NODE_LIST_LIMIT) {
+                    throw new IllegalStateException("VFS tree exceeds the administrative "
+                            + "listing limit of " + NODE_LIST_LIMIT + " nodes");
+                }
                 return List.copyOf(nodes);
             }
         } catch (SQLException exception) {
@@ -299,34 +390,95 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     @Override
     public boolean deleteNode(UUID nodeId, UUID ownerId) {
         String sql = "DELETE FROM vfs.node WHERE node_id=? AND owner_id=? "
-                + "AND parent_node_id IS NOT NULL "
+                + "AND parent_node_id IS NOT NULL AND node_type <> 'MOUNT' "
                 + "AND NOT EXISTS (SELECT 1 FROM vfs.node child WHERE child.parent_node_id=vfs.node.node_id) "
                 + "AND NOT EXISTS (SELECT 1 FROM vfs.file_revision revision "
                 + "WHERE revision.node_id=vfs.node.node_id)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, nodeId);
             statement.setObject(2, ownerId);
-            return statement.executeUpdate() == 1;
+            if (statement.executeUpdate() == 1) return true;
         } catch (SQLException exception) {
             throw failure("vfs.deleteNode", exception);
         }
+        return rejectProtectedDelete(nodeId, ownerId);
     }
 
+    /**
+     * A DELETE that matched no row either means the node is gone (return false, the
+     * caller's unchanged conflict signal) or that it exists but is protected: MOUNT
+     * nodes must never be deleted because their vfs.mount row cascades away, and root,
+     * non-empty, and versioned nodes are rejected by the shared invariant. The error
+     * text stays consistent with AdminVfsService.delete.
+     */
+    private boolean rejectProtectedDelete(UUID nodeId, UUID ownerId) {
+        String sql = "SELECT node_type FROM vfs.node WHERE node_id=? AND owner_id=?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, nodeId);
+            statement.setObject(2, ownerId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return false;
+                if ("MOUNT".equals(rows.getString("node_type"))) {
+                    throw new IllegalStateException(
+                            "VFS mount nodes are protected from deletion");
+                }
+                throw new IllegalStateException(
+                        "Target is a root, non-empty directory, or versioned file");
+            }
+        } catch (SQLException exception) {
+            throw failure("vfs.deleteNode.existenceCheck", exception);
+        }
+    }
+
+    /**
+     * Content CAS with bounded in-transaction retry. Two processes may race to replace
+     * the same node; under READ COMMITTED every statement observes the latest committed
+     * row, so re-reading {@code current_object_hash} and re-issuing the UPDATE lets a
+     * transient race settle before the caller sees a failure. The expectation is
+     * deliberately NOT re-based onto a concurrent commit: silently overwriting a newer
+     * write (or re-chaining an append manifest to a stale base) would lose data. A
+     * genuinely moved expectation therefore surfaces as an optimistic conflict
+     * (PersistenceFailure kind OPTIMISTIC_CONFLICT) so the caller can re-read
+     * and retry the whole operation. Retries never cross the caller's transaction.
+     */
     @Override
     public boolean replaceContent(UUID nodeId, Optional<ObjectHash> expectedObjectHash,
                                   ObjectHash replacementObjectHash, Instant updatedAt) {
-        String sql = "UPDATE vfs.node SET current_object_hash=?,state_version=state_version+1,updated_at=? "
-                + "WHERE node_id=? AND node_type IN ('FILE','SYMLINK') "
-                + "AND current_object_hash IS NOT DISTINCT FROM ?";
+        for (int attempt = 0; attempt < 3; attempt++) {
+            String sql = "UPDATE vfs.node SET current_object_hash=?,state_version=state_version+1,updated_at=? "
+                    + "WHERE node_id=? AND node_type IN ('FILE','SYMLINK') "
+                    + "AND current_object_hash IS NOT DISTINCT FROM ?";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setBytes(1, JdbcValues.hash(replacementObjectHash));
+                statement.setTimestamp(2, java.sql.Timestamp.from(updatedAt));
+                statement.setObject(3, nodeId);
+                if (expectedObjectHash.isPresent()) statement.setBytes(4, JdbcValues.hash(expectedObjectHash.get()));
+                else statement.setNull(4, java.sql.Types.BINARY);
+                if (statement.executeUpdate() == 1) return true;
+            } catch (SQLException exception) {
+                throw failure("vfs.replaceContent", exception);
+            }
+            if (attempt + 1 == 3) break;
+            Optional<ObjectHash> current = readCurrentObjectHash(nodeId);
+            if (current.isEmpty()) return false;
+            if (!current.equals(expectedObjectHash)) {
+                throw SqlStateClassifier.optimisticConflict("vfs.replaceContent");
+            }
+        }
+        throw SqlStateClassifier.optimisticConflict("vfs.replaceContent");
+    }
+
+    private Optional<ObjectHash> readCurrentObjectHash(UUID nodeId) {
+        String sql = "SELECT current_object_hash FROM vfs.node WHERE node_id=?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setBytes(1, JdbcValues.hash(replacementObjectHash));
-            statement.setTimestamp(2, java.sql.Timestamp.from(updatedAt));
-            statement.setObject(3, nodeId);
-            if (expectedObjectHash.isPresent()) statement.setBytes(4, JdbcValues.hash(expectedObjectHash.get()));
-            else statement.setNull(4, java.sql.Types.BINARY);
-            return statement.executeUpdate() == 1;
+            statement.setObject(1, nodeId);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                byte[] hash = rows.getBytes(1);
+                return hash == null ? Optional.empty() : Optional.of(JdbcValues.hash(hash));
+            }
         } catch (SQLException exception) {
-            throw failure("vfs.replaceContent", exception);
+            throw failure("vfs.replaceContent.currentHash", exception);
         }
     }
 
@@ -459,8 +611,7 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             statement.setBytes(4, JdbcValues.hash(objectHash));
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) {
-                    throw com.follarce.persistence.postgres.error.SqlStateClassifier
-                            .optimisticConflict("vfs.appendRevision");
+                    throw SqlStateClassifier.optimisticConflict("vfs.appendRevision");
                 }
                 return mapRevision(rows);
             }
@@ -602,6 +753,15 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
         }
     }
 
+    /**
+     * Acquires a node lease, or re-acquires an unexpired lease already held by the same
+     * {@code processUid}. Every successful acquire mints a NEW fencing token: callers
+     * MUST use the returned token and must never reuse a previously minted one (old
+     * tokens no longer satisfy renewLock/releaseLock). A re-acquire is allowed only when
+     * the caller's execution epoch is at least the stored one, so a stale lower-epoch
+     * generation of the same process cannot take over the lease; an unexpired lease held
+     * by another process returns empty.
+     */
     @Override
     public Optional<FileLock> acquireLock(UUID nodeId, UUID ownerId, UUID processUid,
                                           long executionEpoch, Instant leaseUntil, Instant at) {
@@ -611,7 +771,8 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
                 + "execution_epoch=EXCLUDED.execution_epoch,lease_until=EXCLUDED.lease_until,"
                 + "fencing_token=vfs.node_lock.fencing_token+1,updated_at=EXCLUDED.updated_at "
                 + "WHERE vfs.node_lock.lease_until<=EXCLUDED.updated_at OR "
-                + "vfs.node_lock.process_uid=EXCLUDED.process_uid "
+                + "(vfs.node_lock.process_uid=EXCLUDED.process_uid "
+                + "AND vfs.node_lock.execution_epoch<=EXCLUDED.execution_epoch) "
                 + "RETURNING fencing_token,lease_until";
         return fileLock("vfs.acquireLock", sql, statement -> {
             statement.setObject(1, nodeId);

@@ -11,14 +11,21 @@ import org.junit.jupiter.api.Test;
 class CilExecConfigTest {
     @Test
     void defaultsReserveRuntimePoolCapacity() {
-        CilExecConfig config = CilExecConfig.load(Map.of());
+        Map<String, String> environment = Map.of("CILEXEC_RUNTIME_POOL_MAX", "20");
+        CilExecConfig config = CilExecConfig.load(environment);
         assertEquals("cilexec", config.instanceName());
         assertEquals(10, config.schedulerWorkers());
-        assertEquals(12, config.runtimeDatabase().maximumPoolSize());
+        assertEquals(20, config.runtimeDatabase().maximumPoolSize());
         assertEquals(6, config.effectWorkers());
         assertEquals(6, config.effectDatabase().maximumPoolSize());
         assertEquals(Duration.ofMillis(25), config.schedulerErrorBackoff());
         assertEquals(Duration.ofMillis(25), config.effectErrorBackoff());
+    }
+
+    @Test
+    void shippedDefaultPoolSizeRejectsCombinedWorkerDemand() {
+        assertThrows(ConfigException.class, () -> CilExecConfig.load(Map.of(
+                "CILEXEC_RUNTIME_POOL_MAX", "12")));
     }
 
     @Test

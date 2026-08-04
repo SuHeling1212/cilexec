@@ -130,6 +130,11 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
     }
 
     private static int schemaVersion(Connection source) throws SQLException {
+        // The version check runs as the DataSource role (production: cilexec_runtime) before
+        // SET LOCAL ROLE cilexec_owner; docker/postgres/init/00-cilexec-bootstrap.sh grants
+        // that role USAGE on the flyway schema and SELECT on migrator-owned tables. A
+        // deployment that skips those grants fails here by design: an export with an
+        // unchecked schema version must not be produced.
         String version = scalar(source, "SELECT max(version::integer)::text "
                 + "FROM flyway.flyway_schema_history "
                 + "WHERE success AND version ~ '^[0-9]+$'");
@@ -147,9 +152,12 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
         String schemas = APPLICATION_SCHEMAS.stream()
                 .map(name -> "'" + name + "'")
                 .collect(java.util.stream.Collectors.joining(","));
+        // Only plain relations ('r') are exported: a partitioned parent ('p') has no storage
+        // of its own, so exporting it would duplicate the rows that live in its leaf
+        // partitions, which are plain relations and are exported individually.
         String query = "SELECT n.nspname,c.relname FROM pg_catalog.pg_class c "
                 + "JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace "
-                + "WHERE c.relkind IN ('r','p') AND n.nspname IN (" + schemas + ") "
+                + "WHERE c.relkind = 'r' AND n.nspname IN (" + schemas + ") "
                 + "ORDER BY n.nspname,c.relname";
         List<String> tables = new ArrayList<>();
         try (Statement statement = source.createStatement();
@@ -180,6 +188,10 @@ final class PostgresLogicalExportSource implements LogicalSnapshotProducer {
                     .collect(java.util.stream.Collectors.joining(","));
             rowExpression += " - ARRAY[" + keys + "]::text[]";
         }
+        // Sorting the full canonical row text on the server is expensive on large tables, but
+        // it is what makes row hashes deterministic regardless of physical row order; this
+        // must not be replaced with an index-order sort without a proven textual-equivalence
+        // argument.
         String query = "SELECT (" + rowExpression + ")::text AS row_json FROM "
                 + relation + " AS source_row ORDER BY pg_catalog.convert_to(("
                 + rowExpression + ")::text,'UTF8')";

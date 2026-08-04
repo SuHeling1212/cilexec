@@ -26,7 +26,7 @@ final class FclSourceIncludes {
     private static final long MAX_EXPANDED_BYTES = 16L * 1024 * 1024;
     private static final Pattern DIRECTIVE = Pattern.compile(
             "(?m)(^|[;{}\\n])([\\t ]*)include[\\t ]+\"((?:\\\\.|[^\"\\\\\\r\\n])*)\""
-                    + "[\\t ]*(?=;|\\r?$|})");
+                    + "[\\t ]*(?=;|\\r?$|}|//[^\\r\\n]*)");
 
     String expand(TransactionContext transaction, UUID ownerId, String source,
                   String workingDirectory) {
@@ -159,7 +159,8 @@ final class FclSourceIncludes {
                 case 't' -> '\t';
                 case '"' -> '"';
                 case '\\' -> '\\';
-                default -> escaped;
+                default -> throw new FclRuntimeException(
+                        "Unknown escape sequence '\\" + escaped + "' in include target");
             });
         }
         return decoded.toString();

@@ -10,7 +10,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Properties;
@@ -20,7 +19,6 @@ import java.util.function.Consumer;
 /** Owns the pool-external session that fences a single active Runtime. */
 public final class ControlLock implements AutoCloseable {
     private static final String ACQUIRE_SQL = "SELECT pg_try_advisory_lock(?)";
-    private static final String ACQUIRE_PROOF_SQL = "SELECT pg_try_advisory_lock(?)";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Connection connection;
@@ -37,10 +35,14 @@ public final class ControlLock implements AutoCloseable {
     }
 
     public static ControlLock acquire(DatabaseConfig database, long lockKey) {
+        DriverManager.setLoginTimeout(15);
         Properties properties = new Properties();
         properties.setProperty("user", database.username());
         properties.setProperty("ApplicationName", database.applicationName() + "-control");
         properties.setProperty("tcpKeepAlive", "true");
+        // connectTimeout bounds the TCP connect and handshake; socketTimeout is deliberately
+        // absent because the passive monitor relies on an indefinite notification read.
+        properties.setProperty("connectTimeout", "15");
         try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
             properties.setProperty("password", secret.exposeForDriver());
         }
@@ -103,7 +105,7 @@ public final class ControlLock implements AutoCloseable {
         for (int attempt = 0; attempt < 8; attempt++) {
             long proofKey = RANDOM.nextLong();
             if (proofKey == controlKey) continue;
-            try (PreparedStatement statement = connection.prepareStatement(ACQUIRE_PROOF_SQL)) {
+            try (PreparedStatement statement = connection.prepareStatement(ACQUIRE_SQL)) {
                 statement.setLong(1, proofKey);
                 try (ResultSet result = statement.executeQuery()) {
                     if (result.next() && result.getBoolean(1)) return proofKey;
@@ -151,14 +153,10 @@ public final class ControlLock implements AutoCloseable {
         } catch (SQLException ignored) {
             // Nothing can recover this session during shutdown.
         }
-        Thread current = monitor;
-        if (current != null && current != Thread.currentThread()) {
-            try {
-                current.join(Duration.ofSeconds(5));
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
+        // The monitor is a virtual thread; it exits on its own once held/monitoring are cleared
+        // or the aborted session fails its socket read. It is never joined here: a fence that
+        // reaches onFence blocks it until shutdown completes, so joining it would deadlock the
+        // shutdown thread against the monitor thread for the full join timeout.
         monitor = null;
     }
 

@@ -86,8 +86,6 @@ public final class FclFunctionRegistry {
         validateName(name, "function");
         Definition definition = resolve(existingIdentifier);
         bindQualified(namespace + "." + name, definition);
-        bare.computeIfAbsent(name, ignored -> new LinkedHashMap<>())
-                .put(definition.qualifiedName(), definition);
         return this;
     }
 

@@ -2,14 +2,17 @@ package com.follarce.terminal;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EditableTerminalInputTest {
@@ -261,6 +264,59 @@ class EditableTerminalInputTest {
                 FclInputBuffer::complete));
         assertEquals("ab{\ncd}", input.editSubmission(output, "test> ", "...> ", true,
                 FclInputBuffer::complete));
+    }
+
+    @Test
+    void loneEscCancelsTheLineWithoutSwallowingTheNextCharacter() throws Exception {
+        byte[] source = "ab\u001bx\n".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("", input.edit(output, "test> ", true));
+        assertEquals("x", input.edit(output, "test> ", true));
+    }
+
+    @Test
+    void ctrlCInRawModeCancelsTheCurrentLine() throws Exception {
+        byte[] source = "abc\u0003def\n".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+
+        assertEquals("", input.readLine());
+        assertEquals("def", input.readLine());
+    }
+
+    @Test
+    void ctrlDInRawModeIsEndOfInput() throws Exception {
+        byte[] source = "abc\u0004".getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+
+        assertEquals("abc", input.readLine());
+        assertNull(input.readLine());
+    }
+
+    @Test
+    void rejectsOverlongUtf8AndReReadsTheOffendingContinuationByte() throws Exception {
+        byte[] source = new byte[]{(byte) 0xC0, (byte) 0x80, 'A', '\n'};
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("\uFFFD\uFFFDA", input.edit(output, "test> ", true));
+    }
+
+    @Test
+    void nulBytesAreSkippedByTheKeyReader() throws Exception {
+        TerminalInput input = TerminalInput.visible(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(new byte[]{0, 0, 'x'}), StandardCharsets.UTF_8)));
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("x", input.readKey(output));
     }
 
     private static int occurrences(String value, String token) {

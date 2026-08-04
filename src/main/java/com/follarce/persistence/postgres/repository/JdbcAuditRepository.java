@@ -40,6 +40,8 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
             statement.setObject(8, com.follarce.persistence.postgres.mapper.JdbcValues.json(json.write(event.details())));
             statement.setTimestamp(9, java.sql.Timestamp.from(event.createdAt()));
             requireOne("audit.append", statement.executeUpdate());
+            // Wakes the timer loop so retention purges are scheduled; append is
+            // service-level only, never the statement hot path.
             notifyWork("cilexec_timer_work", "audit.append.notify");
         } catch (SQLException exception) {
             throw failure("audit.append", exception);

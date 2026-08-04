@@ -7,6 +7,8 @@ import com.zaxxer.hikari.HikariDataSource;
 
 /** Creates bounded role-specific pools; callers own and close the result. */
 public final class DataSourceFactory {
+    private static final long LEAK_DETECTION_THRESHOLD_MS = 300_000;
+
     private DataSourceFactory() {
     }
 
@@ -18,10 +20,13 @@ public final class DataSourceFactory {
             hikari.setPassword(secret.exposeForDriver());
         }
         hikari.setPoolName(database.applicationName());
+        // Pool invariants are enforced by CilExecConfig at load time; the factory respects
+        // the configured maximum as-is.
         hikari.setMaximumPoolSize(database.maximumPoolSize());
         hikari.setMinimumIdle(database.minimumIdle());
         hikari.setConnectionTimeout(database.connectionTimeout().toMillis());
         hikari.setValidationTimeout(database.validationTimeout().toMillis());
+        hikari.setLeakDetectionThreshold(LEAK_DETECTION_THRESHOLD_MS);
         hikari.setAutoCommit(false);
         hikari.setReadOnly(false);
         hikari.setTransactionIsolation("TRANSACTION_READ_COMMITTED");
@@ -31,6 +36,7 @@ public final class DataSourceFactory {
         hikari.addDataSourceProperty("tcpKeepAlive", "true");
         hikari.addDataSourceProperty("reWriteBatchedInserts", "true");
         hikari.addDataSourceProperty("assumeMinServerVersion", "17");
+        hikari.addDataSourceProperty("TimeZone", "UTC");
         return new HikariDataSource(hikari);
     }
 }

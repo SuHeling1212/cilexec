@@ -24,6 +24,9 @@ import java.util.UUID;
 
 /** Semantic recovery after PostgreSQL has completed its own WAL recovery. */
 public final class RecoveryCoordinator {
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(RecoveryCoordinator.class);
+
     private final DataSource dataSource;
     private final JsonCodec json = new JsonCodec();
 
@@ -81,26 +84,54 @@ public final class RecoveryCoordinator {
         int recovered = 0;
         int failed = 0;
         for (UUID processUid : candidates) {
+            CilProcess process;
             try {
-                CilProcess process = processes.findByUid(processUid)
+                process = processes.findByUid(processUid)
                         .orElseThrow(() -> new IllegalStateException(
                                 "Recovery candidate disappeared"));
-                if (process.status() == CilProcess.Status.RUNNING) {
-                    Instant transitionAt = now.isBefore(process.updatedAt())
-                            ? process.updatedAt() : now;
-                    CilProcess ready = process.transitionTo(CilProcess.Status.READY, transitionAt);
-                    ProcessRepository.UpdateResult result = processes.update(ready,
-                            process.stateVersion(), process.executionEpoch());
-                    if (result != ProcessRepository.UpdateResult.UPDATED) {
-                        throw new IllegalStateException(
-                                "Recovery process compare-and-set was rejected: " + result);
-                    }
-                    recovered++;
-                }
             } catch (RuntimeException failure) {
                 if (failure instanceof PersistenceFailure) throw failure;
-                markFailedRecovery(connection, processUid, now, failure);
-                failed++;
+                if (isDeterministicCorruption(failure)) {
+                    markFailedRecovery(connection, processUid, now, failure);
+                    failed++;
+                } else {
+                    LOG.warn("Skipping recovery of process {} after {}",
+                            processUid, failureReason(failure));
+                }
+                continue;
+            }
+            try {
+                Instant transitionAt = now.isBefore(process.updatedAt())
+                        ? process.updatedAt() : now;
+                CilProcess recoveredProcess = switch (process.status()) {
+                    case RUNNING -> process.transitionTo(CilProcess.Status.READY, transitionAt);
+                    case TERMINATING -> process.transitionTo(CilProcess.Status.TERMINATED,
+                            transitionAt);
+                    default -> null;
+                };
+                if (recoveredProcess == null) continue;
+                ProcessRepository.UpdateResult result = processes.update(recoveredProcess,
+                        process.stateVersion(), process.executionEpoch());
+                if (result != ProcessRepository.UpdateResult.UPDATED) {
+                    LOG.warn("Skipping recovery of process {} after rejected compare-and-set ({})",
+                            processUid, result);
+                    continue;
+                }
+                if (recoveredProcess.status() == CilProcess.Status.TERMINATED) {
+                    execute(connection,
+                            "DELETE FROM process.timer WHERE process_uid=? AND fired_at IS NULL",
+                            processUid);
+                }
+                recovered++;
+            } catch (RuntimeException failure) {
+                if (failure instanceof PersistenceFailure) throw failure;
+                if (isDeterministicCorruption(failure)) {
+                    markFailedRecovery(connection, processUid, now, failure);
+                    failed++;
+                } else {
+                    LOG.warn("Skipping recovery of process {} after {}",
+                            processUid, failureReason(failure));
+                }
             }
         }
         return new ProcessRecoveryResult(recovered, failed);
@@ -224,6 +255,24 @@ public final class RecoveryCoordinator {
         String message = failure.getMessage();
         if (message == null || message.isBlank()) return failure.getClass().getSimpleName();
         return failure.getClass().getSimpleName() + ": " + message;
+    }
+
+    /**
+     * Only failures that are guaranteed to repeat identically are treated as durable corruption.
+     * Unexpected one-off failures leave the process RUNNING so the lease machinery retries it.
+     */
+    private static boolean isDeterministicCorruption(RuntimeException failure) {
+        if (failure instanceof IllegalArgumentException
+                || failure instanceof ClassCastException
+                || failure instanceof com.google.gson.JsonParseException) {
+            return true;
+        }
+        if (failure instanceof IllegalStateException) {
+            String message = failure.getMessage();
+            return message == null || (!message.contains("Recovery candidate disappeared")
+                    && !message.contains("compare-and-set was rejected"));
+        }
+        return false;
     }
 
     private static int execute(Connection connection, String sql, Object... values)

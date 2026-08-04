@@ -22,7 +22,7 @@ class RuntimeLifecycleTest {
 
         assertEquals(RuntimeLifecycle.State.READY, lifecycle.state());
         assertEquals(List.of(
-                "phase:STARTING", "schema", "control:acquire", "boot:15",
+                "phase:STARTING", "control:acquire", "migrate", "schema", "boot:15",
                 "boot:recovering", "phase:RECOVERING", "recover",
                 "health:start", "scheduler:start", "effects:start", "timer:start",
                 "boot:ready", "phase:READY"), hooks.events);
@@ -34,7 +34,7 @@ class RuntimeLifecycleTest {
                 "phase:DRAINING", "scheduler:stop", "effects:stop", "timer:stop",
                 "health:stop", "boot:clean:SIGTERM", "control:release",
                 "resources:close", "phase:STOPPED"),
-                hooks.events.subList(13, hooks.events.size()));
+                hooks.events.subList(14, hooks.events.size()));
     }
 
     @Test
@@ -54,16 +54,17 @@ class RuntimeLifecycleTest {
     }
 
     @Test
-    void schemaFailureClosesResourcesWithoutCreatingBootMetadata() {
+    void schemaFailureAfterControlAcquisitionFencesWithoutCreatingBootMetadata() {
         RecordingHooks hooks = new RecordingHooks();
         hooks.schemaFailure = new IllegalStateException("unsupported schema");
         RuntimeLifecycle lifecycle = new RuntimeLifecycle(hooks, Duration.ofSeconds(1));
 
         assertThrows(IllegalStateException.class, lifecycle::start);
 
-        assertEquals(RuntimeLifecycle.State.STOPPED, lifecycle.state());
-        assertEquals(List.of("phase:STARTING", "schema", "phase:STOPPED",
-                "resources:close"), hooks.events);
+        assertEquals(RuntimeLifecycle.State.FENCED, lifecycle.state());
+        assertEquals(List.of("phase:STARTING", "control:acquire", "migrate", "schema",
+                "phase:FENCED", "scheduler:stop", "effects:stop", "timer:stop", "health:stop",
+                "control:release", "resources:close"), hooks.events);
         assertTrue(hooks.events.stream().noneMatch(event -> event.startsWith("boot:")));
     }
 
@@ -117,6 +118,11 @@ class RuntimeLifecycleTest {
         public void acquireControl(Consumer<Throwable> onFence) {
             events.add("control:acquire");
             fence = onFence;
+        }
+
+        @Override
+        public void migrate() {
+            events.add("migrate");
         }
 
         @Override

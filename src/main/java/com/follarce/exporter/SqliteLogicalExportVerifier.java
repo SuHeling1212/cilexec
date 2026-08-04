@@ -45,7 +45,7 @@ public final class SqliteLogicalExportVerifier {
     }
 
     private static Connection openImmutable(Path database) throws SQLException {
-        String uri = "jdbc:sqlite:file:" + database.toAbsolutePath().normalize()
+        String uri = "jdbc:sqlite:" + database.toAbsolutePath().normalize().toUri().toASCIIString()
                 + "?mode=ro&immutable=1";
         Connection connection = DriverManager.getConnection(uri);
         try (Statement statement = connection.createStatement()) {
@@ -120,6 +120,27 @@ public final class SqliteLogicalExportVerifier {
         if (!triggers.equals(SqliteLogicalExportWriter.readOnlyTriggers())) {
             throw new LogicalExportException("Logical export read-only guards are incomplete");
         }
+        validateRowColumn(connection);
+    }
+
+    private static void validateRowColumn(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT name,type,\"notnull\" FROM pragma_table_info('export_row')")) {
+            boolean found = false;
+            while (rows.next()) {
+                if ("row_json".equals(rows.getString(1))) {
+                    found = true;
+                    if (!"TEXT".equalsIgnoreCase(rows.getString(2)) || rows.getInt(3) != 1) {
+                        throw new LogicalExportException(
+                                "Logical export row_json column must be NOT NULL TEXT");
+                    }
+                }
+            }
+            if (!found) {
+                throw new LogicalExportException("Logical export row_json column is missing");
+            }
+        }
     }
 
     private static Map<String, String> readMetadata(Connection connection) throws SQLException {
@@ -180,6 +201,11 @@ public final class SqliteLogicalExportVerifier {
                                     "Non-contiguous row numbering in " + table.tableName());
                         }
                         String json = rows.getString(2);
+                        if (json == null) {
+                            throw new LogicalExportException(
+                                    "NULL row_json in " + table.tableName() + " at row_number "
+                                            + count);
+                        }
                         if (!CanonicalJson.normalizeObject(json).equals(json)) {
                             throw new LogicalExportException(
                                     "Non-canonical JSON row in " + table.tableName());

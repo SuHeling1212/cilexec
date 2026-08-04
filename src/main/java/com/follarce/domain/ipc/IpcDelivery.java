@@ -70,12 +70,12 @@ public record IpcDelivery(
     }
 
     public IpcDelivery dead(Instant at, String reason) {
-        if (status != Status.PENDING && status != Status.RESERVED && status != Status.FAILED) {
-            throw new IllegalStateException("only unfinished delivery can become DEAD");
+        if (status != Status.RESERVED && status != Status.FAILED) {
+            throw new IllegalStateException("only reserved or failed delivery can become DEAD");
         }
         return new IpcDelivery(deliveryId, messageId, receiverProcessUid, Status.DEAD,
                 reservedBy, reservedAt, Optional.empty(), Optional.of(Invariant.required(at, "at")),
-                Optional.of(reason));
+                Optional.ofNullable(reason));
     }
 
     public boolean isTerminal() {
@@ -111,9 +111,8 @@ public record IpcDelivery(
             case FAILED -> Invariant.check(reservedBy.isPresent() && consumedAt.isEmpty()
                             && failedAt.isPresent() && failureReason.isPresent(),
                     "failed delivery requires reservation and failure details");
-            case DEAD -> Invariant.check(consumedAt.isEmpty() && failedAt.isPresent()
-                            && failureReason.isPresent(),
-                    "dead delivery requires failure details");
+            case DEAD -> Invariant.check(consumedAt.isEmpty() && failedAt.isPresent(),
+                    "dead delivery requires a failure time");
         }
     }
 
