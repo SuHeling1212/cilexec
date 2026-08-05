@@ -3,6 +3,7 @@ package com.follarce.app;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.Optional;
 
 public enum ApplicationCommand {
     TERMINAL,
@@ -10,7 +11,8 @@ public enum ApplicationCommand {
     MIGRATE,
     EXPORT,
     PACKAGE_BUILD,
-    HOST_MOVE;
+    HOST_MOVE,
+    COMPILE;
 
     public static ApplicationCommand parse(String[] arguments) {
         if (arguments == null || arguments.length == 0) return TERMINAL;
@@ -33,6 +35,10 @@ public enum ApplicationCommand {
                 hostTargetPath(arguments);
                 hostUsername(arguments);
                 yield HOST_MOVE;
+            }
+            case "compile" -> {
+                compileSourcePath(arguments);
+                yield COMPILE;
             }
             default -> throw usage();
         };
@@ -69,6 +75,27 @@ public enum ApplicationCommand {
             throw usage();
         }
         return path;
+    }
+
+    public static Path compileSourcePath(String[] arguments) {
+        compileArguments(arguments);
+        return safePath(arguments[1]);
+    }
+
+    public static Optional<Path> compileOutputPath(String[] arguments) {
+        compileArguments(arguments);
+        if (arguments.length >= 3 && arguments[2] != null && !arguments[2].isBlank()) {
+            return Optional.of(safePath(arguments[2]));
+        }
+        return Optional.empty();
+    }
+
+    private static void compileArguments(String[] arguments) {
+        if (arguments == null || arguments.length < 2 || arguments.length > 3
+                || arguments[0] == null || !"compile".equalsIgnoreCase(arguments[0])
+                || arguments[1] == null || arguments[1].isBlank()) {
+            throw usage();
+        }
     }
 
     public static Path hostSourcePath(String[] arguments) {
@@ -123,6 +150,6 @@ public enum ApplicationCommand {
 
     private static IllegalArgumentException usage() {
         return new IllegalArgumentException(
-                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|host move <source-file> <absolute-vfs-path> <username>]");
+                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|compile <source.fcl> [<output.json>]|host move <source-file> <absolute-vfs-path> <username>]");
     }
 }

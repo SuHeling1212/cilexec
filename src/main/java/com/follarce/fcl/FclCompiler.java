@@ -442,7 +442,8 @@ public final class FclCompiler {
 
         private void importInstruction(Token start) {
             String target = String.valueOf(consume(Type.STRING,
-                    "Expected quoted package binding or database SHA-256 after import").literal());
+                    "Expected quoted import target, for example: import \"binding\" or "
+                            + "import \"<64-hex-sha256>\"").literal());
             String identity = target.endsWith(".*")
                     ? target.substring(0, target.length() - 2) : target;
             if (!identity.matches("(?i)[0-9a-f]{64}")

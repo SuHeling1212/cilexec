@@ -119,10 +119,10 @@ Runtime 还会重新验证 SQLite 结构、包内部哈希、能力声明和精�
 
 ## 生成发布目录
 
-本文件属于已生成的发布目录。开发源码中可从项目根目录执行 `build/release.sh`
+本文件属于已生成的发布目录。开发源码中可从项目根目录执行 `tools/release.sh`
 （Windows 执行 `build\release.bat`），一次完成测试、两个 JAR、全部 FCL 包、市场清单
 和 `SHA256SUMS` 的生成与复核。若只需核对已有发布物，可执行
-`python3 build/release.py --verify-only`。发布流水线先在临时目录完成全部检查，成功后才
+`python3 tools/release.py --verify-only`。发布流水线先在临时目录完成全部检查，成功后才
 替换 `dist` 中的生成文件。
 
 每项依赖都必须是精确分发文件 SHA-256：

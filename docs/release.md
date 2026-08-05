@@ -5,7 +5,7 @@
 Run from the project root:
 
 ```bash
-./build/release.sh
+./tools/release.sh
 ```
 
 Windows runs:
@@ -33,10 +33,10 @@ Optional flags:
 
 ```bash
 # Use when CI has already run the full test suite
-./build/release.sh --skip-tests
+./tools/release.sh --skip-tests
 
 # Do not build; only recheck all existing artifacts in dist
-./build/release.sh --verify-only
+./tools/release.sh --verify-only
 ```
 
 `--skip-tests` only applies when a trusted CI job in the same run has already executed the

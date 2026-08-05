@@ -160,7 +160,7 @@ undeclared usage fails the audit.
 A formal release is built from the project root:
 
 ```bash
-./build/release.sh
+./tools/release.sh
 ```
 
 Windows runs `build\release.bat`. The flow runs the Runtime and market-server tests, builds
@@ -174,7 +174,7 @@ The editor source lives in `dist/editor/`. To build a single `.db` use the stand
 single-file builder:
 
 ```bash
-python3 PackageBuild.py dist/editor editor.db
+python3 tools/PackageBuild.py dist/editor editor.db
 ```
 
 The builder depends on neither the CilExec JAR, Docker, nor a database service and produces

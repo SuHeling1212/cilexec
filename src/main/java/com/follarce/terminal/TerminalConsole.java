@@ -17,6 +17,8 @@ public final class TerminalConsole implements Runnable {
     private final TerminalControl control;
     private final ShellCommandParser parser;
     private final PasswordPrompt passwords;
+    /** Consecutive identical control-surface failures that end the session (anti-spam). */
+    private static final int REPEATED_FAILURE_LIMIT = 5;
 
     public TerminalConsole(BufferedReader input, PrintWriter output, TerminalControl control) {
         this(TerminalInput.visible(input), output, control);
@@ -132,16 +134,27 @@ public final class TerminalConsole implements Runnable {
                 } catch (IllegalArgumentException exception) {
                     output.println("error: " + exception.getMessage());
                 } catch (RuntimeException exception) {
+                    // FCL compile/runtime errors never disconnect the terminal: retrying
+                    // the same input after an error is the most common workflow. A broken
+                    // control surface that keeps throwing (not a language error) is
+                    // bounded instead, so the session cannot spam errors forever.
                     LOG.warn("Terminal control operation failed", exception);
                     output.println("error: " + describe(exception));
-                    if (sameFailure(previousFailure, exception)
-                            && ++consecutiveControlFailures >= 2) {
-                        output.println("terminal stopped after repeated control failures");
-                        return Outcome.END_OF_INPUT;
+                    if (!(exception instanceof com.follarce.fcl.FclCompileException)
+                            && !(exception instanceof com.follarce.fcl.FclRuntimeException)) {
+                        consecutiveControlFailures = sameFailure(previousFailure, exception)
+                                ? consecutiveControlFailures + 1 : 1;
+                        if (consecutiveControlFailures >= REPEATED_FAILURE_LIMIT) {
+                            output.println("terminal stopped after repeated control failures");
+                            return Outcome.END_OF_INPUT;
+                        }
                     }
                     previousFailure = exception;
-                    consecutiveControlFailures = 1;
                 } catch (IOException exception) {
+                    if (exception instanceof TerminalInput.SubmissionLimitExceeded) {
+                        output.println("error: " + exception.getMessage());
+                        continue;
+                    }
                     LOG.warn("Terminal input failed; closing session", exception);
                     output.println("terminal closed");
                     return Outcome.END_OF_INPUT;

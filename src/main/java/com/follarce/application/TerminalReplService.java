@@ -327,8 +327,8 @@ public final class TerminalReplService {
             }
             if (!resolvable) {
                 throw new com.follarce.fcl.FclRuntimeException("Unresolved package import: "
-                        + value.target() + "; fix the import or reconnect to start a fresh "
-                        + "terminal session");
+                        + value.target() + "; fix the import (install or bind the package "
+                        + "first) and submit again");
             }
         }
     }

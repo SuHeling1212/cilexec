@@ -17,6 +17,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.fcl_check import FclSyntaxError, validate_module
+except ImportError:  # pragma: no cover - depends on how the script is invoked
+    from fcl_check import FclSyntaxError, validate_module
+
 
 FORMAT_VERSION = 2
 MAX_MANIFEST_BYTES = 1 * 1024 * 1024
@@ -90,8 +95,13 @@ def function_definitions(source: bytes, logical_path: str) -> dict[str, int]:
         decoded = source.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         fail(f"Module is not valid UTF-8 ({logical_path}): {error}")
-    # This deliberately checks only the declaration surface. The Runtime remains the
-    # authoritative FCL parser and performs complete compilation at import/run time.
+    # Full syntax validation (mirrors FclCompiler.java) so an un-compilable module can
+    # never be packaged and shipped; the regex below only extracts the declaration
+    # surface for the manifest, it is not a substitute for parsing.
+    try:
+        validate_module(decoded)
+    except FclSyntaxError as error:
+        fail(f"Module is not valid FCL ({logical_path}): {error}")
     result: dict[str, int] = {}
     for match in FUNCTION.finditer(decoded):
         name, parameters = match.groups()

@@ -2,4 +2,4 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
-exec python3 "$project_dir/build/release.py" "$@"
+exec python3 "$project_dir/tools/release.py" "$@"

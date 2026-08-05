@@ -17,6 +17,16 @@ import java.util.function.Predicate;
 public interface TerminalInput {
     int MAX_SUBMISSION_CHARACTERS = 256 * 1024;
 
+    /**
+     * Raised when a submission exceeds the character limit. Unlike a transport failure,
+     * this must not close the session: the terminal reports the error and keeps running.
+     */
+    final class SubmissionLimitExceeded extends IOException {
+        SubmissionLimitExceeded(String message) {
+            super(message);
+        }
+    }
+
     String readLine() throws IOException;
 
     /**
@@ -41,7 +51,7 @@ public interface TerminalInput {
             if (!value.isEmpty()) value.append('\n');
             value.append(line);
             if (value.length() > MAX_SUBMISSION_CHARACTERS) {
-                throw new IOException("Terminal submission exceeds 256 Ki characters");
+                throw new SubmissionLimitExceeded("Terminal submission exceeds 256 Ki characters");
             }
             if (complete.test(value.toString())) return value.toString();
         }
@@ -291,7 +301,7 @@ public interface TerminalInput {
                 }
                 if (character >= 32) value.append(decodeUtf8(character));
                 if (value.length() > MAX_SUBMISSION_CHARACTERS) {
-                    throw new IOException("Terminal line exceeds 256 Ki characters");
+                    throw new SubmissionLimitExceeded("Terminal line exceeds 256 Ki characters");
                 }
             }
         }
@@ -547,7 +557,7 @@ public interface TerminalInput {
 
         private static void requireSubmissionLimit(StringBuilder value) throws IOException {
             if (value.length() > MAX_SUBMISSION_CHARACTERS) {
-                throw new IOException("Terminal submission exceeds 256 Ki characters");
+                throw new SubmissionLimitExceeded("Terminal submission exceeds 256 Ki characters");
             }
         }
 

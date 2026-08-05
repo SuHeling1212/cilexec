@@ -29,7 +29,7 @@ reconstructed from the database. There is no `.proc` snapshot format and no
   entering the interactive Shell (`./Headless.sh`).
 - [host-vfs-import.md](host-vfs-import.md) — importing one named host file into the VFS
   (`HostMove.sh` / `host move`), including the required capabilities.
-- [release.md](release.md) — one-command local release process (`./build/release.sh`).
+- [release.md](release.md) — one-command local release process (`./tools/release.sh`).
 - [terminal-and-admin-plan.md](terminal-and-admin-plan.md) — implementation plan and status
   for the terminal command surface and `SYSTEM_ADMIN` global administration.
 

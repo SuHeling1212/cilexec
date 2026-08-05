@@ -57,8 +57,11 @@ public final class TerminalAccessConsole implements Runnable {
                 String choice = input.readLine(output, "access> ", false);
                 if (choice == null) return;
                 String action = choice.trim().toLowerCase(java.util.Locale.ROOT);
+                // "shutdown" is an ordinary word here: the access menu has no shutdown
+                // option, so it falls through to the unknown-choice error like any other
+                // unrecognized input instead of silently disconnecting the terminal.
                 if (action.equals("3") || action.equals("exit")
-                        || action.equals("shutdown") || action.equals("disconnect")) return;
+                        || action.equals("disconnect")) return;
                 Optional<UserAccount> account = switch (action) {
                     case "1", "login" -> login();
                     case "2", "create", "register" -> create();
@@ -77,6 +80,10 @@ public final class TerminalAccessConsole implements Runnable {
             } catch (IllegalArgumentException | IllegalStateException failure) {
                 output.println("error: " + failure.getMessage());
             } catch (IOException closed) {
+                if (closed instanceof TerminalInput.SubmissionLimitExceeded) {
+                    output.println("error: " + closed.getMessage());
+                    continue;
+                }
                 output.println("terminal closed: " + closed.getMessage());
                 return;
             }

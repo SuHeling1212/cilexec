@@ -41,6 +41,12 @@ public final class TerminalOutputRouter {
         TerminalOutputTracker.discard(output);
     }
 
+    /** Returns whether at least one terminal is currently attached to the route. */
+    public static boolean attached(UUID routeId) {
+        Set<SessionOutput> outputs = OUTPUTS.get(routeId);
+        return outputs != null && !outputs.isEmpty();
+    }
+
     /** Returns whether at least one authenticated terminal accepted the output. */
     public static boolean publish(UUID routeId, String text, boolean newline) {
         Set<SessionOutput> outputs = OUTPUTS.get(routeId);

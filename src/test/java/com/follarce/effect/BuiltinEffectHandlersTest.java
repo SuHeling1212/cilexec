@@ -15,6 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -172,13 +173,17 @@ class BuiltinEffectHandlersTest {
     }
 
     @Test
-    void failsOutputWhenTheRouteHasNoAttachedTerminal() {
+    void succeedsWhenTheRouteHasNoAttachedTerminal() throws Exception {
         EffectHandlerRegistry handlers = new EffectHandlerRegistry(
                 BuiltinEffectHandlers.defaults());
         Continuation.PersistedValue output = typed(Map.of("text", "hello",
                 "routeId", java.util.UUID.randomUUID().toString()));
-        assertThrows(IllegalStateException.class,
-                () -> handlers.require("io.output").execute(output, Optional.empty()));
+        // A background process must survive its terminal disconnecting: output to a
+        // route without an attached terminal is dropped (envelope ok=true), not failed.
+        Continuation.PersistedValue result = handlers.require("io.output")
+                .execute(output, Optional.empty());
+        assertNotNull(result);
+        assertTrue(result.canonicalPayload().contains("\"ok\""), result.canonicalPayload());
     }
 
     @Test

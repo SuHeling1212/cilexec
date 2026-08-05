@@ -258,21 +258,16 @@ public final class RecoveryCoordinator {
     }
 
     /**
-     * Only failures that are guaranteed to repeat identically are treated as durable corruption.
-     * Unexpected one-off failures leave the process RUNNING so the lease machinery retries it.
+     * Only failures that are guaranteed to repeat identically are treated as durable
+     * corruption. IllegalStateException is deliberately excluded: a one-off state race
+     * during recovery must not sentence a process to permanent FAILED_RECOVERY — a
+     * genuinely corrupt continuation surfaces again as a visible FCL failure when the
+     * process next runs.
      */
     private static boolean isDeterministicCorruption(RuntimeException failure) {
-        if (failure instanceof IllegalArgumentException
+        return failure instanceof IllegalArgumentException
                 || failure instanceof ClassCastException
-                || failure instanceof com.google.gson.JsonParseException) {
-            return true;
-        }
-        if (failure instanceof IllegalStateException) {
-            String message = failure.getMessage();
-            return message == null || (!message.contains("Recovery candidate disappeared")
-                    && !message.contains("compare-and-set was rejected"));
-        }
-        return false;
+                || failure instanceof com.google.gson.JsonParseException;
     }
 
     private static int execute(Connection connection, String sql, Object... values)

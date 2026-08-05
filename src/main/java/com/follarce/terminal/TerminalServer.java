@@ -39,15 +39,16 @@ public final class TerminalServer implements AutoCloseable {
     private static final int MAX_CONNECTIONS = 128;
     private static final int MAX_BUFFERED_INPUT_BYTES = 64 * 1024;
     private static final int TERMINAL_IDLE_TIMEOUT_MILLIS = 60_000;
-    private static final long TERMINAL_IDLE_DISCONNECT_NANOS =
-            java.util.concurrent.TimeUnit.MINUTES.toNanos(10);
     private static final long MIN_ACCEPT_BACKOFF_MILLIS = 250;
     private static final long MAX_ACCEPT_BACKOFF_MILLIS = 5_000;
+    private static final long IDLE_WARN_LEAD_NANOS =
+            java.util.concurrent.TimeUnit.MINUTES.toNanos(1);
     private final int port;
     private final TerminalAccess access;
     private final Function<UserAccount, TerminalControl> controls;
     private final BiFunction<UserAccount, String, TerminalControl> headlessControls;
     private final String administratorUsername;
+    private final long idleDisconnectNanos;
     private final AtomicBoolean running = new AtomicBoolean();
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
     private final Set<Thread> sessionThreads = ConcurrentHashMap.newKeySet();
@@ -59,15 +60,27 @@ public final class TerminalServer implements AutoCloseable {
                           Function<UserAccount, TerminalControl> controls,
                           String administratorUsername) {
         this(port, access, controls, (account, ignored) -> controls.apply(account),
-                administratorUsername);
+                administratorUsername, TerminalSettings.DEFAULT_IDLE_DISCONNECT);
     }
 
     public TerminalServer(int port, TerminalAccess access,
                           Function<UserAccount, TerminalControl> controls,
                           BiFunction<UserAccount, String, TerminalControl> headlessControls,
                           String administratorUsername) {
+        this(port, access, controls, headlessControls, administratorUsername,
+                TerminalSettings.DEFAULT_IDLE_DISCONNECT);
+    }
+
+    public TerminalServer(int port, TerminalAccess access,
+                          Function<UserAccount, TerminalControl> controls,
+                          BiFunction<UserAccount, String, TerminalControl> headlessControls,
+                          String administratorUsername,
+                          java.time.Duration idleDisconnect) {
         if (port < 1 || port > 65_535) {
             throw new IllegalArgumentException("Terminal port is outside 1..65535");
+        }
+        if (idleDisconnect == null || idleDisconnect.isNegative() || idleDisconnect.isZero()) {
+            throw new IllegalArgumentException("Idle disconnect must be positive");
         }
         this.port = port;
         this.access = java.util.Objects.requireNonNull(access, "access");
@@ -76,6 +89,7 @@ public final class TerminalServer implements AutoCloseable {
                 "headlessControls");
         this.administratorUsername = java.util.Objects.requireNonNull(
                 administratorUsername, "administratorUsername");
+        this.idleDisconnectNanos = idleDisconnect.toNanos();
     }
 
     public synchronized void start() {
@@ -116,6 +130,15 @@ public final class TerminalServer implements AutoCloseable {
             }
             backoffMillis = MIN_ACCEPT_BACKOFF_MILLIS;
             if (!connectionSlots.tryAcquire()) {
+                try {
+                    PrintWriter busy = new PrintWriter(new OutputStreamWriter(
+                            client.getOutputStream(), StandardCharsets.UTF_8), true);
+                    busy.println("CilExec terminal is busy (128 connections); "
+                            + "disconnect an existing session and retry");
+                    busy.flush();
+                } catch (IOException ignored) {
+                    // The client is gone anyway; closing without a message is fine.
+                }
                 closeClient(client);
                 continue;
             }
@@ -163,10 +186,17 @@ public final class TerminalServer implements AutoCloseable {
                 output.flush();
                 return;
             }
-            DimensionInputStream transported = new DimensionInputStream(connection);
+            DimensionInputStream transported = new DimensionInputStream(connection,
+                    idleDisconnectNanos);
+            PrintWriter sessionOutput = output;
+            transported.onIdleWarning(() -> {
+                sessionOutput.println("idle disconnect in 1 minute; press any key to stay "
+                        + "connected (CILEXEC_TERMINAL_IDLE_MINUTES configures the "
+                        + "timeout)");
+                sessionOutput.flush();
+            });
             transported.onDisconnect(session::interrupt);
             TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
-            PrintWriter sessionOutput = output;
             new TerminalAccessConsole(input, output, access, account -> {
                         TerminalControl control = controls.apply(account);
                         transported.bind(account.userId(), control::interruptForeground);
@@ -375,14 +405,18 @@ public final class TerminalServer implements AutoCloseable {
         private volatile BooleanSupplier interrupt = () -> false;
         private final AtomicBoolean receivedAnyByte = new AtomicBoolean();
         private final AtomicBoolean disconnected = new AtomicBoolean();
+        private final AtomicBoolean idleWarningSent = new AtomicBoolean();
+        private final long idleDisconnectNanos;
         private final java.util.concurrent.atomic.AtomicLong lastActivityNanos =
                 new java.util.concurrent.atomic.AtomicLong();
         private volatile Runnable disconnectListener = () -> { };
+        private volatile Runnable idleWarning = () -> { };
         private final ArrayBlockingQueue<Integer> input =
                 new ArrayBlockingQueue<>(MAX_BUFFERED_INPUT_BYTES);
 
-        private DimensionInputStream(InputStream input) {
+        private DimensionInputStream(InputStream input, long idleDisconnectNanos) {
             super(input);
+            this.idleDisconnectNanos = idleDisconnectNanos;
             Thread.ofVirtual().name("cilexec-terminal-input").start(this::pump);
         }
 
@@ -396,6 +430,11 @@ public final class TerminalServer implements AutoCloseable {
          *  polling loop cannot keep its connection slot and transaction rate alive. */
         void onDisconnect(Runnable listener) {
             disconnectListener = java.util.Objects.requireNonNull(listener, "listener");
+        }
+
+        /** Warns the user shortly before an idle disconnect, so the session is not dropped silently. */
+        void onIdleWarning(Runnable warning) {
+            idleWarning = java.util.Objects.requireNonNull(warning, "warning");
         }
 
         private int width() {
@@ -434,11 +473,15 @@ public final class TerminalServer implements AutoCloseable {
                         // Never-disconnecting idle sessions must still yield their slot: a
                         // local process that sent a single byte could otherwise pin a
                         // connection forever. Bytes keep the session alive; total inactivity
-                        // beyond the disconnect threshold closes it.
-                        long lastActivity = lastActivityNanos.get();
-                        if (!receivedAnyByte.get() || System.nanoTime() - lastActivity
-                                > TERMINAL_IDLE_DISCONNECT_NANOS) {
+                        // beyond the disconnect threshold closes it, with a warning sent one
+                        // minute before the drop so an idle session is never cut silently.
+                        long idleNanos = System.nanoTime() - lastActivityNanos.get();
+                        if (!receivedAnyByte.get() || idleNanos > idleDisconnectNanos) {
                             break;
+                        }
+                        if (idleWarningSent.compareAndSet(false, true)
+                                && idleNanos > idleDisconnectNanos - IDLE_WARN_LEAD_NANOS) {
+                            idleWarning.run();
                         }
                         continue;
                     }

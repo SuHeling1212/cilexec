@@ -3,19 +3,26 @@ package com.follarce.app;
 import com.follarce.config.CilExecConfig;
 import com.follarce.exporter.LogicalExportReport;
 import com.follarce.exporter.LogicalExportService;
+import com.follarce.fcl.FclCompileException;
+import com.follarce.fcl.FclCompiler;
+import com.follarce.fcl.FclProgram;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.FlywayMigrator;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.host.HostVfsImportService;
 import com.follarce.persistence.postgres.error.PersistenceFailure;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
+import com.google.gson.GsonBuilder;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Supplier;
 
 /** Command dispatcher for the dedicated migration and Runtime processes. */
@@ -31,6 +38,7 @@ public final class CilExecApplication {
     private final MigrationAction migration;
     private final ExportAction export;
     private final PackageBuildAction packageBuild;
+    private final CompileAction compile;
 
     CilExecApplication(
             Supplier<CilExecConfig> configSource,
@@ -44,6 +52,8 @@ public final class CilExecApplication {
                     throw new AssertionError("package build action was not configured");
                 }, (config, build) -> {
                     throw new AssertionError("terminal action was not configured");
+                }, (source, output) -> {
+                    throw new AssertionError("compile action was not configured");
                 });
     }
 
@@ -58,6 +68,8 @@ public final class CilExecApplication {
         this(configSource, buildSource, runtime, migration, export, packageBuild,
                 (config, build) -> {
                     throw new AssertionError("terminal action was not configured");
+                }, (source, output) -> {
+                    throw new AssertionError("compile action was not configured");
                 });
     }
 
@@ -70,6 +82,22 @@ public final class CilExecApplication {
             PackageBuildAction packageBuild,
             RuntimeAction terminal
     ) {
+        this(configSource, buildSource, runtime, migration, export, packageBuild, terminal,
+                (source, output) -> {
+                    throw new AssertionError("compile action was not configured");
+                });
+    }
+
+    CilExecApplication(
+            Supplier<CilExecConfig> configSource,
+            Supplier<BuildInfo> buildSource,
+            RuntimeAction runtime,
+            MigrationAction migration,
+            ExportAction export,
+            PackageBuildAction packageBuild,
+            RuntimeAction terminal,
+            CompileAction compile
+    ) {
         this.configSource = Objects.requireNonNull(configSource, "configSource");
         this.buildSource = Objects.requireNonNull(buildSource, "buildSource");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
@@ -77,6 +105,7 @@ public final class CilExecApplication {
         this.migration = Objects.requireNonNull(migration, "migration");
         this.export = Objects.requireNonNull(export, "export");
         this.packageBuild = Objects.requireNonNull(packageBuild, "packageBuild");
+        this.compile = Objects.requireNonNull(compile, "compile");
     }
 
     public static int run(String[] arguments) {
@@ -87,7 +116,8 @@ public final class CilExecApplication {
                 CilExecApplication::runMigration,
                 CilExecApplication::runExport,
                 CilExecApplication::runPackageBuild,
-                CilExecApplication::runTerminal);
+                CilExecApplication::runTerminal,
+                CilExecApplication::runCompile);
         try {
             return application.execute(arguments);
         } catch (IllegalArgumentException usage) {
@@ -124,6 +154,11 @@ public final class CilExecApplication {
                 runHostMove(config(), ApplicationCommand.hostSourcePath(arguments),
                         ApplicationCommand.hostTargetPath(arguments),
                         ApplicationCommand.hostUsername(arguments));
+                yield 0;
+            }
+            case COMPILE -> {
+                compile.run(ApplicationCommand.compileSourcePath(arguments),
+                        ApplicationCommand.compileOutputPath(arguments));
                 yield 0;
             }
         };
@@ -194,6 +229,41 @@ public final class CilExecApplication {
                 descriptor.databaseFileHash());
     }
 
+    /**
+     * Compiles FCL source into its flat instruction program (the durable bytecode form)
+     * and writes it as JSON. With no output path the JSON goes to stdout.
+     */
+    private static void runCompile(Path source, Optional<Path> output) {
+        String sourceText;
+        try {
+            sourceText = Files.readString(source);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("compile: cannot read " + source + ": "
+                    + failure.getMessage());
+        }
+        FclProgram program;
+        try {
+            program = new FclCompiler().compile(sourceText);
+        } catch (FclCompileException failure) {
+            throw new IllegalArgumentException("compile: " + failure.getMessage());
+        }
+        String json = new GsonBuilder().disableHtmlEscaping().setPrettyPrinting()
+                .create().toJson(program);
+        if (output.isPresent()) {
+            try {
+                Files.writeString(output.orElseThrow(), json + System.lineSeparator());
+            } catch (IOException failure) {
+                throw new IllegalArgumentException("compile: cannot write " + output.orElseThrow()
+                        + ": " + failure.getMessage());
+            }
+            System.out.printf("Compiled %s: %d instructions, %d functions, %d source bytes -> %s%n",
+                    source.getFileName(), program.instructions().size(), program.functions().size(),
+                    sourceText.length(), output.orElseThrow());
+        } else {
+            System.out.println(json);
+        }
+    }
+
     private static void runHostMove(CilExecConfig config, Path source, String target,
                                     String username) {
         try (HikariDataSource dataSource = DataSourceFactory.create(config.runtimeDatabase())) {
@@ -222,5 +292,10 @@ public final class CilExecApplication {
     @FunctionalInterface
     interface PackageBuildAction {
         void run(Path source, Path output);
+    }
+
+    @FunctionalInterface
+    interface CompileAction {
+        void run(Path source, Optional<Path> output);
     }
 }

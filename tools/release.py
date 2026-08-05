@@ -117,7 +117,7 @@ def package_sources() -> list[Path]:
 def build_packages(staging: Path) -> dict[str, Any]:
     sys.path.insert(0, str(ROOT))
     try:
-        from PackageBuild import build as build_package
+        from tools.PackageBuild import build as build_package
     finally:
         sys.path.pop(0)
 

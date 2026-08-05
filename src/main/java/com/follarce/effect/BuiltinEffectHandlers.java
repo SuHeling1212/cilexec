@@ -139,9 +139,14 @@ public final class BuiltinEffectHandlers {
                     throw new IllegalArgumentException("Effect field must be a UUID string: routeId",
                             invalid);
                 }
+                if (!TerminalOutputRouter.attached(routeId)) {
+                    // The terminal session is gone: drop the output instead of failing the
+                    // process. A background process must survive its terminal disconnecting.
+                    return null;
+                }
                 if (!TerminalOutputRouter.publish(routeId, text, newline)) {
                     throw new IllegalStateException("Output could not be delivered to terminal "
-                            + routeId + " (route has no attached terminal or delivery timed out)");
+                            + routeId + " (delivery timed out)");
                 }
             }
             // Detached process output remains in the durable effect result; never leak user
