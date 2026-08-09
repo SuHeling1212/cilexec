@@ -10,6 +10,9 @@ import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageBinding;
 import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
+import com.follarce.domain.ipc.IpcChannel;
+import com.follarce.domain.ipc.IpcMessage;
+import com.follarce.domain.ipc.IpcTopic;
 import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.port.EnvironmentRepository;
 import com.follarce.domain.port.TransactionContext;
@@ -21,6 +24,7 @@ import com.follarce.domain.program.Program;
 import com.follarce.domain.timer.ProcessTimer;
 import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.StoredObject;
+import com.follarce.ipc.IpcService;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.domain.vfs.VfsFileLimits;
@@ -126,6 +130,7 @@ public final class FclRuntimeFunctions {
         registerPackages();
         registerMarket();
         registerSwapPool();
+        registerIpc();
         registerSystem();
         extensions.installFunctions(registry, transaction, process, continuation, now);
     }
@@ -1367,6 +1372,131 @@ public final class FclRuntimeFunctions {
                 })
                 .registerContextual("swapPool", "waitFor", (args, invocation) ->
                         waitForSwap(args, invocation));
+    }
+
+    private void registerIpc() {
+        registry.register("ipc", "createChannel", args -> {
+                    arity(args, 1, "ipc.createChannel");
+                    IpcChannel channel = IpcService.createChannelIn(transaction,
+                            process.ownerId(), string(args.get(0), "ipc.createChannel name"), now);
+                    return Map.of("channelId", channel.channelId().toString(),
+                            "name", channel.name());
+                })
+                .register("ipc", "createTopic", args -> {
+                    arity(args, 1, "ipc.createTopic");
+                    IpcTopic topic = IpcService.createTopicIn(transaction, process.ownerId(),
+                            string(args.get(0), "ipc.createTopic name"), now);
+                    return Map.of("topicId", topic.topicId().toString(),
+                            "name", topic.name());
+                })
+                .register("ipc", "removeChannel", args -> {
+                    arity(args, 1, "ipc.removeChannel");
+                    return IpcService.removeChannelIn(transaction, process.ownerId(),
+                            uuid(args.get(0), "ipc.removeChannel channelId"));
+                })
+                .register("ipc", "removeTopic", args -> {
+                    arity(args, 1, "ipc.removeTopic");
+                    return IpcService.removeTopicIn(transaction, process.ownerId(),
+                            uuid(args.get(0), "ipc.removeTopic topicId"));
+                })
+                .register("ipc", "subscribeChannel", args -> {
+                    arity(args, 1, "ipc.subscribeChannel");
+                    IpcService.subscribeChannelIn(transaction, process.ownerId(),
+                            process.identity().processUid(),
+                            uuid(args.get(0), "ipc.subscribeChannel channelId"), now);
+                    return true;
+                })
+                .register("ipc", "subscribeTopic", args -> {
+                    arity(args, 1, "ipc.subscribeTopic");
+                    IpcService.subscribeTopicIn(transaction, process.ownerId(),
+                            process.identity().processUid(),
+                            string(args.get(0), "ipc.subscribeTopic topic"), now);
+                    return true;
+                })
+                .register("ipc", "sendDirect", args -> {
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "ipc.sendDirect expects receiver pid, payload and optional expiresAt");
+                    long pid = integer(args.get(0), "ipc.sendDirect pid");
+                    CilProcess receiver = transaction.processes().findByPid(pid)
+                            .orElseThrow(() -> new FclRuntimeException("Unknown process pid: " + pid));
+                    IpcMessage message = IpcService.sendDirectIn(transaction, process.ownerId(),
+                            Optional.of(process.identity().processUid()),
+                            receiver.identity().processUid(),
+                            ipcPayload(args.get(1), "ipc.sendDirect payload"),
+                            Optional.empty(), now);
+                    return Map.of("messageId", message.messageId().toString());
+                })
+                .register("ipc", "sendChannel", args -> {
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "ipc.sendChannel expects channelId, payload and optional expiresAt");
+                    IpcMessage message = IpcService.sendChannelIn(transaction, process.ownerId(),
+                            Optional.of(process.identity().processUid()),
+                            uuid(args.get(0), "ipc.sendChannel channelId"),
+                            ipcPayload(args.get(1), "ipc.sendChannel payload"),
+                            Optional.empty(), now);
+                    return Map.of("messageId", message.messageId().toString());
+                })
+                .register("ipc", "publishTopic", args -> {
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "ipc.publishTopic expects topic, payload and optional expiresAt");
+                    IpcMessage message = IpcService.publishTopicIn(transaction, process.ownerId(),
+                            Optional.of(process.identity().processUid()),
+                            string(args.get(0), "ipc.publishTopic topic"),
+                            ipcPayload(args.get(1), "ipc.publishTopic payload"),
+                            Optional.empty(), now);
+                    return Map.of("messageId", message.messageId().toString());
+                })
+                .register("ipc", "broadcast", args -> {
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "ipc.broadcast expects topic, payload and optional expiresAt");
+                    IpcMessage message = IpcService.broadcastIn(transaction, process.ownerId(),
+                            Optional.of(process.identity().processUid()),
+                            string(args.get(0), "ipc.broadcast topic"),
+                            ipcPayload(args.get(1), "ipc.broadcast payload"),
+                            Optional.empty(), now);
+                    return Map.of("messageId", message.messageId().toString());
+                })
+                .registerContextual("ipc", "receive", (args, invocation) -> {
+                    if (!args.isEmpty()) throw new FclRuntimeException("ipc.receive takes no arguments");
+                    return ipcReceive(invocation);
+                })
+                .register("ipc", "poll", args -> {
+                    arity(args, 0, "ipc.poll");
+                    return IpcService.reserveNextIn(transaction, process.ownerId(),
+                                    process.identity().processUid(), UUID.randomUUID(), now)
+                            .map(envelope -> IpcService.envelopeMap(envelope.delivery(),
+                                    envelope.message()))
+                            .orElse(null);
+                })
+                .register("ipc", "consume", args -> {
+                    arity(args, 1, "ipc.consume");
+                    return IpcService.consumeIn(transaction, process.ownerId(),
+                            uuid(args.get(0), "ipc.consume deliveryId"));
+                });
+    }
+
+    /** Serializes any FCL value into a durable IPC payload. */
+    private IpcService.Payload ipcPayload(Object value, String field) {
+        Continuation.PersistedValue persisted = typed(value);
+        return IpcService.Payload.json(persisted.type(), persisted.canonicalPayload());
+    }
+
+    /**
+     * Blocking receive: consumes an already-delivered envelope from the process inbox, or
+     * suspends the process as WAITING_IPC until a delivery wakes it.
+     */
+    private Object ipcReceive(FclFunctionRegistry.Invocation invocation) {
+        FclContinuation continuation = invocation.continuation();
+        if (continuation.scope().contains(ProcessInbox.IPC_RESULT)) {
+            Object delivered = continuation.scope().remove(ProcessInbox.IPC_RESULT);
+            if (delivered instanceof Continuation.PersistedValue persisted) {
+                return codec.valueFromJson(persisted.canonicalPayload());
+            }
+            return delivered;
+        }
+        continuation.waitFor("ipc:" + process.identity().processUid(),
+                Map.of("ipc", "receive"));
+        throw FclSuspension.suspend();
     }
 
     private Object addSwapValue(List<Object> args) {

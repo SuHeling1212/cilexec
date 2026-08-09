@@ -25,6 +25,29 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
     }
 
     @Override
+    public boolean removeChannel(UUID ownerId, UUID channelId) {
+        change("ipc.removeChannelMessages", "DELETE FROM ipc.message WHERE channel_id=? "
+                + "AND owner_id=?", statement -> {
+            statement.setObject(1, channelId);
+            statement.setObject(2, ownerId);
+        });
+        return change("ipc.removeChannel", "DELETE FROM ipc.channel WHERE channel_id=? "
+                + "AND owner_id=?", statement -> {
+            statement.setObject(1, channelId);
+            statement.setObject(2, ownerId);
+        }) == 1;
+    }
+
+    @Override
+    public boolean removeTopic(UUID ownerId, UUID topicId) {
+        return change("ipc.removeTopic", "DELETE FROM ipc.topic WHERE topic_id=? "
+                + "AND owner_id=?", statement -> {
+            statement.setObject(1, topicId);
+            statement.setObject(2, ownerId);
+        }) == 1;
+    }
+
+    @Override
     public void saveChannel(IpcChannel channel) {
         String sql = "INSERT INTO ipc.channel(channel_id,owner_id,channel_name,status,created_at,closed_at) "
                 + "VALUES (?,?,?,?,?,?) ON CONFLICT (channel_id) DO UPDATE SET "

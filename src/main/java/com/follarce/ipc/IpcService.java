@@ -8,6 +8,7 @@ import com.follarce.domain.ipc.IpcSubscription;
 import com.follarce.domain.ipc.IpcTopic;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.ProcessRepository;
+import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
@@ -24,35 +25,68 @@ import java.util.Optional;
 import java.util.UUID;
 import com.google.gson.Gson;
 
-/** Durable direct, channel, topic, and broadcast messaging use cases. */
+/**
+ * Durable direct, channel, topic, and broadcast messaging use cases.
+ *
+ * <p>Every operation has an {@code *In(TransactionContext, ...)} variant that executes
+ * inside an already-open transaction (the FCL runtime slice transaction), and a public
+ * wrapper that opens its own user transaction for callers outside the runtime.
+ */
 public final class IpcService {
     private static final Gson JSON = new Gson();
-    private final UserTransactionExecutor transactions;
+    private final com.follarce.persistence.postgres.transaction.UserTransactionExecutor transactions;
     private final Clock clock;
 
-    public IpcService(UserTransactionExecutor transactions, Clock clock) {
+    public IpcService(com.follarce.persistence.postgres.transaction.UserTransactionExecutor transactions,
+                      Clock clock) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
     }
 
     public IpcChannel createChannel(UUID ownerId, String name) {
-        Instant now = clock.instant();
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> createChannelIn(transaction, ownerId, name, clock.instant()));
+    }
+
+    public static IpcChannel createChannelIn(TransactionContext transaction, UUID ownerId,
+                                             String name, Instant now) {
         IpcChannel channel = new IpcChannel(UUID.randomUUID(), ownerId, name,
                 IpcChannel.Status.ACTIVE, now, Optional.empty());
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            transaction.ipc().saveChannel(channel);
-            return channel;
-        });
+        transaction.ipc().saveChannel(channel);
+        return channel;
     }
 
     public IpcTopic createTopic(UUID ownerId, String name) {
-        Instant now = clock.instant();
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> createTopicIn(transaction, ownerId, name, clock.instant()));
+    }
+
+    public static IpcTopic createTopicIn(TransactionContext transaction, UUID ownerId,
+                                         String name, Instant now) {
         IpcTopic topic = new IpcTopic(UUID.randomUUID(), ownerId, name,
                 IpcTopic.Status.ACTIVE, now, Optional.empty());
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            transaction.ipc().saveTopic(topic);
-            return topic;
-        });
+        transaction.ipc().saveTopic(topic);
+        return topic;
+    }
+
+    public boolean removeChannel(UUID ownerId, UUID channelId) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> transaction.ipc().removeChannel(ownerId, channelId));
+    }
+
+    public static boolean removeChannelIn(TransactionContext transaction, UUID ownerId,
+                                          UUID channelId) {
+        return transaction.ipc().removeChannel(ownerId, channelId);
+    }
+
+    public boolean removeTopic(UUID ownerId, UUID topicId) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> transaction.ipc().removeTopic(ownerId, topicId));
+    }
+
+    public static boolean removeTopicIn(TransactionContext transaction, UUID ownerId,
+                                        UUID topicId) {
+        return transaction.ipc().removeTopic(ownerId, topicId);
     }
 
     public IpcSubscription subscribeChannel(UUID ownerId, UUID processUid, UUID channelId) {
@@ -60,40 +94,60 @@ public final class IpcService {
                 Optional.of(channelId), Optional.empty());
     }
 
+    public static IpcSubscription subscribeChannelIn(TransactionContext transaction,
+                                                     UUID ownerId, UUID processUid,
+                                                     UUID channelId, Instant now) {
+        return subscribeIn(transaction, ownerId, processUid,
+                IpcSubscription.SourceKind.CHANNEL, Optional.of(channelId), Optional.empty(), now);
+    }
+
     public IpcSubscription subscribeTopic(UUID ownerId, UUID processUid, String topicName) {
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             IpcTopic topic = transaction.ipc().findTopic(topicName)
                     .filter(candidate -> candidate.status() == IpcTopic.Status.ACTIVE)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown active topic"));
-            requireProcess(transaction, processUid);
-            Instant now = clock.instant();
-            IpcSubscription subscription = new IpcSubscription(UUID.randomUUID(), ownerId,
-                    processUid, IpcSubscription.SourceKind.TOPIC, Optional.empty(),
-                    Optional.of(topic.topicId()), IpcSubscription.Status.ACTIVE, now,
-                    Optional.empty());
-            transaction.ipc().saveSubscription(subscription);
-            return subscription;
+            return subscribeIn(transaction, ownerId, processUid,
+                    IpcSubscription.SourceKind.TOPIC, Optional.empty(),
+                    Optional.of(topic.topicId()), clock.instant());
         });
+    }
+
+    public static IpcSubscription subscribeTopicIn(TransactionContext transaction,
+                                                   UUID ownerId, UUID processUid,
+                                                   String topicName, Instant now) {
+        IpcTopic topic = transaction.ipc().findTopic(topicName)
+                .filter(candidate -> candidate.status() == IpcTopic.Status.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown active topic"));
+        return subscribeIn(transaction, ownerId, processUid,
+                IpcSubscription.SourceKind.TOPIC, Optional.empty(), Optional.of(topic.topicId()),
+                now);
     }
 
     private IpcSubscription subscribe(UUID ownerId, UUID processUid,
                                       IpcSubscription.SourceKind kind,
                                       Optional<UUID> channelId,
                                       Optional<UUID> topicId) {
-        Instant now = clock.instant();
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                subscribeIn(transaction, ownerId, processUid, kind, channelId, topicId,
+                        clock.instant()));
+    }
+
+    private static IpcSubscription subscribeIn(TransactionContext transaction, UUID ownerId,
+                                               UUID processUid,
+                                               IpcSubscription.SourceKind kind,
+                                               Optional<UUID> channelId,
+                                               Optional<UUID> topicId, Instant now) {
         IpcSubscription subscription = new IpcSubscription(UUID.randomUUID(), ownerId,
                 processUid, kind, channelId, topicId, IpcSubscription.Status.ACTIVE,
                 now, Optional.empty());
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            requireProcess(transaction, processUid);
-            if (kind == IpcSubscription.SourceKind.CHANNEL) {
-                transaction.ipc().findChannel(channelId.orElseThrow())
-                        .filter(channel -> channel.status() == IpcChannel.Status.ACTIVE)
-                        .orElseThrow(() -> new IllegalArgumentException("Unknown active channel"));
-            }
-            transaction.ipc().saveSubscription(subscription);
-            return subscription;
-        });
+        requireProcess(transaction, processUid);
+        if (kind == IpcSubscription.SourceKind.CHANNEL) {
+            transaction.ipc().findChannel(channelId.orElseThrow())
+                    .filter(channel -> channel.status() == IpcChannel.Status.ACTIVE)
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown active channel"));
+        }
+        transaction.ipc().saveSubscription(subscription);
+        return subscription;
     }
 
     public IpcMessage sendDirect(UUID ownerId, Optional<UUID> senderProcessUid,
@@ -103,19 +157,35 @@ public final class IpcService {
                 Optional.empty(), List.of(receiverProcessUid), payload, expiresAt);
     }
 
+    public static IpcMessage sendDirectIn(TransactionContext transaction, UUID ownerId,
+                                          Optional<UUID> senderProcessUid,
+                                          UUID receiverProcessUid, Payload payload,
+                                          Optional<Instant> expiresAt, Instant now) {
+        return persist(transaction, ownerId, senderProcessUid, IpcMessage.Kind.DIRECT,
+                Optional.empty(), Optional.empty(), List.of(receiverProcessUid), payload,
+                expiresAt, now);
+    }
+
     public IpcMessage sendChannel(UUID ownerId, Optional<UUID> senderProcessUid,
                                   UUID channelId, Payload payload,
                                   Optional<Instant> expiresAt) {
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            IpcChannel channel = transaction.ipc().findChannel(channelId)
-                    .filter(candidate -> candidate.status() == IpcChannel.Status.ACTIVE)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown active channel"));
-            UUID receiver = transaction.ipc().selectChannelReceiver(channel.channelId())
-                    .orElseThrow(() -> new IllegalStateException("Channel has no active consumer"));
-            return persist(transaction, ownerId, senderProcessUid, IpcMessage.Kind.CHANNEL,
-                    Optional.of(channelId), Optional.empty(), List.of(receiver), payload,
-                    expiresAt, clock.instant());
-        });
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                sendChannelIn(transaction, ownerId, senderProcessUid, channelId, payload,
+                        expiresAt, clock.instant()));
+    }
+
+    public static IpcMessage sendChannelIn(TransactionContext transaction, UUID ownerId,
+                                           Optional<UUID> senderProcessUid, UUID channelId,
+                                           Payload payload, Optional<Instant> expiresAt,
+                                           Instant now) {
+        IpcChannel channel = transaction.ipc().findChannel(channelId)
+                .filter(candidate -> candidate.status() == IpcChannel.Status.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown active channel"));
+        UUID receiver = transaction.ipc().selectChannelReceiver(channel.channelId())
+                .orElseThrow(() -> new IllegalStateException("Channel has no active consumer"));
+        return persist(transaction, ownerId, senderProcessUid, IpcMessage.Kind.CHANNEL,
+                Optional.of(channelId), Optional.empty(), List.of(receiver), payload,
+                expiresAt, now);
     }
 
     public IpcMessage publishTopic(UUID ownerId, Optional<UUID> senderProcessUid,
@@ -125,6 +195,14 @@ public final class IpcService {
                 payload, expiresAt);
     }
 
+    public static IpcMessage publishTopicIn(TransactionContext transaction, UUID ownerId,
+                                            Optional<UUID> senderProcessUid, String topicName,
+                                            Payload payload, Optional<Instant> expiresAt,
+                                            Instant now) {
+        return publishIn(transaction, ownerId, senderProcessUid, topicName,
+                IpcMessage.Kind.TOPIC, payload, expiresAt, now);
+    }
+
     public IpcMessage broadcast(UUID ownerId, Optional<UUID> senderProcessUid,
                                 String topicName, Payload payload,
                                 Optional<Instant> expiresAt) {
@@ -132,17 +210,32 @@ public final class IpcService {
                 payload, expiresAt);
     }
 
+    public static IpcMessage broadcastIn(TransactionContext transaction, UUID ownerId,
+                                         Optional<UUID> senderProcessUid, String topicName,
+                                         Payload payload, Optional<Instant> expiresAt,
+                                         Instant now) {
+        return publishIn(transaction, ownerId, senderProcessUid, topicName,
+                IpcMessage.Kind.BROADCAST, payload, expiresAt, now);
+    }
+
     private IpcMessage publish(UUID ownerId, Optional<UUID> senderProcessUid,
                                String topicName, IpcMessage.Kind kind, Payload payload,
                                Optional<Instant> expiresAt) {
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            IpcTopic topic = transaction.ipc().findTopic(topicName)
-                    .filter(candidate -> candidate.status() == IpcTopic.Status.ACTIVE)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown active topic"));
-            List<UUID> receivers = transaction.ipc().findTopicReceivers(topic.topicId());
-            return persist(transaction, ownerId, senderProcessUid, kind, Optional.empty(),
-                    Optional.of(topic.name()), receivers, payload, expiresAt, clock.instant());
-        });
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                publishIn(transaction, ownerId, senderProcessUid, topicName, kind, payload,
+                        expiresAt, clock.instant()));
+    }
+
+    private static IpcMessage publishIn(TransactionContext transaction, UUID ownerId,
+                                        Optional<UUID> senderProcessUid, String topicName,
+                                        IpcMessage.Kind kind, Payload payload,
+                                        Optional<Instant> expiresAt, Instant now) {
+        IpcTopic topic = transaction.ipc().findTopic(topicName)
+                .filter(candidate -> candidate.status() == IpcTopic.Status.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown active topic"));
+        List<UUID> receivers = transaction.ipc().findTopicReceivers(topic.topicId());
+        return persist(transaction, ownerId, senderProcessUid, kind, Optional.empty(),
+                Optional.of(topic.name()), receivers, payload, expiresAt, now);
     }
 
     private IpcMessage send(UUID ownerId, Optional<UUID> senderProcessUid, IpcMessage.Kind kind,
@@ -154,7 +247,7 @@ public final class IpcService {
     }
 
     private static IpcMessage persist(
-            com.follarce.domain.port.TransactionContext transaction,
+            TransactionContext transaction,
             UUID ownerId,
             Optional<UUID> senderProcessUid,
             IpcMessage.Kind kind,
@@ -187,42 +280,50 @@ public final class IpcService {
     }
 
     public Optional<Envelope> reserveNext(UUID ownerId, UUID receiverProcessUid, UUID workerId) {
-        Instant now = clock.instant();
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            List<IpcDelivery> pending = transaction.ipc().findPending(receiverProcessUid, 1);
-            if (pending.isEmpty()) return Optional.empty();
-            IpcDelivery reserved = pending.getFirst().reserve(workerId, now);
-            if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
-                return Optional.empty();
-            }
-            IpcMessage message = transaction.ipc().findMessage(reserved.messageId())
-                    .orElseThrow(() -> new IllegalStateException("Delivery message is missing"));
-            if (message.isExpiredAt(now)) {
-                IpcDelivery dead = reserved.dead(now, "message expired before consumption");
-                transaction.ipc().updateDelivery(dead, IpcDelivery.Status.RESERVED);
-                return Optional.empty();
-            }
-            return Optional.of(new Envelope(message, reserved));
-        });
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                reserveNextIn(transaction, ownerId, receiverProcessUid, workerId,
+                        clock.instant()));
+    }
+
+    public static Optional<Envelope> reserveNextIn(TransactionContext transaction,
+                                                   UUID ownerId, UUID receiverProcessUid,
+                                                   UUID workerId, Instant now) {
+        List<IpcDelivery> pending = transaction.ipc().findPending(receiverProcessUid, 1);
+        if (pending.isEmpty()) return Optional.empty();
+        IpcDelivery reserved = pending.getFirst().reserve(workerId, now);
+        if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
+            return Optional.empty();
+        }
+        IpcMessage message = transaction.ipc().findMessage(reserved.messageId())
+                .orElseThrow(() -> new IllegalStateException("Delivery message is missing"));
+        if (message.isExpiredAt(now)) {
+            IpcDelivery dead = reserved.dead(now, "message expired before consumption");
+            transaction.ipc().updateDelivery(dead, IpcDelivery.Status.RESERVED);
+            return Optional.empty();
+        }
+        return Optional.of(new Envelope(message, reserved));
     }
 
     public boolean consume(UUID ownerId, UUID deliveryId) {
-        Instant now = clock.instant();
-        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            IpcDelivery reserved = transaction.ipc().findDelivery(deliveryId)
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown delivery"));
-            return transaction.ipc().updateDelivery(reserved.consume(now),
-                    IpcDelivery.Status.RESERVED);
-        });
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                consumeIn(transaction, ownerId, deliveryId));
     }
 
-    private static CilProcess requireProcess(com.follarce.domain.port.TransactionContext transaction,
+    public static boolean consumeIn(TransactionContext transaction, UUID ownerId,
+                                    UUID deliveryId) {
+        IpcDelivery reserved = transaction.ipc().findDelivery(deliveryId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown delivery"));
+        return transaction.ipc().updateDelivery(reserved.consume(Instant.now()),
+                IpcDelivery.Status.RESERVED);
+    }
+
+    private static CilProcess requireProcess(TransactionContext transaction,
                                              UUID processUid) {
         return transaction.processes().findByUid(processUid)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown process " + processUid));
     }
 
-    private static void wakeWaitingReceiver(com.follarce.domain.port.TransactionContext transaction,
+    private static void wakeWaitingReceiver(TransactionContext transaction,
                                             IpcDelivery delivery, IpcMessage message,
                                             Instant now) {
         UUID receiver = delivery.receiverProcessUid();
@@ -275,6 +376,12 @@ public final class IpcService {
 
     private static Continuation.PersistedValue ipcResult(IpcDelivery delivery,
                                                          IpcMessage message) {
+        return new Continuation.PersistedValue(
+                "application/vnd.cilexec.ipc-delivery+json", JSON.toJson(envelopeMap(delivery, message)));
+    }
+
+    /** Stable delivery envelope shared by the wake fast path and the polling path. */
+    public static Map<String, Object> envelopeMap(IpcDelivery delivery, IpcMessage message) {
         Map<String, Object> value = new java.util.LinkedHashMap<>();
         value.put("deliveryId", delivery.deliveryId().toString());
         value.put("messageId", message.messageId().toString());
@@ -282,8 +389,7 @@ public final class IpcService {
         value.put("payloadType", message.payloadType());
         message.payloadJson().ifPresent(payload -> value.put("payloadJson", payload));
         message.payloadObjectHash().ifPresent(hash -> value.put("payloadObjectHash", hash.value()));
-        return new Continuation.PersistedValue(
-                "application/vnd.cilexec.ipc-delivery+json", JSON.toJson(value));
+        return value;
     }
 
     public record Payload(

@@ -39,6 +39,22 @@ public interface IpcRepository {
 
     boolean updateDelivery(IpcDelivery delivery, IpcDelivery.Status expectedStatus);
 
+    /**
+     * Removes a channel owned by this user together with its messages (deliveries cascade);
+     * returns whether the channel existed.
+     */
+    default boolean removeChannel(UUID ownerId, UUID channelId) {
+        throw new UnsupportedOperationException("Channels are not implemented");
+    }
+
+    /**
+     * Removes a topic owned by this user together with its subscriptions; returns whether
+     * the topic existed. Historical messages keep their topic name text and are retained.
+     */
+    default boolean removeTopic(UUID ownerId, UUID topicId) {
+        throw new UnsupportedOperationException("Topics are not implemented");
+    }
+
     default boolean createSwapPool(UUID ownerId, UUID ownerProcessUid, String poolName,
                                    Instant createdAt) {
         throw new UnsupportedOperationException("Swap pools are not implemented");
