@@ -319,8 +319,10 @@ CREATE INDEX ix_variable_process_scope ON process.variable(process_uid, scope_id
 CREATE INDEX ix_process_event_history ON process.event(process_uid, created_at DESC);
 
 -- name: baseline.event_immutability
-CREATE TRIGGER process_event_reject_update_delete
-BEFORE UPDATE OR DELETE ON process.event
+-- Process events are append-only: they can never be updated, but they are removed
+-- together with their process when an administrator explicitly garbage-collects it.
+CREATE TRIGGER process_event_reject_update
+BEFORE UPDATE ON process.event
 FOR EACH ROW EXECUTE FUNCTION meta.reject_immutable_mutation();
 
 -- name: baseline.process_rls
@@ -353,7 +355,7 @@ $rls$;
 
 -- name: baseline.process_grants
 GRANT USAGE, SELECT ON SEQUENCE process.pid_sequence TO cilexec_runtime;
-GRANT SELECT, INSERT, UPDATE ON process.process, process.call_frame, process.scope,
+GRANT SELECT, INSERT, UPDATE, DELETE ON process.process, process.call_frame, process.scope,
     process.variable, process.exception_frame, process.wait_state, process.relationship TO cilexec_runtime;
 GRANT DELETE ON process.call_frame, process.scope, process.variable, process.exception_frame,
     process.wait_state, process.relationship TO cilexec_runtime;

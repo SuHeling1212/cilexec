@@ -94,6 +94,49 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
     }
 
     @Override
+    public int deleteTerminated() {
+        return deleteTerminalProcesses("", statement -> { });
+    }
+
+    @Override
+    public boolean deleteTerminatedByPid(long pid) {
+        return deleteTerminalProcesses("AND pid = ?", statement -> statement.setLong(1, pid))
+                == 1;
+    }
+
+    /**
+     * Removes terminal processes in one statement. RESTRICT references (effects, node
+     * locks, swap-pool lock owners, and accepted terminal inputs) are cleared first so the
+     * process row and its CASCADE dependents (continuation, variables, timers, events,
+     * package pins) can be removed atomically.
+     */
+    private int deleteTerminalProcesses(String pidClause, Binder binder) {
+        String sql = "WITH doomed AS (SELECT process_uid, owner_id FROM process.process "
+                + "WHERE status IN ('TERMINATED','FAILED','FAILED_RECOVERY') " + pidClause
+                + "), clear_effects AS (DELETE FROM effect.effect e USING doomed "
+                + "WHERE e.process_uid = doomed.process_uid AND e.owner_id = doomed.owner_id), "
+                + "clear_locks AS (DELETE FROM vfs.node_lock l USING doomed "
+                + "WHERE l.process_uid = doomed.process_uid), "
+                + "clear_swap AS (UPDATE ipc.swap_value s SET lock_process_uid = NULL, "
+                + "lock_execution_epoch = NULL, lease_until = NULL FROM doomed "
+                + "WHERE s.lock_process_uid = doomed.process_uid), "
+                + "clear_inputs AS (DELETE FROM terminal.input i USING doomed "
+                + "WHERE i.target_process_uid = doomed.process_uid), "
+                + "removed AS (DELETE FROM process.process p USING doomed "
+                + "WHERE p.process_uid = doomed.process_uid AND p.owner_id = doomed.owner_id "
+                + "RETURNING p.process_uid) SELECT count(*) FROM removed";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            binder.bind(statement);
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getInt(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("process.deleteTerminated", exception);
+        }
+    }
+
+    @Override
     public void insert(CilProcess process) {
         validateStatusWait(process);
         String sql = "INSERT INTO process.process(process_uid,pid,owner_id,program_id,"

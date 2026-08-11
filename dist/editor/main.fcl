@@ -411,7 +411,7 @@ func open(editorPath) {
     io.print(term.alternate(true) + term.mouse(true) + term.paste(true) + term.hideCursor())
     io.print(ed_render(editorState))
     while editorState["running"] {
-        editorEvent = io.readKey(100)
+        editorEvent = io.readKey(50)
         if editorEvent["kind"] == "timeout" {
             // Idle repaint: a resize becomes visible within 100 ms without pressing a key.
             io.print(ed_render(editorState))

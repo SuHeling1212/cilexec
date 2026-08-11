@@ -84,7 +84,7 @@ class MarketEditorPackageTest {
         byte[] database = java.nio.file.Files.readAllBytes(output);
         SqlitePackageReader reader = new SqlitePackageReader();
 
-        assertEquals("cilexec/editor/1.1.1", descriptor.coordinate());
+        assertEquals("cilexec/editor/1.1.2", descriptor.coordinate());
         assertEquals(com.follarce.domain.packageinfo.PackageKind.APPLICATION, descriptor.kind());
         assertEquals(List.of("run"), descriptor.entrypoints().stream()
                 .map(value -> value.name()).toList());

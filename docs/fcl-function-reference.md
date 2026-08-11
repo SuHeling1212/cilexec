@@ -109,12 +109,12 @@ terminal context:
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
-market.install("9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f")
-import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "editor"
+market.install("71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab")
+import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "editor"
 editor.open("notes.txt")
 ```
 
-Its package coordinate is `cilexec/editor/1.1.1`, and its public function is
+Its package coordinate is `cilexec/editor/1.1.2`, and its public function is
 `editor.open(path)`. A package is identified only by the SHA-256 of its `.db` file;
 two different hashes are two independent packages. `import` accepts the 64-character
 SHA-256 of an installed `.db` file, optionally with a private per-process alias, but
@@ -130,7 +130,7 @@ never a human-readable name or a `namespace/name/version` coordinate.
 | Paths | Relative paths are based on the `:pwd` result; a leading `/` is an absolute VFS path. |
 | Administrators | The initial `local` account has `SYSTEM_ADMIN`. Functions authorize as the currently logged-in user. |
 | External operations | Input, printing, HTTP, sockets, and system commands suspend the FCL process and resume it automatically when done. |
-| Releasing variables | `memory.destroy("name")` recursively clears the array/object container immediately and removes the variable binding from the current scope; after this statement commits, the value no longer appears in the persisted continuation. Returns `true` if the variable was actually removed, `false` if it did not exist. FCL values are deep-copied on assignment; there are no shared object aliases. It does not delete VFS files or packages. |
+| Releasing variables | `memory.destroy("name")` (aliases `memory.unset("name")`, `memory.release("name")`) recursively clears the array/object container immediately and removes the variable binding from the current scope; after this statement commits, the value no longer appears in the persisted continuation. Returns `true` if the variable was actually removed, `false` if it did not exist. FCL values are deep-copied on assignment; there are no shared object aliases. It does not delete VFS files or packages. |
 | Listing real names | `system.ls()` returns every qualified function name and alias callable in this Runtime. |
 | Java extensions | `system.extensions()` returns the fixed list of extensions sealed into the system at build time. |
 
@@ -171,6 +171,7 @@ capabilities within their own scope at registration; administrators have all of 
 | `util.input([prompt])` | Optionally show a prompt and wait for one line of user input. Equivalent to `io.input`. |
 | `util.sleep(milliseconds)` | Suspend the current process for the given milliseconds, then resume. |
 | `util.exit([result])` | End the current FCL process normally, optionally returning a result value. |
+| `util.objectgc()` | Administrator-only garbage collection of unreferenced object-store entries that have been unreachable from every durable root for at least one hour. Named `objectgc` because it reclaims the object store; it does not touch VFS files, programs, packages, or process data. |
 
 ## Paths & Aliases: `path`
 
@@ -333,6 +334,7 @@ control other users' processes.
 | `process.exec(path)` | Compile the FCL file at an absolute path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. Scripts that want the current directory must pass `path.join(env.get("PWD"), relativePath)` explicitly. Terminal processes keep global variables, package bindings, and the working directory, and return to the same terminal when the target program ends; ordinary background processes terminate when the target program ends. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
+| `process.gc([pid])` | Manually remove terminal processes (TERMINATED/FAILED) and their persisted state (continuation, variables, events, timers, package pins). Without a PID it removes every terminal process and returns the count removed; with a PID it removes only that process when it has already ended and returns `true`. Running, suspended, and waiting processes are never removed, and `system_kill`ed processes cannot be revived. Administrator (`SYSTEM_ADMIN`) only. |
 
 ## Users: `user`
 
@@ -404,9 +406,9 @@ hash (last wins); processes that already linked a program keep the module they w
 linked with:
 
 ```fcl
-import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "e"
-import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f"
-value = "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f".open("x.txt")
+import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "e"
+import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab"
+value = "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab".open("x.txt")
 ```
 
 Binding names are unique within one package environment. Reinstalling the same
@@ -417,7 +419,6 @@ operations.
 | Call | Effect |
 | --- | --- |
 | `package.remove(environmentUuid, binding)` | Synonym of `unpin`; removes a binding. |
-| `package.gc()` | Administrator-only bounded garbage collection of objects that have been unreachable from every durable root for at least one hour. |
 | `package.recover()` | Administrator recovery-check entrypoint; currently returns `true`. |
 
 ## Built-in Market: `market`

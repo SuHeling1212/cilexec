@@ -102,8 +102,8 @@ market.update()
 market.configure("http://host.docker.internal:8787")
 market.update()
 market.search("editor")
-market.install("9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f")
-import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "editor"
+market.install("71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab")
+import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "editor"
 editor.open("notes.txt")
 ```
 

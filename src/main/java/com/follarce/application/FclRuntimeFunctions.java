@@ -383,6 +383,18 @@ public final class FclRuntimeFunctions {
                     Object result = args.isEmpty() ? null : args.getFirst();
                     invocation.continuation().exit(result);
                     return result;
+                })
+                .register("util", "objectgc", args -> {
+                    arity(args, 0, "util.objectgc");
+                    Authorization.requireAdministrator(transaction, process.ownerId());
+                    long deleted = transaction.vfs().garbageCollectObjects(
+                            process.ownerId(), 1000);
+                    transaction.audit().append(new AuditEvent(UUID.randomUUID(),
+                            AuditEvent.ActorType.USER, process.ownerId().toString(),
+                            "util.objectgc", "object_store", process.ownerId().toString(),
+                            AuditEvent.Result.SUCCEEDED,
+                            Map.of("limit", "1000", "deleted", Long.toString(deleted)), now));
+                    return deleted;
                 });
     }
 
@@ -761,7 +773,36 @@ public final class FclRuntimeFunctions {
                     CilProcess target = targetProcess(integer(args.getFirst(),
                             "process.waitPID pid"), "process.waitPID");
                     return waitForProcess(target, invocation);
-                });
+                })
+                .register("process", "gc", args -> processGc(args));
+    }
+
+    /**
+     * Manually removes terminal processes and their persisted state. Without arguments it
+     * removes every TERMINATED/FAILED process; with a PID it removes only that process when
+     * it has already ended. Running, suspended, and waiting processes are never removed.
+     */
+    private Object processGc(List<Object> args) {
+        if (args.size() > 1) throw new FclRuntimeException(
+                "process.gc expects zero arguments or one process PID");
+        Authorization.requireAdministrator(transaction, process.ownerId());
+        if (args.isEmpty()) {
+            long deleted = transaction.processes().deleteTerminated();
+            audit("process.gc", process.identity().processUid(), Map.of(
+                    "deleted", Long.toString(deleted)));
+            return deleted;
+        }
+        long pid = integer(args.getFirst(), "process.gc pid");
+        Optional<CilProcess> target = transaction.processes().findByPid(pid);
+        if (target.isPresent() && !targetProcess(pid, "process.gc").isTerminal()) {
+            throw new FclRuntimeException(
+                    "process.gc can only remove a process that has already ended; "
+                            + "process " + pid + " is still active");
+        }
+        boolean deleted = transaction.processes().deleteTerminatedByPid(pid);
+        audit("process.gc", process.identity().processUid(), Map.of(
+                "pid", Long.toString(pid), "deleted", Boolean.toString(deleted)));
+        return deleted;
     }
 
     private void registerUsers() {
@@ -887,18 +928,6 @@ public final class FclRuntimeFunctions {
                     return decodeUtf8(content, "package.resource");
                 })
                 .register("package", "pin", args -> pinPackage(args))
-                .register("package", "gc", args -> {
-                    arity(args, 0, "package.gc");
-                    Authorization.requireAdministrator(transaction, process.ownerId());
-                    long deleted = transaction.vfs().garbageCollectObjects(
-                            process.ownerId(), 1000);
-                    transaction.audit().append(new AuditEvent(UUID.randomUUID(),
-                            AuditEvent.ActorType.USER, process.ownerId().toString(),
-                            "package.gc", "object_store", process.ownerId().toString(),
-                            AuditEvent.Result.SUCCEEDED,
-                            Map.of("limit", "1000", "deleted", Long.toString(deleted)), now));
-                    return deleted;
-                })
                 .register("package", "recover", args -> {
                     arity(args, 0, "package.recover");
                     Authorization.requireAdministrator(transaction, process.ownerId());

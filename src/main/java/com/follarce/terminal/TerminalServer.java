@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.BiFunction;
@@ -91,7 +92,6 @@ public final class TerminalServer implements AutoCloseable {
                 administratorUsername, "administratorUsername");
         this.idleDisconnectNanos = idleDisconnect.toNanos();
     }
-
     public synchronized void start() {
         if (!running.compareAndSet(false, true)) return;
         try {
@@ -188,16 +188,24 @@ public final class TerminalServer implements AutoCloseable {
             DimensionInputStream transported = new DimensionInputStream(connection,
                     idleDisconnectNanos);
             PrintWriter sessionOutput = output;
+            java.util.concurrent.atomic.AtomicReference<TerminalControl> attached =
+                    new java.util.concurrent.atomic.AtomicReference<>();
             transported.onIdleWarning(() -> {
-                sessionOutput.println("idle disconnect in 1 minute; press any key to stay "
-                        + "connected (CILEXEC_TERMINAL_IDLE_MINUTES configures the "
-                        + "timeout)");
+                sessionOutput.println("session idle; this terminal will close in 1 minute if "
+                        + "the attached process stays suspended (input or activity resets the "
+                        + "timer)");
                 sessionOutput.flush();
+            });
+            transported.onIdleCheck(() -> {
+                TerminalControl control = attached.get();
+                return control == null ? Long.MAX_VALUE
+                        : control.idleRemainingNanos(idleDisconnectNanos);
             });
             transported.onDisconnect(transported::interruptForeground);
             TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
             new TerminalAccessConsole(input, output, access, account -> {
                         TerminalControl control = controls.apply(account);
+                        attached.set(control);
                         transported.bind(account.userId(), control::interruptForeground);
                         control.outputRouteId().ifPresent(
                                 routeId -> TerminalOutputRouter.attach(routeId, sessionOutput));
@@ -402,12 +410,9 @@ public final class TerminalServer implements AutoCloseable {
         private volatile java.util.UUID ownerId;
         private volatile TerminalDimensions.Size size = new TerminalDimensions.Size(80, 24);
         private volatile BooleanSupplier interrupt = () -> false;
-        private final AtomicBoolean receivedAnyByte = new AtomicBoolean();
         private final AtomicBoolean disconnected = new AtomicBoolean();
-        private final AtomicBoolean idleWarningSent = new AtomicBoolean();
         private final long idleDisconnectNanos;
-        private final java.util.concurrent.atomic.AtomicLong lastActivityNanos =
-                new java.util.concurrent.atomic.AtomicLong();
+        private volatile LongSupplier idleCheck = () -> Long.MAX_VALUE;
         private volatile Runnable disconnectListener = () -> { };
         private volatile Runnable idleWarning = () -> { };
         private final ArrayBlockingQueue<Integer> input =
@@ -434,6 +439,11 @@ public final class TerminalServer implements AutoCloseable {
         /** Warns the user shortly before an idle disconnect, so the session is not dropped silently. */
         void onIdleWarning(Runnable warning) {
             idleWarning = java.util.Objects.requireNonNull(warning, "warning");
+        }
+
+        /** Returns nanos until the suspended-process threshold, 0 to close, MAX for active. */
+        void onIdleCheck(LongSupplier check) {
+            idleCheck = java.util.Objects.requireNonNull(check, "check");
         }
 
         private int width() {
@@ -472,30 +482,35 @@ public final class TerminalServer implements AutoCloseable {
         }
 
         private void pump() {
+            boolean warnedRecently = false;
             try {
                 while (true) {
                     int value;
                     try {
                         value = in.read();
                     } catch (SocketTimeoutException idle) {
-                        // Never-disconnecting idle sessions must still yield their slot: a
-                        // local process that sent a single byte could otherwise pin a
-                        // connection forever. Bytes keep the session alive; total inactivity
-                        // beyond the disconnect threshold closes it, with a warning sent one
-                        // minute before the drop so an idle session is never cut silently.
-                        long idleNanos = System.nanoTime() - lastActivityNanos.get();
-                        if (!receivedAnyByte.get() || idleNanos > idleDisconnectNanos) {
-                            break;
+                        // The socket timeout is only a periodic wake-up for the suspension
+                        // check. A session closes for idleness only when its attached process
+                        // has been suspended (PAUSED) for the configured threshold; active
+                        // processes and full-screen programs waiting on input never close.
+                        long remaining;
+                        try {
+                            remaining = idleCheck.getAsLong();
+                        } catch (RuntimeException failure) {
+                            remaining = Long.MAX_VALUE;
                         }
-                        if (idleWarningSent.compareAndSet(false, true)
-                                && idleNanos > idleDisconnectNanos - IDLE_WARN_LEAD_NANOS) {
-                            idleWarning.run();
+                        if (remaining <= 0) break;
+                        if (remaining <= IDLE_WARN_LEAD_NANOS) {
+                            if (!warnedRecently) {
+                                warnedRecently = true;
+                                idleWarning.run();
+                            }
+                        } else {
+                            warnedRecently = false;
                         }
                         continue;
                     }
                     if (value < 0) break;
-                    receivedAnyByte.set(true);
-                    lastActivityNanos.set(System.nanoTime());
                     if (value == 0) readFrame();
                     else input.put(value);
                 }

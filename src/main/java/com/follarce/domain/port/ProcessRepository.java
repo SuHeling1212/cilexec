@@ -42,6 +42,23 @@ public interface ProcessRepository {
             SchedulerClaim claim
     );
 
+    /**
+     * Removes every terminal process (TERMINATED, FAILED, FAILED_RECOVERY) and, by
+     * cascade, its persisted continuation, variables, timers, events, and package pins.
+     * Returns the number of processes removed.
+     */
+    default int deleteTerminated() {
+        throw new UnsupportedOperationException("Terminal process deletion is not implemented");
+    }
+
+    /**
+     * Removes one terminal process by PID. Returns {@code false} when the process is
+     * unknown or is not in a terminal state.
+     */
+    default boolean deleteTerminatedByPid(long pid) {
+        throw new UnsupportedOperationException("Terminal process deletion is not implemented");
+    }
+
     enum UpdateResult {
         UPDATED,
         VERSION_CONFLICT,

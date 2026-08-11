@@ -70,6 +70,36 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     @Override
+    public long idleRemainingNanos(long thresholdNanos) {
+        try {
+            Optional<CilProcess> attached = transactions.inUserTransaction(user.userId(),
+                    Isolation.READ_COMMITTED, transaction ->
+                            transaction.terminal().findActiveAttachment(sessionId)
+                                    .flatMap(attachment -> transaction.processes()
+                                            .findByUid(attachment.processUid())));
+            return idleRemainingNanos(attached.orElse(null), Instant.now(), thresholdNanos);
+        } catch (RuntimeException failure) {
+            // A transient query failure must never close a live session.
+            return Long.MAX_VALUE;
+        }
+    }
+
+    /**
+     * A session closes for idleness only when its attached process has been suspended
+     * (PAUSED) for the whole threshold: REPL idle, nothing running. Active processes,
+     * full-screen programs waiting on input, and sessions with no attachment are never
+     * closed for idleness.
+     */
+    static long idleRemainingNanos(CilProcess process, Instant now, long thresholdNanos) {
+        if (process == null || process.status() != CilProcess.Status.PAUSED) {
+            return Long.MAX_VALUE;
+        }
+        long elapsed = Duration.between(process.updatedAt(), now).toNanos();
+        long remaining = thresholdNanos - elapsed;
+        return remaining <= 0 ? 0 : remaining;
+    }
+
+    @Override
     public String execute(ShellCommand command) {
         java.util.Objects.requireNonNull(command, "command");
         return switch (command) {

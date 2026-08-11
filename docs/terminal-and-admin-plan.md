@@ -323,8 +323,10 @@ are the only baseline additions.
 - `:cd`, `:pwd`, `:ls` operate on the durable working directory; `:cd` without an
   argument reports an error without crashing.
 - `:exit` disconnects only the caller; the shared Runtime keeps running. A client
-  disconnect is detected instead of polling forever, and sockets that never send a
-  byte are dropped after the idle timeout.
+  disconnect is detected instead of polling forever. A session is closed for
+  idleness only when its attached process has been suspended (PAUSED) for the
+  configured threshold (default 60 minutes, `CILEXEC_TERMINAL_IDLE_MINUTES`);
+  active processes and full-screen programs waiting on input are never closed.
 - First use bootstraps `local` with `SYSTEM_ADMIN`; `TerminalBootstrap` never
   removes pre-existing capabilities.
 - Login and administrator-password failures are rate-limited (exponential backoff,

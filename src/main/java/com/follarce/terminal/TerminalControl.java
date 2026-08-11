@@ -27,7 +27,16 @@ public interface TerminalControl {
 
     /** Describes how the attached FCL process expects its next terminal input. */
     default AttachedInputMode attachedInputMode() {
-        return awaitingAttachedInput() ? AttachedInputMode.LINE : AttachedInputMode.NONE;
+        return AttachedInputMode.NONE;
+    }
+
+    /**
+     * Nanoseconds until the attached process has been suspended (PAUSED) for the idle
+     * threshold, 0 when it is already past the threshold, or {@link Long#MAX_VALUE} when
+     * the session is active and must never be closed for idleness.
+     */
+    default long idleRemainingNanos(long thresholdNanos) {
+        return Long.MAX_VALUE;
     }
 
     default String prompt() {

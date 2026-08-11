@@ -31,6 +31,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -220,9 +221,65 @@ class JdbcProcessEffectIT {
                 wait, globals, Map.of(), "fcl-1", "1");
     }
 
+    @Test
+    void manualGcRemovesOnlyTerminalProcessesWithTheirPersistedState() throws Exception {
+        UUID ownerId = UUID.randomUUID();
+        UUID programId = UUID.randomUUID();
+        ObjectHash programHash = hash("program");
+        seed(ownerId, programId, programHash, UUID.randomUUID());
+        JsonCodec json = new JsonCodec();
+        try (Connection connection = runtimeConnection()) {
+            JdbcProcessRepository processes = new JdbcProcessRepository(connection, json);
+            UUID terminalUid = UUID.randomUUID();
+            UUID runningUid = UUID.randomUUID();
+            UUID terminalScope = UUID.randomUUID();
+            CilProcess terminal = new CilProcess(new ProcessIdentity(terminalUid, 800),
+                    ownerId, CilProcess.Status.TERMINATED, 2, 2,
+                    continuation(programId, programHash, Optional.empty(),
+                            List.of(new Continuation.CallFrame(UUID.randomUUID(), "run", 4,
+                                    terminalScope)),
+                            List.of(new Continuation.ScopeFrame(terminalScope, Optional.empty(),
+                                    Map.of("saved", value("number", "42")))),
+                            List.of(), Map.of()),
+                    Optional.empty(), T0.minusSeconds(30), T0.minusSeconds(10));
+            CilProcess running = new CilProcess(new ProcessIdentity(runningUid, 801),
+                    ownerId, CilProcess.Status.RUNNING, 0, 0,
+                    continuation(programId, programHash, Optional.empty(), List.of(), List.of(),
+                            List.of(), Map.of()),
+                    Optional.empty(), T0, T0);
+            processes.insert(terminal);
+            processes.insert(running);
+
+            assertTrue(processes.deleteTerminatedByPid(800),
+                    "deleting an ended process by PID must succeed");
+            assertTrue(processes.findByUid(terminalUid).isEmpty());
+            assertEquals(0, count(connection,
+                    "SELECT count(*) FROM process.call_frame WHERE process_uid=?", terminalUid));
+            assertEquals(0, count(connection,
+                    "SELECT count(*) FROM process.variable WHERE process_uid=?", terminalUid));
+            assertTrue(processes.findByUid(runningUid).isPresent());
+
+            assertFalse(processes.deleteTerminatedByPid(800),
+                    "an already-deleted PID must report false");
+            assertFalse(processes.deleteTerminatedByPid(9999),
+                    "an unknown PID must report false");
+
+            assertEquals(0, processes.deleteTerminated(),
+                    "no terminal processes remain after the targeted removal");
+            assertTrue(processes.findByUid(runningUid).isPresent(),
+                    "running processes must never be removed");
+        }
+    }
+
     private static void seed(UUID ownerId, UUID programId, ObjectHash programHash, UUID bootId)
             throws Exception {
         try (Connection connection = adminConnection()) {
+            // The shared container keeps one meta.instance singleton; each test seeds its own
+            // instance/kernel/boot, so clear the previous singleton and its dependents first.
+            try (Statement cleanup = connection.createStatement()) {
+                cleanup.execute("TRUNCATE scheduler.lease, scheduler.runner, process.process, "
+                        + "meta.boot, meta.kernel_instance, meta.instance CASCADE");
+            }
             UUID instanceId = UUID.randomUUID();
             UUID runtimeId = UUID.randomUUID();
             String roleName = "cilexec_user_" + ownerId.toString().replace("-", "");
@@ -230,7 +287,7 @@ class JdbcProcessEffectIT {
                     "INSERT INTO auth.user_account(user_id,username,postgres_role_name,status) "
                             + "VALUES (?,?,?,'ACTIVE')")) {
                 user.setObject(1, ownerId);
-                user.setString(2, "projection-test");
+                user.setString(2, "projection-" + ownerId.toString().substring(0, 8));
                 user.setString(3, roleName);
                 user.executeUpdate();
             }
@@ -262,7 +319,8 @@ class JdbcProcessEffectIT {
             ObjectHash sourceHash = ObjectHash.sha256(new BinaryContent(source));
             try (PreparedStatement object = connection.prepareStatement(
                     "INSERT INTO object_store.object(object_hash,byte_size,media_type,content,"
-                            + "created_by) VALUES (?,?,?,?,?)")) {
+                            + "created_by) VALUES (?,?,?,?,?) "
+                            + "ON CONFLICT (object_hash) DO NOTHING")) {
                 object.setBytes(1, JdbcValues.hash(sourceHash));
                 object.setLong(2, source.length);
                 object.setString(3, "text/plain");

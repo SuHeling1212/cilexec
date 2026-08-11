@@ -23,7 +23,7 @@
         <logback.version>1.5.34</logback.version>
         <jackson.version>2.21.5</jackson.version>
         <junit.version>5.13.4</junit.version>
-        <testcontainers.version>1.21.3</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
         <compiler.plugin.version>3.15.0</compiler.plugin.version>
         <surefire.version>3.5.3</surefire.version>
         <shade.version>3.6.1</shade.version>

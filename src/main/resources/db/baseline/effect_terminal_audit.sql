@@ -135,7 +135,7 @@ END
 $rls$;
 
 -- name: baseline.effect_grants
-GRANT SELECT, INSERT, UPDATE ON effect.effect, effect.attempt TO cilexec_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON effect.effect, effect.attempt TO cilexec_runtime;
 GRANT SELECT, INSERT, UPDATE ON effect.effect, effect.attempt TO cilexec_effect_worker;
 
 COMMENT ON TABLE effect.effect IS 'Durable request/result boundary for every database-external operation';
@@ -218,7 +218,7 @@ END
 $rls$;
 
 -- name: baseline.terminal_grants
-GRANT SELECT, INSERT, UPDATE ON terminal.session, terminal.input, terminal.attachment TO cilexec_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON terminal.session, terminal.input, terminal.attachment TO cilexec_runtime;
 
 COMMENT ON TABLE terminal.input IS 'One row per fully submitted input; individual keystrokes are never persisted';
 
@@ -1036,7 +1036,7 @@ BEGIN
     EXECUTE format('GRANT SELECT ON auth.user_capability, auth.group_capability TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON auth.environment_variable, auth.shared_environment_variable, auth.shared_environment_policy TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON program.program, program.statement, program.module_binding TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE ON process.process, process.call_frame, process.scope, process.variable, process.exception_frame, process.wait_state, process.relationship TO %I', mapped_role);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON process.process, process.call_frame, process.scope, process.variable, process.exception_frame, process.wait_state, process.relationship TO %I', mapped_role);
     EXECUTE format('GRANT DELETE ON process.call_frame, process.scope, process.variable, process.exception_frame, process.wait_state, process.relationship TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON process.event TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON process.timer, scheduler.queue TO %I', mapped_role);
@@ -1048,8 +1048,8 @@ BEGIN
     EXECUTE format('GRANT SELECT, INSERT, UPDATE ON vfs.mount TO %I', mapped_role);
     EXECUTE format('GRANT SELECT ON package.release TO %I', mapped_role);
     EXECUTE format('GRANT SELECT ON package.release_dependency, package.release_module, package.release_entrypoint, package.release_export, package.release_capability TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT ON effect.effect TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE ON terminal.session, terminal.input, terminal.attachment TO %I', mapped_role);
+    EXECUTE format('GRANT SELECT, INSERT, DELETE ON effect.effect TO %I', mapped_role);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON terminal.session, terminal.input, terminal.attachment TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON audit.event TO %I', mapped_role);
     RETURN mapped_role;
 END
