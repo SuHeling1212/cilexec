@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd -P)"
+project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$project_dir"
 
 if [[ "$#" -ne 1 ]]; then
-    echo 'Usage: ./Headless.sh <fcl-source>' >&2
-    echo 'Example: ./Headless.sh '\''counter = 1'\''' >&2
+    echo 'Usage: ./tools/Headless.sh <fcl-source>' >&2
+    echo 'Example: ./tools/Headless.sh '\''counter = 1'\''' >&2
     exit 2
 fi
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
@@ -37,7 +37,7 @@ username="${CILEXEC_TERMINAL_USERNAME:-local}"
 compose=(docker compose -f compose.yml -f docker/compose/persistent.yml)
 
 if [[ -z "$("${compose[@]}" ps --status running -q cilexec)" ]]; then
-    echo 'Error: the shared CilExec Runtime is not running; run ./Install.sh first.' >&2
+    echo 'Error: the shared CilExec Runtime is not running; run ./tools/Install.sh first.' >&2
     exit 1
 fi
 

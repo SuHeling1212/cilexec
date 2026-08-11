@@ -86,6 +86,21 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     }
 
     @Override
+    public long garbageCollectObjects(UUID administratorId, int limit) {
+        String sql = "SELECT object_store.admin_gc_orphans(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setInt(2, limit);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException("Object GC returned no result");
+                return rows.getLong(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("object_store.gc", exception);
+        }
+    }
+
+    @Override
     public long logicalObjectSize(ObjectHash objectHash) {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT object_store.logical_object_size(?)")) {
@@ -766,7 +781,9 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     public Optional<FileLock> acquireLock(UUID nodeId, UUID ownerId, UUID processUid,
                                           long executionEpoch, Instant leaseUntil, Instant at) {
         String sql = "INSERT INTO vfs.node_lock(node_id,owner_id,process_uid,execution_epoch,"
-                + "lease_until,fencing_token,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?) "
+                + "lease_until,fencing_token,created_at,updated_at) SELECT ?,?,?,?,?,1,?,? "
+                + "FROM process.process active WHERE active.process_uid=? AND active.owner_id=? "
+                + "AND active.execution_epoch=? "
                 + "ON CONFLICT (node_id) DO UPDATE SET process_uid=EXCLUDED.process_uid,"
                 + "execution_epoch=EXCLUDED.execution_epoch,lease_until=EXCLUDED.lease_until,"
                 + "fencing_token=vfs.node_lock.fencing_token+1,updated_at=EXCLUDED.updated_at "
@@ -782,6 +799,9 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             statement.setTimestamp(5, java.sql.Timestamp.from(leaseUntil));
             statement.setTimestamp(6, java.sql.Timestamp.from(at));
             statement.setTimestamp(7, java.sql.Timestamp.from(at));
+            statement.setObject(8, processUid);
+            statement.setObject(9, ownerId);
+            statement.setLong(10, executionEpoch);
         });
     }
 
@@ -791,7 +811,9 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
                                         Instant leaseUntil, Instant at) {
         String sql = "UPDATE vfs.node_lock SET execution_epoch=?,lease_until=?,updated_at=? "
                 + "WHERE node_id=? AND owner_id=? AND process_uid=? AND fencing_token=? "
-                + "AND lease_until>? RETURNING fencing_token,lease_until";
+                + "AND lease_until>? AND EXISTS (SELECT 1 FROM process.process active "
+                + "WHERE active.process_uid=? AND active.owner_id=? AND active.execution_epoch=?) "
+                + "RETURNING fencing_token,lease_until";
         return fileLock("vfs.renewLock", sql, statement -> {
             statement.setLong(1, executionEpoch);
             statement.setTimestamp(2, java.sql.Timestamp.from(leaseUntil));
@@ -801,6 +823,9 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
             statement.setObject(6, processUid);
             statement.setLong(7, fencingToken);
             statement.setTimestamp(8, java.sql.Timestamp.from(at));
+            statement.setObject(9, processUid);
+            statement.setObject(10, ownerId);
+            statement.setLong(11, executionEpoch);
         });
     }
 
@@ -808,12 +833,16 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     public boolean releaseLock(UUID nodeId, UUID ownerId, UUID processUid,
                                long executionEpoch, long fencingToken) {
         String sql = "DELETE FROM vfs.node_lock WHERE node_id=? AND owner_id=? AND process_uid=? "
-                + "AND fencing_token=?";
+                + "AND fencing_token=? AND EXISTS (SELECT 1 FROM process.process active "
+                + "WHERE active.process_uid=? AND active.owner_id=? AND active.execution_epoch=?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, nodeId);
             statement.setObject(2, ownerId);
             statement.setObject(3, processUid);
             statement.setLong(4, fencingToken);
+            statement.setObject(5, processUid);
+            statement.setObject(6, ownerId);
+            statement.setLong(7, executionEpoch);
             return statement.executeUpdate() == 1;
         } catch (SQLException exception) {
             throw failure("vfs.releaseLock", exception);

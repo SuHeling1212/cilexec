@@ -43,13 +43,10 @@ class MarketHttpServerTest {
                 new Gson().fromJson(new String(market.index(),
                         java.nio.charset.StandardCharsets.UTF_8), Object.class)).get("packages");
         assertEquals(2, packages.size());
-        assertEquals(1, packages.stream().map(java.util.Map.class::cast)
-                .filter(item -> Boolean.TRUE.equals(item.get("latest"))).count());
         assertTrue(packages.stream().map(java.util.Map.class::cast)
                 .anyMatch(item -> "1.0.0".equals(item.get("version"))));
         assertTrue(packages.stream().map(java.util.Map.class::cast)
-                .anyMatch(item -> "1.1.0".equals(item.get("version"))
-                        && Boolean.TRUE.equals(item.get("latest"))));
+                .anyMatch(item -> "1.1.0".equals(item.get("version"))));
     }
 
     @Test
@@ -99,7 +96,6 @@ class MarketHttpServerTest {
             java.util.Map<?, ?> latest = packages.stream().map(java.util.Map.class::cast)
                     .filter(item -> "1.1.0".equals(item.get("version")))
                     .findFirst().orElseThrow();
-            assertEquals(true, latest.get("latest"));
             URI newPackageUri = URI.create("http://127.0.0.1:" + server.port()
                     + latest.get("download"));
             HttpResponse<byte[]> newPackage = client.send(HttpRequest.newBuilder(newPackageUri)

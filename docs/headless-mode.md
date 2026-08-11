@@ -8,14 +8,14 @@ instruction.
 Initial install and administrator account creation still use:
 
 ```bash
-./Install.sh
+./tools/Install.sh
 ```
 
 Afterwards, consecutive invocations in the same host terminal:
 
 ```bash
-./Headless.sh 'counter = 1'
-./Headless.sh 'counter = counter + 1; io.println(counter)'
+./tools/Headless.sh 'counter = 1'
+./tools/Headless.sh 'counter = counter + 1; io.println(counter)'
 ```
 
 The second command prints `2`. Invocations from the same host terminal reuse the same
@@ -32,7 +32,7 @@ arguments or environment variables.
 CI or TTY-less environments must explicitly set a stable, non-sensitive context ID:
 
 ```bash
-CILEXEC_HEADLESS_CONTEXT=build-42 ./Headless.sh 'io.println("done")'
+  CILEXEC_HEADLESS_CONTEXT=build-42 ./tools/Headless.sh 'io.println("done")'
 ```
 
 Different context IDs do not share variables. Do not treat the context ID as an
@@ -50,5 +50,5 @@ argument:
 
 ```bash
 printf '%s\n' "$SECRET_FROM_SAFE_STORE" | \
-  CILEXEC_HEADLESS_CONTEXT=build-42 ./Headless.sh 'io.println("done")'
+CILEXEC_HEADLESS_CONTEXT=build-42 ./tools/Headless.sh 'io.println("done")'
 ```

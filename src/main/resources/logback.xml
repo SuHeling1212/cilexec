@@ -4,9 +4,21 @@
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <target>System.out</target>
-        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-            <charset>UTF-8</charset>
-            <pattern>%date{yyyy-MM-dd'T'HH:mm:ss.SSSXXX,UTC} %-5level [%thread] %logger{48} - %msg%n</pattern>
+        <encoder class="ch.qos.logback.classic.encoder.JsonEncoder">
+            <withTimestamp>true</withTimestamp>
+            <withNanoseconds>true</withNanoseconds>
+            <withSequenceNumber>true</withSequenceNumber>
+            <withLevel>true</withLevel>
+            <withThreadName>true</withThreadName>
+            <withLoggerName>true</withLoggerName>
+            <withContext>false</withContext>
+            <withMarkers>true</withMarkers>
+            <withMDC>true</withMDC>
+            <withKVPList>true</withKVPList>
+            <withMessage>false</withMessage>
+            <withArguments>false</withArguments>
+            <withFormattedMessage>true</withFormattedMessage>
+            <withThrowable>true</withThrowable>
         </encoder>
     </appender>
 

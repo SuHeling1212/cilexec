@@ -44,11 +44,12 @@ class PortContractTest {
     void transactionContextExposesEveryRepositoryAndOwnsCompletion() {
         Set<String> methods = names(TransactionContext.class);
 
-        assertTrue(methods.containsAll(Set.of(
+        Set<String> expected = Set.of(
                 "programs", "processes", "scheduler", "ipc", "timers", "vfs",
                 "packages", "effects", "auth", "audit", "terminal", "environment",
-                "commit", "rollback", "close")));
-        assertEquals(15, methods.size());
+                "commit", "rollback", "close");
+        assertTrue(methods.containsAll(expected));
+        assertEquals(expected.size(), methods.size());
     }
 
     @Test
@@ -72,6 +73,7 @@ class PortContractTest {
 
     private static Set<String> names(Class<?> type) {
         return List.of(type.getDeclaredMethods()).stream()
+                .filter(method -> !method.isSynthetic())
                 .map(Method::getName)
                 .collect(Collectors.toSet());
     }

@@ -27,8 +27,6 @@ import com.follarce.domain.ipc.IpcDelivery;
 import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.ipc.IpcSubscription;
 import com.follarce.domain.ipc.IpcTopic;
-import com.follarce.domain.packageinfo.PackageBinding;
-import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
@@ -390,6 +388,11 @@ class ProgramServiceTest {
     static final class MemoryIpcRepository implements IpcRepository {
         final Map<UUID, IpcMessage> messages = new LinkedHashMap<>();
         final Map<UUID, IpcDelivery> deliveries = new LinkedHashMap<>();
+        int purgeResult;
+        UUID purgeOwner;
+        Instant purgeCutoff;
+        Instant purgeNow;
+        int purgeLimit;
 
         @Override public void saveChannel(IpcChannel channel) {
             throw new UnsupportedOperationException();
@@ -429,11 +432,19 @@ class ProgramServiceTest {
                     .limit(limit).toList();
         }
         @Override public boolean updateDelivery(IpcDelivery delivery,
-                                                IpcDelivery.Status expectedStatus) {
+                                                 IpcDelivery.Status expectedStatus) {
             IpcDelivery current = deliveries.get(delivery.deliveryId());
             if (current == null || current.status() != expectedStatus) return false;
             deliveries.put(delivery.deliveryId(), delivery);
             return true;
+        }
+        @Override public int purgeMessages(UUID ownerId, Instant olderThan, Instant now,
+                                           int limit) {
+            purgeOwner = ownerId;
+            purgeCutoff = olderThan;
+            purgeNow = now;
+            purgeLimit = limit;
+            return purgeResult;
         }
     }
 
@@ -482,8 +493,6 @@ class ProgramServiceTest {
     static final class MemoryPackageRepository implements PackageRepository {
         final Map<String, ProcessPackageBinding> processBindings = new LinkedHashMap<>();
         final Map<PackageRelease.Hash, PackageRelease> releases = new LinkedHashMap<>();
-        final Map<UUID, PackageEnvironment> environments = new LinkedHashMap<>();
-        final Map<String, PackageBinding> bindings = new LinkedHashMap<>();
 
         @Override public ReleaseWriteResult registerRelease(PackageIndex packageIndex) {
             throw new UnsupportedOperationException();
@@ -497,18 +506,6 @@ class ProgramServiceTest {
         }
         @Override public List<PackageRelease> findReleases() {
             return List.copyOf(releases.values());
-        }
-        @Override public void saveEnvironment(PackageEnvironment environment) {
-            environments.put(environment.environmentId(), environment);
-        }
-        @Override public Optional<PackageEnvironment> findEnvironment(UUID environmentId) {
-            return Optional.ofNullable(environments.get(environmentId));
-        }
-        @Override public void saveBinding(PackageBinding binding) {
-            bindings.put(binding.environmentId() + ":" + binding.binding(), binding);
-        }
-        @Override public Optional<PackageBinding> findBinding(UUID environmentId, String binding) {
-            return Optional.ofNullable(bindings.get(environmentId + ":" + binding));
         }
         @Override public void saveProcessBinding(ProcessPackageBinding binding) {
             processBindings.put(binding.processUid() + ":" + binding.importName(), binding);

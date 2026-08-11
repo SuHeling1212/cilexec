@@ -24,6 +24,7 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -34,6 +35,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -42,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Real JVM and PostgreSQL-container kill recovery, including committed FCL continuation replay. */
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 class RuntimeCrashRecoveryIT {
     private static final String PASSWORD = "runtime-crash-test-password";
     private static final String INSTANCE = "crash-recovery-test";
@@ -50,25 +52,21 @@ class RuntimeCrashRecoveryIT {
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
-            "postgres:18.0-alpine3.22");
+            System.getProperty("cilexec.test.postgres.image", "postgres:17.10-alpine3.23"));
 
     @TempDir
     Path temporaryDirectory;
 
     @BeforeAll
     static void migrate() throws Exception {
-        try (Connection connection = adminConnection(); Statement statement = connection.createStatement()) {
-            statement.execute("CREATE ROLE cilexec_owner NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_migrator LOGIN CREATEROLE PASSWORD '" + PASSWORD + "'");
-            statement.execute("CREATE ROLE cilexec_runtime LOGIN PASSWORD '" + PASSWORD + "'");
-            statement.execute("CREATE ROLE cilexec_effect_worker LOGIN PASSWORD '" + PASSWORD + "'");
-            statement.execute("CREATE ROLE cilexec_readonly LOGIN PASSWORD '" + PASSWORD + "'");
-            statement.execute("GRANT cilexec_owner TO cilexec_migrator");
-            statement.execute("ALTER DATABASE \"" + connection.getCatalog().replace("\"", "\"\"")
-                    + "\" OWNER TO cilexec_owner");
+        try (Connection connection = adminConnection()) {
+            com.follarce.persistence.postgres.PostgresTestBootstrap.createServiceRoles(
+                    connection, PASSWORD);
         }
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(POSTGRES.getJdbcUrl(),
+                        com.follarce.persistence.postgres.PostgresTestBootstrap.MIGRATOR_ROLE,
+                        PASSWORD)
                 .locations("classpath:db/migration")
                 .defaultSchema("flyway")
                 .schemas("flyway")
@@ -88,6 +86,8 @@ class RuntimeCrashRecoveryIT {
     void forcedJvmKillRestartsRuntimeFromTheLastCommittedContinuation() throws Exception {
         Path secret = temporaryDirectory.resolve("database.password");
         Files.writeString(secret, PASSWORD);
+        Files.setPosixFilePermissions(secret, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
         UUID processUid;
 
         Process first = startRuntime(secret, temporaryDirectory.resolve("runtime-1.log"));
@@ -161,17 +161,18 @@ class RuntimeCrashRecoveryIT {
             try (PreparedStatement statement = connection.prepareStatement(
                     "INSERT INTO program.program(program_id,owner_id,program_hash,language_version,"
                             + "runtime_format_version,source_object_hash,compiled_object_hash,"
-                            + "statement_count) VALUES (?,?,?,'fcl-1',1,?,?,1)")) {
+                            + "statement_count) VALUES (?,?,?,'fcl-1',?,?,?,1)")) {
                 statement.setObject(1, programId);
                 statement.setObject(2, ownerId);
                 statement.setBytes(3, JdbcValues.hash(sourceHash));
-                statement.setBytes(4, JdbcValues.hash(sourceHash));
-                statement.setBytes(5, JdbcValues.hash(compiledHash));
+                statement.setInt(4, FclProgramCodec.FORMAT_VERSION);
+                statement.setBytes(5, JdbcValues.hash(sourceHash));
+                statement.setBytes(6, JdbcValues.hash(compiledHash));
                 statement.executeUpdate();
             }
             Continuation continuation = new Continuation(programId, sourceHash, 0,
                     List.of(), List.of(), List.of(), List.of(), Optional.empty(), Map.of(),
-                    Map.of(), "fcl-1", "1");
+                    Map.of(), "fcl-1", Integer.toString(FclProgramCodec.FORMAT_VERSION));
             Instant now = Instant.now();
             new JdbcProcessRepository(connection, new JsonCodec()).insert(new CilProcess(
                     new ProcessIdentity(processUid, 7001), ownerId, CilProcess.Status.RUNNING,
@@ -250,12 +251,20 @@ class RuntimeCrashRecoveryIT {
     private static String processSnapshot(UUID processUid) throws Exception {
         try (Connection connection = adminConnection(); Statement statement =
                 connection.createStatement(); ResultSet result = statement.executeQuery(
-                "SELECT status,state_version,execution_epoch,failure_code,failure_message "
-                        + "FROM process.process WHERE process_uid='" + processUid + "'::uuid")) {
+                "SELECT process.status,process.state_version,process.execution_epoch,"
+                        + "process.failure_code,process.failure_message,COALESCE(string_agg("
+                        + "event.event_type || ':' || event.details_json::text,' | ' ORDER BY "
+                        + "event.created_at),''),COALESCE((SELECT string_agg(variable_name || "
+                        + "'=' || COALESCE(value_json::text,encode(value_object_hash,'hex')),"
+                        + "' | ') FROM process.variable AS variable WHERE variable.process_uid="
+                        + "process.process_uid),'') FROM process.process AS process LEFT JOIN "
+                        + "process.event AS event USING (process_uid) WHERE process.process_uid='"
+                        + processUid + "'::uuid GROUP BY process.process_uid")) {
             if (!result.next()) return "process row missing";
             return "status=" + result.getString(1) + ", stateVersion=" + result.getLong(2)
                     + ", epoch=" + result.getLong(3) + ", failureCode=" + result.getString(4)
-                    + ", failureMessage=" + result.getString(5);
+                    + ", failureMessage=" + result.getString(5) + ", events="
+                    + result.getString(6) + ", variables=" + result.getString(7);
         }
     }
 

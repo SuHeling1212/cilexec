@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HumanUserPasswordPolicyMigrationTest {
     @Test
-    void keepsHumanPrincipalCreationAtSixCharacters() throws IOException {
+    void requiresSixCharacterHumanPasswords() throws IOException {
         String sql = BaselineSql.load();
             assertTrue(sql.contains("CREATE OR REPLACE FUNCTION auth.provision_login_role"));
             assertTrue(sql.contains("CREATE OR REPLACE FUNCTION auth.admin_create_user_as"));

@@ -71,6 +71,37 @@ public interface TerminalInput {
         return line.isEmpty() ? "ENTER" : String.valueOf(line.charAt(0));
     }
 
+    /**
+     * Reads one input event as canonical JSON for an attached full-screen FCL application.
+     * Key events carry modifiers, and mouse / paste / focus / unknown escape sequences are
+     * preserved instead of collapsing to a single key name.
+     */
+    default String readKeyEvent(PrintWriter output) throws IOException {
+        String key = readKey(output);
+        if (key == null) return null;
+        return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(key)
+                + "\",\"shift\":false,\"ctrl\":false,\"alt\":false,\"text\":\"\"}";
+    }
+
+    static String jsonEscape(String value) {
+        StringBuilder escaped = new StringBuilder(value.length() + 8);
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            switch (character) {
+                case '"' -> escaped.append("\\\"");
+                case '\\' -> escaped.append("\\\\");
+                case '\n' -> escaped.append("\\n");
+                case '\r' -> escaped.append("\\r");
+                case '\t' -> escaped.append("\\t");
+                default -> {
+                    if (character < 0x20) escaped.append(String.format("\\u%04x", (int) character));
+                    else escaped.append(character);
+                }
+            }
+        }
+        return escaped.toString();
+    }
+
     /** Leaves persistent raw-key mode before returning to normal line input. */
     default void finishKeyMode() throws IOException {
     }
@@ -135,6 +166,8 @@ public interface TerminalInput {
         private final Console console;
         private final IntSupplier terminalWidth;
         private final List<String> history = new ArrayList<>();
+        private final StringBuilder pasteBuffer = new StringBuilder();
+        private boolean inPaste;
         private RawMode keyMode;
 
         EditableTerminalInput(InputStream stream, Console console) {
@@ -245,6 +278,253 @@ public interface TerminalInput {
             String key = decodeByteKey(stream.read());
             if (console != null) TerminalDimensions.refresh();
             return key;
+        }
+
+        @Override
+        public String readKeyEvent(PrintWriter output) throws IOException {
+            if (console != null && keyMode == null) keyMode = RawMode.enable();
+            String event = decodeEvent(stream.read());
+            if (console != null) TerminalDimensions.refresh();
+            return event;
+        }
+
+        /** Decodes one input event, buffering bracketed-paste content across reads. */
+        private String decodeEvent(int first) throws IOException {
+            while (inPaste) {
+                if (first == 27) {
+                    int bracket = stream.read();
+                    if (bracket == '[') {
+                        int code = stream.read();
+                        if (code == '2') {
+                            int digit = stream.read();
+                            if (digit == '0') {
+                                int tail = stream.read();
+                                if (tail == '1' && stream.read() == '~') {
+                                    inPaste = false;
+                                    String text = pasteBuffer.toString().replace("\r\n", "\n");
+                                    pasteBuffer.setLength(0);
+                                    return "{\"kind\":\"paste\",\"text\":\""
+                                            + jsonEscape(text) + "\"}";
+                                }
+                            }
+                            pasteBuffer.append((char) code).append((char) digit);
+                        } else {
+                            pasteBuffer.append((char) code);
+                        }
+                    } else if (bracket >= 0) {
+                        pasteBuffer.append((char) bracket);
+                    }
+                } else if (first >= 0) {
+                    pasteBuffer.appendCodePoint(first);
+                } else {
+                    return null;
+                }
+                first = stream.read();
+            }
+
+            if (first == 27) {
+                int prefix = stream.read();
+                if (prefix == '[') {
+                    int code = stream.read();
+                    if (code == 'I') return "{\"kind\":\"focus\",\"focus\":true}";
+                    if (code == 'O') return "{\"kind\":\"focus\",\"focus\":false}";
+                    if (code == 'M') return decodeMouse(stream::read, false);
+                    if (code == 'm') return decodeMouse(stream::read, true);
+                    if (code == 'Z') return keyEvent("SHIFT_TAB", false, true, false);
+                    if (code == '<') return decodeSgrMouse(stream::read);
+                    if (code >= 'A' && code <= 'F') {
+                        return keyEvent(arrowName((char) code), false, false, false);
+                    }
+                    if (code >= '0' && code <= '9') {
+                        int number = code - '0';
+                        while (number <= 999) {
+                            int next = stream.read();
+                            if (next == ';') return decodeModified(stream::read);
+                            if (next == '~') {
+                                if (number == 200) {
+                                    inPaste = true;
+                                    return decodeEvent(stream.read());
+                                }
+                                return decodeTilde(number);
+                            }
+                            if (next < '0' || next > '9') break;
+                            number = number * 10 + (next - '0');
+                        }
+                    }
+                    return rawEvent(escapeSequence(first, prefix, code));
+                }
+                if (prefix == 'O') {
+                    int code = stream.read();
+                    return switch (code) {
+                        case 'P' -> keyEvent("F1", false, false, false);
+                        case 'Q' -> keyEvent("F2", false, false, false);
+                        case 'R' -> keyEvent("F3", false, false, false);
+                        case 'S' -> keyEvent("F4", false, false, false);
+                        default -> rawEvent(escapeSequence(first, prefix, code));
+                    };
+                }
+                if (prefix < 0) return null;
+                return rawEvent(escapeSequence(first, prefix, -1));
+            }
+            return decodePlainEvent(first);
+        }
+
+        private String decodePlainEvent(int first) throws IOException {
+            if (first < 0) return null;
+            if (first == '\r' || first == '\n') return keyEvent("ENTER", false, false, false);
+            if (first == '\t') return keyEvent("TAB", false, false, false);
+            if (first == 127 || first == 8) return keyEvent("BACKSPACE", false, false, false);
+            if (first > 0 && first < 27) {
+                return "{\"kind\":\"key\",\"key\":\"CTRL_" + (char) ('A' + first - 1)
+                        + "\",\"shift\":false,\"ctrl\":true,\"alt\":false,\"text\":\"\"}";
+            }
+            if (first < 128) {
+                String text = String.valueOf((char) first);
+                return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(text)
+                        + "\",\"shift\":false,\"ctrl\":false,\"alt\":false,\"text\":\""
+                        + jsonEscape(text) + "\"}";
+            }
+            int length = first >= 0xF0 ? 4 : first >= 0xE0 ? 3 : 2;
+            byte[] bytes = new byte[length];
+            bytes[0] = (byte) first;
+            for (int index = 1; index < length; index++) {
+                int next = stream.read();
+                if (next < 0) return null;
+                bytes[index] = (byte) next;
+            }
+            String text = new String(bytes, StandardCharsets.UTF_8);
+            return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(text)
+                    + "\",\"shift\":false,\"ctrl\":false,\"alt\":false,\"text\":\""
+                    + jsonEscape(text) + "\"}";
+        }
+
+        /** Decodes CSI <param>;<modifier><letter> modified-key sequences. */
+        private String decodeModified(KeyReader input) throws IOException {
+            int modifier = 0;
+            int digit = input.read();
+            while (digit >= '0' && digit <= '9') {
+                modifier = modifier * 10 + (digit - '0');
+                digit = input.read();
+            }
+            if (digit < 0) return rawEvent("ESC[;");
+            return keyEvent(arrowName((char) digit), (modifier & 2) != 0,
+                    (modifier & 4) != 0, (modifier & 8) != 0);
+        }
+
+        private String decodeTilde(int number) {
+            return switch (number) {
+                case 2 -> keyEvent("INSERT", false, false, false);
+                case 3 -> keyEvent("DELETE", false, false, false);
+                case 5 -> keyEvent("PAGE_UP", false, false, false);
+                case 6 -> keyEvent("PAGE_DOWN", false, false, false);
+                case 11, 12, 13, 14, 15 -> keyEvent("F" + (number - 10), false, false, false);
+                case 17, 18, 19, 20, 21, 23, 24 -> keyEvent(
+                        "F" + (number == 17 ? 6 : number == 18 ? 7 : number == 19 ? 8
+                                : number == 20 ? 9 : number == 21 ? 10 : number == 23 ? 11 : 12),
+                        false, false, false);
+                case 28 -> keyEvent("F13", false, false, false);
+                case 29 -> keyEvent("F14", false, false, false);
+                case 31 -> keyEvent("F15", false, false, false);
+                case 32 -> keyEvent("F16", false, false, false);
+                case 33 -> keyEvent("F17", false, false, false);
+                case 34 -> keyEvent("F18", false, false, false);
+                default -> "{\"kind\":\"raw\",\"sequence\":\""
+                        + jsonEscape("ESC[" + number + "~") + "\"}";
+            };
+        }
+
+        private String decodeSgrMouse(KeyReader input) throws IOException {
+            DigitScan button = readDigits(input);
+            if (button.terminator != ';') return rawEvent("ESC[<" + button.digits);
+            DigitScan x = readDigits(input);
+            if (x.terminator != ';') {
+                return rawEvent("ESC[<" + button.digits + ";" + x.digits);
+            }
+            DigitScan y = readDigits(input);
+            int value = button.digits.isEmpty() ? 0 : Integer.parseInt(button.digits);
+            boolean release = y.terminator == 'm';
+            boolean motion = (value & 32) != 0;
+            boolean wheel = (value & 64) != 0;
+            int buttonMask = value & 3;
+            String buttonName = wheel ? "WHEEL" : switch (buttonMask) {
+                case 0 -> "LEFT";
+                case 1 -> "MIDDLE";
+                case 2 -> "RIGHT";
+                default -> "NONE";
+            };
+            String action = wheel ? "SCROLL" : motion ? "MOVE"
+                    : release ? "RELEASE" : "PRESS";
+            int scroll = wheel ? ((value & 1) == 0 ? 1 : -1) : 0;
+            int xValue = x.digits.isEmpty() ? 0 : Integer.parseInt(x.digits);
+            int yValue = y.digits.isEmpty() ? 0 : Integer.parseInt(y.digits);
+            return "{\"kind\":\"mouse\",\"button\":\"" + buttonName
+                    + "\",\"action\":\"" + action + "\",\"scroll\":" + scroll
+                    + ",\"x\":" + xValue + ",\"y\":" + yValue
+                    + ",\"shift\":" + ((value & 4) != 0)
+                    + ",\"alt\":" + ((value & 8) != 0)
+                    + ",\"ctrl\":" + ((value & 16) != 0) + "}";
+        }
+
+        private record DigitScan(String digits, int terminator) {
+        }
+
+        private static DigitScan readDigits(KeyReader input) throws IOException {
+            StringBuilder digits = new StringBuilder();
+            int next = input.read();
+            while (next >= '0' && next <= '9') {
+                digits.append((char) next);
+                next = input.read();
+            }
+            return new DigitScan(digits.toString(), next);
+        }
+
+        private String decodeMouse(KeyReader input, boolean release) throws IOException {
+            int button = input.read() - 32;
+            int x = input.read() - 32;
+            int y = input.read() - 32;
+            String buttonName = switch (button & 3) {
+                case 0 -> "LEFT";
+                case 1 -> "MIDDLE";
+                case 2 -> "RIGHT";
+                default -> "NONE";
+            };
+            return "{\"kind\":\"mouse\",\"button\":\"" + buttonName
+                    + "\",\"action\":\"" + (release ? "RELEASE" : "PRESS")
+                    + "\",\"scroll\":0,\"x\":" + x + ",\"y\":" + y
+                    + ",\"shift\":" + ((button & 4) != 0)
+                    + ",\"alt\":" + ((button & 8) != 0)
+                    + ",\"ctrl\":" + ((button & 16) != 0) + "}";
+        }
+
+        private static String keyEvent(String key, boolean shift, boolean ctrl, boolean alt) {
+            return "{\"kind\":\"key\",\"key\":\"" + key
+                    + "\",\"shift\":" + shift + ",\"ctrl\":" + ctrl
+                    + ",\"alt\":" + alt + ",\"text\":\"\"}";
+        }
+
+        private static String rawEvent(String sequence) {
+            return "{\"kind\":\"raw\",\"sequence\":\"" + jsonEscape(sequence) + "\"}";
+        }
+
+        private static String escapeSequence(int first, int prefix, int code) {
+            StringBuilder sequence = new StringBuilder("ESC");
+            if (prefix == '[') sequence.append('[');
+            else if (prefix == 'O') sequence.append('O');
+            else sequence.append((char) prefix);
+            if (code >= 0) sequence.append((char) code);
+            return sequence.toString();
+        }
+
+        private static String arrowName(char code) {
+            return switch (code) {
+                case 'A' -> "UP";
+                case 'B' -> "DOWN";
+                case 'C' -> "RIGHT";
+                case 'D' -> "LEFT";
+                case 'H' -> "HOME";
+                case 'F' -> "END";
+                default -> String.valueOf(code);
+            };
         }
 
         @Override

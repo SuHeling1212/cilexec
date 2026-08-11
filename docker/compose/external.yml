@@ -3,10 +3,15 @@
 name: cilexec-external
 
 x-cilexec-image: &cilexec-image
-  image: cilexec:${CILEXEC_IMAGE_TAG:-local}
+  image: ${CILEXEC_IMAGE:-cilexec:local}
   build:
     context: .
     dockerfile: Dockerfile
+    target: ${CILEXEC_DOCKER_TARGET:-runtime}
+    args:
+      BUILD_VERSION: ${CILEXEC_BUILD_VERSION:-1.0.0}
+      BUILD_REVISION: ${CILEXEC_BUILD_REVISION:-development}
+      BUILD_SOURCE: ${CILEXEC_BUILD_SOURCE:-https://github.com/SuHeling1212/cilexec}
 
 x-cilexec-environment: &cilexec-environment
   CILEXEC_INSTANCE_NAME: ${CILEXEC_INSTANCE_NAME:-cilexec}
@@ -14,6 +19,8 @@ x-cilexec-environment: &cilexec-environment
   CILEXEC_DATABASE_URL: ${CILEXEC_DATABASE_URL:?set CILEXEC_DATABASE_URL to an external PostgreSQL JDBC URL}
   CILEXEC_DATABASE_CONNECTION_TIMEOUT: ${CILEXEC_DATABASE_CONNECTION_TIMEOUT:-PT10S}
   CILEXEC_DATABASE_VALIDATION_TIMEOUT: ${CILEXEC_DATABASE_VALIDATION_TIMEOUT:-PT5S}
+  CILEXEC_DATABASE_STATEMENT_TIMEOUT: ${CILEXEC_DATABASE_STATEMENT_TIMEOUT:-PT30S}
+  CILEXEC_DATABASE_SSL_ROOT_CERTIFICATE_FILE: /run/cilexec-tls/ca.crt
   CILEXEC_RUNTIME_DATABASE_USER: cilexec_runtime
   CILEXEC_RUNTIME_DATABASE_PASSWORD_FILE: /run/secrets/cilexec_runtime_password
   CILEXEC_RUNTIME_POOL_MAX: ${CILEXEC_RUNTIME_POOL_MAX:-20}
@@ -26,6 +33,10 @@ x-cilexec-environment: &cilexec-environment
   CILEXEC_MIGRATOR_DATABASE_PASSWORD_FILE: /run/secrets/cilexec_migrator_password
   CILEXEC_MIGRATOR_POOL_MAX: ${CILEXEC_MIGRATOR_POOL_MAX:-2}
   CILEXEC_MIGRATOR_POOL_MIN_IDLE: ${CILEXEC_MIGRATOR_POOL_MIN_IDLE:-0}
+  CILEXEC_EXPORTER_DATABASE_USER: cilexec_exporter
+  CILEXEC_EXPORTER_DATABASE_PASSWORD_FILE: /run/secrets/cilexec_exporter_password
+  CILEXEC_EXPORTER_POOL_MAX: ${CILEXEC_EXPORTER_POOL_MAX:-1}
+  CILEXEC_EXPORTER_POOL_MIN_IDLE: ${CILEXEC_EXPORTER_POOL_MIN_IDLE:-0}
   CILEXEC_SCHEDULER_WORKERS: ${CILEXEC_SCHEDULER_WORKERS:-10}
   CILEXEC_LEASE_DURATION: ${CILEXEC_LEASE_DURATION:-PT30S}
   CILEXEC_SCHEDULER_ERROR_BACKOFF: ${CILEXEC_SCHEDULER_ERROR_BACKOFF:-PT0.025S}
@@ -33,13 +44,15 @@ x-cilexec-environment: &cilexec-environment
   CILEXEC_EFFECT_ERROR_BACKOFF: ${CILEXEC_EFFECT_ERROR_BACKOFF:-PT0.025S}
   CILEXEC_SHUTDOWN_GRACE: ${CILEXEC_SHUTDOWN_GRACE:-PT30S}
   CILEXEC_HEALTH_PORT: 8080
+  CILEXEC_HEALTH_DATABASE_PROBE_INTERVAL: ${CILEXEC_HEALTH_DATABASE_PROBE_INTERVAL:-PT10S}
   CILEXEC_MIGRATE_ON_START: "false"
   CILEXEC_TERMINAL_USERNAME: ${CILEXEC_TERMINAL_USERNAME:-local}
   CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS: ${CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS:-}
-  JAVA_TOOL_OPTIONS: ${CILEXEC_JAVA_TOOL_OPTIONS:--Dorg.sqlite.tmpdir=/var/cache/cilexec/sqlite-native -XX:MaxRAMPercentage=75.0}
+  CILEXEC_FCL_EXEC_ALLOWLIST: ${CILEXEC_FCL_EXEC_ALLOWLIST:-}
+  JAVA_TOOL_OPTIONS: ${CILEXEC_JAVA_TOOL_OPTIONS:--Dorg.sqlite.tmpdir=/var/cache/cilexec/sqlite-native -XX:MaxRAMPercentage=75.0 -XX:MaxMetaspaceSize=256m}
 
 x-cilexec-hardening: &cilexec-hardening
-  user: "10001:10001"
+  user: "${CILEXEC_CONTAINER_UID:-10001}:${CILEXEC_CONTAINER_GID:-10001}"
   read_only: true
   cap_drop: ["ALL"]
   security_opt: ["no-new-privileges:true"]
@@ -54,11 +67,13 @@ services:
       <<: *cilexec-environment
     secrets:
       - cilexec_migrator_password
+    volumes:
+      - ${CILEXEC_POSTGRES_CA_FILE:?set CILEXEC_POSTGRES_CA_FILE}:/run/cilexec-tls/ca.crt:ro
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=64m,uid=${CILEXEC_CONTAINER_UID:-10001},gid=${CILEXEC_CONTAINER_GID:-10001}
     healthcheck:
       disable: true
-    mem_limit: ${CILEXEC_MIGRATE_MEMORY_LIMIT:-768m}
+    mem_limit: ${CILEXEC_MIGRATE_MEMORY_LIMIT:-1024m}
     pids_limit: ${CILEXEC_JAVA_PIDS_LIMIT:-256}
 
   cilexec:
@@ -74,14 +89,16 @@ services:
     secrets:
       - cilexec_runtime_password
       - cilexec_effect_worker_password
+    volumes:
+      - ${CILEXEC_POSTGRES_CA_FILE:?set CILEXEC_POSTGRES_CA_FILE}:/run/cilexec-tls/ca.crt:ro
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
-      - /var/cache/cilexec/packages:rw,noexec,nosuid,size=${CILEXEC_PACKAGE_CACHE_SIZE:-256m},uid=10001,gid=10001
-      - /var/cache/cilexec/sqlite-native:rw,exec,nosuid,size=32m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=160m,uid=${CILEXEC_CONTAINER_UID:-10001},gid=${CILEXEC_CONTAINER_GID:-10001}
+      - /var/cache/cilexec/packages:rw,noexec,nosuid,size=${CILEXEC_PACKAGE_CACHE_SIZE:-256m},uid=${CILEXEC_CONTAINER_UID:-10001},gid=${CILEXEC_CONTAINER_GID:-10001}
+      - /var/cache/cilexec/sqlite-native:rw,exec,nosuid,size=32m,uid=${CILEXEC_CONTAINER_UID:-10001},gid=${CILEXEC_CONTAINER_GID:-10001}
     depends_on:
       migrate:
         condition: service_completed_successfully
-    mem_limit: ${CILEXEC_RUNTIME_MEMORY_LIMIT:-1536m}
+    mem_limit: ${CILEXEC_RUNTIME_MEMORY_LIMIT:-2048m}
     pids_limit: ${CILEXEC_JAVA_PIDS_LIMIT:-256}
 
   export:
@@ -92,17 +109,21 @@ services:
     environment:
       <<: *cilexec-environment
     secrets:
-      - cilexec_migrator_password
+      - cilexec_exporter_password
     volumes:
       - type: bind
         source: ${CILEXEC_EXPORT_DIRECTORY:-./exports}
         target: /exports
+      - type: bind
+        source: ${CILEXEC_POSTGRES_CA_FILE:?set CILEXEC_POSTGRES_CA_FILE}
+        target: /run/cilexec-tls/ca.crt
+        read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
-      - /var/cache/cilexec/sqlite-native:rw,exec,nosuid,size=32m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=64m,uid=${CILEXEC_CONTAINER_UID:-10001},gid=${CILEXEC_CONTAINER_GID:-10001}
+      - /var/cache/cilexec/sqlite-native:rw,exec,nosuid,size=32m,uid=${CILEXEC_CONTAINER_UID:-10001},gid=${CILEXEC_CONTAINER_GID:-10001}
     healthcheck:
       disable: true
-    mem_limit: ${CILEXEC_EXPORT_MEMORY_LIMIT:-1536m}
+    mem_limit: ${CILEXEC_EXPORT_MEMORY_LIMIT:-2048m}
     pids_limit: ${CILEXEC_JAVA_PIDS_LIMIT:-256}
     depends_on:
       migrate:
@@ -115,3 +136,5 @@ secrets:
     file: ${CILEXEC_RUNTIME_PASSWORD_FILE:-./docker/secrets/cilexec-runtime-password}
   cilexec_effect_worker_password:
     file: ${CILEXEC_EFFECT_PASSWORD_FILE:-./docker/secrets/cilexec-effect-worker-password}
+  cilexec_exporter_password:
+    file: ${CILEXEC_EXPORTER_PASSWORD_FILE:-./docker/secrets/cilexec-exporter-password}

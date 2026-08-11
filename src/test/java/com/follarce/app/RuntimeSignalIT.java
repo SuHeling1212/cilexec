@@ -1,5 +1,6 @@
 package com.follarce.app;
 
+import com.follarce.terminal.TerminalAccessService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -21,6 +23,7 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.nio.charset.StandardCharsets;
 
@@ -28,31 +31,27 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Sends a real SIGTERM to the production entry point and verifies durable clean shutdown. */
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 class RuntimeSignalIT {
     private static final String PASSWORD = "runtime-signal-test-password";
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
-            "postgres:18.0-alpine3.22");
+            System.getProperty("cilexec.test.postgres.image", "postgres:17.10-alpine3.23"));
 
     @TempDir
     Path temporaryDirectory;
 
     @BeforeAll
     static void migrate() throws Exception {
-        try (Connection connection = adminConnection(); Statement statement = connection.createStatement()) {
-            statement.execute("CREATE ROLE cilexec_owner NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_migrator LOGIN CREATEROLE PASSWORD '" + PASSWORD + "'");
-            statement.execute("CREATE ROLE cilexec_runtime LOGIN PASSWORD '" + PASSWORD + "'");
-            statement.execute("CREATE ROLE cilexec_effect_worker LOGIN PASSWORD '" + PASSWORD + "'");
-            statement.execute("CREATE ROLE cilexec_readonly LOGIN PASSWORD '" + PASSWORD + "'");
-            statement.execute("GRANT cilexec_owner TO cilexec_migrator");
-            statement.execute("ALTER DATABASE \"" + connection.getCatalog().replace("\"", "\"\"")
-                    + "\" OWNER TO cilexec_owner");
+        try (Connection connection = adminConnection()) {
+            com.follarce.persistence.postgres.PostgresTestBootstrap.createServiceRoles(
+                    connection, PASSWORD);
         }
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(POSTGRES.getJdbcUrl(),
+                        com.follarce.persistence.postgres.PostgresTestBootstrap.MIGRATOR_ROLE,
+                        PASSWORD)
                 .locations("classpath:db/migration")
                 .defaultSchema("flyway")
                 .schemas("flyway")
@@ -72,6 +71,7 @@ class RuntimeSignalIT {
     void sigtermRunsTheBoundedShutdownAndMarksTheBootClean() throws Exception {
         Path secret = temporaryDirectory.resolve("database.password");
         Files.writeString(secret, PASSWORD);
+        makePrivate(secret);
         Path output = temporaryDirectory.resolve("runtime.log");
         int healthPort = availablePort();
         ProcessBuilder builder = new ProcessBuilder(
@@ -134,6 +134,7 @@ class RuntimeSignalIT {
     void defaultEntryPointServesThePersistentFclTerminalAndShutsDownOnCommand() throws Exception {
         Path secret = temporaryDirectory.resolve("terminal.password");
         Files.writeString(secret, PASSWORD);
+        makePrivate(secret);
         Path output = temporaryDirectory.resolve("terminal.log");
         ProcessBuilder builder = new ProcessBuilder(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
@@ -147,7 +148,7 @@ class RuntimeSignalIT {
 
         Process terminal = builder.start();
         try {
-            String alicePassword = "alice123";
+            String alicePassword = "alice-password";
             String commands = PASSWORD + "\n" + PASSWORD + "\n"
                     + "login\nlocal\nwrong-password-value\n"
                     + "login\nlocal\n" + PASSWORD + "\n"
@@ -172,7 +173,8 @@ class RuntimeSignalIT {
                     + "JOIN auth.user_capability assignment USING (user_id) "
                     + "JOIN auth.capability capability USING (capability_id) "
                     + "WHERE account.username='local' AND capability.capability_key='system_admin'"));
-            assertEquals(9, count("SELECT count(*) FROM auth.user_account account "
+            assertEquals(TerminalAccessService.USER_CAPABILITIES.size(), count(
+                    "SELECT count(*) FROM auth.user_account account "
                     + "JOIN auth.user_capability assignment USING (user_id) "
                     + "WHERE account.username='alice'"));
             assertEquals(0, count("SELECT count(*) FROM auth.user_account account "
@@ -266,6 +268,11 @@ class RuntimeSignalIT {
         try (ServerSocket socket = new ServerSocket(0)) {
             return socket.getLocalPort();
         }
+    }
+
+    private static void makePrivate(Path secret) throws IOException {
+        Files.setPosixFilePermissions(secret, Set.of(
+                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
     }
 
     private static String diagnostic(Path output) {

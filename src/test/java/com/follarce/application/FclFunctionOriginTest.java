@@ -60,7 +60,7 @@ class FclFunctionOriginTest {
                 Instant.now());
         persistence.packages.releases.put(release.packageHash(), release);
         persistence.packages.saveProcessBinding(new ProcessPackageBinding(
-                process.identity().processUid(), "e", UUID.randomUUID(),
+                process.identity().processUid(), "e",
                 release.packageHash(), Instant.now()));
 
         FclContinuation continuation = new FclContinuation();

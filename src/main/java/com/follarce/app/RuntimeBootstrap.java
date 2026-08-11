@@ -10,6 +10,7 @@ import com.follarce.effect.BuiltinEffectHandlers;
 import com.follarce.domain.port.Isolation;
 import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.health.HealthServer;
+import com.follarce.health.HealthMonitor;
 import com.follarce.health.HealthState;
 import com.follarce.persistence.postgres.connection.ControlLock;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
@@ -57,7 +58,9 @@ public final class RuntimeBootstrap {
         ProductionHooks hooks = new ProductionHooks(config, buildInfo,
                 null, productionEffectHandlers(), settings);
         RuntimeLifecycle lifecycle = new RuntimeLifecycle(hooks, config.shutdownGrace());
-        hooks.runtimeShutdown = () -> lifecycle.shutdown("administrator terminal shutdown");
+        hooks.runtimeShutdown = () -> Thread.ofPlatform()
+                .name("cilexec-administrator-shutdown")
+                .start(() -> lifecycle.shutdown("administrator terminal shutdown"));
         return lifecycle;
     }
 
@@ -99,6 +102,7 @@ public final class RuntimeBootstrap {
         private volatile ControlLock control;
         private volatile RuntimeMetadataStore.BootIdentity boot;
         private volatile HealthServer healthServer;
+        private volatile HealthMonitor healthMonitor;
         private volatile SchedulerService scheduler;
         private volatile PostgresWorkListener workListener;
         private volatile HikariDataSource effectDataSource;
@@ -120,6 +124,7 @@ public final class RuntimeBootstrap {
             this.buildInfo = Objects.requireNonNull(buildInfo, "buildInfo");
             this.effectHandlers = List.copyOf(effectHandlers);
             this.terminalSettings = terminalSettings;
+            health.terminalEnabled(terminalSettings != null);
             runtimeDataSource = DataSourceFactory.create(config.runtimeDatabase());
             runtimeTransactions = new JdbcTransactionExecutor(runtimeDataSource);
             processHandler = handlerFactory == null
@@ -191,6 +196,15 @@ public final class RuntimeBootstrap {
         public void startHealth() {
             healthServer = new HealthServer(config.healthPort(), health);
             healthServer.start();
+            DatabaseHealth database = new DatabaseHealth(runtimeDataSource);
+            healthMonitor = new HealthMonitor(health, database::isAvailable,
+                    () -> scheduler != null && scheduler.isRunning(),
+                    () -> effectWorkers != null && effectWorkers.isRunning(),
+                    () -> timerLoop != null && timerLoop.isRunning(),
+                    () -> workListener != null && workListener.isRunning(),
+                    () -> terminalServer != null && terminalServer.isRunning(),
+                    config.healthDatabaseProbeInterval());
+            healthMonitor.start();
         }
 
         @Override
@@ -207,6 +221,7 @@ public final class RuntimeBootstrap {
                         if (current != null) current.wakeInterrupt();
                     }, requireFence());
             workListener.start();
+            health.workListener(true);
             scheduler.start();
             health.schedulerLoop(true);
         }
@@ -221,6 +236,7 @@ public final class RuntimeBootstrap {
                     config.effectErrorBackoff(), Clock.systemUTC(), requireFence(),
                     this::wakeScheduler);
             effectWorkers.start();
+            health.effectWorkers(true);
         }
 
         @Override
@@ -248,6 +264,7 @@ public final class RuntimeBootstrap {
             }, () -> timers.deleteFiredExpired(Instant.now().minus(
                     java.time.Duration.ofMinutes(1))), this::nextMaintenanceAt, requireFence());
             timerLoop.start();
+            health.timerLoop(true);
         }
 
         private Optional<Instant> nextMaintenanceAt() {
@@ -299,11 +316,13 @@ public final class RuntimeBootstrap {
                             }),
                     terminalSettings.username());
             terminalServer.start();
+            health.terminalServer(true);
         }
 
         @Override
         public synchronized void stopScheduler() {
             health.schedulerLoop(false);
+            health.workListener(false);
             if (workListener != null) {
                 workListener.close();
                 workListener = null;
@@ -316,6 +335,7 @@ public final class RuntimeBootstrap {
 
         @Override
         public synchronized void stopEffectWorkers() {
+            health.effectWorkers(false);
             if (effectWorkers != null) {
                 effectWorkers.close();
                 effectWorkers = null;
@@ -324,6 +344,7 @@ public final class RuntimeBootstrap {
 
         @Override
         public synchronized void stopTimerLoop() {
+            health.timerLoop(false);
             if (timerLoop != null) {
                 timerLoop.close();
                 timerLoop = null;
@@ -332,6 +353,11 @@ public final class RuntimeBootstrap {
 
         @Override
         public synchronized void stopHealth() {
+            if (healthMonitor != null) {
+                healthMonitor.close();
+                healthMonitor = null;
+            }
+            health.terminalServer(false);
             if (terminalServer != null) {
                 terminalServer.close();
                 terminalServer = null;

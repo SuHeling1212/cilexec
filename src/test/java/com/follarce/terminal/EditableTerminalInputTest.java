@@ -17,6 +17,47 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EditableTerminalInputTest {
     @Test
+    void decodesKeyEventsWithModifiersFunctionKeysAndPrintableText() throws Exception {
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(("\u001b[1;5A\u001b[2~\u001b[11~x"
+                        + "\u001b[1;2D").getBytes(StandardCharsets.UTF_8)), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+        assertEquals("{\"kind\":\"key\",\"key\":\"UP\",\"shift\":false,\"ctrl\":true,"
+                + "\"alt\":false,\"text\":\"\"}", input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"key\",\"key\":\"INSERT\",\"shift\":false,\"ctrl\":false,"
+                + "\"alt\":false,\"text\":\"\"}", input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"key\",\"key\":\"F1\",\"shift\":false,\"ctrl\":false,"
+                + "\"alt\":false,\"text\":\"\"}", input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"key\",\"key\":\"x\",\"shift\":false,\"ctrl\":false,"
+                + "\"alt\":false,\"text\":\"x\"}", input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"key\",\"key\":\"LEFT\",\"shift\":true,\"ctrl\":false,"
+                + "\"alt\":false,\"text\":\"\"}", input.readKeyEvent(output));
+    }
+
+    @Test
+    void decodesMouseFocusPasteAndUnknownEscapeEvents() throws Exception {
+        byte[] source = ("\u001b[<0;5;3M\u001b[<65;7;9m\u001b[I"
+                + "\u001b[200~pasted \r\ntext\u001b[201~\u001b[1;9A")
+                .getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+        assertEquals("{\"kind\":\"mouse\",\"button\":\"LEFT\",\"action\":\"PRESS\","
+                + "\"scroll\":0,\"x\":5,\"y\":3,\"shift\":false,\"alt\":false,\"ctrl\":false}",
+                input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"mouse\",\"button\":\"WHEEL\",\"action\":\"SCROLL\","
+                + "\"scroll\":-1,\"x\":7,\"y\":9,\"shift\":false,\"alt\":false,\"ctrl\":false}",
+                input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"focus\",\"focus\":true}", input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"paste\",\"text\":\"pasted \\ntext\"}",
+                input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"key\",\"key\":\"UP\",\"shift\":false,\"ctrl\":false,"
+                + "\"alt\":true,\"text\":\"\"}", input.readKeyEvent(output));
+    }
+
+    @Test
     void ansiFormattingInPromptDoesNotShiftThePhysicalCursor() throws Exception {
         byte[] source = "ab\u001b[DX\n".getBytes(StandardCharsets.UTF_8);
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(

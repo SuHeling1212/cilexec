@@ -79,7 +79,19 @@ public final class PostgresWorkListener implements AutoCloseable {
         properties.setProperty("tcpKeepAlive", "true");
         // connectTimeout bounds the TCP connect and handshake; socketTimeout is deliberately
         // absent because the listener relies on an indefinite notification read.
-        properties.setProperty("connectTimeout", "15");
+        long connectSeconds = Math.max(1,
+                (database.connectionTimeout().toMillis() + 999) / 1_000);
+        properties.setProperty("connectTimeout", Long.toString(connectSeconds));
+        properties.setProperty("options", "-c statement_timeout="
+                + database.statementTimeout().toMillis()
+                + " -c lock_timeout=5000 -c idle_in_transaction_session_timeout=60000");
+        if (database.verifyFullTls()) {
+            properties.setProperty("sslmode", "verify-full");
+            properties.setProperty("sslrootcert",
+                    database.sslRootCertificateFile().orElseThrow().toString());
+        } else {
+            properties.setProperty("sslmode", "disable");
+        }
         try (com.follarce.config.DockerSecretLoader.SecretValue secret =
                      com.follarce.config.DockerSecretLoader.read(database.passwordFile())) {
             properties.setProperty("password", secret.exposeForDriver());

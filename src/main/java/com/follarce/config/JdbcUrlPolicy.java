@@ -23,11 +23,21 @@ public final class JdbcUrlPolicy {
             throw new IllegalArgumentException(
                     "PostgreSQL JDBC URL must contain a host and database without user info");
         }
-        rejectEmbeddedCredentials(uri.getRawQuery());
+        rejectEmbeddedConnectionSettings(uri.getRawQuery());
         return value;
     }
 
-    private static void rejectEmbeddedCredentials(String query) {
+    public static boolean requiresVerifiedTls(String value) {
+        String checked = requirePostgreSql(value);
+        java.net.URI uri = java.net.URI.create(checked.substring("jdbc:".length()));
+        String host = uri.getHost().toLowerCase(java.util.Locale.ROOT);
+        return !host.equals("localhost")
+                && !host.equals("127.0.0.1")
+                && !host.equals("::1")
+                && !host.equals("[::1]");
+    }
+
+    private static void rejectEmbeddedConnectionSettings(String query) {
         if (query == null || query.isBlank()) return;
         for (String parameter : query.split("&")) {
             String rawName = parameter.split("=", 2)[0];
@@ -39,10 +49,11 @@ public final class JdbcUrlPolicy {
                 throw new IllegalArgumentException("PostgreSQL JDBC URL query is invalid", invalid);
             }
             if (java.util.Set.of("user", "password", "sslpassword", "loggerfile",
-                    "options", "sslcert", "sslkey", "sslrootcert")
+                    "options", "ssl", "sslmode", "sslfactory", "sslfactoryarg",
+                    "sslhostnameverifier", "sslcert", "sslkey", "sslrootcert")
                     .contains(name)) {
                 throw new IllegalArgumentException(
-                        "PostgreSQL credentials and output paths must use dedicated configuration");
+                        "PostgreSQL credentials, TLS settings, and output paths must use dedicated configuration");
             }
         }
     }

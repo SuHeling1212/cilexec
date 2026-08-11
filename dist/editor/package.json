@@ -1,23 +1,46 @@
 {
   "namespace": "cilexec",
   "name": "editor",
-  "version": "1.0.13",
+  "version": "1.1.1",
   "languageVersion": "fcl-1",
   "kind": "application",
   "modules": [
-    {"name": "main", "path": "main.fcl"}
+    {
+      "name": "main",
+      "path": "main.fcl"
+    }
   ],
   "resources": [],
   "dependencies": [],
   "entrypoints": [
-    {"name": "run", "module": "main", "function": "run"}
+    {
+      "name": "run",
+      "module": "main",
+      "function": "run"
+    }
   ],
   "exports": [
-    {"name": "open", "module": "main", "symbol": "open"}
+    {
+      "name": "open",
+      "module": "main",
+      "symbol": "open"
+    }
   ],
   "capabilities": [
-    {"key": "vfs.read", "required": true, "rationale": "Open existing VFS text files"},
-    {"key": "vfs.write", "required": true, "rationale": "Save edited VFS text files"},
-    {"key": "terminal.raw_input", "required": true, "rationale": "Read interactive editor keys"}
+    {
+      "key": "vfs.read",
+      "required": true,
+      "rationale": "Open existing VFS text files"
+    },
+    {
+      "key": "vfs.write",
+      "required": true,
+      "rationale": "Save edited VFS text files"
+    },
+    {
+      "key": "terminal.raw_input",
+      "required": true,
+      "rationale": "Read interactive editor keys"
+    }
   ]
 }

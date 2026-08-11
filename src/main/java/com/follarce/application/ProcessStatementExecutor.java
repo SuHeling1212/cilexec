@@ -30,7 +30,7 @@ import com.follarce.scheduler.ClaimedProcessHandler;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
-import com.follarce.package_manager.PackageEnvironments;
+import com.follarce.package_manager.PackageManager;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -683,35 +683,19 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     "include requires a compiled source dependency; unresolved include: " + target);
             return;
         }
-        Optional<ProcessPackageBinding> pinned = transaction.packages().findProcessBinding(
-                process.identity().processUid(), importName(wait, target));
-        if (pinned.isEmpty()) {
-            var environment = PackageEnvironments.ensureDefault(transaction.packages(),
-                    process.ownerId(), now);
-            Optional<PackageRelease> release = isSha256(target)
-                    ? directRelease(transaction, target)
-                    : bindingRelease(transaction, environment.environmentId(), target);
-            if (release.isEmpty()) {
-                continuation.rejectDirective("Unresolved package import: " + target);
-                return;
-            }
-            ProcessPackageBinding resolved = new ProcessPackageBinding(
-                    process.identity().processUid(), importName(wait, target),
-                    environment.environmentId(),
-                    release.orElseThrow().packageHash(), now);
-            transaction.packages().saveProcessBinding(resolved);
+        Optional<PackageRelease> release = directRelease(transaction, target);
+        if (release.isEmpty()) {
+            continuation.rejectDirective("Unresolved package import: " + target);
+            return;
         }
+        // Last-wins rebinding: re-importing the same alias in the same process re-pins it to
+        // the newest hash. Already-linked programs keep the module they were linked with;
+        // the pin only affects future compilation.
+        ProcessPackageBinding resolved = new ProcessPackageBinding(
+                process.identity().processUid(), importName(wait, target),
+                release.orElseThrow().packageHash(), now);
+        transaction.packages().saveProcessBinding(resolved);
         continuation.clearWait();
-    }
-
-    static Optional<PackageRelease> bindingRelease(
-            com.follarce.domain.port.TransactionContext transaction,
-            UUID environmentId,
-            String target
-    ) {
-        if (!target.matches("[A-Za-z_][A-Za-z0-9_]{0,127}")) return Optional.empty();
-        return transaction.packages().findBinding(environmentId, target)
-                .flatMap(binding -> transaction.packages().findRelease(binding.packageHash()));
     }
 
     static Optional<PackageRelease> directRelease(

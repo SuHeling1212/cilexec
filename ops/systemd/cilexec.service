@@ -1,0 +1,46 @@
+[Unit]
+Description=CilExec runtime
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cilexec
+Group=cilexec
+EnvironmentFile=/etc/cilexec/cilexec.env
+Environment=JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75.0
+Environment=CILEXEC_RUNTIME_DATABASE_PASSWORD_FILE=/run/credentials/cilexec.service/cilexec_runtime_password
+Environment=CILEXEC_EFFECT_DATABASE_PASSWORD_FILE=/run/credentials/cilexec.service/cilexec_effect_worker_password
+LoadCredential=cilexec_runtime_password:/etc/cilexec/secrets/cilexec_runtime_password
+LoadCredential=cilexec_effect_worker_password:/etc/cilexec/secrets/cilexec_effect_worker_password
+ExecStart=/usr/bin/java -jar /opt/cilexec/cilexec-app.jar terminal
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+SuccessExitStatus=143
+UMask=0077
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/cilexec /opt/cilexec
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cilexec
+
+[Install]
+WantedBy=multi-user.target

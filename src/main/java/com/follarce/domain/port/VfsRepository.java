@@ -19,6 +19,11 @@ public interface VfsRepository {
 
     Optional<StoredObject> findObject(ObjectHash objectHash);
 
+    /** Deletes bounded, aged content that no durable root can reach. */
+    default long garbageCollectObjects(UUID administratorId, int limit) {
+        return 0L;
+    }
+
     /** Logical file size; chunked manifests may be much larger than one JVM array. */
     default long logicalObjectSize(ObjectHash objectHash) {
         return findObject(objectHash).orElseThrow(() ->

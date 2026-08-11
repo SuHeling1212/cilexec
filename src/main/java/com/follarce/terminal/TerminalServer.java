@@ -165,8 +165,7 @@ public final class TerminalServer implements AutoCloseable {
     }
 
     private void serve(Socket client) {
-        Thread session = Thread.currentThread();
-        sessionThreads.add(session);
+        sessionThreads.add(Thread.currentThread());
         PrintWriter output = null;
         try (client) {
             output = new LockedPrintWriter(new OutputStreamWriter(client.getOutputStream(),
@@ -195,7 +194,7 @@ public final class TerminalServer implements AutoCloseable {
                         + "timeout)");
                 sessionOutput.flush();
             });
-            transported.onDisconnect(session::interrupt);
+            transported.onDisconnect(transported::interruptForeground);
             TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
             new TerminalAccessConsole(input, output, access, account -> {
                         TerminalControl control = controls.apply(account);
@@ -439,6 +438,15 @@ public final class TerminalServer implements AutoCloseable {
 
         private int width() {
             return size.width();
+        }
+
+        private void interruptForeground() {
+            if (ownerId == null) return;
+            try {
+                interrupt.getAsBoolean();
+            } catch (RuntimeException ignored) {
+                // Disconnect cleanup must not prevent the queued end-of-stream from being read.
+            }
         }
 
         @Override

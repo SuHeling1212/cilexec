@@ -1,0 +1,35 @@
+[Unit]
+Description=CilExec one-shot database migration
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cilexec-migrate
+Group=cilexec-migrate
+EnvironmentFile=/etc/cilexec/cilexec.env
+Environment=CILEXEC_MIGRATOR_DATABASE_PASSWORD_FILE=/run/credentials/cilexec-migrate.service/cilexec_migrator_password
+LoadCredential=cilexec_migrator_password:/etc/cilexec/secrets/cilexec_migrator_password
+ExecStart=/usr/bin/java -jar /opt/cilexec/cilexec-app.jar migrate
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/cilexec /opt/cilexec
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cilexec-migrate

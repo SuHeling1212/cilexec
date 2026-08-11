@@ -259,15 +259,17 @@ public final class RecoveryCoordinator {
 
     /**
      * Only failures that are guaranteed to repeat identically are treated as durable
-     * corruption. IllegalStateException is deliberately excluded: a one-off state race
-     * during recovery must not sentence a process to permanent FAILED_RECOVERY — a
-     * genuinely corrupt continuation surfaces again as a visible FCL failure when the
-     * process next runs.
+     * corruption. Projection disagreement is deterministic because recovery already holds
+     * the process row lock; unrelated IllegalStateException failures remain retryable.
      */
     private static boolean isDeterministicCorruption(RuntimeException failure) {
         return failure instanceof IllegalArgumentException
                 || failure instanceof ClassCastException
-                || failure instanceof com.google.gson.JsonParseException;
+                || failure instanceof com.google.gson.JsonParseException
+                || (failure instanceof IllegalStateException
+                    && failure.getMessage() != null
+                    && failure.getMessage().toLowerCase(java.util.Locale.ROOT)
+                            .contains("projection"));
     }
 
     private static int execute(Connection connection, String sql, Object... values)

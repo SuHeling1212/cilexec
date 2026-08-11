@@ -65,20 +65,17 @@ ALTER TABLE ipc.swap_value FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY swap_pool_owner_control ON ipc.swap_pool TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY swap_pool_runtime_control ON ipc.swap_pool TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY swap_pool_readonly_control ON ipc.swap_pool FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY swap_pool_principal ON ipc.swap_pool TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id())
     WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 CREATE POLICY swap_value_owner_control ON ipc.swap_value TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY swap_value_runtime_control ON ipc.swap_value TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY swap_value_readonly_control ON ipc.swap_value FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY swap_value_principal ON ipc.swap_value TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id())
     WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ipc.swap_pool, ipc.swap_value TO cilexec_runtime;
-GRANT SELECT ON ipc.swap_pool, ipc.swap_value TO cilexec_readonly;
 
 INSERT INTO meta.table_security_classification
     (schema_name, table_name, classification, owner_column, rationale)
@@ -114,13 +111,11 @@ ALTER TABLE vfs.node_lock ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vfs.node_lock FORCE ROW LEVEL SECURITY;
 CREATE POLICY node_lock_owner_control ON vfs.node_lock TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY node_lock_runtime_control ON vfs.node_lock TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY node_lock_readonly_control ON vfs.node_lock FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY node_lock_principal ON vfs.node_lock TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id())
     WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON vfs.node_lock TO cilexec_runtime, PUBLIC;
-GRANT SELECT ON vfs.node_lock TO cilexec_readonly;
 
 INSERT INTO meta.table_security_classification
     (schema_name, table_name, classification, owner_column, rationale)

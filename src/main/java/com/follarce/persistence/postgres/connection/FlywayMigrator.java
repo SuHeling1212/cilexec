@@ -36,6 +36,8 @@ public final class FlywayMigrator {
                     .validateMigrationNaming(true)
                     .validateOnMigrate(true)
                     .cleanDisabled(true)
+                    .initSql("SET statement_timeout = "
+                            + database.statementTimeout().toMillis())
                     .baselineOnMigrate(false)
                     .load();
         }

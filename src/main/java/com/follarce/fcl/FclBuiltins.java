@@ -321,6 +321,54 @@ public final class FclBuiltins {
                     return "\u001b[2K\r";
                 })
                 .register("term", "inverse", args -> ansiWrap(args, "inverse", "7"))
+                .register("term", "underline", args -> ansiWrap(args, "underline", "4"))
+                .register("term", "strikethrough", args -> ansiWrap(args, "strikethrough", "9"))
+                .register("term", "alternate", args -> {
+                    arity(args, 1, "alternate");
+                    boolean active = truthy(args.getFirst(), "alternate");
+                    return active ? "\u001b[?1049h" : "\u001b[?1049l";
+                })
+                .register("term", "mouse", args -> {
+                    arity(args, 1, "mouse");
+                    boolean active = truthy(args.getFirst(), "mouse");
+                    return active ? "\u001b[?1002h\u001b[?1006h"
+                            : "\u001b[?1002l\u001b[?1006l";
+                })
+                .register("term", "paste", args -> {
+                    arity(args, 1, "paste");
+                    boolean active = truthy(args.getFirst(), "paste");
+                    return active ? "\u001b[?2004h" : "\u001b[?2004l";
+                })
+                .register("term", "focus", args -> {
+                    arity(args, 1, "focus");
+                    boolean active = truthy(args.getFirst(), "focus");
+                    return active ? "\u001b[?1004h" : "\u001b[?1004l";
+                })
+                .register("term", "bg", args -> {
+                    arity(args, 2, "bg");
+                    return ansiBackground(stringAt(args, 0, "bg"))
+                            + String.valueOf(args.get(1)) + "\u001b[0m";
+                })
+                .register("term", "color256", args -> {
+                    arity(args, 2, "color256");
+                    return ansiPalette(stringAt(args, 0, "color256"), "38")
+                            + String.valueOf(args.get(1)) + "\u001b[0m";
+                })
+                .register("term", "bg256", args -> {
+                    arity(args, 2, "bg256");
+                    return ansiPalette(stringAt(args, 0, "bg256"), "48")
+                            + String.valueOf(args.get(1)) + "\u001b[0m";
+                })
+                .register("term", "trueColor", args -> {
+                    arity(args, 4, "trueColor");
+                    return ansiRgb(rgb(args, "trueColor"), "38")
+                            + String.valueOf(args.get(3)) + "\u001b[0m";
+                })
+                .register("term", "bgTrueColor", args -> {
+                    arity(args, 4, "bgTrueColor");
+                    return ansiRgb(rgb(args, "bgTrueColor"), "48")
+                            + String.valueOf(args.get(3)) + "\u001b[0m";
+                })
                 .register("term", "hideCursor", args -> {
                     arity(args, 0, "hideCursor");
                     return "\u001b[?25l";
@@ -389,6 +437,66 @@ public final class FclBuiltins {
             case "white" -> "\u001b[37m";
             default -> throw new FclRuntimeException("Unknown terminal color: " + name);
         };
+    }
+
+    private static String ansiBackground(String name) {
+        return switch (name.toLowerCase(java.util.Locale.ROOT)) {
+            case "black" -> "\u001b[40m";
+            case "red" -> "\u001b[41m";
+            case "green" -> "\u001b[42m";
+            case "yellow" -> "\u001b[43m";
+            case "blue" -> "\u001b[44m";
+            case "magenta" -> "\u001b[45m";
+            case "cyan" -> "\u001b[46m";
+            case "white" -> "\u001b[47m";
+            default -> throw new FclRuntimeException("Unknown terminal color: " + name);
+        };
+    }
+
+    private static String ansiPalette(String indexText, String prefix) {
+        long index = integral(parseValue(indexText), "palette index");
+        if (index < 0 || index > 255) {
+            throw new FclRuntimeException("Palette index must be between 0 and 255");
+        }
+        return "\u001b[" + prefix + ";5;" + index + "m";
+    }
+
+    private static String ansiRgb(int[] components, String prefix) {
+        return "\u001b[" + prefix + ";2;" + components[0] + ";" + components[1]
+                + ";" + components[2] + "m";
+    }
+
+    private static int[] rgb(List<Object> args, String function) {
+        int[] components = new int[3];
+        for (int index = 0; index < 3; index++) {
+            long value = integral(args.get(index), function + " component");
+            if (value < 0 || value > 255) {
+                throw new FclRuntimeException(function
+                        + " components must be between 0 and 255");
+            }
+            components[index] = (int) value;
+        }
+        return components;
+    }
+
+    private static boolean truthy(Object value, String function) {
+        if (value instanceof Boolean flag) return flag;
+        if (value instanceof Long number) return number != 0;
+        if (value instanceof String text) {
+            return text.equalsIgnoreCase("true") || text.equals("1");
+        }
+        throw new FclRuntimeException(function + " expects a boolean");
+    }
+
+    private static Object parseValue(Object value) {
+        if (value instanceof String text) {
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException ignored) {
+                return value;
+            }
+        }
+        return value;
     }
 
     private static String normalizePath(String source) {

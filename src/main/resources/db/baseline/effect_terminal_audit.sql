@@ -126,8 +126,6 @@ BEGIN
             relation_name || '_runtime_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON effect.%I TO cilexec_effect_worker USING (true) WITH CHECK (true)',
             relation_name || '_worker_control', relation_name);
-        EXECUTE format('CREATE POLICY %I ON effect.%I FOR SELECT TO cilexec_readonly USING (true)',
-            relation_name || '_readonly_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON effect.%I FOR SELECT TO PUBLIC USING (owner_id = auth.current_cilexec_user_id())',
             relation_name || '_principal', relation_name);
         EXECUTE format('CREATE POLICY %I ON effect.%I FOR INSERT TO PUBLIC WITH CHECK (owner_id = auth.current_cilexec_user_id())',
@@ -139,7 +137,6 @@ $rls$;
 -- name: baseline.effect_grants
 GRANT SELECT, INSERT, UPDATE ON effect.effect, effect.attempt TO cilexec_runtime;
 GRANT SELECT, INSERT, UPDATE ON effect.effect, effect.attempt TO cilexec_effect_worker;
-GRANT SELECT ON effect.effect, effect.attempt TO cilexec_readonly;
 
 COMMENT ON TABLE effect.effect IS 'Durable request/result boundary for every database-external operation';
 
@@ -214,8 +211,6 @@ BEGIN
             relation_name || '_owner_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON terminal.%I TO cilexec_runtime USING (true) WITH CHECK (true)',
             relation_name || '_runtime_control', relation_name);
-        EXECUTE format('CREATE POLICY %I ON terminal.%I FOR SELECT TO cilexec_readonly USING (true)',
-            relation_name || '_readonly_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON terminal.%I TO PUBLIC USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id())',
             relation_name || '_principal', relation_name);
     END LOOP;
@@ -224,7 +219,6 @@ $rls$;
 
 -- name: baseline.terminal_grants
 GRANT SELECT, INSERT, UPDATE ON terminal.session, terminal.input, terminal.attachment TO cilexec_runtime;
-GRANT SELECT ON terminal.session, terminal.input, terminal.attachment TO cilexec_readonly;
 
 COMMENT ON TABLE terminal.input IS 'One row per fully submitted input; individual keystrokes are never persisted';
 
@@ -276,7 +270,6 @@ ALTER TABLE audit.event FORCE ROW LEVEL SECURITY;
 CREATE POLICY audit_event_owner_control ON audit.event TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY audit_event_runtime_control ON audit.event TO cilexec_runtime USING (true) WITH CHECK (true);
 CREATE POLICY audit_event_worker_insert ON audit.event FOR INSERT TO cilexec_effect_worker WITH CHECK (true);
-CREATE POLICY audit_event_readonly_control ON audit.event FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY audit_event_principal ON audit.event FOR SELECT TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id());
 CREATE POLICY audit_event_principal_insert ON audit.event FOR INSERT TO PUBLIC
@@ -288,7 +281,6 @@ CREATE POLICY audit_event_principal_insert ON audit.event FOR INSERT TO PUBLIC
 -- name: baseline.audit_grants
 GRANT SELECT, INSERT ON audit.event TO cilexec_runtime;
 GRANT INSERT ON audit.event TO cilexec_effect_worker;
-GRANT SELECT ON audit.event, audit.retention_policy TO cilexec_readonly;
 
 COMMENT ON TABLE audit.event IS 'Append-only security, management, package, effect, and recovery audit trail';
 
@@ -309,6 +301,7 @@ CREATE TABLE meta.table_security_classification (
         'USER_SCOPED', 'SYSTEM_RUNTIME', 'SYSTEM_READONLY', 'SHARED_IMMUTABLE'
     )),
     owner_column name,
+    exportable boolean NOT NULL DEFAULT false,
     rationale text NOT NULL CHECK (btrim(rationale) <> ''),
     registered_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (schema_name, table_name),
@@ -370,9 +363,6 @@ VALUES
     ('package', 'release_entrypoint', 'SHARED_IMMUTABLE', NULL, 'derived immutable release index'),
     ('package', 'release_export', 'SHARED_IMMUTABLE', NULL, 'derived immutable release index'),
     ('package', 'release_capability', 'SHARED_IMMUTABLE', NULL, 'derived immutable release index'),
-    ('package', 'environment', 'USER_SCOPED', 'owner_id', 'user-owned package environment'),
-    ('package', 'binding', 'USER_SCOPED', 'owner_id', 'environment binding to an exact hash'),
-    ('package', 'data_scope', 'USER_SCOPED', 'owner_id', 'mutable package data outside SQLite'),
 
     ('effect', 'effect', 'USER_SCOPED', 'owner_id', 'owner-scoped external effect request'),
     ('effect', 'attempt', 'USER_SCOPED', 'owner_id', 'owner-scoped external effect attempt'),
@@ -491,13 +481,6 @@ AS $function$
               WHERE (source_program.source_object_hash = stored.object_hash
                      OR source_program.compiled_object_hash = stored.object_hash)
                 AND source_program.owner_id = auth.resolve_cilexec_user_id(p_database_role, p_claim)
-          )
-          OR EXISTS (
-              SELECT 1
-              FROM package.release AS release
-              JOIN package.binding AS binding ON binding.package_hash = release.package_hash
-              WHERE release.database_object_hash = stored.object_hash
-                AND binding.owner_id = auth.resolve_cilexec_user_id(p_database_role, p_claim)
           )
           OR EXISTS (
               SELECT 1
@@ -1057,7 +1040,7 @@ BEGIN
     EXECUTE format('GRANT DELETE ON process.call_frame, process.scope, process.variable, process.exception_frame, process.wait_state, process.relationship TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON process.event TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON process.timer, scheduler.queue TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT ON process.package_binding TO %I', mapped_role);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE ON process.package_binding TO %I', mapped_role);
     EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE process.pid_sequence TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ipc.channel, ipc.topic, ipc.subscription, ipc.message, ipc.delivery TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON vfs.node TO %I', mapped_role);
@@ -1065,7 +1048,6 @@ BEGIN
     EXECUTE format('GRANT SELECT, INSERT, UPDATE ON vfs.mount TO %I', mapped_role);
     EXECUTE format('GRANT SELECT ON package.release TO %I', mapped_role);
     EXECUTE format('GRANT SELECT ON package.release_dependency, package.release_module, package.release_entrypoint, package.release_export, package.release_capability TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON package.environment, package.binding, package.data_scope TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON effect.effect TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE ON terminal.session, terminal.input, terminal.attachment TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON audit.event TO %I', mapped_role);
@@ -1134,7 +1116,10 @@ DECLARE
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_catalog.pg_roles
-        WHERE rolname IN ('cilexec_runtime', 'cilexec_effect_worker', 'cilexec_readonly')
+        WHERE rolname IN (
+            'cilexec_runtime', 'cilexec_effect_worker',
+            'cilexec_readonly', 'cilexec_exporter'
+        )
           AND (rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole)
     ) THEN
         RAISE EXCEPTION 'runtime service roles have forbidden cluster privileges';
@@ -1199,7 +1184,7 @@ END
 $function$;
 
 -- name: baseline.security_catalog_grants
-GRANT SELECT ON meta.table_security_classification TO cilexec_runtime, cilexec_readonly;
+GRANT SELECT ON meta.table_security_classification TO cilexec_runtime;
 REVOKE ALL ON FUNCTION meta.assert_security_invariants() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION meta.assert_security_invariants()
     TO cilexec_migrator, cilexec_runtime, cilexec_readonly;

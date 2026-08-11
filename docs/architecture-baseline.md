@@ -666,9 +666,9 @@ database business tables
 Flyway is the schema versioning tool.
 
 ```text
-V001__bootstrap_roles.sql
-V002__create_meta.sql
-V003__create_auth.sql
+V001__CilexecBaseline.java       # frozen CilExec 1.0 modular baseline
+V002__next_forward_change.java   # first post-1.0 change
+V003__later_forward_change.java
 ...
 ```
 
@@ -683,7 +683,10 @@ Rules:
 7. downgrades are performed by restoring a backup;
 8. development environments may explicitly allow the Runtime to run migrations, but this must never become the production default.
 
-The SQL baselines live in `src/main/resources/db/baseline/` and are applied by Flyway. They define roles, RLS policies, and SECURITY DEFINER functions (`foundation.sql`, `password_vfs_runtime.sql`, `atomic_administration.sql`, `execution.sql`, `contracts.sql`, `administrator_storage.sql`, `environment_permissions.sql`, `effect_terminal_audit.sql`, `terminal_runtime.sql`, `vfs_package.sql`).
+The V001 SQL modules live in `src/main/resources/db/baseline/` and are applied by Flyway. They
+define roles, RLS policies, quotas, retention, and SECURITY DEFINER functions. V001 and all of
+its modules are frozen together at 1.0; post-1.0 changes must not edit them and must ship in a
+new versioned Java migration.
 
 **Migration on start.** `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) takes effect: when enabled, the Runtime applies pending migrations at startup through the migrator role and validates them before continuing, instead of requiring the one-shot `migrate` command.
 
@@ -1328,12 +1331,12 @@ After a process resolves an import for the first time, the exact binding is pers
 ```text
 process.package_binding
 ├── process_uid
-├── import_name
-├── environment_id
+├── import_name   -- either the 64-character SHA-256 or a private per-process alias
 └── package_hash
 ```
 
-Later environment upgrades never change the exact hash of an already-running process.
+Package identity is the SHA-256 of the `.db` file. A different hash is a different
+package; no later operation ever changes the exact hash pinned to a running process.
 
 ### 14.7 Lifecycle Hooks
 
@@ -1348,7 +1351,7 @@ pre-uninstall
 post-uninstall
 ```
 
-Install, upgrade, and uninstall only change declarative bindings and grants inside PostgreSQL; they never automatically execute arbitrary FCL or host operations.
+Install and uninstall only change package releases and process pins inside PostgreSQL; they never automatically execute arbitrary FCL or host operations. There is no package upgrade: a different content hash is a different package.
 
 ### 14.8 Mutable Data
 

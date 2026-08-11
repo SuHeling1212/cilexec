@@ -206,7 +206,9 @@ public final class EffectWorkerService implements AutoCloseable {
     }
 
     public boolean isRunning() {
-        return running.get() && workers.stream().allMatch(Thread::isAlive);
+        Thread currentHeartbeat = heartbeat;
+        return running.get() && currentHeartbeat != null && currentHeartbeat.isAlive()
+                && workers.stream().allMatch(Thread::isAlive);
     }
 
     private void workerLoop(int index, UUID workerId) {

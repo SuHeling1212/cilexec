@@ -97,12 +97,16 @@ class FclCodecAndRegistryTest {
         assertThrows(FclCompileException.class,
                 () -> new FclCompiler().compile("import \""
                         + "a".repeat(64) + "\" as numbers"));
-        assertDoesNotThrow(() -> new FclCompiler().compile("import \"editor\""));
-        assertDoesNotThrow(() -> new FclCompiler().compile("import \"editor.*\""));
+        assertThrows(FclCompileException.class,
+                () -> new FclCompiler().compile("import \"editor\""));
+        assertThrows(FclCompileException.class,
+                () -> new FclCompiler().compile("import \"editor.*\""));
         assertThrows(FclCompileException.class,
                 () -> new FclCompiler().compile("import \"bad-binding\""));
         assertDoesNotThrow(() -> new FclCompiler().compile(
                 "value = " + "2".repeat(64) + ".open(\"a.txt\")"));
+        assertDoesNotThrow(() -> new FclCompiler().compile(
+                "value = \"" + "3".repeat(64) + "\".open(\"a.txt\")"));
         assertThrows(FclCompileException.class, () -> new FclCompiler().compile(
                 "import \"" + "a".repeat(64) + "\" as \"bad alias\""));
         assertThrows(FclCompileException.class, () -> new FclCompiler().compile(

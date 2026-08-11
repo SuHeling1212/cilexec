@@ -10,6 +10,11 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog
 AS $function$
 BEGIN
+    IF TG_OP = 'DELETE'
+       AND current_user = 'cilexec_owner'
+       AND current_setting('app.cilexec_gc', true) = 'on' THEN
+        RETURN OLD;
+    END IF;
     RAISE EXCEPTION 'immutable relation %.% does not permit %', TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP
         USING ERRCODE = '55000';
 END
@@ -35,8 +40,6 @@ FOR EACH ROW EXECUTE FUNCTION meta.reject_immutable_mutation();
 -- This is a shared system relation. Raw content is never granted to user LOGIN roles.
 -- name: baseline.object_grants
 GRANT SELECT, INSERT ON object_store.object TO cilexec_runtime;
-GRANT SELECT (object_hash, byte_size, media_type, created_by, created_at)
-    ON object_store.object TO cilexec_readonly;
 
 COMMENT ON TABLE object_store.object IS
     'Immutable SHA-256 addressed bytes shared by VFS, programs, payloads, and SQLite packages';
@@ -116,25 +119,21 @@ ALTER TABLE program.module_binding FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY program_owner_control ON program.program TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY program_runtime_control ON program.program TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY program_readonly_control ON program.program FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY program_principal ON program.program TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 CREATE POLICY statement_owner_control ON program.statement TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY statement_runtime_control ON program.statement TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY statement_readonly_control ON program.statement FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY statement_principal ON program.statement TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 CREATE POLICY module_binding_owner_control ON program.module_binding TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY module_binding_runtime_control ON program.module_binding TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY module_binding_readonly_control ON program.module_binding FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY module_binding_principal ON program.module_binding TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 -- name: baseline.program_grants
 GRANT SELECT, INSERT ON program.program, program.statement, program.module_binding TO cilexec_runtime;
-GRANT SELECT ON program.program, program.statement, program.module_binding TO cilexec_readonly;
 
 RESET ROLE;
 
@@ -345,10 +344,6 @@ BEGIN
             relation_name || '_runtime_control', relation_name
         );
         EXECUTE format(
-            'CREATE POLICY %I ON process.%I FOR SELECT TO cilexec_readonly USING (true)',
-            relation_name || '_readonly_control', relation_name
-        );
-        EXECUTE format(
             'CREATE POLICY %I ON process.%I TO PUBLIC USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id())',
             relation_name || '_principal', relation_name
         );
@@ -363,7 +358,6 @@ GRANT SELECT, INSERT, UPDATE ON process.process, process.call_frame, process.sco
 GRANT DELETE ON process.call_frame, process.scope, process.variable, process.exception_frame,
     process.wait_state, process.relationship TO cilexec_runtime;
 GRANT SELECT, INSERT ON process.event TO cilexec_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA process TO cilexec_readonly;
 
 COMMENT ON SEQUENCE process.pid_sequence IS 'Monotonic, non-cycling user-visible PID allocator; values are never reused';
 COMMENT ON TABLE process.process IS 'Authoritative process identity, status, program counter, and fencing versions';
@@ -430,14 +424,12 @@ ALTER TABLE scheduler.queue ENABLE ROW LEVEL SECURITY;
 ALTER TABLE scheduler.queue FORCE ROW LEVEL SECURITY;
 CREATE POLICY queue_owner_control ON scheduler.queue TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY queue_runtime_control ON scheduler.queue TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY queue_readonly_control ON scheduler.queue FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY queue_principal ON scheduler.queue TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 -- name: baseline.scheduler_grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON scheduler.queue TO cilexec_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON scheduler.runner, scheduler.lease TO cilexec_runtime;
-GRANT SELECT ON scheduler.runner, scheduler.queue, scheduler.lease TO cilexec_readonly;
 
 COMMENT ON INDEX scheduler.ix_queue_claim_next IS
     'Stable FIFO claim order for SELECT FOR UPDATE SKIP LOCKED';
@@ -584,8 +576,6 @@ BEGIN
             relation_name || '_owner_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON ipc.%I TO cilexec_runtime USING (true) WITH CHECK (true)',
             relation_name || '_runtime_control', relation_name);
-        EXECUTE format('CREATE POLICY %I ON ipc.%I FOR SELECT TO cilexec_readonly USING (true)',
-            relation_name || '_readonly_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON ipc.%I TO PUBLIC USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id())',
             relation_name || '_principal', relation_name);
     END LOOP;
@@ -595,7 +585,6 @@ $rls$;
 -- name: baseline.ipc_grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON ipc.channel, ipc.topic, ipc.subscription,
     ipc.message, ipc.delivery TO cilexec_runtime;
-GRANT SELECT ON ipc.channel, ipc.topic, ipc.subscription, ipc.message, ipc.delivery TO cilexec_readonly;
 
 COMMENT ON TABLE ipc.delivery IS
     'Exactly-once database consumption unit; topic and broadcast create one row per subscriber';
@@ -635,15 +624,12 @@ ALTER TABLE process.timer ENABLE ROW LEVEL SECURITY;
 ALTER TABLE process.timer FORCE ROW LEVEL SECURITY;
 CREATE POLICY timer_owner_control ON process.timer TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY timer_runtime_control ON process.timer TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY timer_readonly_control ON process.timer FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY timer_principal ON process.timer TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 -- name: baseline.timer_grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON process.timer TO cilexec_runtime;
-GRANT SELECT ON process.timer TO cilexec_readonly;
 
 COMMENT ON TABLE process.timer IS 'Authoritative timer state; JVM sleeps are only an optimization';
 
 RESET ROLE;
-

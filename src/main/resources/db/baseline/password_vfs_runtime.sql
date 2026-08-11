@@ -48,8 +48,15 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = mapped_role) THEN
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles
+            WHERE rolname = mapped_role
+              AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+        ) THEN
+            RAISE EXCEPTION 'mapped PostgreSQL role has forbidden privileged attributes';
+        END IF;
         EXECUTE format(
-            'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL',
+            'ALTER ROLE %I NOLOGIN NOINHERIT PASSWORD NULL',
             mapped_role
         );
     ELSE
@@ -238,10 +245,6 @@ AS $function$
                      WHERE (source_program.source_object_hash = stored.object_hash
                             OR source_program.compiled_object_hash = stored.object_hash)
                        AND source_program.owner_id = auth.resolve_cilexec_user_id(p_database_role, p_claim))
-          OR EXISTS (SELECT 1 FROM package.release AS release
-                     JOIN package.binding AS binding ON binding.package_hash = release.package_hash
-                     WHERE release.database_object_hash = stored.object_hash
-                       AND binding.owner_id = auth.resolve_cilexec_user_id(p_database_role, p_claim))
           OR EXISTS (SELECT 1 FROM package.release AS release
                      JOIN process.package_binding AS binding ON binding.package_hash = release.package_hash
                      WHERE release.database_object_hash = stored.object_hash

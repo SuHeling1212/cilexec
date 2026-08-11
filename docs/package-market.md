@@ -8,7 +8,7 @@ CilExec Runtime (built-in market.*)        cilexec-market-server.jar
 ──────────────────────────────             ─────────────────────────
 Caches the full index in user VFS          Serves the explicit catalog.json
 Local natural-language search              Validates read-only SQLite package.db
-SHA-256 download, install, upgrade  ◄────►  Serves index and HEAD/Range downloads
+SHA-256 download, install  ◄────►  Serves index and HEAD/Range downloads
 ```
 
 The client ships with `cilexec-app.jar`. The server is a standalone fat JAR that runs on
@@ -97,10 +97,9 @@ tells you explicitly to call `market.configure(...)`.
 | `market.search(text)` | Prefix-searches package name, namespace, type, tags, and description words; versions do not participate in search. |
 | `market.info(sha256)` | Returns one full package record, or `null` if absent. |
 | `market.download(sha256)` | Downloads in chunks and recomputes the full-file SHA-256. |
-| `market.install(sha256)` | Recursively installs exact-hash dependencies and creates default bindings. |
-| `market.list()` | Lists market-managed package names, bindings, and SHA-256s. |
-| `market.upgrade()` | Updates the index and upgrades every market install with a newer version. |
-| `market.uninstall(sha256)` | Removes the binding and the market-downloaded file. |
+| `market.install(sha256)` | Recursively installs exact-hash dependencies; identity is the SHA-256, so a different hash is a different package. |
+| `market.list()` | Lists installed package SHA-256s and their coordinates. |
+| `market.uninstall(sha256)` | Removes the installed package file and its receipt. |
 | `market.help()` | Returns function help. |
 | `market.run()` | Returns the client version and help without requiring a configured origin. |
 
@@ -110,8 +109,8 @@ Installing an editor end to end:
 market.configure("http://host.docker.internal:8787")
 market.update()
 market.search("editor")
-market.install("1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557")
-import "editor"
+market.install("9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f")
+import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "editor"
 editor.open("notes.txt")
 ```
 
@@ -130,7 +129,7 @@ ordinary single-VFS-file limit remains 1 GiB.
 ## Package Capabilities
 
 `package.run` executes an application package through its declared entrypoints. The
-entrypoint name — `package.run(binding, entrypoint)` — must be a valid FCL identifier; an
+entrypoint name — `package.run(packageHash, entrypoint)` — must be a valid FCL identifier; an
 invalid or reserved name is rejected at manifest validation time. Coordinate segments
 (namespace, name, and version parts) must be canonical: segments of `"."` or `".."` are
 rejected.
@@ -144,7 +143,7 @@ uses a capability that was not declared. The audit covers the following mapping:
 | `io.readFile`, `file.*` read operations | `vfs.read` |
 | `io.writeFile`, `file.*` write operations | `vfs.write` |
 | `util.input`, `io.input`, `io.readKey`, `io.readChar` | `terminal.raw_input` |
-| `market.configure`, `market.update`, `market.download`, `market.install`, `market.upgrade`, `market.uninstall` | `package.manage` |
+| `market.configure`, `market.update`, `market.download`, `market.install`, `market.uninstall` | `package.manage` |
 | `process.exec`, `process.kill`, `process.pause`, `process.continue`, `process.getList` | `process.control` |
 | `user.validateUser`, `user.getListOfUsers`, `user.removeUser` | `system.admin` |
 
@@ -163,7 +162,7 @@ A formal release is built from the project root:
 ./tools/release.sh
 ```
 
-Windows runs `build\release.bat`. The flow runs the Runtime and market-server tests, builds
+Windows runs `tools\release.bat`. The flow runs the Runtime and market-server tests, builds
 the two JARs, scans package sources in `dist/*/` that carry a `package.json` and
 `market.json`, generates the market repository and `catalog.json` from their coordinates,
 then regenerates and rechecks `SHA256SUMS`. Only after all staged artifacts validate are
@@ -193,7 +192,7 @@ Every dependency is an exact distribution-file SHA-256:
 The client installs required dependencies recursively first, and rejects cycles and
 dependency chains deeper than 64 levels. Optional dependencies are never installed
 automatically. Package modules call exported functions through the full dependency hash;
-coordinates and binding names do not participate in dependency resolution.
+coordinates never participate in dependency resolution; dependencies are exact database-file hashes.
 
 ## Security and Deployment Notes
 

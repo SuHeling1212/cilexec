@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "revision": "d184a468ca521f5f443604e94e0e5ac622515c42-dirty",
+  "formal": false,
+  "tag": null,
+  "artifacts": {
+    "LICENSE": {
+      "sha256": "43e6978cabd396c22cdf53335bf304e9625501f2049e2b21bcbd12c59a23c882",
+      "size": 1065
+    },
+    "MARKET.md": {
+      "sha256": "53251499b6f478b3d595ec4ea4ac016301ce0521f9449d3a0354a01a1f6fab93",
+      "size": 7059
+    },
+    "RELEASE.txt": {
+      "sha256": "793f96009b4184ed6e36aa66a6c6b23110278f1e4839ae9734d7792449eb7466",
+      "size": 740
+    },
+    "SBOM.cdx.json": {
+      "sha256": "bfc0c8a410a0f90f96327a7b1dea0921e6f93b0d2f367b8237f5af95ed4854fd",
+      "size": 8342
+    },
+    "THIRD_PARTY_NOTICES.txt": {
+      "sha256": "a219e34820c4ab73ba0984787a697822d68945c249294c4df12d88d632c6c466",
+      "size": 1452
+    },
+    "catalog.json": {
+      "sha256": "d4c472eb7715f1c7d81d36a6e13b9d4cf9a72aabf7987aea0069f23209484f9f",
+      "size": 883
+    },
+    "cilexec-app.jar": {
+      "sha256": "7b0da2b6783c7ed3009e080fb91ab4e710b186aabc0051255856f9e524dc7430",
+      "size": 21227778
+    },
+    "cilexec-market-server.jar": {
+      "sha256": "2990307b7a634cae85a5cd92700014e9f505d2cb1789c4fe55e88c33bcbc70e2",
+      "size": 14757773
+    },
+    "market-dependencies.txt": {
+      "sha256": "8c5d85a6e1f18d5b4af5252ea12cb3c7ed79351979962ebf5e425ee24969ffcd",
+      "size": 172
+    },
+    "repository/packages/cilexec/editor/1.0.13/editor.db": {
+      "sha256": "14fb8d75690981e9d6dd221d6eb9e69b7f9d5da874f1270232ed74d06111834e",
+      "size": 49152
+    },
+    "repository/packages/cilexec/editor/1.1.0/editor.db": {
+      "sha256": "0e17aef0fae8eeb672877f4c209ee003f61f54f53db46e2559fd0de44794d3a8",
+      "size": 53248
+    },
+    "repository/packages/cilexec/editor/1.1.1/editor.db": {
+      "sha256": "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f",
+      "size": 53248
+    },
+    "runtime-dependencies.txt": {
+      "sha256": "61138cba36c020a4e46f9d174edee4c99b70428312edc92dd4085913dd4bd095",
+      "size": 509
+    }
+  }
+}

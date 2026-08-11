@@ -90,10 +90,9 @@ market.update()
 | `market.search(text)` | 按包名、命名空间、类型、标签和说明词前缀搜索；版本号不参与搜索。 |
 | `market.info(sha256)` | 查询一个完整包记录，不存在时返回 `null`。 |
 | `market.download(sha256)` | 分块下载并重新计算完整文件 SHA-256。 |
-| `market.install(sha256)` | 递归安装精确哈希依赖并建立默认绑定。 |
-| `market.list()` | 查看由市场管理的包名、绑定和 SHA-256。 |
-| `market.upgrade()` | 更新索引并升级所有存在新版本的市场安装。 |
-| `market.uninstall(sha256)` | 解除对应绑定并移除市场下载文件。 |
+| `market.install(sha256)` | 递归安装精确哈希依赖；身份就是 SHA-256，不同哈希即不同包。 |
+| `market.list()` | 查看已安装包的 SHA-256 与坐标。 |
+| `market.uninstall(sha256)` | 移除已安装的包文件与其安装记录。 |
 | `market.help()` | 返回函数帮助。 |
 | `market.run()` | 返回客户端版本和帮助，不要求配置镜像。 |
 
@@ -103,8 +102,8 @@ market.update()
 market.configure("http://host.docker.internal:8787")
 market.update()
 market.search("editor")
-market.install("1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557")
-import "editor"
+market.install("9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f")
+import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "editor"
 editor.open("notes.txt")
 ```
 
@@ -120,8 +119,8 @@ Runtime 还会重新验证 SQLite 结构、包内部哈希、能力声明和精�
 ## 生成发布目录
 
 本文件属于已生成的发布目录。开发源码中可从项目根目录执行 `tools/release.sh`
-（Windows 执行 `build\release.bat`），一次完成测试、两个 JAR、全部 FCL 包、市场清单
-和 `SHA256SUMS` 的生成与复核。若只需核对已有发布物，可执行
+（Windows 执行 `tools\release.bat`），一次完成测试、两个 JAR、全部 FCL 包、市场清单、
+许可证、第三方声明、CycloneDX SBOM、release manifest 和 `SHA256SUMS` 的生成与复核。若只需核对已有发布物，可执行
 `python3 tools/release.py --verify-only`。发布流水线先在临时目录完成全部检查，成功后才
 替换 `dist` 中的生成文件。
 

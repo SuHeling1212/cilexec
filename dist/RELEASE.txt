@@ -1,13 +1,19 @@
-CilExec Java Market release candidate
+CilExec 1.0.0
 
+Build revision: d184a468ca521f5f443604e94e0e5ac622515c42-dirty
 Runtime requirement: Java 26
 Market server requirement: Java 21 or newer
 Market protocol: cilexec.market/v1
-Built-in client: market.* 2.0.0
-Published packages: cilexec/editor/1.0.11, cilexec/editor/1.0.12
+Published packages: cilexec/editor/1.0.13, cilexec/editor/1.1.0, cilexec/editor/1.1.1
+
+Contents: cilexec-app.jar, cilexec-market-server.jar, repository/, catalog.json,
+MARKET.md, LICENSE, THIRD_PARTY_NOTICES.txt, SBOM.cdx.json, release-manifest.json,
+runtime-dependencies.txt, market-dependencies.txt, and SHA256SUMS.
+
+Verify every payload file before deployment:
+
+sha256sum -c SHA256SUMS
 
 Start the market server from this directory:
 
 java --enable-native-access=ALL-UNNAMED -jar cilexec-market-server.jar --repository repository --catalog catalog.json
-
-The server listens on 127.0.0.1:8787 by default. See MARKET.md for Docker and Windows examples.

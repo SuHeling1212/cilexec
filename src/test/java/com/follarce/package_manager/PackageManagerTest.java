@@ -4,8 +4,6 @@ import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.audit.AuditRetentionPolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
-import com.follarce.domain.packageinfo.PackageBinding;
-import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
@@ -228,8 +226,6 @@ class PackageManagerTest {
         private final Map<PackageRelease.Hash, PackageRelease> byHash = new LinkedHashMap<>();
         private final Map<PackageRelease.Coordinate, PackageRelease> byCoordinate =
                 new LinkedHashMap<>();
-        private final Map<UUID, PackageEnvironment> environments = new LinkedHashMap<>();
-        private final Map<String, PackageBinding> bindings = new LinkedHashMap<>();
         private PackageIndex lastIndex;
 
         @Override public ReleaseWriteResult registerRelease(PackageIndex index) {
@@ -253,18 +249,6 @@ class PackageManagerTest {
         }
         @Override public List<PackageRelease> findReleases() {
             return List.copyOf(byHash.values());
-        }
-        @Override public void saveEnvironment(PackageEnvironment environment) {
-            environments.put(environment.environmentId(), environment);
-        }
-        @Override public Optional<PackageEnvironment> findEnvironment(UUID environmentId) {
-            return Optional.ofNullable(environments.get(environmentId));
-        }
-        @Override public void saveBinding(PackageBinding binding) {
-            bindings.put(binding.environmentId() + "\u0000" + binding.binding(), binding);
-        }
-        @Override public Optional<PackageBinding> findBinding(UUID id, String binding) {
-            return Optional.ofNullable(bindings.get(id + "\u0000" + binding));
         }
         @Override public void saveProcessBinding(ProcessPackageBinding binding) {
             throw new UnsupportedOperationException();

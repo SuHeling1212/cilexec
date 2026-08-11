@@ -211,14 +211,15 @@ public final class TerminalReplService {
         String normalized = source.endsWith("\n") ? source : source + "\n";
         boolean declaration = librarySubmission(compiled);
         if (declaration) {
-            String changedLibrary = existingLibrary + normalized;
+            String changedLibrary = mergeImports(existingLibrary, importsFrom(compiled))
+                    + strippedImports(normalized);
             // Compile the complete accumulated library now so duplicate or incompatible
             // declarations fail before a process or terminal attachment is created.
             compiler.compile(changedLibrary);
             return new PreparedSource(changedLibrary, changedLibrary);
         }
         String importedLibrary = importsFrom(compiled);
-        String nextLibrary = existingLibrary + importedLibrary;
+        String nextLibrary = mergeImports(existingLibrary, importedLibrary);
         if (!importedLibrary.isEmpty()) {
             compiler.compile(nextLibrary);
         }
@@ -293,6 +294,51 @@ public final class TerminalReplService {
         return imports.toString();
     }
 
+    /**
+     * Last-wins import merging: any existing library import that binds the same qualifier
+     * (the alias, or the target hash when there is no alias) is replaced by the new import,
+     * so re-importing an alias never accumulates a second binding and cannot conflict during
+     * later linking.
+     */
+    private static String mergeImports(String existingLibrary, String newImports) {
+        if (newImports == null || newImports.isBlank()) return existingLibrary;
+        java.util.Set<String> qualifiers = new java.util.LinkedHashSet<>();
+        for (String line : newImports.split("\n")) {
+            if (!line.isBlank()) qualifiers.add(importQualifier(line));
+        }
+        StringBuilder merged = new StringBuilder();
+        for (String line : existingLibrary.split("\n")) {
+            if (line.isBlank()) continue;
+            if (qualifiers.contains(importQualifier(line))) continue;
+            merged.append(line).append('\n');
+        }
+        merged.append(newImports);
+        return merged.toString();
+    }
+
+    /** Removes top-level import lines from a declaration submission, keeping declarations. */
+    private static String strippedImports(String source) {
+        StringBuilder result = new StringBuilder();
+        for (String line : source.split("\n")) {
+            if (line.stripLeading().startsWith("import ")) continue;
+            result.append(line).append('\n');
+        }
+        return result.toString();
+    }
+
+    private static String importQualifier(String importLine) {
+        int alias = importLine.indexOf(" as \"");
+        if (alias >= 0) {
+            int aliasStart = alias + 5;
+            int end = importLine.indexOf('"', aliasStart);
+            if (end > aliasStart) return importLine.substring(aliasStart, end);
+        }
+        int first = importLine.indexOf('"');
+        int second = first >= 0 ? importLine.indexOf('"', first + 1) : -1;
+        return first >= 0 && second > first
+                ? importLine.substring(first + 1, second) : importLine;
+    }
+
     private static String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"")
                 .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
@@ -316,19 +362,13 @@ public final class TerminalReplService {
             boolean resolvable = transaction.packages()
                     .findProcessBinding(processUid, name).isPresent();
             if (!resolvable) {
-                var environment = com.follarce.package_manager.PackageEnvironments
-                        .ensureDefault(transaction.packages(), ownerId, now);
-                java.util.Optional<com.follarce.domain.packageinfo.PackageRelease> release =
-                        ProcessStatementExecutor.isSha256(target)
-                                ? ProcessStatementExecutor.directRelease(transaction, target)
-                                : ProcessStatementExecutor.bindingRelease(transaction,
-                                        environment.environmentId(), target);
-                resolvable = release.isPresent();
+                resolvable = ProcessStatementExecutor.directRelease(transaction, target)
+                        .isPresent();
             }
             if (!resolvable) {
                 throw new com.follarce.fcl.FclRuntimeException("Unresolved package import: "
-                        + value.target() + "; fix the import (install or bind the package "
-                        + "first) and submit again");
+                        + value.target() + "; install the exact package hash first and "
+                        + "submit again");
             }
         }
     }

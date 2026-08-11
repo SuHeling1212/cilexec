@@ -34,6 +34,8 @@ import com.google.gson.Gson;
  */
 public final class IpcService {
     private static final Gson JSON = new Gson();
+    public static final int MAX_PURGE_BATCH = 10_000;
+    private static final int MAX_EXPIRY_SCAN = 100;
     private final com.follarce.persistence.postgres.transaction.UserTransactionExecutor transactions;
     private final Clock clock;
 
@@ -87,6 +89,30 @@ public final class IpcService {
     public static boolean removeTopicIn(TransactionContext transaction, UUID ownerId,
                                         UUID topicId) {
         return transaction.ipc().removeTopic(ownerId, topicId);
+    }
+
+    public int purgeMessages(UUID ownerId, Instant olderThan, int limit) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> purgeMessagesIn(transaction, ownerId, olderThan,
+                        clock.instant(), limit));
+    }
+
+    public static int purgeMessagesIn(TransactionContext transaction, UUID ownerId,
+                                      Instant olderThan, Instant now, int limit) {
+        if (olderThan == null || now == null || olderThan.isAfter(now)) {
+            throw new IllegalArgumentException("IPC purge cutoff must not be in the future");
+        }
+        if (limit < 1 || limit > MAX_PURGE_BATCH) {
+            throw new IllegalArgumentException("IPC purge limit must be between 1 and "
+                    + MAX_PURGE_BATCH);
+        }
+        int deleted = transaction.ipc().purgeMessages(ownerId, olderThan, now, limit);
+        transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
+                ownerId.toString(), "ipc.purge", "ipc.messages", ownerId.toString(),
+                AuditEvent.Result.SUCCEEDED,
+                Map.of("olderThan", olderThan.toString(), "deleted", Integer.toString(deleted)),
+                now));
+        return deleted;
     }
 
     public IpcSubscription subscribeChannel(UUID ownerId, UUID processUid, UUID channelId) {
@@ -288,20 +314,23 @@ public final class IpcService {
     public static Optional<Envelope> reserveNextIn(TransactionContext transaction,
                                                    UUID ownerId, UUID receiverProcessUid,
                                                    UUID workerId, Instant now) {
-        List<IpcDelivery> pending = transaction.ipc().findPending(receiverProcessUid, 1);
-        if (pending.isEmpty()) return Optional.empty();
-        IpcDelivery reserved = pending.getFirst().reserve(workerId, now);
-        if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
-            return Optional.empty();
+        List<IpcDelivery> pending = transaction.ipc().findPending(
+                receiverProcessUid, MAX_EXPIRY_SCAN);
+        for (IpcDelivery candidate : pending) {
+            IpcDelivery reserved = candidate.reserve(workerId, now);
+            if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
+                continue;
+            }
+            IpcMessage message = transaction.ipc().findMessage(reserved.messageId())
+                    .orElseThrow(() -> new IllegalStateException("Delivery message is missing"));
+            if (message.isExpiredAt(now)) {
+                IpcDelivery dead = reserved.dead(now, "message expired before consumption");
+                transaction.ipc().updateDelivery(dead, IpcDelivery.Status.RESERVED);
+                continue;
+            }
+            return Optional.of(new Envelope(message, reserved));
         }
-        IpcMessage message = transaction.ipc().findMessage(reserved.messageId())
-                .orElseThrow(() -> new IllegalStateException("Delivery message is missing"));
-        if (message.isExpiredAt(now)) {
-            IpcDelivery dead = reserved.dead(now, "message expired before consumption");
-            transaction.ipc().updateDelivery(dead, IpcDelivery.Status.RESERVED);
-            return Optional.empty();
-        }
-        return Optional.of(new Envelope(message, reserved));
+        return Optional.empty();
     }
 
     public boolean consume(UUID ownerId, UUID deliveryId) {

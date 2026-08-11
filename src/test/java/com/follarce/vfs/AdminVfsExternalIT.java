@@ -24,6 +24,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Optional runner for databases supplied by CI or local Docker when Testcontainers is unavailable. */
@@ -103,8 +104,11 @@ class AdminVfsExternalIT {
             var fileLock = transaction.vfs().acquireLock(file.nodeId(), owner.userId(),
                     process.identity().processUid(), process.executionEpoch(), at.plusSeconds(5),
                     at).orElseThrow();
-            assertEquals(true, transaction.vfs().releaseLock(file.nodeId(), owner.userId(),
+            assertFalse(transaction.vfs().releaseLock(file.nodeId(), owner.userId(),
                     process.identity().processUid(), process.executionEpoch() + 1,
+                    fileLock.fencingToken()));
+            assertEquals(true, transaction.vfs().releaseLock(file.nodeId(), owner.userId(),
+                    process.identity().processUid(), process.executionEpoch(),
                     fileLock.fencingToken()));
             return null;
         });

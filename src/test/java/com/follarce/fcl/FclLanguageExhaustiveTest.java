@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -87,20 +89,22 @@ class FclLanguageExhaustiveTest {
     }
 
     @Test
-    void compilesAllPackageDirectiveFormsAndFullHashFunctionNames() {
+    void compilesPackageHashDirectivesAndFullHashFunctionNames() {
         String hash = "0123456789abcdef".repeat(4);
+        String other = "fedcba9876543210".repeat(4);
         FclProgram program = compiler.compile("""
-                import "editor"
-                import "editor" as "e"
-                import "editor.*"
+                import "%s"
+                import "%s" as "e"
+                import "%s.*"
                 import "%s" as "exact"
                 include "library.fcl"
                 result = %s.open("note.txt")
-                """.formatted(hash, hash));
+                quoted = "%s".open("other.txt")
+                """.formatted(hash, other, hash, hash, hash, hash));
 
         assertInstanceOf(FclInstruction.Import.class, program.instructions().get(0));
         FclInstruction.Import plain = (FclInstruction.Import) program.instructions().get(0);
-        assertEquals("editor", plain.target());
+        assertEquals(hash, plain.target());
         assertEquals(null, plain.alias());
         assertFalse(plain.wildcard());
         FclInstruction.Import aliased = (FclInstruction.Import) program.instructions().get(1);
@@ -109,6 +113,18 @@ class FclLanguageExhaustiveTest {
         assertTrue(wildcard.wildcard());
         assertInstanceOf(FclInstruction.Include.class, program.instructions().get(4));
         assertInstanceOf(FclInstruction.Assignment.class, program.instructions().get(5));
+    }
+
+    @Test
+    void rejectsHumanReadableImportTargets() {
+        for (String source : List.of(
+                "import \"editor\"",
+                "import \"editor\" as \"e\"",
+                "import \"editor.*\"",
+                "import \"e.ditor\"",
+                "import \"0x1234\"")) {
+            assertThrows(FclCompileException.class, () -> compiler.compile(source), source);
+        }
     }
 
     @Test

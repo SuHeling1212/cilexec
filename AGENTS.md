@@ -107,7 +107,7 @@ To add a source-only Java extension:
 5. Run `mvn clean test` and rebuild the JAR/image. There is intentionally no runtime
    Java-plugin install path.
 
-Host-to-VFS transfer is deliberately a host tool rather than an FCL function. `HostMove.sh`
+Host-to-VFS transfer is deliberately a host tool rather than an FCL function. `tools/HostMove.sh`
 mounts one explicitly named regular file read-only into a disposable tool container; the
 `host move` application command streams it into PostgreSQL and creates the VFS node while
 retaining the host source. `host move` requires a target user holding the `VFS_MOUNT_HOST`
@@ -116,13 +116,10 @@ or a broad host directory for this feature.
 
 ## Important Design Details
 
-- **Pre-release compatibility policy:** Until the first stable release, there is **no
-  backwards-compatibility or migration requirement**. Old functionality that is superseded is
-  deleted outright — do not add Flyway versions (V002, ...) to migrate existing databases, do
-  not keep deprecated code paths for upgrade safety, and do not preserve old persisted formats.
-  Schema changes are made in place in the single Flyway baseline
-  (`src/main/java/db/migration/V001__CilexecBaseline.java` → `src/main/resources/db/baseline/`),
-  which runs once on a fresh deployment. Any old data/format is simply abandoned.
+- **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen CilExec 1.0 schema.
+  Never modify an applied migration after release. Every subsequent schema or persisted-format
+  change must be an immutable `V002`, `V003`, ... forward migration with upgrade, backup, and
+  rollback-by-restore tests. Automatic downgrades remain forbidden.
 - **Database migrations:** Flyway baselines live in `src/main/resources/db/baseline/`;
   `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) now takes
   effect — when enabled, the Runtime applies pending migrations at startup instead of

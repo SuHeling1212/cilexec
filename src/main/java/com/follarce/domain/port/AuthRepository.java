@@ -52,6 +52,16 @@ public interface AuthRepository {
         throw new UnsupportedOperationException("Credential verification is not implemented");
     }
 
+    default Optional<Instant> loginBlockedUntil(String principalKey) {
+        return Optional.empty();
+    }
+
+    default void recordLoginFailure(String principalKey, Instant failedAt, long maximumDelayMillis) {
+    }
+
+    default void clearLoginFailures(String principalKey) {
+    }
+
     /** Makes the stable PostgreSQL role unable to log in in this same transaction. */
     void disablePrincipal(UUID userId);
 

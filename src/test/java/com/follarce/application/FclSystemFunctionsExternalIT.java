@@ -116,10 +116,9 @@ class FclSystemFunctionsExternalIT {
                 ownProcesses = process.getList()
                 functions = system.ls()
                 builtPackage = package.build("/pkg/package.json", "/hello.db")
-                installedPackage = package.install("/hello.db", "hello")
+                installedPackage = package.install("/hello.db")
                 packageCheck = package.verify("demo/hello/1.0.0")
-                packageEnvironments = package.environments()
-                launchedPackage = package.run("hello")
+                launchedPackage = package.run(installedPackage["sha256"])
                 foreignHomeVisible = file.exists("/Users/local")
                 """;
         var ownerProgram = new ProgramService(transactions).create(owner.userId(), source);
@@ -152,7 +151,7 @@ class FclSystemFunctionsExternalIT {
         @SuppressWarnings("unchecked")
         Map<String, Object> installedPackage =
                 (Map<String, Object>) ownerRuntime.scope().get("installedPackage");
-        assertEquals("hello", installedPackage.get("binding"));
+        assertEquals("demo/hello/1.0.0", installedPackage.get("coordinate"));
         @SuppressWarnings("unchecked")
         Map<String, Object> packageCheck =
                 (Map<String, Object>) ownerRuntime.scope().get("packageCheck");
@@ -377,6 +376,10 @@ class FclSystemFunctionsExternalIT {
                 locker.status(), locker.stateVersion(), locker.executionEpoch() + 1,
                 locker.continuation(), locker.parentProcessUid(), locker.createdAt(),
                 locker.updatedAt());
+        assertEquals(com.follarce.domain.port.ProcessRepository.UpdateResult.UPDATED,
+                transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                        transaction -> transaction.processes().update(rescheduledLocker,
+                                locker.stateVersion(), locker.executionEpoch())));
         while (!lockerRuntime.halted()) {
             FclStepResult result = step(transactions, rescheduledLocker, lockerProgram,
                     lockerCompiled, lockerRuntime);
@@ -387,7 +390,7 @@ class FclSystemFunctionsExternalIT {
         assertEquals(true, lockerRuntime.scope().get("released"));
 
         assertExactlyOneConcurrentConsumerGetsTheSyncValue(transactions, owner.userId(),
-                locker, "bus", "message", "approved");
+                rescheduledLocker, "bus", "message", "approved");
     }
 
     private static void assertExactlyOneConcurrentConsumerGetsTheSyncValue(

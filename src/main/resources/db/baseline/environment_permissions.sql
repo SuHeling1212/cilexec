@@ -41,28 +41,20 @@ CREATE POLICY environment_variable_owner_control ON auth.environment_variable
     TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY environment_variable_runtime_control ON auth.environment_variable
     TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY environment_variable_readonly_control ON auth.environment_variable
-    FOR SELECT TO cilexec_readonly USING (true);
 
 CREATE POLICY shared_environment_variable_owner_control ON auth.shared_environment_variable
     TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY shared_environment_variable_runtime_control ON auth.shared_environment_variable
     TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY shared_environment_variable_readonly_control ON auth.shared_environment_variable
-    FOR SELECT TO cilexec_readonly USING (true);
 
 CREATE POLICY shared_environment_policy_owner_control ON auth.shared_environment_policy
     TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY shared_environment_policy_runtime_control ON auth.shared_environment_policy
     TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY shared_environment_policy_readonly_control ON auth.shared_environment_policy
-    FOR SELECT TO cilexec_readonly USING (true);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth.environment_variable,
     auth.shared_environment_variable, auth.shared_environment_policy
     TO cilexec_runtime, PUBLIC;
-GRANT SELECT ON auth.environment_variable, auth.shared_environment_variable,
-    auth.shared_environment_policy TO cilexec_readonly;
 
 INSERT INTO meta.table_security_classification
     (schema_name, table_name, classification, owner_column, rationale)

@@ -346,26 +346,28 @@ public final class DatabaseTerminalControl implements TerminalControl {
                   :cd <vfs-path>                 change the durable working directory
                   :pwd                           print the working directory
                   :ls [vfs-path]                 list a directory
-                  :clear                         clear the terminal screen
+                  :clear (:cls)                  clear the terminal screen
                   :logout                        return to login without losing REPL state
-                  :exit                          close only this terminal connection
+                  :exit (:quit)                  close only this terminal connection
                   :shutdown                      stop the shared Runtime (admin password required)
 
                 Line editing:
                   Up/Down                        select earlier terminal commands
                   Left/Right                     move the cursor within the current line
+                  Home/End                       jump to the start/end of the line
+                  Ctrl-C                         cancel the current input
 
                 FCL editor package (install it from the market first):
-                  network.download(url, "/editor.db")
-                                                  download the SQLite package into VFS
-                  package.install("/editor.db", "editor")
-                                                  install and bind the downloaded package
-                  import "editor"
-                                                  import the installed package by binding
-                  import "<package-db-sha256>" as "editor"
-                                                  alternatively import an exact package hash
-                  editor.open("notes.txt")         open or create a VFS text file
-                  Ctrl-O/Ctrl-S save, Ctrl-X exit, Ctrl-W search, Ctrl-K cut line, Ctrl-U paste
+                  market.configure("https://market-origin")
+                                                  set the market origin (once)
+                  market.update()                download the index
+                  market.install("<package-sha256>")
+                                                  install the editor package by hash
+                  import "<package-sha256>" as "editor"
+                                                  import the exact package by hash
+                  editor.open("notes.txt")       open or create a VFS text file
+                  Ctrl-O/Ctrl-S save, Ctrl-X exit, Ctrl-W search, Ctrl-K cut line, Ctrl-U paste,
+                  Ctrl-G help, mouse wheel scrolls
 
                 Process, file, package, user, effect, and system operations are FCL functions.
 

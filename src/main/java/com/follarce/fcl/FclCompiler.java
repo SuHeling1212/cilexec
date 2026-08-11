@@ -442,14 +442,13 @@ public final class FclCompiler {
 
         private void importInstruction(Token start) {
             String target = String.valueOf(consume(Type.STRING,
-                    "Expected quoted import target, for example: import \"binding\" or "
+                    "Expected quoted import target, for example: "
                             + "import \"<64-hex-sha256>\"").literal());
             String identity = target.endsWith(".*")
                     ? target.substring(0, target.length() - 2) : target;
-            if (!identity.matches("(?i)[0-9a-f]{64}")
-                    && !simpleBindableIdentifier(identity)) {
-                fail(previous(), "Import target must be a package binding or a "
-                        + "64-character package database SHA-256");
+            if (!identity.matches("(?i)[0-9a-f]{64}")) {
+                fail(previous(), "Import target must be a 64-character package database "
+                        + "SHA-256; package identity is the hash");
             }
             String alias = null;
             if (word("as")) {
@@ -590,6 +589,19 @@ public final class FclCompiler {
         private FclExpression postfix() {
             FclExpression expression = primary();
             while (true) {
+                // Hash-qualified package calls: "<64-hex-sha256>".function(...). The
+                // qualifier is the immutable package identity; the dot form keeps the
+                // hash out of the identifier grammar.
+                if (expression instanceof FclExpression.Literal literal
+                        && literal.value() instanceof String text
+                        && text.matches("(?i)[0-9a-f]{64}")
+                        && match(Type.DOT)) {
+                    Token member = consume(Type.IDENTIFIER,
+                            "Expected a function name after '\".\"'");
+                    expression = new FclExpression.Variable(nextId(),
+                            text.toLowerCase(java.util.Locale.ROOT) + "." + member.text());
+                    continue;
+                }
                 if (match(Type.LEFT_PAREN)) {
                     if (!(expression instanceof FclExpression.Variable)) {
                         fail(previous(), "Only named functions can be called");

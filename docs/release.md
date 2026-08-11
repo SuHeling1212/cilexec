@@ -8,11 +8,27 @@ Run from the project root:
 ./tools/release.sh
 ```
 
+To build the verified core distribution and every offline host package with one command:
+
+```bash
+./tools/release-all.sh
+```
+
+This produces `build/releases/<version>/cilexec-<version>-linux-amd64.sh`,
+`cilexec-<version>-linux-arm64.sh`, and `cilexec-<version>-windows.zip`. The Windows ZIP
+contains a native PowerShell controller and both Docker image architectures; installation does
+not require WSL, Git Bash, or a host JDK.
+
 Windows runs:
 
 ```bat
-build\release.bat
+tools\release.bat
 ```
+
+The all-platform developer build can also be started with `tools\release-all.bat`. Building the
+Unix self-extracting targets from Windows requires Bash in `PATH` (for example Git for Windows),
+but the resulting Windows installation package itself requires only PowerShell and Docker
+Desktop in Linux-container mode.
 
 The default flow runs the full Maven test suite and produces:
 
@@ -20,14 +36,20 @@ The default flow runs the full Maven test suite and produces:
 - `dist/cilexec-market-server.jar`
 - `dist/repository/packages/<namespace>/<name>/<version>/<name>.db`
 - `dist/catalog.json`
+- `dist/MARKET.md` and `dist/RELEASE.txt`
+- `dist/LICENSE` and `dist/THIRD_PARTY_NOTICES.txt`
+- `dist/SBOM.cdx.json` (CycloneDX 1.5)
+- `dist/runtime-dependencies.txt` and `dist/market-dependencies.txt`
+- `dist/release-manifest.json`
 - `dist/SHA256SUMS`
 
-The flow cross-validates JARs, SQLite packages, the market catalog, and SHA-256 sums in a
-temporary directory. Existing artifacts are replaced only after all validations pass. The
-Git commit id is baked into the Runtime; when building outside a Git working tree, provide
-it via `CILEXEC_BUILD_REVISION`. A local working tree with uncommitted changes is recorded
-as `<commit>-dirty` so an unreproducible local build is never mistaken for a formal release
-of that commit.
+The flow cross-validates JARs, SQLite packages, the market catalog, release documents,
+license, resolved Maven runtime inventories, SBOM, release manifest, and SHA-256 sums in a
+temporary directory. The manifest records the version, revision, formal/candidate status,
+size, and digest of every payload file. Existing artifacts are replaced only after all
+validations pass. The Git commit id is baked into the Runtime; when building outside a Git
+working tree, provide it via `CILEXEC_BUILD_REVISION`. A local working tree with uncommitted
+changes is recorded as `<commit>-dirty`.
 
 Optional flags:
 
@@ -39,8 +61,19 @@ Optional flags:
 ./tools/release.sh --verify-only
 ```
 
-`--skip-tests` only applies when a trusted CI job in the same run has already executed the
-tests; it should not be the default for manual formal releases.
+`--skip-tests` only applies to candidate assembly when a trusted CI job in the same run has
+already executed the tests. Formal mode rejects it. A normal build also runs
+`tools/check_test_reports.py` before staging artifacts.
+
+Formal release mode is used by the tag workflow:
+
+```bash
+python3 tools/release.py --formal --tag v1.2.3
+```
+
+It rejects a dirty tree, a `SNAPSHOT` or unknown version/revision, a tag other than
+`v<project.version>`, a revision different from `HEAD`, or a tag that does not point at
+`HEAD`, or an attempt to skip tests. Candidate builds intentionally do not use `--formal`.
 
 ## Runtime Configuration Defaults
 
@@ -56,12 +89,27 @@ The release Runtime reads its defaults from `cilexec-defaults.properties`, overr
 
 ## GitHub Actions
 
-Ordinary pushes and pull requests run validation of Java, the market server, the host
-scripts, the Docker image, and the full release directory. Pushing a `v*` tag or manually
-running the `release-artifacts` workflow runs the full release flow and uploads
-`cilexec-release.tar.gz`. The archive contains the two JARs, the market repository, the
-catalog, the readme, and the checksum files; it does not contain source directories or
-build caches.
+Before formal publication, enable GitHub Release immutability and restrict GHCR package-write
+access to this release workflow. The workflow refuses known tag or asset replacement, but only
+repository policy can prevent a different credential from racing an OCI tag update.
+
+Ordinary pushes and pull requests run validation of Java, the market server, the host scripts,
+the Docker image, and the full release directory. Pushing a `v*` tag or manually running the
+`release-artifacts` workflow runs the full release flow, with PostgreSQL 17 and 18 both gating
+publication. Unprivileged jobs build and scan the exact verified JAR, OCI archive, and offline
+artifacts before a separate narrowly privileged job uploads or signs anything. A tag publishes
+a signed amd64/arm64 GHCR image under an immutable version tag,
+creates a GitHub Release, and uploads the exact OCI archive, two architecture-specific
+offline installers, the Windows package, and a deployment archive pinned to the OCI manifest
+digest. It does not publish a mutable `latest`
+tag. The release also includes `cilexec-<version>-windows.zip`, whose `Cilexec.ps1` entry point
+supports `install`, `terminal`, `headless`, `host-move`, `shell`, and `uninstall` directly from
+PowerShell without WSL. The signed outer checksum file covers every GitHub Release asset,
+including `cilexec-image.oci.tar`. A manual run retains unsigned candidate installers as temporary artifacts and does not
+publish an OCI image or deployment archive. The formal archive contains
+the JARs, market repository/catalog, validated release metadata, SBOM, Compose/host tools,
+credential rotation tool, systemd templates, and production recovery runbook. Each offline
+installer contains its architecture-specific image.
 
 After downloading the archive, verify it in the extraction directory:
 
@@ -73,4 +121,26 @@ On macOS:
 
 ```bash
 shasum -a 256 -c SHA256SUMS
+```
+
+For a formal release, first verify the signed outer checksum file downloaded from the GitHub
+Release, then verify its listed files:
+
+```bash
+cosign verify-blob \
+  --bundle cilexec-1.0.0-SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/SuHeling1212/cilexec/.github/workflows/release.yml@refs/tags/v[0-9].*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  cilexec-1.0.0-SHA256SUMS
+sha256sum -c cilexec-1.0.0-SHA256SUMS
+```
+
+The deployment archive's `.env` pins `CILEXEC_IMAGE` to the published manifest digest. Verify
+that same signed image before installation:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/SuHeling1212/cilexec/.github/workflows/release.yml@refs/tags/v[0-9].*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/suheling1212/cilexec@sha256:<manifest-digest>
 ```

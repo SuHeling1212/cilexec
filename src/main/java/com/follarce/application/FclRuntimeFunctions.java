@@ -7,8 +7,6 @@ import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.effect.EffectRequest;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.PackageIndex;
-import com.follarce.domain.packageinfo.PackageBinding;
-import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.ipc.IpcChannel;
 import com.follarce.domain.ipc.IpcMessage;
@@ -46,10 +44,10 @@ import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.package_manager.PackageCoordinateConflictException;
 import com.follarce.package_manager.PackageBuilder;
-import com.follarce.package_manager.PackageEnvironments;
 import com.follarce.package_manager.PackageDependencyPolicy;
 import com.follarce.market.client.MarketRuntimeFunctions;
 import com.follarce.terminal.TerminalDimensions;
+import com.follarce.timer.TimerService;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -350,8 +348,16 @@ public final class FclRuntimeFunctions {
                     return terminalInput(invocation, true, false);
                 })
                 .registerContextual("io", "readKey", (args, invocation) -> {
-                    arity(args, 0, "io.readKey");
-                    return terminalInput(invocation, false, true);
+                    if (args.size() > 1) arity(args, 1, "io.readKey");
+                    long timeout = -1;
+                    if (!args.isEmpty()) {
+                        timeout = integer(args.getFirst(), "io.readKey timeout milliseconds");
+                        if (timeout < 0 || timeout > 86_400_000L) {
+                            throw new FclRuntimeException(
+                                    "io.readKey timeout must be between 0 and 86400000 milliseconds");
+                        }
+                    }
+                    return readKey(invocation, timeout);
                 })
                 .registerContextual("util", "sleep", (args, invocation) -> {
                     arity(args, 1, "util.sleep");
@@ -854,25 +860,6 @@ public final class FclRuntimeFunctions {
                 .register("package", "install", args -> installPackage(args))
                 .register("package", "build", args -> buildPackage(args))
                 .register("package", "run", args -> runPackage(args))
-                .register("package", "createEnvironment", args -> {
-                    arity(args, 1, "package.createEnvironment");
-                    Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-                    String name = string(args.getFirst(), "package environment name");
-                    PackageEnvironment existing = transaction.packages()
-                            .findEnvironmentByName(name).orElse(null);
-                    if (existing != null) return environmentMap(existing);
-                    PackageEnvironment environment = new PackageEnvironment(UUID.randomUUID(),
-                            process.ownerId(), name, Optional.empty(),
-                            PackageEnvironment.Status.ACTIVE, now);
-                    transaction.packages().saveEnvironment(environment);
-                    return environmentMap(environment);
-                })
-                .register("package", "environments", args -> {
-                    arity(args, 0, "package.environments");
-                    Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-                    return transaction.packages().findEnvironments().stream()
-                            .map(FclRuntimeFunctions::environmentMap).toList();
-                })
                 .register("package", "verify", args -> {
                     Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
                     PackageRelease release = requirePackage(args, "package.verify");
@@ -900,25 +887,17 @@ public final class FclRuntimeFunctions {
                     return decodeUtf8(content, "package.resource");
                 })
                 .register("package", "pin", args -> pinPackage(args))
-                .register("package", "unpin", args -> {
-                    arity(args, 2, "package.unpin");
-                    Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-                    return transaction.packages().deleteBinding(
-                            uuid(args.get(0), "package environment"),
-                            string(args.get(1), "package binding"));
-                })
-                .register("package", "remove", args -> {
-                    arity(args, 2, "package.remove");
-                    Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-                    return transaction.packages().deleteBinding(
-                            uuid(args.get(0), "package environment"),
-                            string(args.get(1), "package binding"));
-                })
                 .register("package", "gc", args -> {
                     arity(args, 0, "package.gc");
                     Authorization.requireAdministrator(transaction, process.ownerId());
-                    // Releases and content are immutable authorities; no reachable data is deleted.
-                    return 0L;
+                    long deleted = transaction.vfs().garbageCollectObjects(
+                            process.ownerId(), 1000);
+                    transaction.audit().append(new AuditEvent(UUID.randomUUID(),
+                            AuditEvent.ActorType.USER, process.ownerId().toString(),
+                            "package.gc", "object_store", process.ownerId().toString(),
+                            AuditEvent.Result.SUCCEEDED,
+                            Map.of("limit", "1000", "deleted", Long.toString(deleted)), now));
+                    return deleted;
                 })
                 .register("package", "recover", args -> {
                     arity(args, 0, "package.recover");
@@ -982,33 +961,19 @@ public final class FclRuntimeFunctions {
             }
 
             @Override @SuppressWarnings("unchecked")
-            public Map<String, Object> install(String path, String binding) {
-                Object installed = installPackage(List.of(path, binding));
+            public Map<String, Object> install(String path) {
+                Object installed = installPackage(List.of(path));
                 if (!(installed instanceof Map<?, ?> map)) {
                     throw new FclRuntimeException("Package installer returned an invalid result");
                 }
                 return (Map<String, Object>) map;
             }
-
-            @Override public boolean removeBinding(String environmentId, String binding) {
-                Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-                return transaction.packages().deleteBinding(
-                        uuid(environmentId, "market package environment"), binding);
-            }
-
-            @Override public void pin(String environmentId, String binding,
-                                      String packageHash) {
-                Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-                saveNonReplacingBinding(new PackageBinding(
-                        uuid(environmentId, "market package environment"), binding,
-                        new PackageRelease.Hash(new ObjectHash(packageHash)), now));
-            }
         }).register(registry);
     }
 
     private Object installPackage(List<Object> args) {
-        if (args.isEmpty() || args.size() > 3) throw new FclRuntimeException(
-                "package.install expects a VFS path and optional binding arguments");
+        if (args.size() != 1) throw new FclRuntimeException(
+                "package.install expects a VFS path to an immutable package database");
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
         VfsNode node = requireNode(string(args.getFirst(), "package.install path"));
         requireType(node, VfsNode.Type.FILE, "package.install");
@@ -1040,32 +1005,10 @@ public final class FclRuntimeFunctions {
         }
         release = transaction.packages().findRelease(release.coordinate()).orElseThrow(
                 () -> new IllegalStateException("Installed package release is missing"));
-        UUID environmentId;
-        String binding;
-        if (args.size() == 3) {
-            Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-            environmentId = uuid(args.get(1), "package environment");
-            binding = string(args.get(2), "package binding");
-            transaction.packages().findEnvironment(environmentId)
-                    .orElseThrow(() -> new FclRuntimeException("Unknown package environment"));
-        } else {
-            Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-            PackageEnvironment environment = PackageEnvironments.ensureDefault(
-                    transaction.packages(), process.ownerId(), now);
-            environmentId = environment.environmentId();
-            binding = args.size() == 2
-                    ? string(args.get(1), "package binding") : descriptor.name();
-        }
-        PackageBinding requestedBinding = new PackageBinding(environmentId, binding,
-                release.packageHash(), now);
-        saveNonReplacingBinding(requestedBinding);
         audit("package.install", node.nodeId(), Map.of(
-                "coordinate", release.coordinate().key(), "writeResult", result.name(),
-                "environmentId", environmentId.toString(), "binding", binding));
+                "coordinate", release.coordinate().key(), "writeResult", result.name()));
         Map<String, Object> installed = new LinkedHashMap<>(packageMap(release));
         installed.putAll(descriptorMap(descriptor));
-        installed.put("environmentId", environmentId.toString());
-        installed.put("binding", binding);
         return Map.copyOf(installed);
     }
 
@@ -1096,20 +1039,20 @@ public final class FclRuntimeFunctions {
 
     private Object runPackage(List<Object> args) {
         if (args.isEmpty() || args.size() > 2) {
-            throw new FclRuntimeException("package.run expects binding and optional entrypoint");
+            throw new FclRuntimeException(
+                    "package.run expects a package SHA-256 and optional entrypoint");
         }
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
         Authorization.require(transaction, process.ownerId(), Capability.PROCESS_CREATE);
-        String bindingName = string(args.getFirst(), "package binding");
+        String packageId = string(args.getFirst(), "package hash");
+        if (!packageId.matches("(?i)[0-9a-f]{64}")) {
+            throw new FclRuntimeException(
+                    "package.run requires a 64-character package SHA-256");
+        }
         String entrypointName = args.size() == 2
                 ? string(args.get(1), "package entrypoint") : "run";
-        PackageEnvironment environment = PackageEnvironments.ensureDefault(
-                transaction.packages(), process.ownerId(), now);
-        PackageBinding binding = transaction.packages().findBinding(environment.environmentId(),
-                        bindingName)
-                .orElseThrow(() -> new FclRuntimeException("Package is not installed: "
-                        + bindingName));
-        PackageRelease release = transaction.packages().findRelease(binding.packageHash())
+        PackageRelease release = transaction.packages().findReleaseByDatabaseFileHash(
+                        new ObjectHash(packageId.toLowerCase(java.util.Locale.ROOT)))
                 .orElseThrow(() -> new FclRuntimeException("Installed package release is missing"));
         StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
                 .orElseThrow(() -> new FclRuntimeException("Installed package database is missing"));
@@ -1129,7 +1072,7 @@ public final class FclRuntimeFunctions {
         long pid = transaction.processes().allocatePid();
         UUID processUid = UUID.randomUUID();
         Map<String, ObjectHash> packageBindings = Map.of(importHash,
-                binding.packageHash().value());
+                release.packageHash().value());
         Continuation continuation = new Continuation(entryProgram.programId(),
                 entryProgram.programHash(), 0, List.of(), List.of(), List.of(), List.of(),
                 Optional.empty(), Map.of(), packageBindings, entryProgram.languageVersion(),
@@ -1139,12 +1082,12 @@ public final class FclRuntimeFunctions {
                 Optional.of(process.identity().processUid()), now, now);
         transaction.processes().insert(child);
         transaction.packages().saveProcessBinding(new ProcessPackageBinding(processUid,
-                importHash, environment.environmentId(), binding.packageHash(), now));
+                importHash, release.packageHash(), now));
         transaction.scheduler().enqueue(new com.follarce.domain.scheduler.SchedulerQueueEntry(
                 processUid, now, now,
                 com.follarce.domain.scheduler.SchedulerQueueEntry.Status.READY));
         audit("package.run", processUid, Map.of("pid", Long.toString(pid),
-                "binding", bindingName, "entrypoint", entrypointName,
+                "entrypoint", entrypointName,
                 "coordinate", release.coordinate().key()));
         return Map.of("pid", pid, "processUid", processUid.toString(),
                 "programId", entryProgram.programId().toString(),
@@ -1169,27 +1112,11 @@ public final class FclRuntimeFunctions {
     }
 
     private Object pinPackage(List<Object> args) {
-        if (args.size() != 3 && args.size() != 5) throw new FclRuntimeException(
-                "package.pin expects environment, binding, coordinate or hash");
+        if (args.size() != 1) throw new FclRuntimeException(
+                "package.pin expects a package SHA-256");
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-        UUID environment = uuid(args.get(0), "package environment");
-        String binding = string(args.get(1), "package binding");
-        PackageRelease release = requirePackage(args.subList(2, args.size()), "package.pin");
-        saveNonReplacingBinding(new PackageBinding(environment, binding,
-                release.packageHash(), now));
+        PackageRelease release = requirePackage(args, "package.pin");
         return packageMap(release);
-    }
-
-    private void saveNonReplacingBinding(PackageBinding requested) {
-        transaction.packages().findBinding(requested.environmentId(), requested.binding())
-                .ifPresent(existing -> {
-                    if (!existing.packageHash().equals(requested.packageHash())) {
-                        throw new FclRuntimeException(
-                                "Package binding is already used by another release: "
-                                        + requested.binding());
-                    }
-                });
-        transaction.packages().saveBinding(requested);
     }
 
     private PackageRelease requirePackage(List<Object> args, String function) {
@@ -1254,17 +1181,6 @@ public final class FclRuntimeFunctions {
                 "key", capability.key(),
                 "required", capability.required(),
                 "rationale", capability.rationale())).toList());
-        return Map.copyOf(result);
-    }
-
-    private static Map<String, Object> environmentMap(PackageEnvironment environment) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("environmentId", environment.environmentId().toString());
-        result.put("name", environment.name());
-        result.put("status", environment.status().name());
-        result.put("createdAt", environment.createdAt().toString());
-        environment.parentEnvironmentId().ifPresent(parent -> result.put(
-                "parentEnvironmentId", parent.toString()));
         return Map.copyOf(result);
     }
 
@@ -1423,7 +1339,7 @@ public final class FclRuntimeFunctions {
                             Optional.of(process.identity().processUid()),
                             receiver.identity().processUid(),
                             ipcPayload(args.get(1), "ipc.sendDirect payload"),
-                            Optional.empty(), now);
+                            ipcExpiry(args, 2, "ipc.sendDirect expiresAt"), now);
                     return Map.of("messageId", message.messageId().toString());
                 })
                 .register("ipc", "sendChannel", args -> {
@@ -1433,7 +1349,7 @@ public final class FclRuntimeFunctions {
                             Optional.of(process.identity().processUid()),
                             uuid(args.get(0), "ipc.sendChannel channelId"),
                             ipcPayload(args.get(1), "ipc.sendChannel payload"),
-                            Optional.empty(), now);
+                            ipcExpiry(args, 2, "ipc.sendChannel expiresAt"), now);
                     return Map.of("messageId", message.messageId().toString());
                 })
                 .register("ipc", "publishTopic", args -> {
@@ -1443,7 +1359,7 @@ public final class FclRuntimeFunctions {
                             Optional.of(process.identity().processUid()),
                             string(args.get(0), "ipc.publishTopic topic"),
                             ipcPayload(args.get(1), "ipc.publishTopic payload"),
-                            Optional.empty(), now);
+                            ipcExpiry(args, 2, "ipc.publishTopic expiresAt"), now);
                     return Map.of("messageId", message.messageId().toString());
                 })
                 .register("ipc", "broadcast", args -> {
@@ -1453,8 +1369,21 @@ public final class FclRuntimeFunctions {
                             Optional.of(process.identity().processUid()),
                             string(args.get(0), "ipc.broadcast topic"),
                             ipcPayload(args.get(1), "ipc.broadcast payload"),
-                            Optional.empty(), now);
+                            ipcExpiry(args, 2, "ipc.broadcast expiresAt"), now);
                     return Map.of("messageId", message.messageId().toString());
+                })
+                .register("ipc", "purge", args -> {
+                    if (args.isEmpty() || args.size() > 2) throw new FclRuntimeException(
+                            "ipc.purge expects olderThan and optional limit");
+                    Instant olderThan = instant(args.getFirst(), "ipc.purge olderThan");
+                    long requestedLimit = args.size() == 2
+                            ? integer(args.get(1), "ipc.purge limit") : 1000;
+                    if (requestedLimit < 1 || requestedLimit > IpcService.MAX_PURGE_BATCH) {
+                        throw new FclRuntimeException("ipc.purge limit must be between 1 and "
+                                + IpcService.MAX_PURGE_BATCH);
+                    }
+                    return IpcService.purgeMessagesIn(transaction, process.ownerId(),
+                            olderThan, now, (int) requestedLimit);
                 })
                 .registerContextual("ipc", "receive", (args, invocation) -> {
                     if (!args.isEmpty()) throw new FclRuntimeException("ipc.receive takes no arguments");
@@ -1674,6 +1603,49 @@ public final class FclRuntimeFunctions {
         continuation.waitFor(rawKey ? "input:key" : "input",
                 Map.of("readChar", oneCharacter, "rawKey", rawKey));
         throw FclSuspension.suspend();
+    }
+
+    /**
+     * io.readKey returns one structured terminal event. A pending key event is consumed
+     * immediately; otherwise the process waits in key mode, with an optional durable timer
+     * delivering a timeout event when no key arrives.
+     */
+    private Object readKey(FclFunctionRegistry.Invocation invocation, long timeout) {
+        FclContinuation continuation = invocation.continuation();
+        if (continuation.scope().contains(ProcessInbox.TERMINAL_INPUT)) {
+            return parseTerminalEvent(display(continuation.scope()
+                    .remove(ProcessInbox.TERMINAL_INPUT)));
+        }
+        if (timeout >= 0 && continuation.scope().contains(ProcessInbox.TIMER_RESULT)) {
+            Object timerResult = continuation.scope().remove(ProcessInbox.TIMER_RESULT);
+            if (TimerService.TERMINAL_INPUT_TIMEOUT.equals(display(timerResult))) {
+                return Map.of("kind", "timeout");
+            }
+            return parseTerminalEvent(display(timerResult));
+        }
+        if (timeout >= 0) {
+            UUID timerId = UUID.randomUUID();
+            transaction.timers().save(new ProcessTimer(timerId,
+                    process.identity().processUid(), now.plus(Duration.ofMillis(timeout)),
+                    ProcessTimer.Status.SCHEDULED, now, Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.of(typed(TimerService.TERMINAL_INPUT_TIMEOUT))));
+        }
+        continuation.waitFor("input:key", Map.of("rawKey", true));
+        throw FclSuspension.suspend();
+    }
+
+    /** Parses a terminal event payload into a structured FCL map. */
+    private static Object parseTerminalEvent(String input) {
+        if (input == null || input.isBlank()) return null;
+        if (input.startsWith("{")) {
+            try {
+                return JSON.fromJson(input, Map.class);
+            } catch (RuntimeException malformed) {
+                return Map.of("kind", "raw", "sequence", input);
+            }
+        }
+        return Map.of("kind", "key", "key", input,
+                "shift", false, "ctrl", false, "alt", false, "text", "");
     }
 
     private Object external(FclFunctionRegistry.Invocation invocation, String effectType,
@@ -2666,6 +2638,23 @@ public final class FclRuntimeFunctions {
             return UUID.fromString(string(value, field));
         } catch (IllegalArgumentException failure) {
             throw new FclRuntimeException(field + " must be a UUID", failure);
+        }
+    }
+
+    private Optional<Instant> ipcExpiry(List<Object> args, int index, String field) {
+        if (args.size() <= index || args.get(index) == null) return Optional.empty();
+        Instant expiresAt = instant(args.get(index), field);
+        if (!expiresAt.isAfter(now)) {
+            throw new FclRuntimeException(field + " must be after the current time");
+        }
+        return Optional.of(expiresAt);
+    }
+
+    private static Instant instant(Object value, String field) {
+        try {
+            return Instant.parse(string(value, field));
+        } catch (java.time.format.DateTimeParseException failure) {
+            throw new FclRuntimeException(field + " must be an ISO-8601 instant", failure);
         }
     }
 

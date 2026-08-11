@@ -39,6 +39,11 @@ public interface IpcRepository {
 
     boolean updateDelivery(IpcDelivery delivery, IpcDelivery.Status expectedStatus);
 
+    /** Deletes bounded, aged messages whose deliveries are terminal or whose expiry passed. */
+    default int purgeMessages(UUID ownerId, Instant olderThan, Instant now, int limit) {
+        throw new UnsupportedOperationException("IPC message purge is not implemented");
+    }
+
     /**
      * Removes a channel owned by this user together with its messages (deliveries cascade);
      * returns whether the channel existed.

@@ -37,6 +37,10 @@ AGENTS.md
 CLAUDE.md
 # Maven dependency reduced pom
 dependency-reduced-pom.xml
+.env
+build/cilexec-*.sh
+build/releases/
+build/windows-repack/
 
 # extension
 fcl-vscode/.codewhale/

@@ -32,8 +32,9 @@ migrator_password=$(read_secret "${CILEXEC_MIGRATOR_PASSWORD_FILE:-/run/secrets/
 runtime_password=$(read_secret "${CILEXEC_RUNTIME_PASSWORD_FILE:-/run/secrets/cilexec_runtime_password}")
 effect_password=$(read_secret "${CILEXEC_EFFECT_PASSWORD_FILE:-/run/secrets/cilexec_effect_worker_password}")
 readonly_password=$(read_secret "${CILEXEC_READONLY_PASSWORD_FILE:-/run/secrets/cilexec_readonly_password}")
+exporter_password=$(read_secret "${CILEXEC_EXPORTER_PASSWORD_FILE:-/run/secrets/cilexec_exporter_password}")
 
-for service_password in "$migrator_password" "$runtime_password" "$effect_password" "$readonly_password"; do
+for service_password in "$migrator_password" "$runtime_password" "$effect_password" "$readonly_password" "$exporter_password"; do
     case "$service_password" in
         *[!0-9a-f]*|'')
             echo "CilExec database service secrets must contain exactly 64 lowercase hexadecimal characters" >&2
@@ -53,6 +54,7 @@ printf "\\set migrator_password '%s'\n" "$migrator_password"
 printf "\\set runtime_password '%s'\n" "$runtime_password"
 printf "\\set effect_password '%s'\n" "$effect_password"
 printf "\\set readonly_password '%s'\n" "$readonly_password"
+printf "\\set exporter_password '%s'\n" "$exporter_password"
 cat <<'SQL'
 SELECT 'CREATE ROLE cilexec_owner NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cilexec_owner') \gexec
@@ -65,17 +67,23 @@ SELECT 'CREATE ROLE cilexec_effect_worker LOGIN NOINHERIT NOSUPERUSER NOCREATEDB
 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cilexec_effect_worker') \gexec
 SELECT 'CREATE ROLE cilexec_readonly LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cilexec_readonly') \gexec
+SELECT 'CREATE ROLE cilexec_exporter LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'
+WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'cilexec_exporter') \gexec
 
 ALTER ROLE cilexec_owner NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE cilexec_migrator LOGIN INHERIT NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE cilexec_runtime LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE cilexec_effect_worker LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE cilexec_readonly LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE cilexec_exporter LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE cilexec_readonly SET default_transaction_read_only TO on;
+ALTER ROLE cilexec_exporter SET default_transaction_read_only TO on;
 
 SELECT format('ALTER ROLE cilexec_migrator PASSWORD %L', :'migrator_password') \gexec
 SELECT format('ALTER ROLE cilexec_runtime PASSWORD %L', :'runtime_password') \gexec
 SELECT format('ALTER ROLE cilexec_effect_worker PASSWORD %L', :'effect_password') \gexec
 SELECT format('ALTER ROLE cilexec_readonly PASSWORD %L', :'readonly_password') \gexec
+SELECT format('ALTER ROLE cilexec_exporter PASSWORD %L', :'exporter_password') \gexec
 
 GRANT cilexec_owner TO cilexec_migrator;
 
@@ -86,7 +94,7 @@ SELECT format(
 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_database WHERE datname = :'database_name') \gexec
 
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'database_name') \gexec
-SELECT format('GRANT CONNECT ON DATABASE %I TO cilexec_migrator, cilexec_runtime, cilexec_effect_worker, cilexec_readonly', :'database_name') \gexec
+SELECT format('GRANT CONNECT ON DATABASE %I TO cilexec_migrator, cilexec_runtime, cilexec_effect_worker, cilexec_readonly, cilexec_exporter', :'database_name') \gexec
 SQL
 } | psql --username "$POSTGRES_USER" --dbname postgres --set ON_ERROR_STOP=1
 
@@ -95,9 +103,9 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 CREATE SCHEMA IF NOT EXISTS flyway AUTHORIZATION cilexec_migrator;
 REVOKE ALL ON SCHEMA flyway FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA flyway TO cilexec_migrator;
-GRANT USAGE ON SCHEMA flyway TO cilexec_runtime, cilexec_readonly;
+GRANT USAGE ON SCHEMA flyway TO cilexec_runtime, cilexec_exporter;
 ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_migrator IN SCHEMA flyway
-    GRANT SELECT ON TABLES TO cilexec_runtime, cilexec_readonly;
+    GRANT SELECT ON TABLES TO cilexec_runtime, cilexec_exporter;
 SQL
 
-unset migrator_password runtime_password effect_password readonly_password secret_value
+unset migrator_password runtime_password effect_password readonly_password exporter_password secret_value

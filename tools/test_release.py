@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,8 +10,7 @@ from unittest.mock import patch
 import release
 
 
-GENERATED = ("cilexec-app.jar", "cilexec-market-server.jar", "catalog.json",
-             "repository", release.SHA256_NAME)
+GENERATED = release.PUBLISHED_NAMES
 
 
 def write_set(root: Path, prefix: str, omit: str | None = None) -> None:
@@ -62,6 +63,61 @@ class ReleasePublishTest(unittest.TestCase):
                     release.publish(staging)
             self.assertEqual(set(read_set(distribution).values()), {"old"})
             self.assertFalse(list(distribution.glob(".release-backup-*")))
+
+
+class FormalReleaseValidationTest(unittest.TestCase):
+    REVISION = "a" * 40
+
+    def test_accepts_matching_clean_formal_release(self) -> None:
+        release.validate_formal_release("1.2.3", self.REVISION, "v1.2.3", False,
+                                        self.REVISION, self.REVISION)
+
+    def test_rejects_dirty_release(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "clean Git"):
+            release.validate_formal_release("1.2.3", self.REVISION, "v1.2.3", True)
+
+    def test_rejects_snapshot_release(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "not releasable"):
+            release.validate_formal_release("1.2-SNAPSHOT", self.REVISION,
+                                            "v1.2-SNAPSHOT", False)
+
+    def test_rejects_unknown_revision(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "full Git commit"):
+            release.validate_formal_release("1.2.3", "unknown", "v1.2.3", False)
+
+    def test_rejects_mismatched_tag(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "must be v1.2.3"):
+            release.validate_formal_release("1.2.3", self.REVISION, "v1.2.4", False)
+
+    def test_rejects_tag_not_pointing_at_head(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "does not point at HEAD"):
+            release.validate_formal_release("1.2.3", self.REVISION, "v1.2.3", False,
+                                             self.REVISION, "b" * 40)
+
+    def test_rejects_skipped_tests_for_formal_release(self) -> None:
+        with patch("sys.argv", ["release.py", "--formal", "--tag", "v1.2.3",
+                                "--skip-tests"]):
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    release.parse_arguments()
+
+
+class ReleaseIntegritySetTest(unittest.TestCase):
+    def test_checksums_cover_documents_sbom_manifest_and_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in release.REQUIRED_PAYLOAD_NAMES:
+                (root / name).write_text(name, encoding="utf-8")
+            package = root / "repository/packages/example/tool/1.0/tool.db"
+            package.parent.mkdir(parents=True)
+            package.write_bytes(b"package")
+            (root / release.MANIFEST_NAME).write_text("{}", encoding="utf-8")
+
+            release.write_checksums(root)
+
+            declared = {line[66:] for line in
+                        (root / release.SHA256_NAME).read_text(encoding="ascii").splitlines()}
+            self.assertEqual(declared, set(release.expected_files(root)))
 
 
 if __name__ == "__main__":

@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd -P)"
+project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$project_dir"
 
-project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
+if [[ -z "${CILEXEC_IMAGE:-}" && -f "$project_dir/.env" ]]; then
+    while IFS='=' read -r key value; do
+        if [[ "$key" == "CILEXEC_IMAGE" && "$value" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
+            export CILEXEC_IMAGE="$value"
+        fi
+    done < "$project_dir/.env"
+fi
+
+hash_text() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -c1-64
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -c1-64
+    else
+        echo "Error: sha256sum or shasum is required." >&2
+        return 1
+    fi
+}
+project_hash="$(printf '%s\n' "$project_dir" | hash_text)"
+project_hash="${project_hash:0:8}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
 export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
-image_name="cilexec:${CILEXEC_IMAGE_TAG:-local}"
+image_name="${CILEXEC_IMAGE:-cilexec:local}"
 rebuild=false
 
 if [[ "${1:-}" == "--rebuild" ]]; then
@@ -34,14 +53,23 @@ if ! "${compose[@]}" ps postgres 2>/dev/null | grep -q 'Up'; then
     "${compose[@]}" up -d postgres
 fi
 
-if [[ "$rebuild" == true ]] || ! docker image inspect "$image_name" >/dev/null 2>&1; then
+if [[ "$rebuild" == true ]]; then
     if [[ ! -d "$project_dir/src" ]]; then
-        echo "Error: image $image_name is missing and this distribution has no source to build it." >&2
+        echo "Error: --rebuild requires a source distribution." >&2
         exit 1
     fi
     echo "Building image $image_name..."
     "${compose[@]}" build
     echo "Image $image_name built."
+elif ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    if [[ -n "${CILEXEC_IMAGE:-}" && "$image_name" != "cilexec:local" ]]; then
+        docker pull "$image_name"
+    elif [[ -d "$project_dir/src" ]]; then
+        "${compose[@]}" build
+    else
+        echo "Error: release image $image_name is unavailable." >&2
+        exit 1
+    fi
 else
     echo "Reusing image $image_name (use --rebuild to rebuild it)."
 fi

@@ -213,7 +213,7 @@ public final class CilExecApplication {
     }
 
     private static void runExport(CilExecConfig config, BuildInfo buildInfo, Path output) {
-        try (HikariDataSource dataSource = DataSourceFactory.create(config.migratorDatabase())) {
+        try (HikariDataSource dataSource = DataSourceFactory.create(config.exporterDatabase())) {
             LogicalExportReport report = new LogicalExportService(dataSource, Clock.systemUTC())
                     .export(output, buildInfo);
             System.out.printf("Exported %d tables and %d rows to %s (SHA-256 %s)%n",

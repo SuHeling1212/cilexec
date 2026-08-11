@@ -238,6 +238,195 @@ class TerminalReplServiceTest {
         assertTrue(next.source().endsWith("return 1 + 1\n"), next.source());
     }
 
+    @Test
+    void keepsTheImportedAliasUsableAfterAFullScreenProcessFailure() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        byte[] database = new com.follarce.package_manager.PackageBuilder().build(
+                new com.follarce.package_manager.PackageManifest("demo", "pkg", "1.0.0",
+                        "fcl-1",
+                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Module(
+                                "main", "main.fcl")), java.util.List.of(), java.util.List.of(),
+                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
+                                "run", "main", "run")),
+                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Export(
+                                "greet", "main", "greet")), java.util.List.of()),
+                path -> ("func greet(value) { return \"Hello, \" + value }\n"
+                        + "func run() { return null }\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var descriptor = new com.follarce.persistence.sqlite.SqlitePackageReader().inspect(database);
+        String packageId = descriptor.databaseFileHash();
+        var stored = com.follarce.domain.vfs.StoredObject.create(
+                new com.follarce.domain.vfs.BinaryContent(database),
+                "application/vnd.sqlite3", NOW);
+        persistence.vfs.saveObject(stored);
+        var objectHash = stored.objectHash();
+        persistence.packages.releases.put(
+                new com.follarce.domain.packageinfo.PackageRelease.Hash(
+                        new com.follarce.domain.vfs.ObjectHash(descriptor.packageHash())),
+                new com.follarce.domain.packageinfo.PackageRelease(
+                        new com.follarce.domain.packageinfo.PackageRelease.Coordinate(
+                                "demo", "pkg", "1.0.0"),
+                        new com.follarce.domain.packageinfo.PackageRelease.Hash(
+                                new com.follarce.domain.vfs.ObjectHash(descriptor.packageHash())),
+                        objectHash, objectHash, NOW));
+
+        repl.submit(owner, sessionId, "import \"" + packageId + "\" as \"m\"");
+        try {
+            run(persistence, executor, owner);
+        } catch (AssertionError failure) {
+            TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
+            System.out.println("DEBUG after declaration: status=" + snapshot.status()
+                    + " errors=" + snapshot.errors());
+            throw failure;
+        }
+
+        // The editor failure mode: a full-screen submission links the imported alias,
+        // suspends on io.readKey, then crashes on a mouse event map that has no "key".
+        repl.submit(owner, sessionId,
+                "ok = m.greet(\"first\")\nevent = io.readKey()\nkey = event[\"key\"]");
+        int guard = 0;
+        while (persistence.processes.current.status() != CilProcess.Status.WAITING_INPUT
+                && guard++ < 30) {
+            CilProcess waiting = persistence.processes.current;
+            if (waiting.status() == CilProcess.Status.READY) {
+                CilProcess claimedWaiting = waiting.claim(waiting.executionEpoch() + 1, NOW);
+                persistence.processes.current = claimedWaiting;
+                SchedulerClaim waitingClaim = new SchedulerClaim(
+                        claimedWaiting.identity().processUid(), owner, UUID.randomUUID(),
+                        UUID.randomUUID(), claimedWaiting.executionEpoch(), NOW, NOW,
+                        NOW.plus(Duration.ofMinutes(1)));
+                persistence.scheduler.lease = waitingClaim;
+                executor.executeOne(waitingClaim);
+            }
+        }
+        assertEquals(CilProcess.Status.WAITING_INPUT,
+                persistence.processes.current.status());
+
+
+        new com.follarce.terminal.TerminalService(persistence, CLOCK).submit(owner, sessionId,
+                "{\"kind\":\"mouse\",\"button\":\"LEFT\",\"action\":\"PRESS\",\"scroll\":0,"
+                        + "\"x\":5,\"y\":3,\"shift\":false,\"alt\":false,\"ctrl\":false}");
+        try {
+            run(persistence, executor, owner);
+        } catch (AssertionError failure) {
+            TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
+            System.out.println("DEBUG after mouse: status=" + snapshot.status()
+                    + " errors=" + snapshot.errors());
+            throw failure;
+        }
+        TerminalReplService.Snapshot afterMouse = repl.active(owner, sessionId).orElseThrow();
+        assertTrue(afterMouse.failed(),
+                "the mouse map must fail the submission exactly like the editor crash");
+
+        // The durable library and the process pin survive the failure: the alias still works.
+        repl.submit(owner, sessionId, "m.greet(\"again\")");
+        run(persistence, executor, owner);
+        assertEquals("Hello, again", repl.active(owner, sessionId).orElseThrow().result());
+    }
+
+    @Test
+    void rebindingAnAliasReplacesTheLibraryImportAndTheProcessPin() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        PackageHashes first = registerPackage(persistence, "pkg", "1.0.0", "first");
+        PackageHashes second = registerPackage(persistence, "pkg", "1.1.0", "second");
+        String firstHash = first.fileHash;
+        String secondHash = second.fileHash;
+
+        repl.submit(owner, sessionId, "import \"" + firstHash + "\" as \"m\"");
+        run(persistence, executor, owner);
+        repl.submit(owner, sessionId, "import \"" + secondHash + "\" as \"m\"");
+        com.follarce.fcl.FclProgram secondCompiled = new FclCompiler().compile(
+                "import \"" + secondHash + "\" as \"m\"");
+        run(persistence, executor, owner);
+
+        com.follarce.fcl.FclContinuation restored =
+                new com.follarce.application.FclPersistenceBridge(
+                        new FclContinuationCodec()).restore(
+                        persistence.processes.current.continuation());
+        Object library = restored.scope().get(TerminalReplService.LIBRARY_SCOPE_KEY);
+        assertTrue(library instanceof String text && text.contains(secondHash)
+                        && !text.contains(firstHash),
+                "re-importing the same alias must replace the old import line: "
+                        + String.valueOf(library));
+        assertEquals(1, countImportLines(String.valueOf(library)),
+                "the library must keep exactly one binding for the alias: "
+                        + String.valueOf(library));
+
+        com.follarce.domain.packageinfo.ProcessPackageBinding pin =
+                persistence.packages.findProcessBinding(
+                        persistence.processes.current.identity().processUid(), "m")
+                        .orElseThrow();
+        assertEquals(second.packageHash, pin.packageHash().value().value(),
+                "the process pin must follow the last import");
+
+        repl.submit(owner, sessionId, "m.greet(\"ok\")");
+        run(persistence, executor, owner);
+        assertEquals("second:ok", repl.active(owner, sessionId).orElseThrow().result());
+    }
+
+    private record PackageHashes(String fileHash, String packageHash) { }
+
+    private static PackageHashes registerPackage(ProgramServiceTest.TestPersistence persistence,
+                                                 String name, String version, String tag) {
+        byte[] database = new com.follarce.package_manager.PackageBuilder().build(
+                new com.follarce.package_manager.PackageManifest("demo", name, version, "fcl-1",
+                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Module(
+                                "main", "main.fcl")), java.util.List.of(), java.util.List.of(),
+                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
+                                "run", "main", "run")),
+                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Export(
+                                "greet", "main", "greet")), java.util.List.of()),
+                path -> ("func greet(value) { return \"" + tag + ":\" + value }\n"
+                        + "func run() { return null }\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var descriptor = new com.follarce.persistence.sqlite.SqlitePackageReader().inspect(database);
+        var stored = com.follarce.domain.vfs.StoredObject.create(
+                new com.follarce.domain.vfs.BinaryContent(database),
+                "application/vnd.sqlite3", NOW);
+        persistence.vfs.saveObject(stored);
+        var objectHash = stored.objectHash();
+        persistence.packages.releases.put(
+                new com.follarce.domain.packageinfo.PackageRelease.Hash(
+                        new com.follarce.domain.vfs.ObjectHash(descriptor.packageHash())),
+                new com.follarce.domain.packageinfo.PackageRelease(
+                        new com.follarce.domain.packageinfo.PackageRelease.Coordinate(
+                                "demo", name, version),
+                        new com.follarce.domain.packageinfo.PackageRelease.Hash(
+                                new com.follarce.domain.vfs.ObjectHash(descriptor.packageHash())),
+                        objectHash, objectHash, NOW));
+        return new PackageHashes(descriptor.databaseFileHash(), descriptor.packageHash());
+    }
+
+    private static int countImportLines(String library) {
+        int count = 0;
+        for (String line : library.split("\n")) {
+            if (line.stripLeading().startsWith("import ")) count++;
+        }
+        return count;
+    }
+
     private static void run(ProgramServiceTest.TestPersistence persistence,
                             ProcessStatementExecutor executor, UUID owner) {
         int steps = 0;

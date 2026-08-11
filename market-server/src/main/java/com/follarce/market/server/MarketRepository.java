@@ -55,7 +55,6 @@ final class MarketRepository {
         for (Map.Entry<String, Publication> entry : publications.entrySet()) {
             loaded.add(load(entry.getKey(), entry.getValue()));
         }
-        markLatest(loaded);
         loaded.sort(Comparator.comparing(value -> value.record().coordinate()));
         Map<String, PublishedPackage> byHash = new LinkedHashMap<>();
         for (PublishedPackage value : loaded) {
@@ -152,7 +151,7 @@ final class MarketRepository {
         String kind = required(metadata, "package_kind");
         String hash = sha256(real);
         PackageRecord record = new PackageRecord(identity[0], identity[1], identity[2], kind,
-                coordinate, hash, "/market/v1/" + hash, bytes, List.copyOf(dependencies), false,
+                coordinate, hash, "/market/v1/" + hash, bytes, List.copyOf(dependencies),
                 publication.summary(), publication.description(), publication.tags());
         return new PublishedPackage(real, record);
     }
@@ -180,23 +179,6 @@ final class MarketRepository {
             result.put(coordinate, new Publication(summary, description, tags));
         }
         return Map.copyOf(result);
-    }
-
-    private static void markLatest(List<PublishedPackage> packages) {
-        Map<String, PublishedPackage> latest = new LinkedHashMap<>();
-        for (PublishedPackage value : packages) {
-            String key = value.record().namespace() + "\n" + value.record().name();
-            PublishedPackage previous = latest.get(key);
-            if (previous == null || compareVersions(value.record().version(),
-                    previous.record().version()) > 0) latest.put(key, value);
-        }
-        Set<String> latestIds = latest.values().stream().map(value -> value.record().sha256())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        for (int index = 0; index < packages.size(); index++) {
-            PublishedPackage value = packages.get(index);
-            packages.set(index, new PublishedPackage(value.path(), value.record().withLatest(
-                    latestIds.contains(value.record().sha256()))));
-        }
     }
 
     static int compareVersions(String left, String right) {
@@ -292,13 +274,8 @@ final class MarketRepository {
 
     record PackageRecord(String namespace, String name, String version, String kind,
                          String coordinate, String sha256, String download, long bytes,
-                         List<Dependency> dependencies, boolean latest, String summary,
+                         List<Dependency> dependencies, String summary,
                          String description, List<String> tags) {
-        PackageRecord withLatest(boolean value) {
-            return new PackageRecord(namespace, name, version, kind, coordinate, sha256,
-                    download, bytes, dependencies, value, summary, description, tags);
-        }
-
         Map<String, Object> asMap() {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("namespace", namespace);
@@ -312,7 +289,6 @@ final class MarketRepository {
             result.put("mediaType", "application/vnd.sqlite3");
             result.put("dependencies", dependencies.stream().map(dependency -> Map.of(
                     "sha256", dependency.sha256(), "optional", dependency.optional())).toList());
-            result.put("latest", latest);
             if (!summary.isEmpty()) result.put("summary", summary);
             if (!description.isEmpty()) result.put("description", description);
             if (!tags.isEmpty()) result.put("tags", tags);

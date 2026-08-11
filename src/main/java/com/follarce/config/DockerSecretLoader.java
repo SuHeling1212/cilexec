@@ -6,7 +6,11 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.Set;
 
 /** Reads a Docker/external secret without retaining it as application configuration text. */
 public final class DockerSecretLoader {
@@ -24,6 +28,7 @@ public final class DockerSecretLoader {
                     || Files.isSymbolicLink(path)) {
                 throw new ConfigException("Secret file does not exist: " + path);
             }
+            requirePrivatePosixPermissions(path);
             if (Files.size(path) > MAX_SECRET_BYTES) {
                 throw new ConfigException("Secret file exceeds 64 KiB: " + path);
             }
@@ -51,6 +56,29 @@ public final class DockerSecretLoader {
             throw new ConfigException("Cannot read secret file: " + path, exception);
         } finally {
             if (bytes != null) Arrays.fill(bytes, (byte) 0);
+        }
+    }
+
+    private static void requirePrivatePosixPermissions(Path path) throws IOException {
+        try {
+            Set<PosixFilePermission> permissions = Files.readAttributes(path,
+                    PosixFileAttributes.class, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                    .permissions();
+            Set<PosixFilePermission> forbidden = EnumSet.of(
+                    PosixFilePermission.OWNER_EXECUTE,
+                    PosixFilePermission.GROUP_READ,
+                    PosixFilePermission.GROUP_WRITE,
+                    PosixFilePermission.GROUP_EXECUTE,
+                    PosixFilePermission.OTHERS_READ,
+                    PosixFilePermission.OTHERS_WRITE,
+                    PosixFilePermission.OTHERS_EXECUTE);
+            if (!permissions.contains(PosixFilePermission.OWNER_READ)
+                    || permissions.stream().anyMatch(forbidden::contains)) {
+                throw new ConfigException("Secret file must be owner-readable and inaccessible "
+                        + "to group/other users (mode 0400 or 0600): " + path);
+            }
+        } catch (UnsupportedOperationException ignored) {
+            // Non-POSIX filesystems still retain the no-symlink and regular-file checks.
         }
     }
 

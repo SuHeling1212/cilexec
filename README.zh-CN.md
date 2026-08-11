@@ -15,14 +15,14 @@
 - **持久化 IPC 与定时器** —— 直连/频道/主题/广播消息和定时器可跨重启唤醒暂停的进程。
 - **可验证导出** —— 基于单个只读快照的 PostgreSQL → SQLite 逻辑导出，端到端哈希校验。
 - **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；另有无头协议供宿主脚本调用。
-- **首个正式版前零迁移** —— schema 变更就地修改单一 Flyway 基线；旧格式直接废弃，不做迁移。
+- **仅前向 Schema 升级** —— 1.0 的 V001 基线永久冻结；后续持久格式变更使用不可修改的 V002+，降级通过恢复备份完成。
 
 ## 快速开始
 
 依赖：JDK 26、Maven 3.9+、PostgreSQL 17.1+。
 
 ```bash
-./Install.sh                    # 一条命令：密钥 + PostgreSQL + 迁移 + 终端
+./tools/Install.sh            # 一条命令：密钥 + PostgreSQL + 迁移 + 终端
 ```
 
 首次使用会要求设置管理员密码（默认用户名 `local`）。然后直接试 FCL：
@@ -37,15 +37,18 @@ return sum
 从宿主免交互执行单次提交（不进入交互终端）：
 
 ```bash
-./Headless.sh 'value = 41'
-./Headless.sh 'io.println(value + 1)'     # 42；同一宿主终端的调用共享同一持久 REPL 进程
+./tools/Headless.sh 'value = 41'
+./tools/Headless.sh 'io.println(value + 1)'     # 42；同一宿主终端的调用共享同一持久 REPL 进程
 ```
+
+生产环境应使用已签名的正式镜像和制品，并遵循[发行验证](docs/release.md)及
+[备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。
 
 不使用 Docker 时直接运行 JAR（需先有数据库）：
 
 ```bash
-java -jar target/cilexec-app.jar terminal
 java -jar target/cilexec-app.jar migrate
+java -jar target/cilexec-app.jar terminal
 ```
 
 ## 核心概念
@@ -84,14 +87,14 @@ src/main/java/com/follarce
   exporter/       可验证 PostgreSQL → SQLite 导出
   terminal/       交互与无头控制面
   auth/ audit/ health/ config/ extension/   安全、运维与扩展面
-src/main/resources/db/baseline/   单一 Flyway 基线（角色、RLS、SQL 函数）
+src/main/resources/db/baseline/   已冻结的 V001 模块（角色、RLS、SQL 函数）
 ```
 
 ## 构建与测试
 
 ```bash
-mvn clean test        # 270+ 单元、生命周期、崩溃恢复测试
-mvn clean verify      # 打包 target/cilexec-app.jar
+mvn clean test        # 293+ 单元与生命周期测试
+mvn clean verify      # 强制 PostgreSQL/崩溃恢复集成测试、质量门禁与 JAR
 ```
 
 ## 文档

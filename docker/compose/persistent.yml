@@ -10,8 +10,8 @@ services:
       - cilexec-postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
   cilexec:
-    # :shutdown must leave the shared Runtime stopped until Install.sh starts it again.
-    restart: "no"
+    # Production availability takes precedence over the interactive :shutdown command.
+    restart: unless-stopped
 
 volumes:
   cilexec-postgres-data:

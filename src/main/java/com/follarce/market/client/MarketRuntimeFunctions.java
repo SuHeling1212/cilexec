@@ -55,7 +55,6 @@ public final class MarketRuntimeFunctions {
                 .registerContextual("market", "download", this::download)
                 .registerContextual("market", "install", this::install)
                 .register("market", "list", this::list)
-                .registerContextual("market", "upgrade", this::upgrade)
                 .register("market", "uninstall", this::uninstall)
                 .register("market", "help", this::help)
                 .register("market", "run", this::run);
@@ -139,92 +138,10 @@ public final class MarketRuntimeFunctions {
                 retained.add(receipt);
                 continue;
             }
-            removed = host.removeBinding(receipt.environmentId(), receipt.binding()) || removed;
-            host.removeFile(packagePath(packageId));
+            removed = host.removeFile(packagePath(packageId)) || removed;
         }
         if (retained.size() != current.size()) saveReceipts(retained);
         return removed;
-    }
-
-    private Object upgrade(List<Object> arguments, FclFunctionRegistry.Invocation invocation) {
-        arity(arguments, 0, "market.upgrade");
-        String stateKey = "cilexec.market.upgrade.updated." + invocation.expressionId();
-        if (!invocation.continuation().scope().contains(stateKey)) {
-            update(List.of(), invocation);
-            invocation.continuation().scope().put(stateKey, true);
-        }
-        try {
-            MarketIndex index = loadIndex();
-            List<Map<String, Object>> outcomes = new ArrayList<>();
-            for (Receipt receipt : List.copyOf(receipts())) {
-                PackageRecord latest = latest(index, receipt.namespace(), receipt.name());
-                if (latest == null || latest.sha256().equals(receipt.sha256())) continue;
-                prepareInstall(index, latest.sha256(), new LinkedHashSet<>(), invocation);
-                host.removeBinding(receipt.environmentId(), receipt.binding());
-                try {
-                    Map<String, Object> outcome = installExact(index, latest.sha256(),
-                            new LinkedHashSet<>(), invocation);
-                    rebind(receipt, outcome);
-                    outcomes.add(outcome);
-                } catch (FclSuspension suspension) {
-                    throw suspension;
-                } catch (RuntimeException failure) {
-                    rollbackBinding(receipt, failure);
-                    throw failure;
-                }
-            }
-            invocation.continuation().scope().remove(stateKey);
-            return Map.of("ok", true, "upgraded", List.copyOf(outcomes));
-        } catch (FclSuspension suspension) {
-            throw suspension;
-        } catch (RuntimeException failure) {
-            invocation.continuation().scope().remove(stateKey);
-            throw failure;
-        }
-    }
-
-    /** Restores the binding that was removed before an upgrade onto the installed release. */
-    private void rebind(Receipt receipt, Map<String, Object> outcome) {
-        String hash = null;
-        if (outcome.get("installed") instanceof Map<?, ?> installed
-                && installed.get("hash") instanceof String value) {
-            hash = value;
-        } else if (outcome.get("receipt") instanceof Map<?, ?> installedReceipt
-                && installedReceipt.get("packageHash") instanceof String value) {
-            hash = value;
-        }
-        if (hash != null) {
-            host.pin(receipt.environmentId(), receipt.binding(), hash);
-        }
-    }
-
-    /** Re-pins the previous release, preserving the original failure when the rollback conflicts. */
-    private void rollbackBinding(Receipt receipt, RuntimeException failure) {
-        try {
-            host.pin(receipt.environmentId(), receipt.binding(), receipt.packageHash());
-        } catch (RuntimeException rollbackFailure) {
-            failure.addSuppressed(rollbackFailure);
-        }
-    }
-
-    /** Downloads the new release and installs its dependencies before replacing an old binding. */
-    private void prepareInstall(MarketIndex index, String packageId, Set<String> visiting,
-                                FclFunctionRegistry.Invocation invocation) {
-        if (visiting.size() >= MAX_DEPENDENCY_DEPTH || !visiting.add(packageId)) {
-            throw new FclRuntimeException("Cyclic or excessively deep market dependency: "
-                    + packageId);
-        }
-        try {
-            PackageRecord record = requireRecord(index, packageId);
-            for (Dependency dependency : record.dependencies()) {
-                if (!dependency.optional()) {
-                    installExact(index, dependency.sha256(), visiting, invocation);
-                }
-            }
-            downloadRecord(record, invocation);
-        } finally {
-            visiting.remove(packageId);
-        }
     }
 
     private Object help(List<Object> arguments) {
@@ -244,7 +161,6 @@ public final class MarketRuntimeFunctions {
         Receipt existing = receipts().stream()
                 .filter(receipt -> receipt.sha256().equals(packageId)).findFirst().orElse(null);
         if (existing != null) {
-            host.pin(existing.environmentId(), existing.binding(), existing.packageHash());
             return Map.of("ok", true, "alreadyInstalled", true,
                     "receipt", existing.asMap());
         }
@@ -263,21 +179,14 @@ public final class MarketRuntimeFunctions {
                 }
             }
             downloadRecord(record, invocation);
-            Map<String, Object> installed = host.install(packagePath(packageId), record.name());
+            Map<String, Object> installed = host.install(packagePath(packageId));
             if (!packageId.equals(installed.get("sha256"))
                     || !record.coordinate().equals(installed.get("coordinate"))) {
-                Object environment = installed.get("environmentId");
-                Object binding = installed.get("binding");
-                if (environment instanceof String environmentId && binding instanceof String name) {
-                    host.removeBinding(environmentId, name);
-                }
                 throw new FclRuntimeException(
                         "Downloaded package identity does not match the market index");
             }
             Receipt receipt = new Receipt(packageId, record.coordinate(), record.namespace(),
-                    record.name(), record.version(), text(installed.get("binding"),
-                    "installed package binding"), text(installed.get("environmentId"),
-                    "installed package environment"), text(installed.get("hash"),
+                    record.name(), record.version(), text(installed.get("hash"),
                     "installed package hash"));
             saveReceipt(receipt);
             return Map.of("ok", true, "package", record.asMap(),
@@ -372,9 +281,8 @@ public final class MarketRuntimeFunctions {
             boolean optional = (Boolean) dependency.get("optional");
             dependencies.add(new Dependency(dependencyId, optional));
         }
-        boolean latest = Boolean.TRUE.equals(record.get("latest"));
         return new PackageRecord(namespace, name, version, kind, coordinate, sha256, download,
-                bytes, List.copyOf(dependencies), latest, optionalText(record.get("summary")),
+                bytes, List.copyOf(dependencies), optionalText(record.get("summary")),
                 optionalText(record.get("description")), stringList(record.get("tags")));
     }
 
@@ -391,7 +299,7 @@ public final class MarketRuntimeFunctions {
             throw new FclRuntimeException("Market receipts are invalid");
         }
         List<Receipt> receipts = new ArrayList<>();
-        Set<String> bindings = new LinkedHashSet<>();
+        Set<String> identities = new LinkedHashSet<>();
         for (Object value : values) {
             if (!(value instanceof Map<?, ?> item)) {
                 throw new FclRuntimeException("Market receipt is invalid");
@@ -403,16 +311,12 @@ public final class MarketRuntimeFunctions {
                         safeName(item.get("namespace"), "receipt namespace"),
                         safeName(item.get("name"), "receipt name"),
                         safeName(item.get("version"), "receipt version"),
-                        text(item.get("binding"), "receipt binding"),
-                        UUID.fromString(text(item.get("environmentId"), "receipt environment"))
-                                .toString(),
                         packageId(item.get("packageHash")));
             } catch (IllegalArgumentException invalid) {
                 throw new FclRuntimeException("Market receipt is invalid", invalid);
             }
             if (!receipt.coordinate().equals(receipt.namespace() + "/" + receipt.name()
-                    + "/" + receipt.version()) || !bindings.add(receipt.environmentId()
-                    + "\n" + receipt.binding())) {
+                    + "/" + receipt.version()) || !identities.add(receipt.sha256())) {
                 throw new FclRuntimeException("Market receipt identity is invalid");
             }
             receipts.add(receipt);
@@ -423,8 +327,7 @@ public final class MarketRuntimeFunctions {
     private void saveReceipt(Receipt receipt) {
         List<Receipt> updated = new ArrayList<>();
         for (Receipt current : receipts()) {
-            if (!current.environmentId().equals(receipt.environmentId())
-                    || !current.binding().equals(receipt.binding())) updated.add(current);
+            if (!current.sha256().equals(receipt.sha256())) updated.add(current);
         }
         updated.add(receipt);
         saveReceipts(updated);
@@ -520,12 +423,6 @@ public final class MarketRuntimeFunctions {
                 new FclRuntimeException("Unknown market package ID: " + packageId));
     }
 
-    private static PackageRecord latest(MarketIndex index, String namespace, String name) {
-        return index.packages().stream().filter(PackageRecord::latest)
-                .filter(record -> record.namespace().equals(namespace)
-                        && record.name().equals(name)).findFirst().orElse(null);
-    }
-
     private static String packagePath(String packageId) {
         return PACKAGE_ROOT + "/" + packageId + ".db";
     }
@@ -537,9 +434,8 @@ public final class MarketRuntimeFunctions {
                 + "market.info(sha256)      Show one package\n"
                 + "market.download(sha256)  Download and verify a package\n"
                 + "market.install(sha256)   Install exact package and dependencies\n"
-                + "market.list()            List market-managed installations\n"
-                + "market.upgrade()         Upgrade market-managed installations\n"
-                + "market.uninstall(sha256) Remove a market-managed binding\n"
+                + "market.list()            List installed package hashes\n"
+                + "market.uninstall(sha256) Remove an installed package\n"
                 + "market.origin()          Show the configured mirror\n"
                 + "market.run()             Show client version and help";
     }
@@ -640,7 +536,7 @@ public final class MarketRuntimeFunctions {
 
     private record PackageRecord(String namespace, String name, String version, String kind,
                                  String coordinate, String sha256, String download, long bytes,
-                                 List<Dependency> dependencies, boolean latest, String summary,
+                                 List<Dependency> dependencies, String summary,
                                  String description, List<String> tags) {
         private Map<String, Object> asMap() {
             Map<String, Object> result = new LinkedHashMap<>();
@@ -654,7 +550,6 @@ public final class MarketRuntimeFunctions {
             result.put("bytes", bytes);
             result.put("dependencies", dependencies.stream().map(dependency -> Map.of(
                     "sha256", dependency.sha256(), "optional", dependency.optional())).toList());
-            result.put("latest", latest);
             if (!summary.isEmpty()) result.put("summary", summary);
             if (!description.isEmpty()) result.put("description", description);
             if (!tags.isEmpty()) result.put("tags", tags);
@@ -663,12 +558,10 @@ public final class MarketRuntimeFunctions {
     }
 
     private record Receipt(String sha256, String coordinate, String namespace, String name,
-                           String version, String binding, String environmentId,
-                           String packageHash) {
+                           String version, String packageHash) {
         private Map<String, Object> asMap() {
             return Map.of("sha256", sha256, "coordinate", coordinate,
                     "namespace", namespace, "name", name, "version", version,
-                    "binding", binding, "environmentId", environmentId,
                     "packageHash", packageHash);
         }
     }
@@ -685,8 +578,6 @@ public final class MarketRuntimeFunctions {
         boolean fileMatches(String path, String sha256, long bytes);
         Object httpGet(String url, FclFunctionRegistry.Invocation invocation);
         Object download(String url, String path, FclFunctionRegistry.Invocation invocation);
-        Map<String, Object> install(String path, String binding);
-        boolean removeBinding(String environmentId, String binding);
-        void pin(String environmentId, String binding, String packageHash);
+        Map<String, Object> install(String path);
     }
 }

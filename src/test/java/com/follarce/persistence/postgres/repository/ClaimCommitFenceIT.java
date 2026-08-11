@@ -21,29 +21,24 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Exercises the final statement-commit fence against a real PostgreSQL lock table. */
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 class ClaimCommitFenceIT {
     private static final long CONTROL_KEY = 8_201_407_713L;
     private static final long PROOF_KEY = -7_114_553_029L;
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
-            "postgres:18.0-alpine3.22");
+            System.getProperty("cilexec.test.postgres.image", "postgres:17.10-alpine3.23"));
 
     @BeforeAll
     static void migrate() throws Exception {
-        try (Connection connection = adminConnection();
-             Statement statement = connection.createStatement()) {
-            statement.execute("CREATE ROLE cilexec_owner NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_migrator NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_runtime NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_effect_worker NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_readonly NOLOGIN");
-            statement.execute("ALTER DATABASE \"" + connection.getCatalog().replace("\"", "\"\"")
-                    + "\" OWNER TO cilexec_owner");
+        try (Connection connection = adminConnection()) {
+            com.follarce.persistence.postgres.PostgresTestBootstrap.createServiceRoles(connection);
         }
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(POSTGRES.getJdbcUrl(),
+                        com.follarce.persistence.postgres.PostgresTestBootstrap.MIGRATOR_ROLE,
+                        com.follarce.persistence.postgres.PostgresTestBootstrap.DEFAULT_PASSWORD)
                 .locations("classpath:db/migration")
                 .defaultSchema("flyway")
                 .schemas("flyway")

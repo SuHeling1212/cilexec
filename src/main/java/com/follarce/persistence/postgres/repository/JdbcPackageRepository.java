@@ -1,7 +1,5 @@
 package com.follarce.persistence.postgres.repository;
 
-import com.follarce.domain.packageinfo.PackageBinding;
-import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
@@ -109,132 +107,18 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     }
 
     @Override
-    public void saveEnvironment(PackageEnvironment environment) {
-        String sql = "INSERT INTO package.environment(environment_id,owner_id,environment_name,"
-                + "parent_environment_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?) "
-                + "ON CONFLICT (environment_id) DO UPDATE SET environment_name=EXCLUDED.environment_name,"
-                + "parent_environment_id=EXCLUDED.parent_environment_id,status=EXCLUDED.status,"
-                + "updated_at=EXCLUDED.updated_at";
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setObject(1, environment.environmentId());
-            statement.setObject(2, environment.ownerId());
-            statement.setString(3, environment.name());
-            JdbcValues.nullableUuid(statement, 4, environment.parentEnvironmentId());
-            statement.setString(5, environment.status().name());
-            statement.setTimestamp(6, java.sql.Timestamp.from(environment.createdAt()));
-            statement.setTimestamp(7, java.sql.Timestamp.from(environment.createdAt()));
-            requireOne("package.saveEnvironment", statement.executeUpdate());
-        } catch (SQLException exception) {
-            throw failure("package.saveEnvironment", exception);
-        }
-    }
-
-    @Override
-    public Optional<PackageEnvironment> findEnvironment(UUID environmentId) {
-        return findEnvironment("package.findEnvironment", "WHERE environment_id=?",
-                statement -> statement.setObject(1, environmentId));
-    }
-
-    @Override
-    public Optional<PackageEnvironment> findEnvironmentByName(String name) {
-        return findEnvironment("package.findEnvironmentByName", "WHERE environment_name=?",
-                statement -> statement.setString(1, name));
-    }
-
-    @Override
-    public List<PackageEnvironment> findEnvironments() {
-        String sql = "SELECT environment_id,owner_id,environment_name,parent_environment_id,"
-                + "status,created_at FROM package.environment ORDER BY environment_name,environment_id";
-        try (PreparedStatement statement = connection.prepareStatement(sql);
-             ResultSet rows = statement.executeQuery()) {
-            List<PackageEnvironment> environments = new java.util.ArrayList<>();
-            while (rows.next()) environments.add(mapEnvironment(rows));
-            return List.copyOf(environments);
-        } catch (SQLException exception) {
-            throw failure("package.findEnvironments", exception);
-        }
-    }
-
-    @Override
-    public void saveBinding(PackageBinding binding) {
-        String sql = "INSERT INTO package.binding(environment_id,owner_id,binding_name,package_hash,bound_at,bound_by) "
-                + "SELECT environment_id,owner_id,?,?,?,owner_id FROM package.environment WHERE environment_id=? "
-                + "ON CONFLICT (environment_id,binding_name) DO NOTHING";
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, binding.binding());
-            statement.setBytes(2, JdbcValues.hash(binding.packageHash().value()));
-            statement.setTimestamp(3, java.sql.Timestamp.from(binding.createdAt()));
-            statement.setObject(4, binding.environmentId());
-            int affected = statement.executeUpdate();
-            if (affected == 0) {
-                PackageBinding persisted = findBinding(binding.environmentId(), binding.binding())
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Package binding target is missing"));
-                if (!persisted.packageHash().equals(binding.packageHash())) {
-                    throw new IllegalStateException(
-                            "Package binding is immutable until explicitly removed: "
-                                    + binding.binding());
-                }
-            }
-        } catch (SQLException exception) {
-            throw failure("package.saveBinding", exception);
-        }
-    }
-
-    @Override
-    public Optional<PackageBinding> findBinding(UUID environmentId, String binding) {
-        String sql = "SELECT environment_id,binding_name,package_hash,bound_at FROM package.binding "
-                + "WHERE environment_id=? AND binding_name=?";
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setObject(1, environmentId);
-            statement.setString(2, binding);
-            try (ResultSet rows = statement.executeQuery()) {
-                if (!rows.next()) return Optional.empty();
-                return Optional.of(new PackageBinding(
-                        rows.getObject("environment_id", UUID.class),
-                        rows.getString("binding_name"),
-                        new PackageRelease.Hash(JdbcValues.hash(rows.getBytes("package_hash"))),
-                        rows.getTimestamp("bound_at").toInstant()
-                ));
-            }
-        } catch (SQLException exception) {
-            throw failure("package.findBinding", exception);
-        }
-    }
-
-    @Override
-    public boolean deleteBinding(UUID environmentId, String binding) {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM package.binding WHERE environment_id=? AND binding_name=?")) {
-            statement.setObject(1, environmentId);
-            statement.setString(2, binding);
-            return statement.executeUpdate() == 1;
-        } catch (SQLException exception) {
-            throw failure("package.deleteBinding", exception);
-        }
-    }
-
-    @Override
     public void saveProcessBinding(ProcessPackageBinding binding) {
-        String sql = "INSERT INTO process.package_binding(process_uid,owner_id,import_name,environment_id,"
-                + "package_hash,resolved_at) SELECT process_uid,owner_id,?,?,?,? FROM process.process "
-                + "WHERE process_uid=? ON CONFLICT (process_uid,import_name) DO NOTHING";
+        // Last-wins: re-importing the same qualifier re-pins it to the newest hash.
+        String sql = "INSERT INTO process.package_binding(process_uid,owner_id,import_name,"
+                + "package_hash,resolved_at) SELECT process_uid,owner_id,?,?,? FROM process.process "
+                + "WHERE process_uid=? ON CONFLICT (process_uid,import_name) DO UPDATE SET "
+                + "package_hash=EXCLUDED.package_hash,resolved_at=EXCLUDED.resolved_at";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, binding.importName());
-            statement.setObject(2, binding.environmentId());
-            statement.setBytes(3, JdbcValues.hash(binding.packageHash().value()));
-            statement.setTimestamp(4, java.sql.Timestamp.from(binding.resolvedAt()));
-            statement.setObject(5, binding.processUid());
-            int affected = statement.executeUpdate();
-            if (affected == 0) {
-                ProcessPackageBinding persisted = findProcessBinding(
-                        binding.processUid(), binding.importName()).orElseThrow(() ->
-                        new IllegalStateException("Process package binding target is missing"));
-                if (!persisted.environmentId().equals(binding.environmentId())
-                        || !persisted.packageHash().equals(binding.packageHash())) {
-                    throw new IllegalStateException("Process package binding is immutable");
-                }
-            }
+            statement.setBytes(2, JdbcValues.hash(binding.packageHash().value()));
+            statement.setTimestamp(3, java.sql.Timestamp.from(binding.resolvedAt()));
+            statement.setObject(4, binding.processUid());
+            requireOne("package.saveProcessBinding", statement.executeUpdate());
         } catch (SQLException exception) {
             throw failure("package.saveProcessBinding", exception);
         }
@@ -242,20 +126,14 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
 
     @Override
     public Optional<ProcessPackageBinding> findProcessBinding(UUID processUid, String importName) {
-        String sql = "SELECT process_uid,import_name,environment_id,package_hash,resolved_at "
+        String sql = "SELECT process_uid,import_name,package_hash,resolved_at "
                 + "FROM process.package_binding WHERE process_uid=? AND import_name=?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, processUid);
             statement.setString(2, importName);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) return Optional.empty();
-                return Optional.of(new ProcessPackageBinding(
-                        rows.getObject("process_uid", UUID.class),
-                        rows.getString("import_name"),
-                        rows.getObject("environment_id", UUID.class),
-                        new PackageRelease.Hash(JdbcValues.hash(rows.getBytes("package_hash"))),
-                        rows.getTimestamp("resolved_at").toInstant()
-                ));
+                return Optional.of(mapProcessBinding(rows));
             }
         } catch (SQLException exception) {
             throw failure("package.findProcessBinding", exception);
@@ -264,7 +142,7 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
 
     @Override
     public List<ProcessPackageBinding> findProcessBindings(UUID processUid) {
-        String sql = "SELECT process_uid,import_name,environment_id,package_hash,resolved_at "
+        String sql = "SELECT process_uid,import_name,package_hash,resolved_at "
                 + "FROM process.package_binding WHERE process_uid=? ORDER BY import_name";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, processUid);
@@ -278,31 +156,9 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
         }
     }
 
-    private Optional<PackageEnvironment> findEnvironment(String operation, String condition,
-                                                         Binder binder) {
-        String sql = "SELECT environment_id,owner_id,environment_name,parent_environment_id,"
-                + "status,created_at FROM package.environment " + condition;
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            binder.bind(statement);
-            try (ResultSet rows = statement.executeQuery()) {
-                return rows.next() ? Optional.of(mapEnvironment(rows)) : Optional.empty();
-            }
-        } catch (SQLException exception) {
-            throw failure(operation, exception);
-        }
-    }
-
-    private static PackageEnvironment mapEnvironment(ResultSet rows) throws SQLException {
-        UUID parent = rows.getObject("parent_environment_id", UUID.class);
-        return new PackageEnvironment(rows.getObject("environment_id", UUID.class),
-                rows.getObject("owner_id", UUID.class), rows.getString("environment_name"),
-                Optional.ofNullable(parent), PackageEnvironment.Status.valueOf(
-                rows.getString("status")), rows.getTimestamp("created_at").toInstant());
-    }
-
     private static ProcessPackageBinding mapProcessBinding(ResultSet rows) throws SQLException {
         return new ProcessPackageBinding(rows.getObject("process_uid", UUID.class),
-                rows.getString("import_name"), rows.getObject("environment_id", UUID.class),
+                rows.getString("import_name"),
                 new PackageRelease.Hash(JdbcValues.hash(rows.getBytes("package_hash"))),
                 rows.getTimestamp("resolved_at").toInstant());
     }

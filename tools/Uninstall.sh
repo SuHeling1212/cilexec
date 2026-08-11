@@ -5,23 +5,44 @@
 # 此脚本仅删除当前 Compose 项目的容器、卷和网络，以及当前安装目录内
 # 生成的密码文件和默认导出目录；不会全局清理其他实例或 Docker 缓存。
 #
-# 用法: ./Uninstall.sh [--force]
+# 用法: ./tools/Uninstall.sh [--force]
 #   --force  跳过确认提示，直接执行清理
 # ==============================================================================
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd -P)"
+project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$project_dir"
+
+if [[ -z "${CILEXEC_IMAGE:-}" && -f "$project_dir/.env" ]]; then
+    while IFS='=' read -r key value; do
+        if [[ "$key" == "CILEXEC_IMAGE" && "$value" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
+            export CILEXEC_IMAGE="$value"
+        fi
+    done < "$project_dir/.env"
+fi
 
 # ---------------------------------------------------------------------------
 # 配置
 # ---------------------------------------------------------------------------
 # 使用与 install.sh 相同的项目名和卷名计算逻辑，
 # 确保能正确找到并清理对应安装实例的资源。
-project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
+hash_text() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -c1-64
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -c1-64
+    else
+        echo "Error: sha256sum or shasum is required." >&2
+        return 1
+    fi
+}
+project_hash="$(printf '%s\n' "$project_dir" | hash_text)"
+project_hash="${project_hash:0:8}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
 export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
-IMAGE_NAME="cilexec:${CILEXEC_IMAGE_TAG:-local}"
+IMAGE_NAME="${CILEXEC_IMAGE:-cilexec:local}"
+REMOVE_IMAGE=false
+[[ "$IMAGE_NAME" == "cilexec:local" ]] && REMOVE_IMAGE=true
 VOLUME_NAME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
 SECRET_DIR="$project_dir/docker/secrets"
 SECRET_FILES=(
@@ -30,6 +51,10 @@ SECRET_FILES=(
     cilexec-runtime-password
     cilexec-effect-worker-password
     cilexec-readonly-password
+    cilexec-exporter-password
+    postgres-ca.crt
+    postgres-server.crt
+    postgres-server.key
 )
 DEFAULT_EXPORT_DIR="$project_dir/exports"
 configured_export_dir="${CILEXEC_EXPORT_DIRECTORY:-$DEFAULT_EXPORT_DIR}"
@@ -183,7 +208,7 @@ fi
 # ---------------------------------------------------------------------------
 header "第 3 步：删除 Docker 镜像"
 
-if command -v docker >/dev/null 2>&1; then
+if [[ "$REMOVE_IMAGE" == true ]] && command -v docker >/dev/null 2>&1; then
     if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         image_users=$(docker ps -a --filter "ancestor=$IMAGE_NAME" -q 2>/dev/null || true)
         if [[ -n "$image_users" ]]; then
@@ -197,8 +222,10 @@ if command -v docker >/dev/null 2>&1; then
     else
         info "镜像 $IMAGE_NAME 不存在"
     fi
-else
+elif [[ "$REMOVE_IMAGE" == true ]]; then
     warn "Docker 不可用，跳过镜像删除"
+else
+    info "保留共享正式镜像 $IMAGE_NAME"
 fi
 
 # ---------------------------------------------------------------------------

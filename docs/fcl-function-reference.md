@@ -60,8 +60,8 @@ file.append("/demo/hello.txt", " world")
 file.read("/demo/hello.txt")
 
 pkg = package.build("/demo/package.json", "/packages/demo.db")
-package.install("/packages/demo.db", "demo")
-package.run("demo")
+package.install("/packages/demo.db")
+package.run("<package-db-sha256>")
 ```
 
 Administrators do not need a separate `file.admin*` function family. File functions
@@ -77,8 +77,9 @@ while a user with `SYSTEM_ADMIN` can access any user's files, leaving an audit t
 | `:cd <path>` | Change and persist the current VFS working directory. The target must be a directory. |
 | `:pwd` | Show the current working directory. |
 | `:ls [path]` | List the current or the given directory; directory names end with `/`. |
+| `:clear` (alias `:cls`) | Clear the terminal screen. |
 | `:logout` | Return to the login screen, keeping the user's terminal state and working directory. |
-| `:exit` | Disconnect the current terminal connection; the shared Runtime and background processes keep running. |
+| `:exit` (alias `:quit`) | Disconnect the current terminal connection; the shared Runtime and background processes keep running. |
 | `:shutdown` | Prompt for the current administrator's password and shut down the shared Runtime; only users with `SYSTEM_ADMIN` can do this. |
 
 In a real interactive terminal, `↑` / `↓` pick previous FCL or colon commands entered
@@ -108,15 +109,16 @@ terminal context:
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
-market.install("1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557")
-import "editor"
+market.install("9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f")
+import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "editor"
 editor.open("notes.txt")
 ```
 
-Its package coordinate is `cilexec/editor/1.0.12`, its binding is `editor`, and its
-public function is `editor.open(path)`. Package imports accept a binding name from the
-current user's default environment or the 64-character SHA-256 of an installed `.db`
-file, but not a `namespace/name/version` coordinate.
+Its package coordinate is `cilexec/editor/1.1.1`, and its public function is
+`editor.open(path)`. A package is identified only by the SHA-256 of its `.db` file;
+two different hashes are two independent packages. `import` accepts the 64-character
+SHA-256 of an installed `.db` file, optionally with a private per-process alias, but
+never a human-readable name or a `namespace/name/version` coordinate.
 
 ## General Data & Permission Rules
 
@@ -237,7 +239,16 @@ These functions return ANSI control text, usually combined with `io.print()` /
 | `term.hideCursor()` / `term.showCursor()` | Hide / show the terminal cursor. |
 | `term.displayWidth(value)` | Return the terminal display columns the text occupies; CJK, full-width characters, and emoji usually take two columns, and ANSI style sequences count as zero width. |
 | `term.truncate(value, width)` | Truncate text safely by terminal display columns without splitting Unicode code points. |
-| `term.getSize()` | Return the current terminal character size, for example `{"width":120,"height":40}`. Alias: `term.size()`. Full-screen TUIs waiting for keys refresh every 100 ms, so size changes appear on the next redraw. |
+| `term.getSize()` | Return the current terminal character size, for example `{"width":120,"height":40}`. Alias: `term.size()`. The size is sampled on every layout/render pass; without `io.readKey(timeout)` idle refresh, a resize becomes visible on the next key press. |
+| `term.sanitize(value)` | Return text with terminal control characters replaced by `?` and tabs expanded to four spaces. |
+| `term.alternate(active)` | Return the enter/leave alternate-screen-buffer sequence so a full-screen program does not pollute the terminal scrollback. |
+| `term.mouse(active)` | Return the enable/disable mouse-reporting sequences (press + wheel events in SGR format). |
+| `term.paste(active)` | Return the enable/disable bracketed-paste sequences. |
+| `term.focus(active)` | Return the enable/disable focus-event sequences. |
+| `term.underline(value)` / `term.strikethrough(value)` | Wrap text in underline / strikethrough style. |
+| `term.bg(color, value)` | Wrap text in a background color (same color names as `term.color`). |
+| `term.color256(index, value)` / `term.bg256(index, value)` | Wrap text in a 256-color palette color, index 0-255. |
+| `term.trueColor(red, green, blue, value)` / `term.bgTrueColor(red, green, blue, value)` | Wrap text in a 24-bit RGB color; components are 0-255. |
 
 ## Array Handling: `array`
 
@@ -270,7 +281,7 @@ intermediate state.
 | `io.println(value)` | Print with a newline. Alias: `util.println(value)`. |
 | `io.input([prompt])` | Wait for one full line of input. Alias: `util.input([prompt])`. While a process waits for input, the terminal prompt becomes `pid:?`. |
 | `io.readChar()` | Wait for input and return the first character; empty input returns an empty string. |
-| `io.readKey()` | Full-screen FCL programs only: read one key immediately, normalizing arrow keys, Ctrl combinations, and so on to names. |
+| `io.readKey([timeoutMs])` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"focus","focus":true}` for focus events; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. |
 | `io.readFile(path [, targetUser])` | Alias of `file.read`. |
 | `io.writeFile(path, content [, targetUser])` | Alias of `file.write`. |
 
@@ -379,23 +390,23 @@ The host market's default index is
 | --- | --- |
 | `package.info(coordinateOrHash)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or a 64-character package hash; `(namespace, name, version)` as three arguments also works. |
 | `package.list()` | Return registered package releases. |
-| `package.install(vfsPath [, binding])` | Install from a `.db` file in the VFS into the current user's default environment. |
-| `package.install(vfsPath, environmentUuid, binding)` | Install and bind to the given environment. |
+| `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. |
 | `package.build(manifestPath, outputPath)` | Read the `package.json` and declared files in the VFS and build a `.db` in the VFS. |
-| `package.run(binding [, entrypoint])` | Create a child process running a bound package entrypoint; the default entrypoint is `run`, and PID and other information are returned. |
-| `package.createEnvironment(name)` | Create a package environment for the current user. |
-| `package.environments()` | List the current user's package environments. |
+| `package.run(packageHash [, entrypoint])` | Create a child process running a package entrypoint; the default entrypoint is `run`, and PID and other information are returned. |
 | `package.verify(coordinateOrHash)` | Verify that the package database objects still match the SHA-256 hash recorded at install time. The three-part coordinate also works as arguments. |
 | `package.resource(coordinateOrHash, resourcePath)` | Read a declared text resource from the package. |
-| `package.pin(environmentUuid, binding, coordinateOrHash)` | Pin an environment binding to a release. The coordinate can also be split into the last three arguments. |
-| `package.unpin(environmentUuid, binding)` | Remove an environment binding. |
+| `package.pin(packageHash)` | Mark a package hash as pinned for the current process environment. |
 
-`import` accepts a binding name from the current user's default environment or the
-full SHA-256 of a package database:
+`import` accepts only the full SHA-256 of an installed package database, optionally
+with a private per-process alias; the qualifier is the hash itself when no alias is
+given. Importing the same alias again in the same session re-pins it to the newest
+hash (last wins); processes that already linked a program keep the module they were
+linked with:
 
 ```fcl
-import "editor" as "e"
-import "1fac4ef3472a90cbc3eb7b2e2042b50bb4197859a89a3129f0e7474089b96557" as "exactEditor"
+import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f" as "e"
+import "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f"
+value = "9d3bb9d09774a35aa9b1508b194939a37ae6ef2e6b1698eabb8ce0fe3b7abf9f".open("x.txt")
 ```
 
 Binding names are unique within one package environment. Reinstalling the same
@@ -406,7 +417,7 @@ operations.
 | Call | Effect |
 | --- | --- |
 | `package.remove(environmentUuid, binding)` | Synonym of `unpin`; removes a binding. |
-| `package.gc()` | Administrator interface; the current immutable packages are never actually deleted and it returns `0`. |
+| `package.gc()` | Administrator-only bounded garbage collection of objects that have been unreachable from every durable root for at least one hour. |
 | `package.recover()` | Administrator recovery-check entrypoint; currently returns `true`. |
 
 ## Built-in Market: `market`
@@ -427,13 +438,13 @@ standalone server are described in `docs/package-market.md`.
 | `market.download(sha256)` | Download in 4 MiB chunks and recompute the full file hash. |
 | `market.install(sha256)` | Recursively install exact-hash dependencies and create the default binding. |
 | `market.list()` | List the current user's install records managed by the market. |
-| `market.upgrade()` | Refresh the index and upgrade market installs that have newer versions. |
 | `market.uninstall(sha256)` | Remove the market install binding and the downloaded file. |
 | `market.help()` | Return help text for the market functions. |
 | `market.run()` | Return the built-in client version and help without requiring a configured mirror. |
 
-Except for `market.configure`, `market.origin`, `market.help`, and `market.run`, the
-operations require a configured mirror. When it is missing, an explicit error names
+Except for `market.configure`, `market.origin`, `market.help`, `market.run`, and the
+local-only `market.list` / `market.uninstall`, the operations require a configured mirror.
+When it is missing, an explicit error names
 the configuration command instead of silently falling back to raw input mode.
 
 ## Swap Pool (Inter-process Data): `swapPool`
@@ -464,6 +475,24 @@ re-scheduled, when a paused terminal process receives the next instruction, or w
 the same Headless context submits code again, as long as the lease has not expired
 and the current fencing token is used. No other process can use that token, even
 when it knows the variable name.
+
+## Messaging: `ipc`
+
+| Call | Effect |
+| --- | --- |
+| `ipc.sendDirect(pid, payload [, expiresAt])` | Send to one process. `expiresAt` is an optional ISO-8601 instant. |
+| `ipc.createChannel(channelId)` / `ipc.createTopic(topic)` | Create a durable channel or topic. |
+| `ipc.removeChannel(channelId)` / `ipc.removeTopic(topic)` | Remove a durable channel or topic. |
+| `ipc.subscribeChannel(channelId)` / `ipc.subscribeTopic(topic)` | Subscribe the current process to the channel or topic. |
+| `ipc.receive()` / `ipc.poll()` | Receive the next owned message; `receive` blocks until one arrives, `poll` returns the current head immediately. |
+| `ipc.consume(deliveryId)` | Mark a received delivery as consumed. |
+| `ipc.sendChannel(channelId, payload [, expiresAt])` | Send to one active channel consumer. |
+| `ipc.publishTopic(topic, payload [, expiresAt])` | Publish to the active topic subscribers. |
+| `ipc.broadcast(topic, payload [, expiresAt])` | Broadcast to the active topic subscribers. |
+| `ipc.purge(olderThan [, limit])` | Delete up to `limit` owned messages older than the ISO-8601 cutoff when all deliveries are terminal or the message has expired; the default is 1000 and the maximum is 10000. |
+
+Message rows are durable after consumption. Use `ipc.purge` to release retained
+payload references and message quota; pending unexpired deliveries are never purged.
 
 ## System: `system`
 

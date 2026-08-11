@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -167,14 +168,17 @@ class CilExecApplicationTest {
         DatabaseConfig runtime = database("runtime", "/secrets/runtime", 6);
         DatabaseConfig effects = database("effect", "/secrets/effect", 1);
         DatabaseConfig migrator = database("migrator", "/secrets/migrator", 1);
-        return new CilExecConfig("primary", 42L, runtime, effects, migrator,
+        DatabaseConfig exporter = database("exporter", "/secrets/exporter", 1);
+        return new CilExecConfig("primary", 42L, runtime, effects, migrator, exporter,
                 2, 1, Duration.ofSeconds(10),
-                Duration.ofMillis(25), Duration.ofMillis(25), Duration.ofSeconds(2), 8081, false);
+                Duration.ofMillis(25), Duration.ofMillis(25), Duration.ofSeconds(2),
+                Duration.ofSeconds(10), 8081, false);
     }
 
     private static DatabaseConfig database(String role, String secret, int poolSize) {
         return new DatabaseConfig("jdbc:postgresql://database/cilexec", role,
-                Path.of(secret), poolSize, 0, Duration.ofSeconds(1),
-                Duration.ofSeconds(1), "cilexec-" + role);
+                Path.of(secret), Optional.of(Path.of("/certificates/postgres-ca.pem")),
+                poolSize, 0, Duration.ofSeconds(1), Duration.ofSeconds(1),
+                Duration.ofSeconds(30), "cilexec-" + role, role.equals("exporter"));
     }
 }

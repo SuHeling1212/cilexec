@@ -6,7 +6,7 @@
 
     <groupId>com.follarce</groupId>
     <artifactId>cilexec</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>CilExec</name>
     <description>Database-driven CilExec FCL runtime</description>
 
@@ -33,14 +33,17 @@
         <resources.plugin.version>3.4.0</resources.plugin.version>
         <clean.plugin.version>3.5.0</clean.plugin.version>
         <jar.plugin.version>3.4.2</jar.plugin.version>
+        <jacoco.version>0.8.15</jacoco.version>
+        <spotbugs.plugin.version>4.10.3.0</spotbugs.plugin.version>
+        <cyclonedx.plugin.version>2.9.3</cyclonedx.plugin.version>
         <project.build.outputTimestamp>2026-07-22T00:00:00Z</project.build.outputTimestamp>
-        <fcl.runtime.format.version>1</fcl.runtime.format.version>
+        <fcl.runtime.format.version>2</fcl.runtime.format.version>
         <database.schema.minimum>1</database.schema.minimum>
         <database.schema.maximum>1</database.schema.maximum>
         <!-- Docker Engine 29 rejects docker-java's legacy default API. -->
         <docker.api.version>1.44</docker.api.version>
         <!-- CI/Docker may override with -Dbuild.revision=<git SHA>. -->
-        <build.revision>unknown</build.revision>
+        <build.revision>development</build.revision>
     </properties>
 
     <dependencyManagement>
@@ -154,6 +157,11 @@
                 </excludes>
             </resource>
             <resource>
+                <directory>${project.basedir}</directory>
+                <targetPath>META-INF/cilexec</targetPath>
+                <includes><include>LICENSE</include></includes>
+            </resource>
+            <resource>
                 <directory>src/main/resources</directory>
                 <filtering>true</filtering>
                 <includes>
@@ -188,6 +196,7 @@
                     <release>${maven.compiler.release}</release>
                     <parameters>true</parameters>
                     <showWarnings>true</showWarnings>
+                    <compilerArgs><arg>-Xlint:all</arg></compilerArgs>
                 </configuration>
             </plugin>
             <plugin>
@@ -217,6 +226,8 @@
                     <useModulePath>false</useModulePath>
                     <includes><include>**/*Test.java</include></includes>
                     <excludes><exclude>**/*IT.java</exclude></excludes>
+                    <failIfNoTests>true</failIfNoTests>
+                    <forkedProcessExitTimeoutInSeconds>30</forkedProcessExitTimeoutInSeconds>
                 </configuration>
             </plugin>
             <plugin>
@@ -231,9 +242,85 @@
                 <configuration>
                     <useModulePath>false</useModulePath>
                     <includes><include>**/*IT.java</include></includes>
+                    <failIfNoTests>true</failIfNoTests>
+                    <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <systemPropertyVariables>
                         <api.version>${docker.api.version}</api.version>
                     </systemPropertyVariables>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                        <configuration><append>true</append></configuration>
+                    </execution>
+                    <execution>
+                        <id>coverage-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-check</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.50</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.35</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>com.github.spotbugs</groupId>
+                <artifactId>spotbugs-maven-plugin</artifactId>
+                <version>${spotbugs.plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>spotbugs-check</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <effort>Max</effort>
+                    <threshold>High</threshold>
+                    <failOnError>true</failOnError>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.cyclonedx</groupId>
+                <artifactId>cyclonedx-maven-plugin</artifactId>
+                <version>${cyclonedx.plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>runtime-sbom</id>
+                        <phase>package</phase>
+                        <goals><goal>makeAggregateBom</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <outputFormat>json</outputFormat>
+                    <outputName>runtime-sbom</outputName>
+                    <includeBomSerialNumber>true</includeBomSerialNumber>
                 </configuration>
             </plugin>
             <plugin>

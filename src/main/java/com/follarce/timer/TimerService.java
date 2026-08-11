@@ -20,6 +20,9 @@ import java.util.UUID;
 
 /** Persists timers and wakes their processes without relying on JVM sleep state. */
 public final class TimerService {
+    /** Marker payload of io.readKey(timeout) timers, delivered as a terminal timeout event. */
+    public static final String TERMINAL_INPUT_TIMEOUT = "terminal-input-timeout";
+    public static final String TERMINAL_TIMEOUT_EVENT = "{\"kind\":\"timeout\"}";
     private final TransactionExecutor runtimeTransactions;
     private final UserTransactionExecutor userTransactions;
     private final Clock clock;
@@ -81,16 +84,24 @@ public final class TimerService {
                     throw new IllegalStateException("Claimed timer lost its ownership");
                 }
                 Optional<CilProcess> process = transaction.processes().findByUid(timer.processUid());
-                if (process.isPresent() && isWaitingFor(process.get(), timer.timerId())) {
+                if (process.isPresent()) {
                     CilProcess current = process.get();
-                    Continuation resumedContinuation = resume(current.continuation(), timer.payload());
-                    CilProcess.Status target = wakeTarget(current);
-                    CilProcess ready = current.commitStatement(resumedContinuation,
-                            target, current.stateVersion(),
-                            current.executionEpoch(), now);
-                    requireUpdated(transaction.processes().update(ready, current.stateVersion(),
-                            current.executionEpoch()));
-                    enqueueIfReady(transaction, ready, now);
+                    boolean inputTimeout = isTerminalInputTimeout(timer)
+                            && isWaitingForTerminalInput(current);
+                    if (isWaitingFor(current, timer.timerId()) || inputTimeout) {
+                        Continuation resumedContinuation = inputTimeout
+                                ? resumeWith(current.continuation(), ProcessInbox.TERMINAL_INPUT,
+                                Optional.of(new Continuation.PersistedValue("string",
+                                        TERMINAL_TIMEOUT_EVENT)))
+                                : resume(current.continuation(), timer.payload());
+                        CilProcess.Status target = wakeTarget(current);
+                        CilProcess ready = current.commitStatement(resumedContinuation,
+                                target, current.stateVersion(),
+                                current.executionEpoch(), now);
+                        requireUpdated(transaction.processes().update(ready, current.stateVersion(),
+                                current.executionEpoch()));
+                        enqueueIfReady(transaction, ready, now);
+                    }
                 }
                 fired++;
             }
@@ -151,12 +162,25 @@ public final class TimerService {
         });
     }
 
-    private static boolean isWaitingFor(CilProcess process, UUID timerId) {
+    static boolean isWaitingFor(CilProcess process, UUID timerId) {
         return (process.status() == CilProcess.Status.WAITING_TIMER
                 || process.status() == CilProcess.Status.PAUSED)
                 && process.continuation().waitState().map(wait ->
                         wait.kind() == Continuation.WaitKind.TIMER
                                 && wait.targetId().equals(Optional.of(timerId))).orElse(false);
+    }
+
+    static boolean isTerminalInputTimeout(ProcessTimer timer) {
+        return timer.payload().map(value ->
+                TERMINAL_INPUT_TIMEOUT.equals(value.canonicalPayload())).orElse(false);
+    }
+
+    /** A process blocked on io.readKey (key-mode input wait) can receive a timeout event. */
+    static boolean isWaitingForTerminalInput(CilProcess process) {
+        return process.status() == CilProcess.Status.WAITING_INPUT
+                && process.continuation().waitState().map(wait ->
+                        wait.kind() == Continuation.WaitKind.INPUT
+                                && wait.targetId().isPresent()).orElse(false);
     }
 
     private static CilProcess.Status wakeTarget(CilProcess process) {
@@ -184,9 +208,17 @@ public final class TimerService {
             Continuation continuation,
             Optional<Continuation.PersistedValue> payload
     ) {
+        return resumeWith(continuation, ProcessInbox.TIMER_RESULT, payload);
+    }
+
+    private static Continuation resumeWith(
+            Continuation continuation,
+            String variable,
+            Optional<Continuation.PersistedValue> payload
+    ) {
         Map<String, Continuation.PersistedValue> variables =
                 new LinkedHashMap<>(continuation.globalVariables());
-        payload.ifPresent(value -> variables.put(ProcessInbox.TIMER_RESULT, value));
+        payload.ifPresent(value -> variables.put(variable, value));
         return copy(continuation, Optional.empty(), Map.copyOf(variables));
     }
 

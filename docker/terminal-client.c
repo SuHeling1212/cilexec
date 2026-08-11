@@ -18,8 +18,19 @@ static volatile sig_atomic_t resized = 1;
 static volatile sig_atomic_t stopping;
 static int output_ended_with_cr;
 
+/* Residue from a crashed full-screen session (alternate screen, mouse/paste/focus
+ * reporting) must never survive a client connect or disconnect: it hides the primary
+ * screen, floods the REPL with raw mouse bytes, and disables native text selection. */
+static const char TERMINAL_RESET[] =
+        "\033[?1049l\033[?1002l\033[?1006l\033[?2004l\033[?1004l\033[?25h";
+
+static int write_all(int descriptor, const void *buffer, size_t length);
+
 static void restore_terminal(void) {
-    if (terminal_saved) tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_terminal);
+    if (terminal_saved) {
+        (void) write_all(STDOUT_FILENO, TERMINAL_RESET, sizeof(TERMINAL_RESET) - 1);
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_terminal);
+    }
 }
 
 static void on_resize(int signal_number) {
@@ -173,6 +184,24 @@ static int receive_headless_response(int runtime) {
     return 74;
 }
 
+static int check_http_health(int runtime, const char *kind) {
+    char request[160];
+    int length = snprintf(request, sizeof(request),
+            "GET /health/%s HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", kind);
+    if (length < 1 || (size_t) length >= sizeof(request)
+            || write_all(runtime, request, (size_t) length) != 0) return 74;
+    shutdown(runtime, SHUT_WR);
+    char response[32];
+    ssize_t count;
+    do {
+        count = read(runtime, response, sizeof(response) - 1);
+    } while (count < 0 && errno == EINTR);
+    if (count < 12) return 69;
+    response[count] = '\0';
+    return (strncmp(response, "HTTP/1.1 200", 12) == 0
+            || strncmp(response, "HTTP/1.0 200", 12) == 0) ? 0 : 69;
+}
+
 /* Headless stdin is: one password line followed by the exact FCL source. Neither value is
  * placed in argv or the environment, so host process listings cannot disclose them. */
 static int run_headless(int runtime, const char *context, const char *username) {
@@ -234,11 +263,17 @@ static int run_headless(int runtime, const char *context, const char *username) 
 int main(int argument_count, char **arguments) {
     int probe = argument_count > 1 && strcmp(arguments[1], "--probe") == 0;
     int headless = argument_count > 1 && strcmp(arguments[1], "--headless") == 0;
+    int health = argument_count > 1 && strcmp(arguments[1], "--health") == 0;
     if (headless && argument_count != 5) {
         fprintf(stderr, "usage: cilexec-terminal-client --headless <port> <context> <username>\n");
         return 64;
     }
-    const char *port_argument = headless ? arguments[2] : probe
+    if (health && (argument_count != 4
+            || (strcmp(arguments[2], "live") != 0 && strcmp(arguments[2], "ready") != 0))) {
+        fprintf(stderr, "usage: cilexec-terminal-client --health <live|ready> <port>\n");
+        return 64;
+    }
+    const char *port_argument = headless ? arguments[2] : health ? arguments[3] : probe
             ? (argument_count > 2 ? arguments[2] : "8022")
             : (argument_count > 1 ? arguments[1] : "8022");
     char *end = NULL;
@@ -255,6 +290,11 @@ int main(int argument_count, char **arguments) {
     if (probe) {
         close(runtime);
         return 0;
+    }
+    if (health) {
+        int status = check_http_health(runtime, arguments[2]);
+        close(runtime);
+        return status;
     }
     if (headless) {
         signal(SIGPIPE, SIG_IGN);
@@ -282,6 +322,10 @@ int main(int argument_count, char **arguments) {
     signal(SIGWINCH, on_resize);
     signal(SIGTERM, on_stop);
     signal(SIGHUP, on_stop);
+    if (write_all(STDOUT_FILENO, TERMINAL_RESET, sizeof(TERMINAL_RESET) - 1) != 0) {
+        close(runtime);
+        return 70;
+    }
     if (write_all(runtime, "\0M INTERACTIVE\n", 15) != 0) {
         close(runtime);
         return 74;

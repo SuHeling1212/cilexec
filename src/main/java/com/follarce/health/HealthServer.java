@@ -1,6 +1,7 @@
 package com.follarce.health;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -26,7 +27,7 @@ public final class HealthServer implements AutoCloseable {
     private final ScheduledExecutorService watchdog;
     private final Semaphore capacity = new Semaphore(MAX_CONCURRENT, true);
     private final HealthState state;
-    private final Gson gson = new Gson();
+    private final Gson gson = new GsonBuilder().serializeNulls().create();
 
     public HealthServer(int port, HealthState state) {
         this.state = state;
@@ -75,6 +76,13 @@ public final class HealthServer implements AutoCloseable {
             response.put("controlLock", snapshot.controlLock());
             response.put("recoveryComplete", snapshot.recoveryComplete());
             response.put("schedulerLoop", snapshot.schedulerLoop());
+            response.put("effectWorkers", snapshot.effectWorkers());
+            response.put("timerLoop", snapshot.timerLoop());
+            response.put("workListener", snapshot.workListener());
+            response.put("terminalEnabled", snapshot.terminalEnabled());
+            response.put("terminalServer", snapshot.terminalServer());
+            response.put("databaseCheckedAt", snapshot.databaseCheckedAt() == null
+                    ? null : snapshot.databaseCheckedAt().toString());
             response.put("startedAt", snapshot.startedAt().toString());
             byte[] body = gson.toJson(response).getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");

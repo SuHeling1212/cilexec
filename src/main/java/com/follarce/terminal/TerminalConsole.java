@@ -9,7 +9,13 @@ import org.slf4j.LoggerFactory;
 /** Optional host console. It delegates every mutation to the database-backed control service. */
 public final class TerminalConsole implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger(TerminalConsole.class);
-    private static final String RESET_TUI = "\033[?25h\033[2J\033[H";
+    /**
+     * Leaves any alternate screen, disables mouse/paste/focus reporting, and restores the
+     * cursor so a crashed full-screen FCL program can never leave the host terminal in a
+     * broken mode (lost selection, flooded raw mouse bytes, hidden primary screen).
+     */
+    private static final String EXIT_FULL_SCREEN =
+            "\033[?1049l\033[?1002l\033[?1006l\033[?2004l\033[?1004l\033[?25h\033[2J\033[H";
     enum Outcome { LOGOUT, EXIT, END_OF_INPUT }
 
     private final TerminalInput input;
@@ -49,17 +55,18 @@ public final class TerminalConsole implements Runnable {
                 try {
                     TerminalControl.AttachedInputMode inputMode = control.attachedInputMode();
                     if (inputMode == TerminalControl.AttachedInputMode.KEY) {
-                        String key = input.readKey(output);
-                        if (key == null) return Outcome.END_OF_INPUT;
-                        if (key.equals("CTRL_C")) {
+                        String event = input.readKeyEvent(output);
+                        if (event == null) return Outcome.END_OF_INPUT;
+                        if (event.contains("\"key\":\"CTRL_C\"")) {
                             input.finishKeyMode();
-                            output.print(RESET_TUI);
+                            output.print(EXIT_FULL_SCREEN);
                             output.flush();
                             continue;
                         }
-                        String result = control.submitAttachedInput(key);
+                        String result = control.submitAttachedInput(event);
                         if (result != null && result.startsWith("error")) {
                             input.finishKeyMode();
+                            output.print(EXIT_FULL_SCREEN);
                             output.println(result);
                         }
                         continue;

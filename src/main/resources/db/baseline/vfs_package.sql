@@ -96,8 +96,6 @@ BEGIN
             relation_name || '_owner_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON vfs.%I TO cilexec_runtime USING (true) WITH CHECK (true)',
             relation_name || '_runtime_control', relation_name);
-        EXECUTE format('CREATE POLICY %I ON vfs.%I FOR SELECT TO cilexec_readonly USING (true)',
-            relation_name || '_readonly_control', relation_name);
         EXECUTE format('CREATE POLICY %I ON vfs.%I TO PUBLIC USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id())',
             relation_name || '_principal', relation_name);
     END LOOP;
@@ -108,7 +106,6 @@ $rls$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON vfs.node TO cilexec_runtime;
 GRANT SELECT, INSERT ON vfs.file_revision TO cilexec_runtime;
 GRANT SELECT, INSERT, UPDATE ON vfs.mount TO cilexec_runtime;
-GRANT SELECT ON vfs.node, vfs.file_revision, vfs.mount TO cilexec_readonly;
 
 COMMENT ON TABLE vfs.node IS 'Mutable pathname node pointing at an immutable content object';
 COMMENT ON TABLE vfs.mount IS 'Database half of a mount; Docker bind mount and capability are also mandatory';
@@ -193,53 +190,8 @@ CREATE TABLE package.release_capability (
     PRIMARY KEY (package_hash, capability_key)
 );
 
--- name: baseline.create_environment
-CREATE TABLE package.environment (
-    environment_id uuid PRIMARY KEY,
-    owner_id uuid NOT NULL REFERENCES auth.user_account(user_id) ON DELETE RESTRICT,
-    environment_name text NOT NULL CHECK (
-        char_length(environment_name) BETWEEN 1 AND 128
-        AND btrim(environment_name) <> '' AND environment_name !~ '[[:cntrl:]]'),
-    parent_environment_id uuid,
-    status text NOT NULL CHECK (status IN ('ACTIVE', 'ARCHIVED')),
-    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (owner_id, environment_name),
-    UNIQUE (environment_id, owner_id),
-    FOREIGN KEY (parent_environment_id, owner_id)
-        REFERENCES package.environment(environment_id, owner_id) ON DELETE RESTRICT
-);
-
--- name: baseline.create_environment_binding
-CREATE TABLE package.binding (
-    environment_id uuid NOT NULL,
-    owner_id uuid NOT NULL,
-    binding_name text NOT NULL CHECK (
-        binding_name ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'),
-    package_hash bytea NOT NULL REFERENCES package.release(package_hash) ON DELETE RESTRICT,
-    bound_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    bound_by uuid NOT NULL REFERENCES auth.user_account(user_id) ON DELETE RESTRICT,
-    PRIMARY KEY (environment_id, binding_name),
-    FOREIGN KEY (environment_id, owner_id)
-        REFERENCES package.environment(environment_id, owner_id) ON DELETE CASCADE
-);
-
--- name: baseline.create_data_scope
-CREATE TABLE package.data_scope (
-    data_scope_id uuid PRIMARY KEY,
-    environment_id uuid NOT NULL,
-    owner_id uuid NOT NULL,
-    package_hash bytea NOT NULL REFERENCES package.release(package_hash) ON DELETE RESTRICT,
-    root_node_id uuid NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    UNIQUE (environment_id, package_hash),
-    FOREIGN KEY (environment_id, owner_id)
-        REFERENCES package.environment(environment_id, owner_id) ON DELETE CASCADE,
-    FOREIGN KEY (root_node_id, owner_id)
-        REFERENCES vfs.node(node_id, owner_id) ON DELETE RESTRICT
-);
-
--- Exact process pinning is separate from mutable environment bindings.
+-- Exact process pinning: package identity is the SHA-256, and the qualifier is
+-- either the hash itself or a private per-process alias; nothing is shared.
 -- name: baseline.create_process_package_binding
 CREATE TABLE process.package_binding (
     process_uid uuid NOT NULL,
@@ -247,21 +199,17 @@ CREATE TABLE process.package_binding (
     import_name text NOT NULL CHECK (
         import_name ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'
         OR import_name ~ '^[0-9a-f]{64}$'),
-    environment_id uuid NOT NULL,
     package_hash bytea NOT NULL REFERENCES package.release(package_hash) ON DELETE RESTRICT,
     resolved_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (process_uid, import_name),
     FOREIGN KEY (process_uid, owner_id)
-        REFERENCES process.process(process_uid, owner_id) ON DELETE CASCADE,
-    FOREIGN KEY (environment_id, owner_id)
-        REFERENCES package.environment(environment_id, owner_id) ON DELETE RESTRICT
+        REFERENCES process.process(process_uid, owner_id) ON DELETE CASCADE
 );
 
 -- name: baseline.package_indexes
 CREATE INDEX ix_release_coordinate ON package.release(namespace, package_name, package_version);
 CREATE INDEX ix_release_dependency_target
     ON package.release_dependency(dependency_file_hash);
-CREATE INDEX ix_binding_package ON package.binding(package_hash);
 CREATE INDEX ix_process_package_hash ON process.package_binding(package_hash);
 
 -- name: baseline.release_immutability
@@ -290,9 +238,6 @@ DECLARE
 BEGIN
     FOR schema_name, relation_name IN
         SELECT * FROM (VALUES
-            ('package', 'environment'),
-            ('package', 'binding'),
-            ('package', 'data_scope'),
             ('process', 'package_binding')
         ) AS relations(schema_name, relation_name)
     LOOP
@@ -302,8 +247,6 @@ BEGIN
             relation_name || '_owner_control', schema_name, relation_name);
         EXECUTE format('CREATE POLICY %I ON %I.%I TO cilexec_runtime USING (true) WITH CHECK (true)',
             relation_name || '_runtime_control', schema_name, relation_name);
-        EXECUTE format('CREATE POLICY %I ON %I.%I FOR SELECT TO cilexec_readonly USING (true)',
-            relation_name || '_readonly_control', schema_name, relation_name);
         EXECUTE format('CREATE POLICY %I ON %I.%I TO PUBLIC USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id())',
             relation_name || '_principal', schema_name, relation_name);
     END LOOP;
@@ -314,10 +257,7 @@ $rls$;
 GRANT SELECT, INSERT ON package.release, package.release_dependency, package.release_module,
     package.release_entrypoint, package.release_export, package.release_capability
     TO cilexec_runtime;
-GRANT SELECT, INSERT, UPDATE, DELETE ON package.environment, package.binding, package.data_scope TO cilexec_runtime;
-GRANT SELECT, INSERT ON process.package_binding TO cilexec_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA package TO cilexec_readonly;
-GRANT SELECT ON process.package_binding TO cilexec_readonly;
+GRANT SELECT, INSERT, UPDATE ON process.package_binding TO cilexec_runtime;
 
 COMMENT ON CONSTRAINT release_namespace_package_name_package_version_key ON package.release IS
     'A coordinate can never be associated with a different logical package hash';

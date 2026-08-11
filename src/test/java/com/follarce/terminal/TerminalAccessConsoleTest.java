@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TerminalAccessConsoleTest {
-    private static final String PASSWORD = "alice123";
+    private static final String PASSWORD = "alice-password";
 
     @Test
     void supportsLoginCreationLogoutAndPasswordErasure() {

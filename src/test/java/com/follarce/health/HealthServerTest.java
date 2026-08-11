@@ -24,6 +24,9 @@ class HealthServerTest {
             assertEquals(503, response.statusCode());
             assertTrue(response.body().contains("\"startedAt\":"), response.body());
             assertTrue(response.body().contains("\"ready\":false"), response.body());
+            assertTrue(response.body().contains("\"effectWorkers\":false"), response.body());
+            assertTrue(response.body().contains("\"workListener\":false"), response.body());
+            assertTrue(response.body().contains("\"databaseCheckedAt\":null"), response.body());
         }
     }
 }

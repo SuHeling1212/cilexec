@@ -100,7 +100,8 @@ class TerminalConsoleTest {
                 StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
                 control).run();
 
-        assertEquals(List.of("UP"), control.attachedInputs);
+        assertEquals(List.of("{\"kind\":\"key\",\"key\":\"UP\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"\"}"), control.attachedInputs);
         assertTrue(control.commands.isEmpty());
     }
 
@@ -123,6 +124,32 @@ class TerminalConsoleTest {
 
         assertTrue(control.attachedInputs.isEmpty());
         assertTrue(control.commands.isEmpty());
+    }
+
+    @Test
+    void restoresFullScreenTerminalModesAfterAnAttachedFclFailure() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl() {
+            @Override public AttachedInputMode attachedInputMode() {
+                return AttachedInputMode.KEY;
+            }
+            @Override public String submitAttachedInput(String input) {
+                return "error: Map key does not exist: key";
+            }
+        };
+        String input = "\u001b[<0;5;3M:exit\n";
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        String transcript = output.toString(StandardCharsets.UTF_8);
+        assertTrue(transcript.contains("\u001b[?1049l\u001b[?1002l\u001b[?1006l"
+                + "\u001b[?2004l\u001b[?1004l\u001b[?25h\u001b[2J\u001b[H"),
+                "a crashed full-screen FCL program must leave alternate screen and "
+                        + "mouse/paste/focus reporting: " + transcript);
+        assertTrue(transcript.contains("error: Map key does not exist: key"), transcript);
     }
 
     @Test

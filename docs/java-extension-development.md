@@ -251,7 +251,7 @@ java -jar target/cilexec-app.jar terminal
 When using a container, rebuild explicitly:
 
 ```bash
-./Install.sh --rebuild
+./tools/Install.sh --rebuild
 ```
 
 `system.extensions()` returns the extension IDs, versions, and descriptions sealed into the

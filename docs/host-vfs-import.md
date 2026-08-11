@@ -1,6 +1,6 @@
 # Copying Host Files into the CilExec VFS
 
-`HostMove.sh` is a single-command importer on the host side. It hides the Docker tool
+`tools/HostMove.sh` is a single-command importer on the host side. It hides the Docker tool
 container and the database connection details; the final result is a real CilExec VFS file
 node with its database objects, not a temporary file left in the container filesystem.
 
@@ -11,7 +11,7 @@ needed, builds a missing CilExec image, starts PostgreSQL if it is stopped, and 
 and migrates the database before every import:
 
 ```bash
-./HostMove.sh /absolute/host/report.pdf /documents/report.pdf alice
+./tools/HostMove.sh /absolute/host/report.pdf /documents/report.pdf alice
 ```
 
 The target user is a required argument. It must be an active, named CilExec user holding
@@ -45,6 +45,6 @@ The internal Java command is:
 cilexec host move <container-source-file> <absolute-vfs-path> <username>
 ```
 
-It is meant for `HostMove.sh`; `move` is the internal name kept for compatibility with
+It is meant for `tools/HostMove.sh`; `move` is the internal name kept for compatibility with
 existing commands, and the actual behavior is a copy. It requires no host database port
 exposure and never mounts the Docker Socket.

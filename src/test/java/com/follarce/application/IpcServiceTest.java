@@ -1,6 +1,7 @@
 package com.follarce.application;
 
 import com.follarce.domain.ipc.IpcDelivery;
+import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessIdentity;
@@ -20,6 +21,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class IpcServiceTest {
@@ -58,5 +60,61 @@ class IpcServiceTest {
         assertTrue(persistence.processes.current.continuation().globalVariables()
                 .containsKey(ProcessInbox.IPC_RESULT));
         assertEquals(1, persistence.scheduler.enqueues);
+    }
+
+    @Test
+    void purgeIsOwnerScopedBoundedAndAudited() {
+        ProgramServiceTest.TestPersistence persistence =
+                new ProgramServiceTest.TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        Instant cutoff = NOW.minusSeconds(3600);
+        persistence.ipc.purgeResult = 7;
+        IpcService service = new IpcService(persistence,
+                Clock.fixed(NOW, ZoneOffset.UTC));
+
+        assertEquals(7, service.purgeMessages(ownerId, cutoff, 100));
+        assertEquals(ownerId, persistence.ipc.purgeOwner);
+        assertEquals(cutoff, persistence.ipc.purgeCutoff);
+        assertEquals(NOW, persistence.ipc.purgeNow);
+        assertEquals(100, persistence.ipc.purgeLimit);
+        assertEquals("ipc.purge", persistence.audit.events.getLast().action());
+        assertThrows(IllegalArgumentException.class,
+                () -> service.purgeMessages(ownerId, NOW.plusSeconds(1), 100));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.purgeMessages(ownerId, cutoff, 0));
+    }
+
+    @Test
+    void pollingSkipsExpiredDeliveriesAndReturnsTheNextValidMessage() {
+        ProgramServiceTest.TestPersistence persistence =
+                new ProgramServiceTest.TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        UUID receiver = UUID.randomUUID();
+        UUID worker = UUID.randomUUID();
+        IpcMessage expired = message(NOW.minusSeconds(10), Optional.of(NOW.minusSeconds(1)));
+        IpcMessage valid = message(NOW.minusSeconds(5), Optional.of(NOW.plusSeconds(10)));
+        IpcDelivery expiredDelivery = IpcDelivery.pending(
+                UUID.randomUUID(), expired.messageId(), receiver);
+        IpcDelivery validDelivery = IpcDelivery.pending(
+                UUID.randomUUID(), valid.messageId(), receiver);
+        persistence.ipc.messages.put(expired.messageId(), expired);
+        persistence.ipc.messages.put(valid.messageId(), valid);
+        persistence.ipc.deliveries.put(expiredDelivery.deliveryId(), expiredDelivery);
+        persistence.ipc.deliveries.put(validDelivery.deliveryId(), validDelivery);
+
+        IpcService.Envelope envelope = IpcService.reserveNextIn(
+                persistence, ownerId, receiver, worker, NOW).orElseThrow();
+
+        assertEquals(valid.messageId(), envelope.message().messageId());
+        assertEquals(IpcDelivery.Status.DEAD,
+                persistence.ipc.deliveries.get(expiredDelivery.deliveryId()).status());
+        assertEquals(IpcDelivery.Status.RESERVED,
+                persistence.ipc.deliveries.get(validDelivery.deliveryId()).status());
+    }
+
+    private static IpcMessage message(Instant createdAt, Optional<Instant> expiresAt) {
+        return new IpcMessage(UUID.randomUUID(), Optional.empty(), IpcMessage.Kind.DIRECT,
+                Optional.empty(), Optional.empty(), "json", Optional.of("{}"),
+                Optional.empty(), createdAt, expiresAt);
     }
 }

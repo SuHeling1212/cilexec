@@ -1,7 +1,5 @@
 package com.follarce.domain;
 
-import com.follarce.domain.packageinfo.PackageBinding;
-import com.follarce.domain.packageinfo.PackageEnvironment;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.vfs.BinaryContent;
@@ -85,30 +83,25 @@ class VfsPackageDomainTest {
     }
 
     @Test
-    void environmentsAndProcessBindingsPinExactPackageHashes() {
+    void processBindingsPinExactPackageHashesPrivately() {
         UUID owner = UUID.randomUUID();
-        UUID environmentId = UUID.randomUUID();
-        PackageEnvironment environment = new PackageEnvironment(environmentId, owner, "default",
-                Optional.empty(), PackageEnvironment.Status.ACTIVE, T0);
         PackageRelease.Hash versionOne = new PackageRelease.Hash(hash("v1"));
         PackageRelease.Hash versionTwo = new PackageRelease.Hash(hash("v2"));
-        PackageBinding current = new PackageBinding(environmentId, "network", versionOne, T0);
         ProcessPackageBinding pinned = new ProcessPackageBinding(UUID.randomUUID(), "network",
-                environmentId, current.packageHash(), T0);
+                versionOne, T0);
         ProcessPackageBinding hashImported = new ProcessPackageBinding(UUID.randomUUID(),
-                "a".repeat(64), environmentId, current.packageHash(), T0);
-        PackageBinding upgraded = new PackageBinding(environmentId, "network", versionTwo,
-                T0.plusSeconds(1));
+                "a".repeat(64), versionOne, T0);
+        ProcessPackageBinding another = new ProcessPackageBinding(UUID.randomUUID(), "network",
+                versionTwo, T0.plusSeconds(1));
 
-        assertEquals(PackageEnvironment.Status.ACTIVE, environment.status());
         assertEquals(versionOne, pinned.packageHash());
         assertEquals("a".repeat(64), hashImported.importName());
-        assertNotEquals(upgraded.packageHash(), pinned.packageHash(),
-                "environment changes cannot mutate a running process binding");
-        assertThrows(IllegalArgumentException.class, () -> new PackageBinding(
-                environmentId, "bad-binding", versionOne, T0));
+        assertNotEquals(another.packageHash(), pinned.packageHash(),
+                "a private alias in one process never changes another process pin");
         assertThrows(IllegalArgumentException.class, () -> new ProcessPackageBinding(
-                UUID.randomUUID(), "0" + "A".repeat(63), environmentId, versionOne, T0));
+                UUID.randomUUID(), "bad-name!", versionOne, T0));
+        assertThrows(IllegalArgumentException.class, () -> new ProcessPackageBinding(
+                UUID.randomUUID(), "0" + "A".repeat(63), versionOne, T0));
     }
 
     @Test

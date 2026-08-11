@@ -734,7 +734,7 @@ BEGIN
     EXECUTE format('GRANT DELETE ON process.call_frame, process.scope, process.variable, process.exception_frame, process.wait_state, process.relationship TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON process.event TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON process.timer, scheduler.queue TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT ON process.package_binding TO %I', mapped_role);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE ON process.package_binding TO %I', mapped_role);
     EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE process.pid_sequence TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ipc.channel, ipc.topic, ipc.subscription, ipc.message, ipc.delivery TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON vfs.node TO %I', mapped_role);
@@ -742,7 +742,6 @@ BEGIN
     EXECUTE format('GRANT SELECT, INSERT, UPDATE ON vfs.mount TO %I', mapped_role);
     EXECUTE format('GRANT SELECT ON package.release TO %I', mapped_role);
     EXECUTE format('GRANT SELECT ON package.release_dependency, package.release_module, package.release_entrypoint, package.release_export, package.release_capability TO %I', mapped_role);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON package.environment, package.binding, package.data_scope TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON effect.effect TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE ON terminal.session, terminal.input, terminal.attachment TO %I', mapped_role);
     EXECUTE format('GRANT SELECT, INSERT ON audit.event TO %I', mapped_role);

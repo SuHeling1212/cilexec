@@ -1,7 +1,6 @@
 package com.follarce.application;
 
 import com.follarce.domain.port.ProcessRepository;
-import com.follarce.domain.packageinfo.PackageBinding;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.process.CilProcess;
@@ -25,8 +24,8 @@ import com.follarce.extension.api.CilExecExtension;
 import com.follarce.extension.api.ExtensionDescriptor;
 import com.follarce.extension.api.ExtensionRegistrar;
 import com.follarce.package_manager.PackageBuilder;
-import com.follarce.package_manager.PackageEnvironments;
 import com.follarce.package_manager.PackageManifest;
+import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import org.junit.jupiter.api.Test;
 
@@ -332,7 +331,7 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void resolvesAnInstalledPackageByEnvironmentBindingAndPinsItsExactHash() {
+    void resolvesAnInstalledPackageByHashAndPinsItsExactHash() {
         PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
@@ -343,8 +342,8 @@ class ProcessStatementExecutorTest {
                         + "func run() { return null }\n")
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         var descriptor = new SqlitePackageReader().inspect(database);
-        Fixture fixture = new Fixture("import \"hello\"\n"
-                + "result = hello.greet(\"CilExec\")\n");
+        Fixture fixture = new Fixture("import \"" + descriptor.databaseFileHash()
+                + "\" as \"hello\"\nresult = hello.greet(\"CilExec\")\n");
         StoredObject object = StoredObject.create(new BinaryContent(database),
                 "application/vnd.sqlite3", NOW);
         fixture.persistence.vfs.saveObject(object);
@@ -353,10 +352,6 @@ class ProcessStatementExecutorTest {
                 new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
                 object.objectHash(), object.objectHash(), NOW);
         fixture.persistence.packages.releases.put(release.packageHash(), release);
-        var environment = PackageEnvironments.ensureDefault(fixture.persistence.packages,
-                fixture.ownerId, NOW);
-        fixture.persistence.packages.saveBinding(new PackageBinding(environment.environmentId(),
-                "hello", release.packageHash(), NOW));
 
         int steps = 0;
         while (!fixture.persistence.processes.current.isTerminal() && steps++ < 30) {
@@ -378,6 +373,67 @@ class ProcessStatementExecutorTest {
         assertEquals("Hello, CilExec", restored.scope().get("result"));
         assertEquals(release.packageHash().value(), fixture.persistence.processes.current
                 .continuation().packageBindings().get("hello"));
+    }
+
+    @Test
+    void rebindingTheSameAliasRepinsTheProcessToTheNewestHash() {
+        byte[] firstDatabase = buildEditorDatabase("first");
+        byte[] secondDatabase = buildEditorDatabase("second");
+        var firstDescriptor = new SqlitePackageReader().inspect(firstDatabase);
+        var secondDescriptor = new SqlitePackageReader().inspect(secondDatabase);
+        Fixture fixture = new Fixture("import \"" + firstDescriptor.databaseFileHash()
+                + "\" as \"m\"\nimport \"" + secondDescriptor.databaseFileHash()
+                + "\" as \"m\"\nresult = m.greet(\"ok\")\n");
+        StoredObject firstObject = StoredObject.create(new BinaryContent(firstDatabase),
+                "application/vnd.sqlite3", NOW);
+        StoredObject secondObject = StoredObject.create(new BinaryContent(secondDatabase),
+                "application/vnd.sqlite3", NOW);
+        fixture.persistence.vfs.saveObject(firstObject);
+        fixture.persistence.vfs.saveObject(secondObject);
+        register(fixture, "1.0.0", firstDescriptor, firstObject);
+        register(fixture, "1.1.0", secondDescriptor, secondObject);
+
+        int steps = 0;
+        while (!fixture.persistence.processes.current.isTerminal() && steps++ < 40) {
+            if (fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = fixture.persistence.processes.current.claim(
+                        fixture.persistence.processes.current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                        claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+            fixture.executor.executeOne(fixture.claim);
+        }
+
+        assertEquals(CilProcess.Status.TERMINATED,
+                fixture.persistence.processes.current.status());
+        ProcessPackageBinding pinned = fixture.persistence.packages.findProcessBinding(
+                fixture.processUid, "m").orElseThrow();
+        assertEquals(new ObjectHash(secondDescriptor.packageHash()), pinned.packageHash().value(),
+                "the last import of the same alias must win");
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals("second:ok", restored.scope().get("result"));
+    }
+
+    private static byte[] buildEditorDatabase(String tag) {
+        return new PackageBuilder().build(new PackageManifest("demo", "pkg", "1.0.0", "fcl-1",
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
+                List.of(new PackageManifest.Entrypoint("run", "main", "run")),
+                List.of(new PackageManifest.Export("greet", "main", "greet")), List.of()),
+                path -> ("func greet(value) { return \"" + tag + ":ok\" }\n"
+                        + "func run() { return null }\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static void register(Fixture fixture, String version,
+                                 PackageDescriptor descriptor, StoredObject object) {
+        PackageRelease release = new PackageRelease(new PackageRelease.Coordinate(
+                "demo", "pkg", version),
+                new PackageRelease.Hash(new ObjectHash(descriptor.packageHash())),
+                object.objectHash(), object.objectHash(), NOW);
+        fixture.persistence.packages.releases.put(release.packageHash(), release);
     }
 
     @Test

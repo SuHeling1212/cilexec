@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "$0")" && pwd -P)"
+project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$project_dir"
+
+if [[ -L "$project_dir/.env" ]]; then
+    echo "Error: .env must not be a symbolic link." >&2
+    exit 1
+fi
 
 # Use a unique project name per install directory so volumes and networks
 # don't conflict with other CilExec installations on the same machine.
-project_hash="$(echo "$project_dir" | shasum -a 256 | cut -c1-8)"
+hash_text() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -c1-64
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -c1-64
+    else
+        echo "Error: sha256sum or shasum is required." >&2
+        return 1
+    fi
+}
+project_hash="$(printf '%s\n' "$project_dir" | hash_text)"
+project_hash="${project_hash:0:8}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
 export CILEXEC_POSTGRES_VOLUME="${CILEXEC_POSTGRES_VOLUME:-cilexec-pgdata-${project_hash}}"
-image_name="cilexec:${CILEXEC_IMAGE_TAG:-local}"
 rebuild=false
 
 if [[ "$#" -gt 1 ]]; then
     echo "Error: too many arguments." >&2
-    echo "Usage: ./Install.sh [--rebuild]" >&2
+    echo "Usage: ./tools/Install.sh [--rebuild]" >&2
     exit 2
 fi
 
@@ -22,13 +37,13 @@ case "${1:-}" in
     "") ;;
     --rebuild) rebuild=true ;;
     --help|-h)
-        echo "Usage: ./Install.sh [--rebuild]"
+        echo "Usage: ./tools/Install.sh [--rebuild]"
         echo "  --rebuild  rebuild the shared application image before opening this terminal"
         exit 0
         ;;
     *)
         echo "Error: unknown option: $1" >&2
-        echo "Usage: ./Install.sh [--rebuild]" >&2
+        echo "Usage: ./tools/Install.sh [--rebuild]" >&2
         exit 2
         ;;
 esac
@@ -42,6 +57,56 @@ if ! docker compose version >/dev/null 2>&1; then
     exit 1
 fi
 
+compose=(docker compose -f compose.yml -f docker/compose/persistent.yml)
+compose_environment="$("${compose[@]}" config --environment)"
+compose_environment_value() {
+    local sought="$1"
+    local line
+    while IFS= read -r line; do
+        if [[ "${line%%=*}" == "$sought" ]]; then
+            printf '%s' "${line#*=}"
+            return
+        fi
+    done <<< "$compose_environment"
+}
+
+configured_image="$(compose_environment_value CILEXEC_IMAGE)"
+configured_uid="$(compose_environment_value CILEXEC_CONTAINER_UID)"
+configured_gid="$(compose_environment_value CILEXEC_CONTAINER_GID)"
+if [[ -z "${CILEXEC_IMAGE:-}" && -n "$configured_image" ]]; then
+    export CILEXEC_IMAGE="$configured_image"
+fi
+if [[ -z "${CILEXEC_CONTAINER_UID:-}" && -n "$configured_uid" ]]; then
+    export CILEXEC_CONTAINER_UID="$configured_uid"
+fi
+if [[ -z "${CILEXEC_CONTAINER_GID:-}" && -n "$configured_gid" ]]; then
+    export CILEXEC_CONTAINER_GID="$configured_gid"
+fi
+
+host_uid="$(id -u)"
+host_gid="$(id -g)"
+if [[ "$host_uid" -eq 0 ]]; then
+    host_uid=10001
+    host_gid=10001
+fi
+export CILEXEC_CONTAINER_UID="${CILEXEC_CONTAINER_UID:-$host_uid}"
+export CILEXEC_CONTAINER_GID="${CILEXEC_CONTAINER_GID:-$host_gid}"
+if [[ ! "$CILEXEC_CONTAINER_UID" =~ ^[0-9]+$ \
+        || ! "$CILEXEC_CONTAINER_GID" =~ ^[0-9]+$ ]] \
+        || (( 10#$CILEXEC_CONTAINER_UID == 0 || 10#$CILEXEC_CONTAINER_GID == 0 )); then
+    echo "Error: CILEXEC_CONTAINER_UID/GID must be positive numeric IDs." >&2
+    exit 2
+fi
+touch "$project_dir/.env"
+chmod 600 "$project_dir/.env"
+if [[ -z "$configured_uid" ]]; then
+    printf 'CILEXEC_CONTAINER_UID=%s\n' "$CILEXEC_CONTAINER_UID" >> "$project_dir/.env"
+fi
+if [[ -z "$configured_gid" ]]; then
+    printf 'CILEXEC_CONTAINER_GID=%s\n' "$CILEXEC_CONTAINER_GID" >> "$project_dir/.env"
+fi
+
+image_name="${CILEXEC_IMAGE:-cilexec:local}"
 bash "$project_dir/docker/create-secrets.sh" >/dev/null
 # Permit HTTP downloads only from the market origin, without allowing arbitrary
 # socket access to the Docker host or other private-network services.
@@ -53,29 +118,58 @@ if [[ ! "$market_port" =~ ^[0-9]+$ ]] \
 fi
 export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="${CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS:-http://host.docker.internal:${market_port}}"
 
-compose=(docker compose -f compose.yml -f docker/compose/persistent.yml)
-
 echo "Starting CilExec..."
 "${compose[@]}" up -d postgres
 runtime_running=false
-if [[ -n "$("${compose[@]}" ps --status running -q cilexec)" ]]; then
+runtime_active=false
+runtime_state=""
+runtime_container="$("${compose[@]}" ps -a -q cilexec)"
+if [[ -n "$runtime_container" ]]; then
+    runtime_state="$(docker inspect --format '{{.State.Status}}' "$runtime_container")"
+fi
+if [[ "$runtime_state" == "running" ]]; then
     runtime_running=true
 fi
+case "$runtime_state" in
+    running|paused|restarting) runtime_active=true ;;
+esac
 
-if [[ "$rebuild" == true ]] || ! docker image inspect "$image_name" >/dev/null 2>&1; then
+if [[ "$rebuild" == true ]]; then
     if [[ ! -d "$project_dir/src" ]]; then
-        echo "Error: image $image_name is missing and this distribution has no source to build it." >&2
+        echo "Error: --rebuild requires a source distribution." >&2
         exit 1
     fi
     echo "Building image $image_name..."
     "${compose[@]}" build
     echo "Image $image_name built."
+elif [[ -n "${CILEXEC_IMAGE:-}" && "$image_name" != "cilexec:local" ]]; then
+    echo "Pulling release image $image_name..."
+    docker pull "$image_name"
+elif ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    if [[ -d "$project_dir/src" ]]; then
+        echo "Building image $image_name..."
+        "${compose[@]}" build
+        echo "Image $image_name built."
+    else
+        echo "Error: release image $image_name is unavailable." >&2
+        exit 1
+    fi
 else
     echo "Reusing image $image_name (use --rebuild to rebuild it)."
 fi
 
-if [[ "$rebuild" == true && "$runtime_running" == true ]]; then
-    echo "Stopping the shared Runtime to activate the rebuilt image..."
+target_image_id="$(docker image inspect --format '{{.Id}}' "$image_name")"
+running_image_id=""
+if [[ "$runtime_active" == true ]]; then
+    running_image_id="$(docker inspect --format '{{.Image}}' "$runtime_container")"
+fi
+if [[ "$runtime_active" == true \
+        && ( "$runtime_state" != "running" || "$rebuild" == true \
+             || "$running_image_id" != "$target_image_id" ) ]]; then
+    echo "Stopping the shared Runtime to migrate before activating image $image_name..."
+    if [[ "$runtime_state" == "paused" ]]; then
+        docker unpause "$runtime_container" >/dev/null
+    fi
     "${compose[@]}" stop cilexec
     runtime_running=false
 fi

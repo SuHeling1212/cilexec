@@ -22,25 +22,21 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@Testcontainers(disabledWithoutDocker = true)
+@Testcontainers
 class FclSystemFunctionsIT {
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(
-            "postgres:18.0-alpine3.22");
+            System.getProperty("cilexec.test.postgres.image", "postgres:17.10-alpine3.23"));
 
     @BeforeAll
     static void migrate() throws Exception {
-        try (Connection connection = adminConnection(); Statement statement = connection.createStatement()) {
-            statement.execute("CREATE ROLE cilexec_owner NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_migrator NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_runtime NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_effect_worker NOLOGIN");
-            statement.execute("CREATE ROLE cilexec_readonly NOLOGIN");
-            statement.execute("ALTER DATABASE \"" + connection.getCatalog().replace("\"", "\"\"")
-                    + "\" OWNER TO cilexec_owner");
+        try (Connection connection = adminConnection()) {
+            com.follarce.persistence.postgres.PostgresTestBootstrap.createServiceRoles(connection);
         }
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(POSTGRES.getJdbcUrl(),
+                        com.follarce.persistence.postgres.PostgresTestBootstrap.MIGRATOR_ROLE,
+                        com.follarce.persistence.postgres.PostgresTestBootstrap.DEFAULT_PASSWORD)
                 .locations("classpath:db/migration")
                 .defaultSchema("flyway")
                 .schemas("flyway")
@@ -69,15 +65,15 @@ class FclSystemFunctionsIT {
     }
 
     @Test
-    void rotatesApplicationCredentialWithoutDatabaseLoginPassword() throws Exception {
+    void createsAndRotatesSixCharacterApplicationCredential() throws Exception {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(POSTGRES.getJdbcUrl());
         source.setUser(POSTGRES.getUsername());
         source.setPassword(POSTGRES.getPassword());
         JdbcTransactionExecutor transactions = new JdbcTransactionExecutor(source);
         String username = "legacy-" + UUID.randomUUID().toString().substring(0, 8);
-        String password = "original-password-123";
-        String replacement = "replacement-password-123";
+        String password = "orig01";
+        String replacement = "repl02";
         var account = new AuthService(transactions, Clock.systemUTC()).create(username,
                 password.toCharArray(), Set.of(Capability.VFS_READ));
 

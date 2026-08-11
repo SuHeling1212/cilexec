@@ -1,6 +1,4 @@
--- CilExec pre-release database baseline.
-
--- Before the first stable release this file is the complete schema, not an upgrade chain.
+-- CilExec 1.0 database baseline. It is immutable after the 1.0 release.
 
 
 -- ============================================================================
@@ -20,7 +18,8 @@ BEGIN
         'cilexec_migrator',
         'cilexec_runtime',
         'cilexec_effect_worker',
-        'cilexec_readonly'
+        'cilexec_readonly',
+        'cilexec_exporter'
     ]
     LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = required_role) THEN
@@ -31,7 +30,10 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM pg_catalog.pg_roles
-        WHERE rolname IN ('cilexec_runtime', 'cilexec_effect_worker')
+        WHERE rolname IN (
+            'cilexec_runtime', 'cilexec_effect_worker',
+            'cilexec_readonly', 'cilexec_exporter'
+        )
           AND (rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole)
     ) THEN
         RAISE EXCEPTION 'runtime and effect worker have forbidden cluster privileges';
@@ -62,13 +64,13 @@ CREATE SCHEMA effect AUTHORIZATION cilexec_owner;
 CREATE SCHEMA package AUTHORIZATION cilexec_owner;
 CREATE SCHEMA terminal AUTHORIZATION cilexec_owner;
 CREATE SCHEMA audit AUTHORIZATION cilexec_owner;
+CREATE SCHEMA diagnostic AUTHORIZATION cilexec_owner;
 
 -- name: baseline.schema_usage
 GRANT USAGE ON SCHEMA meta, auth, object_store, vfs, program, process,
     scheduler, ipc, effect, package, terminal, audit TO cilexec_runtime;
 GRANT USAGE ON SCHEMA meta, effect, process, audit TO cilexec_effect_worker;
-GRANT USAGE ON SCHEMA meta, auth, object_store, vfs, program, process,
-    scheduler, ipc, effect, package, terminal, audit TO cilexec_readonly;
+GRANT USAGE ON SCHEMA meta, diagnostic TO cilexec_readonly;
 
 -- name: baseline.default_public_revocation
 ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
@@ -84,6 +86,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_owner IN SCHEMA effect REVOKE ALL ON T
 ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_owner IN SCHEMA package REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_owner IN SCHEMA terminal REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_owner IN SCHEMA audit REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE cilexec_owner IN SCHEMA diagnostic REVOKE ALL ON TABLES FROM PUBLIC;
 
 COMMENT ON SCHEMA meta IS 'CilExec instance, runtime boot, and security metadata';
 COMMENT ON SCHEMA auth IS 'CilExec principals, capabilities, and PostgreSQL role mapping';
@@ -97,6 +100,7 @@ COMMENT ON SCHEMA package IS 'Immutable SQLite package releases and environments
 COMMENT ON SCHEMA effect IS 'Journal for all external side effects';
 COMMENT ON SCHEMA terminal IS 'Committed terminal input and process attachments';
 COMMENT ON SCHEMA audit IS 'Append-only structured audit events';
+COMMENT ON SCHEMA diagnostic IS 'Redacted operational views for the readonly service role';
 
 RESET ROLE;
 
@@ -162,7 +166,6 @@ CREATE INDEX ix_boot_recovery
 -- name: baseline.meta_grants
 GRANT SELECT, INSERT, UPDATE ON meta.instance, meta.kernel_instance, meta.boot TO cilexec_runtime;
 GRANT SELECT ON meta.instance, meta.kernel_instance, meta.boot TO cilexec_effect_worker;
-GRANT SELECT ON meta.instance, meta.kernel_instance, meta.boot TO cilexec_readonly;
 
 COMMENT ON TABLE meta.instance IS 'Singleton authoritative CilExec database instance identity';
 COMMENT ON TABLE meta.kernel_instance IS 'A concrete Java Runtime incarnation';
@@ -349,13 +352,13 @@ REVOKE ALL ON FUNCTION auth.resolve_cilexec_user_id(name, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auth.resolve_visible_username(name, text, uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auth.visible_username(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION auth.resolve_cilexec_user_id(name, text)
-    TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
+    TO cilexec_runtime, cilexec_effect_worker;
 GRANT EXECUTE ON FUNCTION auth.current_cilexec_user_id()
-    TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
+    TO cilexec_runtime, cilexec_effect_worker;
 GRANT EXECUTE ON FUNCTION auth.resolve_visible_username(name, text, uuid)
-    TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
+    TO cilexec_runtime, cilexec_effect_worker;
 GRANT EXECUTE ON FUNCTION auth.visible_username(uuid)
-    TO cilexec_runtime, cilexec_effect_worker, cilexec_readonly;
+    TO cilexec_runtime, cilexec_effect_worker;
 
 -- name: baseline.auth_rls
 ALTER TABLE auth.user_account ENABLE ROW LEVEL SECURITY;
@@ -363,7 +366,6 @@ ALTER TABLE auth.user_account FORCE ROW LEVEL SECURITY;
 CREATE POLICY user_account_owner_control ON auth.user_account TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY user_account_migrator_control ON auth.user_account TO cilexec_migrator USING (true) WITH CHECK (true);
 CREATE POLICY user_account_runtime_control ON auth.user_account TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY user_account_readonly_control ON auth.user_account FOR SELECT TO cilexec_readonly USING (true);
 -- User LOGIN roles intentionally have no direct user_account policy. The
 -- identity resolver reads this table as cilexec_owner; adding a policy that
 -- calls the resolver here would create recursive RLS. Users call the verified
@@ -380,25 +382,21 @@ ALTER TABLE auth.group_capability FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY group_account_owner_control ON auth.group_account TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY group_account_runtime_control ON auth.group_account TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY group_account_readonly_control ON auth.group_account FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY group_account_principal ON auth.group_account TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 CREATE POLICY group_member_owner_control ON auth.group_member TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY group_member_runtime_control ON auth.group_member TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY group_member_readonly_control ON auth.group_member FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY group_member_principal ON auth.group_member TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id()) WITH CHECK (owner_id = auth.current_cilexec_user_id());
 
 CREATE POLICY user_capability_owner_control ON auth.user_capability TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY user_capability_runtime_control ON auth.user_capability TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY user_capability_readonly_control ON auth.user_capability FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY user_capability_principal ON auth.user_capability FOR SELECT TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id());
 
 CREATE POLICY group_capability_owner_control ON auth.group_capability TO cilexec_owner USING (true) WITH CHECK (true);
 CREATE POLICY group_capability_runtime_control ON auth.group_capability TO cilexec_runtime USING (true) WITH CHECK (true);
-CREATE POLICY group_capability_readonly_control ON auth.group_capability FOR SELECT TO cilexec_readonly USING (true);
 CREATE POLICY group_capability_principal ON auth.group_capability FOR SELECT TO PUBLIC
     USING (owner_id = auth.current_cilexec_user_id());
 
@@ -410,7 +408,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON auth.user_credential
     TO cilexec_runtime, cilexec_migrator;
 GRANT DELETE ON auth.group_member, auth.user_capability, auth.group_capability TO cilexec_runtime;
 GRANT SELECT ON auth.capability TO cilexec_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA auth TO cilexec_readonly;
 
 -- Role creation is cluster DDL, so this function is created by the already
 -- bootstrapped migrator. Runtime later receives only the the baseline composite API.
@@ -437,8 +434,15 @@ BEGIN
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = mapped_role) THEN
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles
+            WHERE rolname = mapped_role
+              AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+        ) THEN
+            RAISE EXCEPTION 'mapped PostgreSQL role has forbidden privileged attributes';
+        END IF;
         EXECUTE format(
-            'ALTER ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL',
+            'ALTER ROLE %I NOLOGIN NOINHERIT PASSWORD NULL',
             mapped_role
         );
     ELSE

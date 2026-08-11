@@ -305,8 +305,13 @@ final class FclPersistenceBridge {
     private static Optional<Continuation.WaitState> parseExternalWait(String key) {
         if (key == null) return Optional.empty();
         if (key.equals("input") || key.startsWith("input:")) {
+            // Preserve the key-mode sub-key so timer-driven input timeouts are never
+            // delivered to a line-input wait. Old persisted INPUT waits carry no target.
             return Optional.of(new Continuation.WaitState(Continuation.WaitKind.INPUT,
-                    Optional.empty(), Optional.empty()));
+                    key.equals("input") ? Optional.empty()
+                            : Optional.of(UUID.nameUUIDFromBytes(
+                            key.getBytes(StandardCharsets.UTF_8))),
+                    Optional.empty()));
         }
         int separator = key.indexOf(':');
         if (separator < 1 || separator == key.length() - 1) return Optional.empty();
@@ -329,7 +334,7 @@ final class FclPersistenceBridge {
 
     private static String externalWaitKey(Continuation.WaitState wait) {
         return switch (wait.kind()) {
-            case INPUT -> "input";
+            case INPUT -> wait.targetId().isEmpty() ? "input" : "input:key";
             case IPC -> "ipc:" + requiredTarget(wait);
             case TIMER -> "timer:" + requiredTarget(wait);
             case EFFECT -> "effect:" + requiredTarget(wait);

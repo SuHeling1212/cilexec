@@ -203,6 +203,57 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     }
 
     @Override
+    public Optional<Instant> loginBlockedUntil(String principalKey) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT blocked_until FROM auth.login_throttle WHERE principal_key=?")) {
+            statement.setString(1, principalKey);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Optional.of(rows.getTimestamp(1).toInstant()) : Optional.empty();
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.loginBlockedUntil", exception);
+        }
+    }
+
+    @Override
+    public void recordLoginFailure(String principalKey, Instant failedAt,
+                                   long maximumDelayMillis) {
+        String sql = "INSERT INTO auth.login_throttle(principal_key,failure_count,last_failed_at,blocked_until) "
+                + "VALUES (?,1,?,CAST(? AS timestamptz) + interval '250 milliseconds') "
+                + "ON CONFLICT (principal_key) DO UPDATE SET "
+                + "failure_count=CASE WHEN GREATEST(EXCLUDED.last_failed_at,"
+                + "auth.login_throttle.last_failed_at)-auth.login_throttle.last_failed_at "
+                + ">= interval '10 minutes' THEN 1 ELSE LEAST(32,auth.login_throttle.failure_count+1) END, "
+                + "last_failed_at=GREATEST(EXCLUDED.last_failed_at,auth.login_throttle.last_failed_at), "
+                + "blocked_until=GREATEST(auth.login_throttle.blocked_until,"
+                + "GREATEST(EXCLUDED.last_failed_at,auth.login_throttle.last_failed_at) + "
+                + "make_interval(secs => LEAST(?::double precision / 1000.0, "
+                + "0.25 * power(2, LEAST(7, CASE WHEN GREATEST(EXCLUDED.last_failed_at,"
+                + "auth.login_throttle.last_failed_at)-auth.login_throttle.last_failed_at "
+                + ">= interval '10 minutes' THEN 0 ELSE auth.login_throttle.failure_count END)))))";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, principalKey);
+            statement.setTimestamp(2, java.sql.Timestamp.from(failedAt));
+            statement.setTimestamp(3, java.sql.Timestamp.from(failedAt));
+            statement.setLong(4, maximumDelayMillis);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("auth.recordLoginFailure", exception);
+        }
+    }
+
+    @Override
+    public void clearLoginFailures(String principalKey) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM auth.login_throttle WHERE principal_key=?")) {
+            statement.setString(1, principalKey);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("auth.clearLoginFailures", exception);
+        }
+    }
+
+    @Override
     public void disablePrincipal(UUID userId) {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT auth.disable_principal(?)")) {

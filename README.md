@@ -36,15 +36,15 @@ from committed database rows, with nothing lost.
 - **Human-friendly terminal** — an interactive REPL whose process (variables, imports,
   functions, working directory) persists across logout/login and Runtime restarts, plus a
   headless protocol for host scripting.
-- **Zero-migration policy until first release** — schema changes are made in place in the
-  single Flyway baseline; old formats are abandoned, not migrated.
+- **Forward-only schema upgrades** — the 1.0 V001 baseline is frozen; every later persisted
+  format change ships as an immutable Flyway V002+ migration and downgrades restore a backup.
 
 ## Quick start
 
 Requirements: JDK 26, Maven 3.9+, PostgreSQL 17.1+.
 
 ```bash
-./Install.sh                    # one command: secrets + PostgreSQL + migrations + terminal
+./tools/Install.sh            # one command: secrets + PostgreSQL + migrations + terminal
 ```
 
 On first use the terminal asks for the administrator password (username `local` by default).
@@ -60,15 +60,24 @@ return sum
 Run one-off submissions from the host without the interactive shell:
 
 ```bash
-./Headless.sh 'value = 41'
-./Headless.sh 'io.println(value + 1)'     # 42; same durable REPL process per host terminal
+./tools/Headless.sh 'value = 41'
+./tools/Headless.sh 'io.println(value + 1)'     # 42; same durable REPL process per host terminal
 ```
+
+Production operators should use the signed release image/artifacts and follow
+[release verification](docs/release.md) and the
+[backup, restore, and credential rotation runbook](docs/production-backup-restore.md).
+
+When using Docker Desktop, give its Linux VM at least 10 GB of memory (Settings →
+Resources → Advanced) on a 16 GB host. The Runtime JVM, PostgreSQL, and the
+`mvn verify` integration suite each need a few GB; with the default 7.8 GB VM the
+host can run out of memory and the Java tooling or Runtime can be killed.
 
 Without Docker, run the JAR directly (a database must exist first):
 
 ```bash
-java -jar target/cilexec-app.jar terminal
 java -jar target/cilexec-app.jar migrate
+java -jar target/cilexec-app.jar terminal
 ```
 
 ## Core concepts
@@ -108,14 +117,14 @@ src/main/java/com/follarce
   exporter/       verified PostgreSQL → SQLite export
   terminal/       interactive and headless control plane
   auth/ audit/ health/ config/ extension/   security, ops, and extension surfaces
-src/main/resources/db/baseline/   single Flyway baseline (roles, RLS, SQL functions)
+src/main/resources/db/baseline/   frozen V001 modules (roles, RLS, SQL functions)
 ```
 
 ## Build & test
 
 ```bash
-mvn clean test        # 270+ unit, lifecycle, and crash-recovery tests
-mvn clean verify      # package target/cilexec-app.jar
+mvn clean test        # 293+ unit and lifecycle tests
+mvn clean verify      # mandatory PostgreSQL/crash-recovery ITs + quality gates + JAR
 ```
 
 ## Documentation
