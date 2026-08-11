@@ -56,6 +56,22 @@ class TerminalConsoleTest {
     }
 
     @Test
+    void joinsCBackslashContinuationsBeforeEvaluatingFcl() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+        String input = "process.exec(\\\n\"/next.fcl\")\n:exit\n";
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        assertEquals(List.of("process.exec(\"/next.fcl\")"), control.sources);
+        assertEquals(List.of("process.exec(\\\n\"/next.fcl\")"), control.remembered,
+                "history keeps the raw typed lines including the continuation backslash");
+    }
+
+    @Test
     void keepsCommandsAvailableWhileAttachedInputWaitsAndEscapesLeadingColon() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         RecordingControl control = new RecordingControl();

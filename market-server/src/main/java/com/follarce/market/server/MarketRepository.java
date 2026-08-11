@@ -5,9 +5,11 @@ import com.google.gson.GsonBuilder;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
@@ -39,8 +41,9 @@ final class MarketRepository {
     private volatile Snapshot snapshot;
 
     MarketRepository(Path repository, Path catalog) throws IOException, SQLException {
-        this.repository = requireDirectory(repository).toRealPath(LinkOption.NOFOLLOW_LINKS);
+        this.repository = ensureRepository(repository).toRealPath(LinkOption.NOFOLLOW_LINKS);
         this.catalog = catalog.toAbsolutePath().normalize();
+        ensureCatalog(this.catalog);
         this.snapshot = loadSnapshot();
     }
 
@@ -49,8 +52,122 @@ final class MarketRepository {
         snapshot = loadSnapshot();
     }
 
+    /** Loads the repository view for the live catalog file. */
     private Snapshot loadSnapshot() throws IOException, SQLException {
-        Map<String, Publication> publications = readPublications(catalog);
+        return loadSnapshot(catalog);
+    }
+
+    byte[] index() {
+        return snapshot.index().clone();
+    }
+
+    /** All published package records, sorted by coordinate. */
+    List<PackageRecord> published() {
+        return snapshot.packages().values().stream()
+                .map(PublishedPackage::record)
+                .sorted(Comparator.comparing(PackageRecord::coordinate))
+                .toList();
+    }
+
+    /** Validates a candidate package database and returns its identity without touching the
+     *  repository. The caller must still call {@link #publish} to make it visible. */
+    synchronized StagedPackage stage(Path source) throws IOException, SQLException {
+        Path real = validateSource(source);
+        Map<String, String> metadata = readMetadata(real);
+        String coordinate = required(metadata, "namespace") + "/"
+                + required(metadata, "name") + "/" + required(metadata, "version");
+        return new StagedPackage(real, coordinate,
+                required(metadata, "package_kind"), sha256(real), Files.size(real));
+    }
+
+    /** Copies a staged package into the repository layout and atomically publishes it in the
+     *  catalog. The catalog is fully re-validated before the atomic replace; a failed
+     *  publication leaves both the repository and the catalog untouched. */
+    synchronized void publish(StagedPackage staged, String summary, String description,
+                              List<String> tags) throws IOException, SQLException {
+        String[] identity = staged.coordinate().split("/", -1);
+        Path target = repository.resolve("packages").resolve(identity[0]).resolve(identity[1])
+                .resolve(identity[2]).resolve(identity[1] + ".db");
+        rejectSymlinkComponents(target);
+        target.getParent().toFile().mkdirs();
+        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                && sha256(target).equals(staged.sha256())) {
+            // Already published with identical content; only the catalog entry may change.
+        } else if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("Different package content already published for "
+                    + staged.coordinate());
+        } else {
+            Files.copy(staged.source(), target);
+        }
+        Map<String, Publication> next = new LinkedHashMap<>(readPublications(catalog));
+        Publication previous = next.get(staged.coordinate());
+        next.put(staged.coordinate(), new Publication(
+                summary != null ? summary
+                        : previous != null ? previous.summary() : "",
+                description != null ? description
+                        : previous != null ? previous.description() : "",
+                tags != null ? List.copyOf(tags)
+                        : previous != null ? previous.tags() : List.of()));
+        writeCatalogVerified(next);
+        refresh();
+    }
+
+    /** The on-disk location a package coordinate is stored at (also used by publish). */
+    String packageFile(String coordinate) {
+        String[] identity = coordinate.split("/", -1);
+        if (identity.length != 3) {
+            throw new IllegalArgumentException("Invalid coordinate: " + coordinate);
+        }
+        return repository.resolve("packages").resolve(identity[0]).resolve(identity[1])
+                .resolve(identity[2]).resolve(identity[1] + ".db").toString();
+    }
+
+    /** Removes one coordinate from the catalog, leaving its package file in place. Returns
+     *  false when the coordinate was not published. */
+    synchronized boolean unpublish(String coordinate) throws IOException, SQLException {
+        Map<String, Publication> next = new LinkedHashMap<>(readPublications(catalog));
+        if (next.remove(coordinate) == null) return false;
+        writeCatalogVerified(next);
+        refresh();
+        return true;
+    }
+
+    /** Writes the catalog atomically after proving that it loads cleanly against the current
+     *  repository contents. */
+    private void writeCatalogVerified(Map<String, Publication> publications)
+            throws IOException, SQLException {
+        Path temporary = catalog.resolveSibling(catalog.getFileName() + ".pending");
+        try {
+            Map<String, Object> document = new LinkedHashMap<>();
+            for (Map.Entry<String, Publication> entry : publications.entrySet()) {
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                if (!entry.getValue().summary().isEmpty()) {
+                    metadata.put("summary", entry.getValue().summary());
+                }
+                if (!entry.getValue().description().isEmpty()) {
+                    metadata.put("description", entry.getValue().description());
+                }
+                if (!entry.getValue().tags().isEmpty()) {
+                    metadata.put("tags", entry.getValue().tags());
+                }
+                document.put(entry.getKey(), metadata);
+            }
+            Files.writeString(temporary, PRETTY_JSON.toJson(document) + "\n",
+                    StandardCharsets.UTF_8);
+            loadSnapshot(temporary);
+            try {
+                Files.move(temporary, catalog, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, catalog, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private Snapshot loadSnapshot(Path catalogSource) throws IOException, SQLException {
+        Map<String, Publication> publications = readPublications(catalogSource);
         List<PublishedPackage> loaded = new ArrayList<>();
         for (Map.Entry<String, Publication> entry : publications.entrySet()) {
             loaded.add(load(entry.getKey(), entry.getValue()));
@@ -70,9 +187,49 @@ final class MarketRepository {
         return new Snapshot(packages, index);
     }
 
-    byte[] index() {
-        return snapshot.index().clone();
+    /** Checks that a source file is a valid package database and returns its real path. */
+    private Path validateSource(Path source) throws IOException {
+        Path real = source.toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(real) || !Files.isRegularFile(real, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("Package source is not a regular file: " + source);
+        }
+        long bytes = Files.size(real);
+        if (bytes < 1 || bytes > MAX_PACKAGE_BYTES) {
+            throw new IllegalArgumentException("Package size must be from 1 byte to 64 MiB");
+        }
+        String jdbc = "jdbc:sqlite:" + real.toUri() + "?mode=ro&immutable=1";
+        try (Connection connection = DriverManager.getConnection(jdbc);
+             Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA query_only=ON");
+            try (ResultSet version = statement.executeQuery("PRAGMA user_version")) {
+                if (!version.next() || version.getInt(1) != 2) {
+                    throw new IllegalArgumentException("Unsupported package format: "
+                            + "expected SQLite user_version 2");
+                }
+            }
+        } catch (SQLException invalid) {
+            throw new IllegalArgumentException("Package source is not a SQLite database: " + source,
+                    invalid);
+        }
+        return real;
     }
+
+    /** Reads the metadata table of a package database (also used by one-shot publish). */
+    public static Map<String, String> readMetadata(Path database) throws SQLException {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        String jdbc = "jdbc:sqlite:" + database.toUri() + "?mode=ro&immutable=1";
+        try (Connection connection = DriverManager.getConnection(jdbc);
+             Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA query_only=ON");
+            try (ResultSet rows = statement.executeQuery(
+                    "SELECT metadata_key,metadata_value FROM package_metadata")) {
+                while (rows.next()) metadata.put(rows.getString(1), rows.getString(2));
+            }
+        }
+        return metadata;
+    }
+
+    record StagedPackage(Path source, String coordinate, String kind, String sha256, long bytes) { }
 
     PublishedPackage require(String sha256) {
         return snapshot.packages().get(sha256);
@@ -206,6 +363,26 @@ final class MarketRepository {
             throw new IllegalArgumentException("Repository is not a regular directory: " + path);
         }
         return path;
+    }
+
+    /**
+     * A single-file deployment: the market creates its own layout on first start.
+     * An existing repository is validated strictly; a missing one is created with
+     * the packages subdirectory, and a missing catalog is initialized to an empty
+     * object so the JAR needs no external setup step.
+     */
+    private static Path ensureRepository(Path path) throws IOException {
+        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return requireDirectory(path);
+        Files.createDirectories(path.resolve("packages"));
+        return path;
+    }
+
+    private static void ensureCatalog(Path catalog) throws IOException {
+        if (Files.exists(catalog, LinkOption.NOFOLLOW_LINKS)) return;
+        if (Files.isSymbolicLink(catalog)) {
+            throw new IllegalArgumentException("Catalog must be a regular JSON file, not a symlink");
+        }
+        Files.writeString(catalog, "{}\n", StandardCharsets.UTF_8);
     }
 
     private void rejectSymlinkComponents(Path candidate) throws IOException {

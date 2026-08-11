@@ -1,13 +1,57 @@
 #!/usr/bin/env python3
 
 import hashlib
+import io
 import json
+import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
 import release_all
+
+
+def write_shell_installer(path: Path, version: str, *, uninstall_entry: bool = True,
+                          embedded_uninstall: bool = True,
+                          uninstall_cleanup: bool = True) -> None:
+    uninstall_function = (
+        "uninstall_installation() {\n"
+        "  docker rm -f $(docker ps -aq) 2>/dev/null\n"
+        "  docker rmi cilexec:local 2>/dev/null\n"
+        "  docker volume rm cilexec-pgdata 2>/dev/null\n"
+        "  docker network rm cilexec-net 2>/dev/null\n"
+        "  rm -f docker/secrets/postgres-admin-password\n"
+        "}\n"
+    ) if embedded_uninstall else ""
+    if uninstall_function and not uninstall_cleanup:
+        uninstall_function = (
+            "uninstall_installation() {\n"
+            "  echo partial\n"
+            "}\n"
+        )
+    parts = ["#!/usr/bin/env bash\n", "set -euo pipefail\n"]
+    if uninstall_function:
+        parts.append(uninstall_function)
+    if uninstall_entry:
+        parts.append("--uninstall) UNINSTALL=true ;;\n")
+    parts.append("echo installing\n")
+    if uninstall_entry and uninstall_function:
+        parts.append("uninstall_installation\n")
+    parts.append("__PAYLOAD__\n")
+    header = "".join(parts)
+    payload_members = [
+        (".cilexec-image-platform", b"linux-amd64"),
+    ]
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, content in payload_members:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(content))
+    payload = buffer.getvalue()
+    path.write_bytes(header.encode("ascii") + payload)
 
 
 class WindowsPackageVerificationTest(unittest.TestCase):
@@ -68,6 +112,35 @@ class WindowsPackageVerificationTest(unittest.TestCase):
                                {"images": images})
             with self.assertRaisesRegex(RuntimeError, "amd64"):
                 release_all.verify_windows_zip(archive_path, "1.0.0")
+
+
+class ShellInstallerVerificationTest(unittest.TestCase):
+    def test_accepts_installer_with_embedded_uninstall_function(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
+            write_shell_installer(installer, "1.0.0")
+            release_all.verify_shell_installer(installer, "1.0.0")
+
+    def test_rejects_installer_without_uninstall_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
+            write_shell_installer(installer, "1.0.0", uninstall_entry=False)
+            with self.assertRaisesRegex(RuntimeError, "uninstall entry"):
+                release_all.verify_shell_installer(installer, "1.0.0")
+
+    def test_rejects_installer_without_embedded_uninstall_function(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
+            write_shell_installer(installer, "1.0.0", embedded_uninstall=False)
+            with self.assertRaisesRegex(RuntimeError, "embedded uninstall"):
+                release_all.verify_shell_installer(installer, "1.0.0")
+
+    def test_rejects_installer_with_incomplete_uninstall_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
+            write_shell_installer(installer, "1.0.0", uninstall_cleanup=False)
+            with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                release_all.verify_shell_installer(installer, "1.0.0")
 
 
 if __name__ == "__main__":

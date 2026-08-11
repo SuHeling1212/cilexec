@@ -737,8 +737,13 @@ public final class FclRuntimeFunctions {
                     Authorization.require(transaction, process.ownerId(),
                             Capability.PROCESS_CONTROL_OWN);
                     String requestedPath = string(args.getFirst(), "process.exec path");
-                    String absolutePath = normalize(requestedPath);
-                    RoutedPath routed = route(requestedPath, process.ownerId());
+                    // C-style resolution: relative paths resolve against the process
+                    // working directory (cilexec.path.cwd); the resolved absolute path is
+                    // what gets persisted with the suspension and audited.
+                    String absolutePath = requestedPath.replace('\\', '/').startsWith("/")
+                            ? normalize(requestedPath)
+                            : FclPath.resolve(invocation.continuation(), requestedPath);
+                    RoutedPath routed = route(absolutePath, process.ownerId());
                     if (!routed.ownerId().equals(process.ownerId())) {
                         throw new FclRuntimeException(
                                 "process.exec accepts a file in the current user's VFS");

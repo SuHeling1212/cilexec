@@ -370,6 +370,8 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 FCL input (default):
                   expression or statement       execute with every FCL namespace available
                   func/if/while blocks           continue on the ...> multiline prompt
+                  Shift+Enter                    insert a line break without submitting
+                  trailing \\                     keep the line open and join it like C
 
                 Terminal commands (prefix with :):
                   :help                          show this help

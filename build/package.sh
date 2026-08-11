@@ -77,6 +77,124 @@ cat > "$output" << 'HEADER'
 #!/usr/bin/env bash
 set -euo pipefail
 
+INSTALL_DIR="${INSTALL_DIR:-$HOME/cilexec}"
+
+# ── Self-contained uninstaller ─────────────────────────────
+# This installer script is the uninstaller: it never relies on files that were
+# extracted into the installation directory, so uninstalling works even when
+# that directory has already been deleted. It cleans the Docker resources,
+# secrets, and exports that belong to this installation.
+hash_text() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -c1-64
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -c1-64
+    else
+        echo "Error: sha256sum or shasum is required." >&2
+        return 1
+    fi
+}
+
+uninstall_installation() {
+    local force="${1:-}"
+    local project_hash compose_project volume_name image_name secret_dir
+    project_hash="$(printf '%s\n' "$INSTALL_DIR" | hash_text)"
+    project_hash="${project_hash:0:8}"
+    compose_project="cilexec-${project_hash}"
+    volume_name="cilexec-pgdata-${project_hash}"
+    secret_dir="$INSTALL_DIR/docker/secrets"
+    image_name="cilexec:local"
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        while IFS='=' read -r key value; do
+            if [[ "$key" == "CILEXEC_IMAGE" && "$value" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
+                image_name="$value"
+            fi
+        done < "$INSTALL_DIR/.env"
+    fi
+
+    if [[ "$force" != "--force" ]]; then
+        echo "This will permanently remove the CilExec instance installed at $INSTALL_DIR:"
+        echo "  containers, the database volume ($volume_name), the image ($image_name),"
+        echo "  secrets, and default exports. This cannot be undone."
+        if command -v docker >/dev/null 2>&1; then
+            echo
+            echo "Current CilExec resources:"
+            docker ps -a --filter "label=com.docker.compose.project=$compose_project" \
+                --format '  container: {{.Names}} ({{.Status}})' 2>/dev/null || true
+            docker volume inspect "$volume_name" --format '  volume: {{.Name}}' 2>/dev/null || true
+            docker network ls --filter "label=com.docker.compose.project=$compose_project" \
+                --format '  network: {{.Name}}' 2>/dev/null || true
+        fi
+        echo
+        read -r -p "Type yes to continue: " confirm
+        if [[ "$confirm" != "yes" ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        containers=$(docker ps -a --filter "label=com.docker.compose.project=$compose_project" \
+            -q 2>/dev/null || true)
+        if [[ -n "$containers" ]]; then
+            while read -r container; do
+                [[ -z "$container" ]] || docker rm -f "$container" >/dev/null 2>&1 || true
+            done <<< "$containers"
+        fi
+        if [[ "$image_name" == "cilexec:local" ]]; then
+            if docker image inspect "$image_name" >/dev/null 2>&1; then
+                docker rmi "$image_name" >/dev/null 2>&1 || \
+                    echo "Note: image $image_name is still in use and was kept." >&2
+            fi
+        fi
+        docker volume rm "$volume_name" >/dev/null 2>&1 || true
+        networks=$(docker network ls \
+            --filter "label=com.docker.compose.project=$compose_project" \
+            -q 2>/dev/null || true)
+        if [[ -n "$networks" ]]; then
+            while read -r network; do
+                [[ -z "$network" ]] || docker network rm "$network" >/dev/null 2>&1 || true
+            done <<< "$networks"
+        fi
+    fi
+
+    if [[ -d "$secret_dir" ]]; then
+        rm -f "$secret_dir/postgres-admin-password" \
+            "$secret_dir/cilexec-migrator-password" \
+            "$secret_dir/cilexec-runtime-password" \
+            "$secret_dir/cilexec-effect-worker-password" \
+            "$secret_dir/cilexec-readonly-password" \
+            "$secret_dir/cilexec-exporter-password" \
+            "$secret_dir/postgres-ca.crt" \
+            "$secret_dir/postgres-server.crt" \
+            "$secret_dir/postgres-server.key"
+    fi
+    if [[ -d "$INSTALL_DIR/exports" ]]; then
+        rm -rf "$INSTALL_DIR/exports"
+    fi
+    echo "CilExec installation resources were removed."
+}
+
+# ── Uninstall entry point ──────────────────────────────────
+UNINSTALL=false
+FORCE=false
+for argument in "$@"; do
+    case "$argument" in
+        --uninstall|-u) UNINSTALL=true ;;
+        --force)        FORCE=true ;;
+        *)
+            echo "Unknown option: $argument" >&2
+            echo "Usage: $0 [--uninstall [--force]]" >&2
+            exit 2
+            ;;
+    esac
+done
+if [[ "$UNINSTALL" == true ]]; then
+    echo "Uninstalling the CilExec instance installed at $INSTALL_DIR..."
+    uninstall_installation "$([[ "$FORCE" == true ]] && echo --force || true)"
+    exit 0
+fi
+
 echo "CilExec Standalone Installer"
 echo "============================"
 echo
@@ -120,7 +238,6 @@ if ! docker compose version &>/dev/null 2>&1; then
 fi
 
 # ── Extract payload ────────────────────────────────────────
-INSTALL_DIR="${INSTALL_DIR:-$HOME/cilexec}"
 mkdir -p "$INSTALL_DIR"
 echo "Installing to: $INSTALL_DIR"
 
@@ -165,6 +282,7 @@ chmod +x tools/Install.sh tools/Uninstall.sh tools/Shell.sh tools/Headless.sh \
 echo
 echo "Installation complete!"
 echo "  cd $INSTALL_DIR && ./tools/Install.sh"
+echo "Uninstall later with:  $0 --uninstall"
 exit 0
 __PAYLOAD__
 HEADER

@@ -161,6 +161,14 @@ public interface TerminalInput {
     /** A small dependency-free line editor for a real TTY. */
     final class EditableTerminalInput implements TerminalInput {
         private static final int HISTORY_LIMIT = TerminalService.COMMAND_HISTORY_LIMIT;
+        /**
+         * Kitty keyboard protocol (push): asks the terminal to disambiguate modifier
+         * keys, so Shift+Enter arrives as CSI 13;2u instead of a plain CR on
+         * terminals that support it (iTerm2, kitty, WezTerm, Windows Terminal, Foot).
+         * Terminals without support silently ignore the sequence.
+         */
+        private static final String KITTY_PROTOCOL_ENABLE = "\u001b[>1u";
+        private static final String KITTY_PROTOCOL_DISABLE = "\u001b[<u";
 
         private final InputStream stream;
         private final Console console;
@@ -169,6 +177,7 @@ public interface TerminalInput {
         private final StringBuilder pasteBuffer = new StringBuilder();
         private boolean inPaste;
         private RawMode keyMode;
+        private boolean kittyProtocolActive;
 
         EditableTerminalInput(InputStream stream, Console console) {
             this(stream, console, () -> TerminalDimensions.current().width());
@@ -596,6 +605,21 @@ public interface TerminalInput {
             int renderedLines = initial.renderedLines();
             int historyIndex = history.size();
             String draft = "";
+            enableKittyProtocol(output);
+            try {
+                return editLoop(output, prompt, continuationPrompt, remember, complete, value,
+                        cursor, initial, historyIndex, draft);
+            } finally {
+                disableKittyProtocol(output);
+            }
+        }
+
+        private String editLoop(PrintWriter output, String prompt, String continuationPrompt,
+                                boolean remember, Predicate<String> complete, StringBuilder value,
+                                int cursor, RenderState initial, int historyIndex, String draft)
+                throws IOException {
+            int screenCursorLine = initial.cursorLine();
+            int renderedLines = initial.renderedLines();
             while (true) {
                 int character = stream.read();
                 if (character < 0) return null;
@@ -640,6 +664,27 @@ public interface TerminalInput {
                     if (bracket == '[' || bracket == 'O') {
                         int direction = stream.read();
                         if (direction < 0) continue;
+                        // Shift+Enter arrives as CSI 13;2u (kitty, iTerm2, Windows
+                        // Terminal) or CSI 13;2~ (xterm modifyOtherKeys). It inserts a
+                        // line break without submitting, so a continued line works
+                        // even when every delimiter is already balanced.
+                        if (direction == '1' && shiftEnter()) {
+                            value.insert(cursor++, '\n');
+                            requireSubmissionLimit(value);
+                            RenderState state = render(output, prompt, continuationPrompt,
+                                    value, cursor, screenCursorLine, renderedLines);
+                            screenCursorLine = state.cursorLine();
+                            renderedLines = state.renderedLines();
+                            continue;
+                        }
+                        // Numeric CSI sequences are modifier-key reports (kitty
+                        // protocol: CSI 120;3u for Alt+X), bracketed-paste markers,
+                        // or terminal replies. Consume them whole so their bytes never
+                        // reach the editor as ordinary text.
+                        if (direction >= '0' && direction <= '9') {
+                            consumeCsi();
+                            continue;
+                        }
                         switch (direction) {
                             case 'A' -> { // Up
                                 int moved = moveVertical(value, cursor, -1);
@@ -822,6 +867,60 @@ public interface TerminalInput {
 
         private void unread(int value) throws IOException {
             ((PushbackInputStream) stream).unread(value);
+        }
+
+        /**
+         * Consumes the remainder of the Shift+Enter escape sequence after the
+         * leading {@code ESC [ 1 3}. Both the kitty {@code u} and the xterm
+         * {@code ~} terminators are accepted. On any mismatch the consumed bytes
+         * are pushed back so an unrelated sequence (for example
+         * {@code ESC [ 1;5A}) keeps its old behavior.
+         */
+        private boolean shiftEnter() throws IOException {
+            int[] consumed = new int[4];
+            consumed[0] = stream.read();
+            if (consumed[0] != '3') return pushBack(consumed, 1);
+            consumed[1] = stream.read();
+            if (consumed[1] != ';') return pushBack(consumed, 2);
+            consumed[2] = stream.read();
+            if (consumed[2] != '2') return pushBack(consumed, 3);
+            consumed[3] = stream.read();
+            if (consumed[3] != 'u' && consumed[3] != '~') return pushBack(consumed, 4);
+            return true;
+        }
+
+        /**
+         * Consumes a numeric CSI sequence up to its final byte (0x40-0x7E), for
+         * example {@code ESC [ 120;3u} (Alt+X under the kitty protocol) or
+         * {@code ESC [ 200~} (bracketed-paste start).
+         */
+        private void consumeCsi() throws IOException {
+            while (true) {
+                int value = stream.read();
+                if (value < 0) return;
+                if (value >= 0x40 && value <= 0x7E) return;
+            }
+        }
+
+        private void enableKittyProtocol(PrintWriter output) {
+            if (kittyProtocolActive) return;
+            output.print(KITTY_PROTOCOL_ENABLE);
+            output.flush();
+            kittyProtocolActive = true;
+        }
+
+        private void disableKittyProtocol(PrintWriter output) {
+            if (!kittyProtocolActive) return;
+            output.print(KITTY_PROTOCOL_DISABLE);
+            output.flush();
+            kittyProtocolActive = false;
+        }
+
+        private boolean pushBack(int[] consumed, int count) throws IOException {
+            for (int index = count - 1; index >= 0; index--) {
+                if (consumed[index] >= 0) unread(consumed[index]);
+            }
+            return false;
         }
 
         private void remember(String value) {

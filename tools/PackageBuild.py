@@ -206,6 +206,12 @@ def normalize_manifest(source: bytes, root: Path) -> tuple[dict[str, str], list[
 
     metadata = {"namespace": namespace, "name": name, "version": version,
                 "language_version": language, "package_kind": kind}
+    author = manifest.get("author")
+    if author is not None:
+        if not isinstance(author, str) or len(author) > 256 or any(ord(ch) < 32 for ch in author):
+            fail("author is invalid")
+        if author.strip():
+            metadata["author"] = author.strip()
     module_rows = [(module, path, hashlib.sha256(dict(contents)[path]).hexdigest())
                    for module, path in modules]
     return metadata, contents, module_rows, dependencies, entrypoints, exports, capabilities

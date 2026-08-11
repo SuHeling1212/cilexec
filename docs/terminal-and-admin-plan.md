@@ -155,7 +155,11 @@ works while FCL is executing. The session supports:
 
 - free-form **FCL input** (default mode): expressions and statements run as a new
   durable FCL process; `func`/`if`/`while` blocks continue on a `...>` multiline
-  prompt;
+  prompt, `Shift+Enter` inserts a line break without submitting (so continued lines
+  work even with balanced delimiters), and a trailing `\` before Enter (C-style line
+  continuation) keeps the submission open, joining the lines before compilation. The
+  editor negotiates the kitty keyboard protocol (`CSI > 1 u`) so terminals with
+  modifier-key support send `Shift+Enter` natively;
 - **attached input**: when a process waits in `io.input()`, the prompt changes to
   `pid:?` and the next line is delivered verbatim; terminal commands still start
   with `:`, and `::text` sends raw input beginning with `:`;

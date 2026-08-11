@@ -116,6 +116,31 @@ class PackageBuilderTest {
                 base.capabilities()));
     }
 
+    @Test
+    void storesThePackageAuthorInTheMetadataTable() throws Exception {
+        PackageManifest authored = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+                PackageKind.APPLICATION,
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
+                List.of(new PackageManifest.Entrypoint("run", "main", "run")), List.of(),
+                List.of(), "Ada Lovelace");
+
+        byte[] database = new PackageBuilder().build(authored, path ->
+                "func run() { return 1 }".getBytes(StandardCharsets.UTF_8));
+
+        var descriptor = new SqlitePackageReader().inspect(database);
+        assertEquals("Ada Lovelace", descriptor.author());
+
+        PackageManifest anonymous = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+                PackageKind.APPLICATION,
+                List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
+                List.of(new PackageManifest.Entrypoint("run", "main", "run")), List.of(),
+                List.of(), null);
+        byte[] anonymousDatabase = new PackageBuilder().build(anonymous, path ->
+                "func run() { return 1 }".getBytes(StandardCharsets.UTF_8));
+        assertEquals(null, new SqlitePackageReader().inspect(anonymousDatabase).author(),
+                "a missing author must not write a metadata row");
+    }
+
     private PackageManifest manifest() {
         return new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 List.of(new PackageManifest.Module("main", "main.fcl")),

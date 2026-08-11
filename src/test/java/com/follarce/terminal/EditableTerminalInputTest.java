@@ -203,7 +203,8 @@ class EditableTerminalInputTest {
         PrintWriter output = new PrintWriter(rendered, true, StandardCharsets.UTF_8);
 
         assertEquals("abcdefgh", input.edit(output, "test> ", true));
-        assertTrue(rendered.toString(StandardCharsets.UTF_8).endsWith("\u001b[1B\r\n"));
+        assertTrue(rendered.toString(StandardCharsets.UTF_8)
+                .endsWith("\u001b[1B\r\n\u001b[<u"));
     }
 
     @Test
@@ -248,6 +249,96 @@ class EditableTerminalInputTest {
                 StandardCharsets.UTF_8);
 
         assertEquals("ab{}", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void enterAfterATrailingBackslashContinuesTheLineInsteadOfSubmitting() throws Exception {
+        byte[] source = ("process.exec(\\\n\"/next.fcl\")\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("process.exec(\\\n\"/next.fcl\")",
+                input.editSubmission(output, "test> ", "...> ", true, FclInputBuffer::complete));
+    }
+
+    @Test
+    void shiftEnterInsertsALineBreakEvenWhenDelimitersAreBalanced() throws Exception {
+        byte[] source = ("f(1) \u001b[13;2u2)\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("f(1) \n2)", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void shiftEnterSupportsTheXtermModifyOtherKeysSequence() throws Exception {
+        byte[] source = ("if (x) \u001b[13;2~{\n}\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("if (x) \n{\n}", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void negotiatesTheKittyKeyboardProtocolAroundEverySubmission() throws Exception {
+        byte[] source = ("value = 1\n").getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(bytes, true, StandardCharsets.UTF_8);
+
+        input.editSubmission(output, "test> ", "...> ", true, FclInputBuffer::complete);
+
+        String transcript = bytes.toString(StandardCharsets.UTF_8);
+        assertTrue(transcript.contains("\u001b[>1u"), "kitty protocol push: " + transcript);
+        assertTrue(transcript.contains("\u001b[<u"), "kitty protocol pop: " + transcript);
+    }
+
+    @Test
+    void kittyModifierSequencesAreConsumedWithoutReachingTheText() throws Exception {
+        byte[] source = ("ab\u001b[120;3uX\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("abX", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void bracketedPasteMarkerIsConsumedWithoutReachingTheText() throws Exception {
+        byte[] source = ("ab\u001b[200~X\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("abX", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void unrelatedEscSequencesKeepTheirPreviousBehaviorAfterShiftEnterLookahead() throws Exception {
+        // ESC [ 1 ; 2 D (Shift+Left) is not Shift+Enter; it is a numeric CSI
+        // sequence and is consumed whole, so its bytes never reach the editor as
+        // ordinary text (previously the trailing ";2D" leaked into the input).
+        byte[] source = ("ab\u001b[1;2D X\n").getBytes(StandardCharsets.UTF_8);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("ab X", input.editSubmission(output, "test> ", "...> ", true,
                 FclInputBuffer::complete));
     }
 

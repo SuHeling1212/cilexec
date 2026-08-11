@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -76,7 +78,36 @@ def build_shell_installer(version: str, revision: str, architecture: str, image:
     output = BUILD / f"cilexec-{version}-linux-{architecture}.sh"
     if not output.is_file():
         raise RuntimeError(f"Missing installer output: {output}")
+    verify_shell_installer(output, version)
     return output
+
+
+def verify_shell_installer(path: Path, version: str) -> None:
+    """Verifies the self-extracting installer: script header, a self-contained
+    uninstall function embedded in the script (never relying on extracted
+    files), and a payload that carries the runtime image."""
+    raw = path.read_bytes()
+    if not raw.startswith(b"#!/usr/bin/env bash\n"):
+        raise RuntimeError(f"Installer {path.name} is not a bash script")
+    text = raw.decode("utf-8", errors="replace")
+    if "--uninstall" not in text:
+        raise RuntimeError(f"Installer {path.name} lacks an uninstall entry point")
+    if "uninstall_installation" not in text:
+        raise RuntimeError(f"Installer {path.name} lacks an embedded uninstall function")
+    for required in ("docker rm -f", "docker rmi", "docker volume rm",
+                     "docker network rm", "postgres-admin-password"):
+        if required not in text:
+            raise RuntimeError(f"Installer {path.name} uninstall logic is incomplete "
+                               f"(missing: {required})")
+    marker = b"\n__PAYLOAD__\n"
+    payload_at = raw.find(marker)
+    if payload_at < 0:
+        raise RuntimeError(f"Installer {path.name} has no payload marker")
+    payload = raw[payload_at + len(marker):]
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
+        names = {member.name.removeprefix("./") for member in archive.getmembers()}
+        if ".cilexec-image-platform" not in names:
+            raise RuntimeError(f"Installer {path.name} payload is missing platform metadata")
 
 
 def verify_image_jar(image: str, expected_hash: str) -> None:

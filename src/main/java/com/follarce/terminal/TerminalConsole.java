@@ -123,7 +123,8 @@ public final class TerminalConsole implements Runnable {
                             throw new IllegalArgumentException(
                                     "Terminal command must start with :, for example :ls or :cd /path");
                         }
-                        result = line.isBlank() ? "" : control.evaluate(line);
+                        result = line.isBlank() ? ""
+                                : control.evaluate(FclInputBuffer.stripContinuations(line));
                     }
                     if (result != null && !result.isEmpty()) {
                         if (command instanceof ShellCommand.Clear) {

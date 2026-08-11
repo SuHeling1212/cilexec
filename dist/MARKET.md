@@ -16,11 +16,39 @@ CilExec Runtime（内置 market.*）        cilexec-market-server.jar
 
 ## 启动服务端
 
+直接运行 JAR（无参数）进入**交互式管理终端**：HTTP 服务自动在后台启动，你可以在
+同一个终端里上架、下架和查看包，改动对客户端立即生效，无需重启：
+
+```bash
+java --enable-native-access=ALL-UNNAMED -jar cilexec-market-server.jar
+```
+
+```
+CilExec Market Console
+Repository: /path/to/repository
+Serving:    http://127.0.0.1:8787/market/v1/index.json
+Type 'help' for commands, 'exit' to leave (the HTTP service stops with this console).
+market> list
+market> publish /path/to/package.db
+market> unpublish cilexec/editor/1.1.2
+```
+
+| 命令 | 作用 |
+| --- | --- |
+| `list` | 显示全部已发布包（坐标、类型、大小、SHA-256、依赖数）。 |
+| `publish <file.db>` | 校验并上架一个包数据库；可逐项确认摘要、说明和标签。 |
+| `unpublish <坐标>` | 下架一个坐标（包文件保留在仓库中）。 |
+| `status` | 显示仓库、目录、服务地址与访问控制。 |
+| `exit` | 停止服务并退出。 |
+
+`--headless` 保留纯前台服务模式（供 systemd/容器使用）：
+
 ```bash
 java --enable-native-access=ALL-UNNAMED \
   -jar cilexec-market-server.jar \
   --repository repository \
-  --catalog catalog.json
+  --catalog catalog.json \
+  --headless
 ```
 
 Windows PowerShell 使用同一 JAR：
@@ -29,7 +57,8 @@ Windows PowerShell 使用同一 JAR：
 java --enable-native-access=ALL-UNNAMED `
   -jar cilexec-market-server.jar `
   --repository repository `
-  --catalog catalog.json
+  --catalog catalog.json `
+  --headless
 ```
 
 默认只监听 `127.0.0.1:8787`。需要让 Docker 容器访问时，应显式监听宿主接口并只放行
@@ -115,6 +144,73 @@ editor.open("notes.txt")
 客户端随后按 4 MiB 重新读取整个逻辑文件，复核索引声明的大小与 SHA-256。安装时
 Runtime 还会重新验证 SQLite 结构、包内部哈希、能力声明和精确依赖图。市场包上限为
 64 MiB；普通 VFS 单文件上限仍为 1 GiB。
+
+## 服务器一键配置
+
+市场服务器的部署与配置只使用一个文件 —— `cilexec-market-server.jar` 本身。把它放到
+Linux 服务器上，以 root 执行 `--setup`：未给出的配置会逐个交互询问（安装目录、服务
+用户、监听地址、端口、允许网段、是否注册 systemd），回车使用括号内的默认值，非法输入
+会重新询问。已给出的参数（如 `--install-dir`）直接采用、跳过对应问题：
+
+```bash
+java -jar cilexec-market-server.jar --setup --bind 0.0.0.0 --allow-cidr 172.20.0.0/16
+```
+
+一次完成：创建仓库布局与空目录、创建专用系统用户、把 JAR 安装到目标目录、注册
+systemd 服务（开机自启、崩溃自动重启）。`--setup` 需要 root（除非 `--no-systemd`）；
+查看完整说明用 `java -jar cilexec-market-server.jar --setup --help`。
+
+服务由 systemd 以 `--headless` 后台运行；管理操作通过同一用户的交互终端进行：
+
+```bash
+sudo -u cilexec-market java --enable-native-access=ALL-UNNAMED \
+  -jar /opt/cilexec-market/cilexec-market-server.jar
+```
+
+任何模式下仓库目录与 `catalog.json` 都会在首次启动时自动创建（缺失即初始化），因此
+这台 JAR 就是全部部署物。发布的包存放在
+`<repository>/packages/<namespace>/<name>/<version>/<name>.db`（默认仓库目录下的
+`repository/packages/`），`publish` 成功后控制台会直接给出该路径。终端与后台服务
+共享同一个仓库目录和 `catalog.json`，上架/下架对客户端立即生效。
+
+## 一键上架
+
+无需进入交互终端，一条命令直接发布（包自身的 `summary`/`description`/`tags`
+元数据会自动采用）：
+
+```bash
+java --enable-native-access=ALL-UNNAMED -jar cilexec-market-server.jar \
+  --publish /path/to/package.db
+```
+
+交互终端内同样支持免确认上架，可覆盖元数据：
+
+```text
+publish /path/to/package.db --summary "Text editor" --description "..." --tags editor,ui
+```
+
+## 其他开发者远程上架
+
+管理员先为开发者创建发布令牌（明文只显示一次，磁盘上只存 SHA-256 摘要，
+服务运行中即时生效，无需重启）：
+
+```bash
+sudo -u cilexec-market java --enable-native-access=ALL-UNNAMED \
+  -jar /opt/cilexec-market/cilexec-market-server.jar \
+  --token add <开发者名> --tokens /opt/cilexec-market/tokens.json
+# 管理：--token list / --token remove <名字>
+```
+
+开发者拿到令牌后，用 `tools/MarketPublish.py` 一键上传（本地构建好的 `package.db`）：
+
+```bash
+python3 tools/MarketPublish.py --url http://服务器:8787 \
+  --token <令牌> --summary "说明" --tags editor,ui /path/to/package.db
+```
+
+上传走 `POST /market/v1/publish`（Bearer 令牌认证、64 MiB 上限），成功返回
+坐标/SHA-256/存储路径并立即出现在索引中；令牌可随时撤销。`--url` 建议用 HTTPS
+反代或可信内网传输令牌。
 
 ## 生成发布目录
 

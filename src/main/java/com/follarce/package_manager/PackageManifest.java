@@ -19,7 +19,8 @@ public record PackageManifest(
         List<Dependency> dependencies,
         List<Entrypoint> entrypoints,
         List<Export> exports,
-        List<Capability> capabilities
+        List<Capability> capabilities,
+        String author
 ) {
     public PackageManifest {
         namespace = component(namespace, "namespace");
@@ -35,6 +36,8 @@ public record PackageManifest(
         entrypoints = copy(entrypoints);
         exports = copy(exports);
         capabilities = copy(capabilities);
+        author = author == null || author.isBlank() ? null
+                : boundedText(author, "author", 256);
         if (modules.isEmpty()) throw new IllegalArgumentException("At least one module is required");
 
         Set<String> moduleNames = unique(modules.stream().map(Module::name).toList(),
@@ -62,7 +65,16 @@ public record PackageManifest(
                            List<Dependency> dependencies, List<Entrypoint> entrypoints,
                            List<Export> exports, List<Capability> capabilities) {
         this(namespace, name, version, languageVersion, PackageKind.APPLICATION, modules,
-                resources, dependencies, entrypoints, exports, capabilities);
+                resources, dependencies, entrypoints, exports, capabilities, null);
+    }
+
+    /** Source compatibility for Java callers that declare the package kind explicitly. */
+    public PackageManifest(String namespace, String name, String version, String languageVersion,
+                           PackageKind kind, List<Module> modules, List<String> resources,
+                           List<Dependency> dependencies, List<Entrypoint> entrypoints,
+                           List<Export> exports, List<Capability> capabilities) {
+        this(namespace, name, version, languageVersion, kind, modules, resources, dependencies,
+                entrypoints, exports, capabilities, null);
     }
 
     public List<String> contentPaths() {

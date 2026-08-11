@@ -591,9 +591,10 @@ Verify every payload file before deployment:
 
 sha256sum -c SHA256SUMS
 
-Start the market server from this directory:
+Start the market server from this directory (repository/ and catalog.json are created
+on first start):
 
-java --enable-native-access=ALL-UNNAMED -jar cilexec-market-server.jar --repository repository --catalog catalog.json
+java --enable-native-access=ALL-UNNAMED -jar cilexec-market-server.jar
 """
     (directory / "RELEASE.txt").write_text(release_text, encoding="utf-8")
     shutil.copy2(ROOT / "LICENSE", directory / "LICENSE")

@@ -20,7 +20,8 @@ public record PackageDescriptor(
         List<PackageIndex.Dependency> dependencyIndex,
         List<PackageIndex.Entrypoint> entrypoints,
         List<PackageIndex.Export> exports,
-        List<PackageIndex.CapabilityRequirement> capabilityIndex
+        List<PackageIndex.CapabilityRequirement> capabilityIndex,
+        String author
 ) {
     public PackageDescriptor {
         namespace = require(namespace, "namespace");
@@ -50,6 +51,10 @@ public record PackageDescriptor(
         exports = List.copyOf(Objects.requireNonNull(exports, "exports"));
         capabilityIndex = List.copyOf(Objects.requireNonNull(capabilityIndex,
                 "capabilityIndex"));
+        if (author != null && (author.isBlank() || author.length() > 256
+                || author.chars().anyMatch(Character::isISOControl))) {
+            throw new PackageDatabaseException("author is invalid");
+        }
     }
 
     public String coordinate() {

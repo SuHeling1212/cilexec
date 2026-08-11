@@ -78,7 +78,8 @@ public final class SqlitePackageReader {
                         readDependencies(connection),
                         entrypoints,
                         readExports(connection),
-                        readCapabilities(connection)
+                        readCapabilities(connection),
+                        metadata.get("author")
                 );
             }
         } catch (PackageDatabaseException exception) {

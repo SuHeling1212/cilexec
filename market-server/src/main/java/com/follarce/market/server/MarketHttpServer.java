@@ -7,13 +7,19 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
@@ -24,8 +30,10 @@ final class MarketHttpServer implements AutoCloseable {
     private static final Pattern PACKAGE_PATH = Pattern.compile("/market/v1/([0-9a-f]{64})");
     private static final Pattern RANGE = Pattern.compile("bytes=([0-9]{1,20})-([0-9]{0,20})");
     private static final int STREAM_BUFFER_BYTES = 1024 * 1024;
+    private static final String PUBLISH_PATH = "/market/v1/publish";
 
     private final MarketRepository repository;
+    private final TokenStore tokens;
     private final List<IpNetwork> allowedNetworks;
     private final Semaphore slots;
     private final HttpServer server;
@@ -33,6 +41,7 @@ final class MarketHttpServer implements AutoCloseable {
 
     MarketHttpServer(ServerOptions options, MarketRepository repository) throws IOException {
         this.repository = repository;
+        this.tokens = new TokenStore(options.tokens());
         this.allowedNetworks = options.allowedNetworks();
         this.slots = new Semaphore(options.workers());
         this.server = HttpServer.create(new InetSocketAddress(options.bind(), options.port()), 32);
@@ -62,12 +71,16 @@ final class MarketHttpServer implements AutoCloseable {
                 return;
             }
             String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
+            String path = exchange.getRequestURI().getRawPath();
+            if (method.equals("POST") && path.equals(PUBLISH_PATH)) {
+                handlePublish(exchange);
+                return;
+            }
             if (!method.equals("GET") && !method.equals("HEAD")) {
                 exchange.getResponseHeaders().set("Allow", "GET, HEAD");
                 respondText(exchange, 405, "Method not allowed\n");
                 return;
             }
-            String path = exchange.getRequestURI().getRawPath();
             if (exchange.getRequestURI().getRawQuery() != null) {
                 respondText(exchange, 404, "Unknown market resource\n");
                 return;
@@ -110,6 +123,99 @@ final class MarketHttpServer implements AutoCloseable {
             if (acquired) slots.release();
             exchange.close();
         }
+    }
+
+    /**
+     * External publish endpoint: the raw package database is uploaded in the body and
+     * authenticated with a Bearer publish token. Metadata (summary/description/tags)
+     * may be overridden via query parameters; otherwise the package's own metadata
+     * table is used.
+     */
+    private void handlePublish(HttpExchange exchange) throws IOException {
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        if (authorization == null || !authorization.startsWith("Bearer ")) {
+            respondText(exchange, 401, "Missing publish token\n");
+            return;
+        }
+        if (!tokens.isValid(authorization.substring("Bearer ".length()).trim())) {
+            respondText(exchange, 403, "Invalid publish token\n");
+            return;
+        }
+        String lengthText = exchange.getRequestHeaders().getFirst("Content-Length");
+        long declared;
+        try {
+            declared = Long.parseLong(lengthText == null ? "" : lengthText);
+        } catch (NumberFormatException invalid) {
+            respondText(exchange, 411, "Content-Length is required\n");
+            return;
+        }
+        if (declared < 1 || declared > MarketRepository.MAX_PACKAGE_BYTES) {
+            respondText(exchange, 413, "Package must be from 1 byte to "
+                    + MarketRepository.MAX_PACKAGE_BYTES + " bytes\n");
+            return;
+        }
+        byte[] body = exchange.getRequestBody().readNBytes((int) declared + 1);
+        if (body.length != declared || body.length > MarketRepository.MAX_PACKAGE_BYTES) {
+            respondText(exchange, 413, "Package body does not match Content-Length\n");
+            return;
+        }
+        Path temporary = Files.createTempFile("market-publish-", ".db");
+        try {
+            Files.write(temporary, body);
+            MarketRepository.StagedPackage staged = repository.stage(temporary);
+            Map<String, String> metadata = MarketRepository.readMetadata(staged.source());
+            Map<String, String> query = queryParameters(exchange);
+            String summary = query.getOrDefault("summary", metadata.getOrDefault("summary", ""));
+            String description = query.getOrDefault("description",
+                    metadata.getOrDefault("description", ""));
+            String tagsText = query.getOrDefault("tags", metadata.getOrDefault("tags", ""));
+            List<String> tags = new ArrayList<>();
+            for (String tag : tagsText.split("[,;]")) {
+                String cleaned = tag.strip();
+                if (!cleaned.isEmpty()) tags.add(cleaned);
+            }
+            repository.publish(staged, summary, description, tags);
+            respondJson(exchange, 201, Map.of(
+                    "coordinate", staged.coordinate(),
+                    "kind", staged.kind(),
+                    "sha256", staged.sha256(),
+                    "bytes", Long.toString(staged.bytes()),
+                    "storedAt", repository.packageFile(staged.coordinate())));
+        } catch (IllegalArgumentException | SQLException invalid) {
+            respondText(exchange, 400, "Rejected: " + safeMessage(invalid) + "\n");
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static Map<String, String> queryParameters(HttpExchange exchange) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isBlank()) return Map.of();
+        Map<String, String> result = new LinkedHashMap<>();
+        for (String pair : query.split("&")) {
+            int separator = pair.indexOf('=');
+            if (separator < 0) continue;
+            String key = decode(pair.substring(0, separator));
+            String value = decode(pair.substring(separator + 1));
+            if (!key.isBlank()) result.put(key, value);
+        }
+        return result;
+    }
+
+    private static String decode(String value) {
+        return URLDecoder.decode(value, StandardCharsets.UTF_8);
+    }
+
+    private static String safeMessage(Exception failure) {
+        String message = failure.getMessage();
+        return message == null || message.isBlank()
+                ? failure.getClass().getSimpleName() : message;
+    }
+
+    private void respondJson(HttpExchange exchange, int status, Map<String, String> body)
+            throws IOException {
+        respondBytes(exchange, status, "application/json; charset=utf-8",
+                new com.google.gson.Gson().toJson(body).getBytes(StandardCharsets.UTF_8), false);
     }
 
     private void sendPackage(HttpExchange exchange, MarketRepository.PublishedPackage value,

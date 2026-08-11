@@ -56,8 +56,8 @@ class MarketHttpServerTest {
         Path catalog = temporary.resolve("catalog.json");
         Files.writeString(catalog, "{\"demo/tool/1.0.0\":{\"summary\":\"tool\"}}");
         ServerOptions options = new ServerOptions(repository, catalog,
-                InetAddress.getByName("127.0.0.1"), 0,
-                List.of(IpNetwork.parse("127.0.0.0/8")), 4, false);
+                temporary.resolve("tokens.json"), InetAddress.getByName("127.0.0.1"), 0,
+                List.of(IpNetwork.parse("127.0.0.0/8")), 4, false, false);
         MarketRepository market = new MarketRepository(repository, catalog);
         try (MarketHttpServer server = new MarketHttpServer(options, market)) {
             server.start();
@@ -105,11 +105,115 @@ class MarketHttpServerTest {
         }
     }
 
+    @Test
+    void publishesThroughTheHttpEndpointWithABearerToken() throws Exception {
+        Path repository = temporary.resolve("publish-repository");
+        Path catalog = temporary.resolve("publish-catalog.json");
+        Files.writeString(catalog, "{}");
+        Path tokens = temporary.resolve("tokens.json");
+        TokenStore tokenStore = new TokenStore(tokens);
+        String token = tokenStore.add("developer");
+        ServerOptions options = new ServerOptions(repository, catalog, tokens,
+                InetAddress.getByName("127.0.0.1"), 0,
+                List.of(IpNetwork.parse("127.0.0.0/8")), 4, false, false);
+        MarketRepository market = new MarketRepository(repository, catalog);
+        Path database = temporary.resolve("remote-tool.db");
+        createPackageAt(database, "remote", "2.0.0", "remote summary");
+
+        try (MarketHttpServer server = new MarketHttpServer(options, market)) {
+            server.start();
+            HttpClient client = HttpClient.newHttpClient();
+            URI publishUri = URI.create("http://127.0.0.1:" + server.port()
+                    + "/market/v1/publish?summary=uploaded");
+            HttpRequest request = HttpRequest.newBuilder(publishUri)
+                    .header("Authorization", "Bearer " + token)
+                    .header("Content-Type", "application/vnd.sqlite3")
+                    .POST(HttpRequest.BodyPublishers.ofFile(database)).build();
+            HttpResponse<String> published = client.send(request,
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(201, published.statusCode(), published.body());
+            java.util.Map<?, ?> body = (java.util.Map<?, ?>)
+                    new Gson().fromJson(published.body(), Object.class);
+            assertEquals("demo/remote/2.0.0", body.get("coordinate"));
+
+            URI indexUri = URI.create("http://127.0.0.1:" + server.port()
+                    + "/market/v1/index.json");
+            HttpResponse<String> index = client.send(HttpRequest.newBuilder(indexUri).GET()
+                    .build(), HttpResponse.BodyHandlers.ofString());
+            assertTrue(index.body().contains("demo/remote/2.0.0"), index.body());
+            assertTrue(index.body().contains("uploaded"),
+                    "query summary must override the package metadata: " + index.body());
+            assertTrue(Files.isRegularFile(repository.resolve(
+                    "packages/demo/remote/2.0.0/remote.db")));
+        }
+    }
+
+    @Test
+    void httpPublishRejectsMissingWrongAndInvalidTokensAndBodies() throws Exception {
+        Path repository = temporary.resolve("auth-repository");
+        Path catalog = temporary.resolve("auth-catalog.json");
+        Files.writeString(catalog, "{}");
+        Path tokens = temporary.resolve("tokens.json");
+        TokenStore tokenStore = new TokenStore(tokens);
+        String token = tokenStore.add("developer");
+        ServerOptions options = new ServerOptions(repository, catalog, tokens,
+                InetAddress.getByName("127.0.0.1"), 0,
+                List.of(IpNetwork.parse("127.0.0.0/8")), 4, false, false);
+        MarketRepository market = new MarketRepository(repository, catalog);
+        Path database = temporary.resolve("auth-tool.db");
+        createPackageAt(database, "auth", "1.0.0", "auth");
+
+        try (MarketHttpServer server = new MarketHttpServer(options, market)) {
+            server.start();
+            HttpClient client = HttpClient.newHttpClient();
+            URI publishUri = URI.create("http://127.0.0.1:" + server.port()
+                    + "/market/v1/publish");
+
+            HttpResponse<String> missing = client.send(HttpRequest.newBuilder(publishUri)
+                    .POST(HttpRequest.BodyPublishers.ofFile(database)).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(401, missing.statusCode());
+
+            HttpResponse<String> wrong = client.send(HttpRequest.newBuilder(publishUri)
+                    .header("Authorization", "Bearer " + "f".repeat(64))
+                    .POST(HttpRequest.BodyPublishers.ofFile(database)).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, wrong.statusCode());
+
+            HttpResponse<String> notPackage = client.send(HttpRequest.newBuilder(publishUri)
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString("not a database")).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(400, notPackage.statusCode());
+
+            // A raw socket is used because HttpClient forbids explicit Content-Length.
+            try (java.net.Socket socket = new java.net.Socket("127.0.0.1", server.port())) {
+                socket.getOutputStream().write(("POST /market/v1/publish HTTP/1.1\r\n"
+                        + "Host: market\r\nAuthorization: Bearer " + token
+                        + "\r\nContent-Length: 99999999999\r\n\r\n")
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                java.io.BufferedReader response = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(socket.getInputStream(),
+                                java.nio.charset.StandardCharsets.UTF_8));
+                assertTrue(response.readLine().startsWith("HTTP/1.1 413"),
+                        "oversized uploads must be rejected");
+            }
+
+            assertEquals(0, market.published().size(),
+                    "no rejected upload may publish anything");
+        }
+    }
+
     private static void createPackage(Path repository, String name, String version)
             throws Exception {
         Path packageDirectory = repository.resolve("packages/demo/" + name + "/" + version);
         Files.createDirectories(packageDirectory);
-        Path database = packageDirectory.resolve(name + ".db");
+        createPackageAt(packageDirectory.resolve(name + ".db"), name, version, "tool");
+    }
+
+    private static void createPackageAt(Path database, String name, String version,
+                                        String summary) throws Exception {
+        Files.createDirectories(database.getParent());
         try (var connection = DriverManager.getConnection("jdbc:sqlite:" + database);
              var statement = connection.createStatement()) {
             statement.execute("PRAGMA user_version=2");
@@ -119,7 +223,7 @@ class MarketHttpServerTest {
                     + "optional INTEGER NOT NULL)");
             statement.execute("INSERT INTO package_metadata VALUES ('namespace','demo'),"
                     + "('name','" + name + "'),('version','" + version
-                    + "'),('package_kind','application')");
+                    + "'),('package_kind','application'),('summary','" + summary + "')");
         }
     }
 }

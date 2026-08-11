@@ -248,10 +248,13 @@ public final class PackageBuilder {
             throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "INSERT INTO package_metadata(metadata_key,metadata_value) VALUES (?,?)")) {
-            Map<String, String> values = Map.of("namespace", manifest.namespace(),
-                    "name", manifest.name(), "version", manifest.version(),
-                    "language_version", manifest.languageVersion(),
-                    "package_kind", manifest.kind().wireName());
+            Map<String, String> values = new java.util.LinkedHashMap<>();
+            values.put("namespace", manifest.namespace());
+            values.put("name", manifest.name());
+            values.put("version", manifest.version());
+            values.put("language_version", manifest.languageVersion());
+            values.put("package_kind", manifest.kind().wireName());
+            if (manifest.author() != null) values.put("author", manifest.author());
             for (Map.Entry<String, String> entry : values.entrySet().stream()
                     .sorted(Map.Entry.comparingByKey()).toList()) {
                 statement.setString(1, entry.getKey());

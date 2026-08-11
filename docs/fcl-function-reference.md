@@ -88,6 +88,26 @@ History is persisted per user and survives re-login, Runtime restart, and contai
 restart. Usernames, passwords, and raw input passed to `io.input()` never enter
 history.
 
+Multiline input combines delimiter matching, Modifier+Enter, and C-style backslash
+continuations: unclosed `{`/`(`/`[` blocks or quotes continue on the `...>` prompt;
+`Shift+Enter` inserts a line break without submitting, so a continued line works even
+when every delimiter is already balanced; and a trailing `\` before Enter also keeps
+the submission open — the backslash and line break are removed before compilation,
+exactly like the C preprocessor joins lines.
+
+The terminal negotiates the kitty keyboard protocol (`CSI > 1 u`) at the start of
+every editable submission, so terminals that support it — **iTerm2, kitty, WezTerm,
+Windows Terminal, Foot, Konsole** — send `Shift+Enter` (`CSI 13;2u`) natively with
+zero configuration, and that key inserts a line break. Modifier-key sequences are
+consumed whole and never reach the editor as text.
+
+**Terminal.app (macOS) does not implement the protocol and sends a plain `\r` for
+Shift+Enter**, which is indistinguishable from Enter; use the trailing `\`
+continuation there. On xterm, a modifyOtherKeys-capable setup sends `CSI 13;2~`,
+which is equally accepted.
+
+The history keeps the raw typed lines.
+
 The terminal offers no operation recording or script export. FCL process contexts,
 working directories, and the last 200 arrow-key history entries are persisted
 separately; to get an executable script, create an FCL file directly.
@@ -331,7 +351,7 @@ control other users' processes.
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
 | `process.fork()` | Copy the current FCL execution context into a child process and return the child PID. |
-| `process.exec(path)` | Compile the FCL file at an absolute path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. Scripts that want the current directory must pass `path.join(env.get("PWD"), relativePath)` explicitly. Terminal processes keep global variables, package bindings, and the working directory, and return to the same terminal when the target program ends; ordinary background processes terminate when the target program ends. |
+| `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. The resolved absolute path is what gets persisted with the suspension. Terminal processes keep global variables, package bindings, and the working directory, and return to the same terminal when the target program ends; ordinary background processes terminate when the target program ends. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
 | `process.gc([pid])` | Manually remove terminal processes (TERMINATED/FAILED) and their persisted state (continuation, variables, events, timers, package pins). Without a PID it removes every terminal process and returns the count removed; with a PID it removes only that process when it has already ended and returns `true`. Running, suspended, and waiting processes are never removed, and `system_kill`ed processes cannot be revived. Administrator (`SYSTEM_ADMIN`) only. |
