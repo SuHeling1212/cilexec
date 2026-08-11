@@ -144,7 +144,7 @@ class TerminalReplServiceTest {
                 UUID.randomUUID(), UUID.randomUUID(), claimed.executionEpoch(), NOW, NOW,
                 NOW.plus(Duration.ofMinutes(1)));
         persistence.scheduler.lease = claim;
-        executor.executeOne(claim);
+        executor.executeSlice(claim);
 
         TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
         assertEquals(CilProcess.Status.WAITING_INPUT, snapshot.status());
@@ -174,7 +174,7 @@ class TerminalReplServiceTest {
                 NOW.plus(Duration.ofMinutes(1)));
         persistence.scheduler.lease = claim;
 
-        executor.executeOne(claim);
+        executor.executeSlice(claim);
 
         TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
         assertEquals(CilProcess.Status.PAUSED, snapshot.status());
@@ -307,7 +307,7 @@ class TerminalReplServiceTest {
                         UUID.randomUUID(), claimedWaiting.executionEpoch(), NOW, NOW,
                         NOW.plus(Duration.ofMinutes(1)));
                 persistence.scheduler.lease = waitingClaim;
-                executor.executeOne(waitingClaim);
+                executor.executeSlice(waitingClaim);
             }
         }
         assertEquals(CilProcess.Status.WAITING_INPUT,
@@ -440,7 +440,7 @@ class TerminalReplServiceTest {
                         UUID.randomUUID(), UUID.randomUUID(), claimed.executionEpoch(), NOW, NOW,
                         NOW.plus(Duration.ofMinutes(1)));
                 persistence.scheduler.lease = claim;
-                executor.executeOne(claim);
+                executor.executeSlice(claim);
             }
         }
         assertEquals(CilProcess.Status.PAUSED, persistence.processes.current.status());

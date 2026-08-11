@@ -119,7 +119,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     }
 
     @Override
-    public void executeOne(SchedulerClaim claim) {
+    public void executeSlice(SchedulerClaim claim) {
         Objects.requireNonNull(claim, "claim");
         Instant now = clock.instant();
         PostCommitSignal signal = transactions.inUserTransaction(claim.ownerId(),

@@ -84,7 +84,7 @@ public final class SchedulerService implements AutoCloseable {
                     await(interruptAvailable);
                     continue;
                 }
-                handler.executeOne(claim.orElseThrow());
+                handler.executeSlice(claim.orElseThrow());
             } catch (Throwable failure) {
                 if (!running.get()) return;
                 if (isFatal(failure)) {
@@ -110,7 +110,7 @@ public final class SchedulerService implements AutoCloseable {
                     awaitWork();
                     continue;
                 }
-                handler.executeOne(claim.get());
+                handler.executeSlice(claim.get());
             } catch (Throwable failure) {
                 if (!running.get()) return;
                 if (isFatal(failure)) {

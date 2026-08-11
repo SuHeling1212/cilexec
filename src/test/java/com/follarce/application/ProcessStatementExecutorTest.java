@@ -54,7 +54,7 @@ class ProcessStatementExecutorTest {
     void executesOnlyOneStatementAndAtomicallyPersistsReadyContinuation() {
         Fixture fixture = new Fixture("first = 1\nsecond = first + 1\n");
 
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         CilProcess committed = fixture.persistence.processes.current;
         assertEquals(1, fixture.persistence.userTransactions);
@@ -114,7 +114,7 @@ class ProcessStatementExecutorTest {
         ProcessIdentity originalIdentity = fixture.persistence.processes.current.identity();
         UUID originalProgramId = fixture.program.programId();
 
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         CilProcess replaced = fixture.persistence.processes.current;
         assertEquals(originalIdentity, replaced.identity(),
@@ -135,7 +135,7 @@ class ProcessStatementExecutorTest {
         fixture.persistence.processes.current = claimed;
         fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
         fixture.persistence.scheduler.lease = fixture.claim;
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(fixture.persistence.processes.current.continuation());
@@ -151,14 +151,14 @@ class ProcessStatementExecutorTest {
     void failsAnUnknownHashImportWithoutPermanentWaits() {
         Fixture unresolved = new Fixture("import \"" + "f".repeat(64)
                 + "\"\nvalue = 1\n");
-        unresolved.executor.executeOne(unresolved.claim);
+        unresolved.executor.executeSlice(unresolved.claim);
         assertEquals(CilProcess.Status.FAILED,
                 unresolved.persistence.processes.current.status());
         assertTrue(new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(unresolved.persistence.processes.current.continuation()).failed());
 
         Fixture failed = new Fixture("value = 1 / 0\n");
-        failed.executor.executeOne(failed.claim);
+        failed.executor.executeSlice(failed.claim);
         assertEquals(CilProcess.Status.FAILED,
                 failed.persistence.processes.current.status());
         FclContinuation failure = new FclPersistenceBridge(new FclContinuationCodec())
@@ -182,7 +182,7 @@ class ProcessStatementExecutorTest {
                 }));
         Fixture fixture = new Fixture("message = greeting.hello()\n", extensions);
 
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         assertEquals(CilProcess.Status.READY, fixture.persistence.processes.current.status());
     }
@@ -195,7 +195,7 @@ class ProcessStatementExecutorTest {
                 com.follarce.extension.SourceExtensionIndex.catalog(),
                 schedulerWakes::incrementAndGet, effectWakes::incrementAndGet);
 
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         assertEquals(CilProcess.Status.WAITING_EFFECT,
                 fixture.persistence.processes.current.status());
@@ -235,7 +235,7 @@ class ProcessStatementExecutorTest {
                         claimed.executionEpoch());
                 fixture.persistence.scheduler.lease = fixture.claim;
             }
-            fixture.executor.executeOne(fixture.claim);
+            fixture.executor.executeSlice(fixture.claim);
         }
 
         assertEquals(CilProcess.Status.TERMINATED,
@@ -289,7 +289,7 @@ class ProcessStatementExecutorTest {
                         claimed.executionEpoch());
                 fixture.persistence.scheduler.lease = fixture.claim;
             }
-            fixture.executor.executeOne(fixture.claim);
+            fixture.executor.executeSlice(fixture.claim);
         }
 
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
@@ -318,14 +318,14 @@ class ProcessStatementExecutorTest {
 
         Fixture aliased = new Fixture("import \"" + fileHash.value() + "\" as \"chosen\"\n");
         aliased.persistence.packages.releases.put(release.packageHash(), release);
-        aliased.executor.executeOne(aliased.claim);
+        aliased.executor.executeSlice(aliased.claim);
         assertEquals(CilProcess.Status.READY, aliased.persistence.processes.current.status());
         assertTrue(aliased.persistence.packages.findProcessBinding(
                 aliased.processUid, "chosen").isPresent());
 
         Fixture unaliased = new Fixture("import \"" + fileHash.value() + "\"\n");
         unaliased.persistence.packages.releases.put(release.packageHash(), release);
-        unaliased.executor.executeOne(unaliased.claim);
+        unaliased.executor.executeSlice(unaliased.claim);
         assertEquals(CilProcess.Status.READY,
                 unaliased.persistence.processes.current.status());
     }
@@ -363,7 +363,7 @@ class ProcessStatementExecutorTest {
                         claimed.executionEpoch());
                 fixture.persistence.scheduler.lease = fixture.claim;
             }
-            fixture.executor.executeOne(fixture.claim);
+            fixture.executor.executeSlice(fixture.claim);
         }
 
         assertEquals(CilProcess.Status.TERMINATED,
@@ -403,7 +403,7 @@ class ProcessStatementExecutorTest {
                         claimed.executionEpoch());
                 fixture.persistence.scheduler.lease = fixture.claim;
             }
-            fixture.executor.executeOne(fixture.claim);
+            fixture.executor.executeSlice(fixture.claim);
         }
 
         assertEquals(CilProcess.Status.TERMINATED,
@@ -454,7 +454,7 @@ class ProcessStatementExecutorTest {
                         claimed.executionEpoch());
                 fixture.persistence.scheduler.lease = fixture.claim;
             }
-            fixture.executor.executeOne(fixture.claim);
+            fixture.executor.executeSlice(fixture.claim);
         }
 
         assertEquals("https://example.test", fixture.persistence.environment
@@ -495,7 +495,7 @@ class ProcessStatementExecutorTest {
                         claimed.executionEpoch());
                 fixture.persistence.scheduler.lease = fixture.claim;
             }
-            fixture.executor.executeOne(fixture.claim);
+            fixture.executor.executeSlice(fixture.claim);
         }
 
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
@@ -508,7 +508,7 @@ class ProcessStatementExecutorTest {
 
         Fixture writeAttempt = new Fixture("env.set(\"PWD\", \"/changed\")\n",
                 com.follarce.extension.SourceExtensionIndex.catalog());
-        writeAttempt.executor.executeOne(writeAttempt.claim);
+        writeAttempt.executor.executeSlice(writeAttempt.claim);
         assertEquals(CilProcess.Status.FAILED,
                 writeAttempt.persistence.processes.current.status());
     }
@@ -517,7 +517,7 @@ class ProcessStatementExecutorTest {
     void persistsCompletionAndRemovesClaimInTheSameTransaction() {
         Fixture fixture = new Fixture("");
 
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         assertEquals(CilProcess.Status.TERMINATED,
                 fixture.persistence.processes.current.status());
@@ -657,7 +657,7 @@ class ProcessStatementExecutorTest {
                 NOW.minusSeconds(1));
         expired.persistence.scheduler.lease = expired.claim;
         assertThrows(ProcessStatementExecutor.StaleClaimException.class,
-                () -> expired.executor.executeOne(expired.claim));
+                () -> expired.executor.executeSlice(expired.claim));
         assertEquals(0, expired.persistence.processes.updates);
         assertEquals(0, expired.persistence.scheduler.releases);
 
@@ -665,7 +665,7 @@ class ProcessStatementExecutorTest {
         wrongEpoch.claim = claim(wrongEpoch.processUid, wrongEpoch.ownerId, 6);
         wrongEpoch.persistence.scheduler.lease = wrongEpoch.claim;
         assertThrows(ProcessStatementExecutor.StaleClaimException.class,
-                () -> wrongEpoch.executor.executeOne(wrongEpoch.claim));
+                () -> wrongEpoch.executor.executeSlice(wrongEpoch.claim));
         assertEquals(0, wrongEpoch.persistence.processes.updates);
         assertEquals(0, wrongEpoch.persistence.scheduler.releases);
     }
@@ -675,7 +675,7 @@ class ProcessStatementExecutorTest {
         Fixture fenced = new Fixture("value = 1\n");
         fenced.persistence.processes.forcedResult = ProcessRepository.UpdateResult.EPOCH_FENCED;
         assertThrows(ProcessStatementExecutor.StaleClaimException.class,
-                () -> fenced.executor.executeOne(fenced.claim));
+                () -> fenced.executor.executeSlice(fenced.claim));
         assertEquals(0, fenced.persistence.scheduler.releases);
 
         Fixture conflicted = new Fixture("value = 1\n");
@@ -683,7 +683,7 @@ class ProcessStatementExecutorTest {
                 ProcessRepository.UpdateResult.VERSION_CONFLICT;
         RuntimeException failure = assertThrows(
                 ProcessStatementExecutor.StatementConflictException.class,
-                () -> conflicted.executor.executeOne(conflicted.claim));
+                () -> conflicted.executor.executeSlice(conflicted.claim));
         assertInstanceOf(ProcessStatementExecutor.StatementConflictException.class, failure);
         assertEquals(0, conflicted.persistence.scheduler.releases);
     }
@@ -693,7 +693,7 @@ class ProcessStatementExecutorTest {
         Fixture fixture = new Fixture("value = 1\n");
         fixture.persistence.terminal.interrupt = true;
 
-        fixture.executor.executeOne(fixture.claim);
+        fixture.executor.executeSlice(fixture.claim);
 
         assertEquals(CilProcess.Status.TERMINATED,
                 fixture.persistence.processes.current.status());

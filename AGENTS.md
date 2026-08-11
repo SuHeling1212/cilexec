@@ -65,9 +65,10 @@ The system has **no in-memory runtime state that survives crashes**. Every seman
 ```
 FCL source → FclCompiler (lexer, parser, continuation program)
            → ProcessStatementExecutor (pattern-match: if/while/func/import/return/etc.,
-              one durable instruction per scheduling slice)
+              one execution slice — terminal processes batch up to 4096 pure steps
+              or 20 ms, all others one statement — committed per slice)
            → FclExpressionEvaluator (expression evaluation)
-           → JdbcTransactionExecutor (commit state to PostgreSQL after each statement)
+           → JdbcTransactionExecutor (commit state to PostgreSQL after each slice)
 ```
 
 Language notes: `//` is the only comment syntax; `#` is only the length operator. Statement

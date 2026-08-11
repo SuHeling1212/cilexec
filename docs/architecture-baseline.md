@@ -749,12 +749,12 @@ failed transactions allow bounded retries
 
 A few multi-row strong-invariant operations may use `SERIALIZABLE`, but must be explicitly marked and retried only a bounded number of times with jitter, and only when replayable.
 
-### 8.2 One Commit per FCL Statement
+### 8.2 One Commit per Execution Slice
 
 The decision:
 
 ```text
-one FCL statement
+one execution slice
 =
 one persisted transaction boundary
 ```
@@ -769,7 +769,7 @@ lock the process row
 verify state_version
 verify execution_epoch
 load the continuation and variables needed by the statement
-execute one FCL statement
+execute up to one scheduling slice of FCL statements
 write current variable values
 write the continuation
 advance the program counter
@@ -778,7 +778,9 @@ append required audit events
 COMMIT
 ```
 
-Every committed statement is therefore a recovery checkpoint.
+A scheduling slice is at most 4096 pure FCL steps or 20 ms for terminal processes
+(one statement per slice for all other processes). Every committed slice is
+therefore a recovery checkpoint.
 
 ### 8.3 Forced Checkpoints
 
@@ -797,7 +799,12 @@ process termination
 end of execution quantum
 ```
 
-Because the first release commits per statement, an ordinary execution quantum is one FCL statement. If a batched pure-computation mode is introduced later, it must be introduced as a new format version and semantic change, never by silently changing the recovery granularity.
+Terminal processes batch pure computation (at most 4096 FCL steps or 20 ms) in a
+single committed slice; a crash rolls the whole slice back and it is replayed from
+its first statement. This is safe only because the forced-checkpoint list above
+ensures that every statement with external effects, blocking, or user-visible
+behavior forms its own transaction boundary, so a slice contains only replayable
+pure statements. All other processes commit one statement per slice.
 
 ### 8.4 Conflict Control
 
