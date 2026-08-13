@@ -69,7 +69,7 @@ CREATE SCHEMA diagnostic AUTHORIZATION cilexec_owner;
 -- name: baseline.schema_usage
 GRANT USAGE ON SCHEMA meta, auth, object_store, vfs, program, process,
     scheduler, ipc, effect, package, terminal, audit TO cilexec_runtime;
-GRANT USAGE ON SCHEMA meta, effect, process, audit TO cilexec_effect_worker;
+GRANT USAGE ON SCHEMA meta, scheduler, effect, process, audit TO cilexec_effect_worker;
 GRANT USAGE ON SCHEMA meta, diagnostic TO cilexec_readonly;
 
 -- name: baseline.default_public_revocation

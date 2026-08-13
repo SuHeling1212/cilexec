@@ -38,4 +38,15 @@ class DatabaseRoleSecurityBaselineTest {
         assertTrue(sql.contains("exportable user table %.% lacks its exporter SELECT policy"));
         assertTrue(sql.contains("readonly has a direct RLS policy on %.%"));
     }
+
+    @Test
+    void effectWorkerCanInspectRunnerLivenessWithoutSchedulerWriteAccess() throws IOException {
+        String sql = BaselineSql.load();
+
+        assertTrue(sql.contains("GRANT USAGE ON SCHEMA meta, scheduler, effect, process, audit "
+                + "TO cilexec_effect_worker"));
+        assertTrue(sql.contains("GRANT SELECT ON scheduler.runner TO cilexec_effect_worker"));
+        assertFalse(sql.contains("GRANT SELECT, INSERT, UPDATE, DELETE ON scheduler.runner "
+                + "TO cilexec_effect_worker"));
+    }
 }

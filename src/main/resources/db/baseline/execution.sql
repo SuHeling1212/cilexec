@@ -432,6 +432,7 @@ CREATE POLICY queue_principal ON scheduler.queue TO PUBLIC
 -- name: baseline.scheduler_grants
 GRANT SELECT, INSERT, UPDATE, DELETE ON scheduler.queue TO cilexec_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON scheduler.runner, scheduler.lease TO cilexec_runtime;
+GRANT SELECT ON scheduler.runner TO cilexec_effect_worker;
 
 COMMENT ON INDEX scheduler.ix_queue_claim_next IS
     'Stable FIFO claim order for SELECT FOR UPDATE SKIP LOCKED';

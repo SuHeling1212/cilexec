@@ -25,6 +25,7 @@ import java.util.Set;
 final class TokenStore {
     private static final Gson JSON = new Gson();
     private static final int TOKEN_BYTES = 32;
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Path file;
     private final Map<String, String> tokens;
@@ -78,7 +79,7 @@ final class TokenStore {
             throw new IllegalArgumentException("Token already exists: " + name);
         }
         byte[] random = new byte[TOKEN_BYTES];
-        new SecureRandom().nextBytes(random);
+        RANDOM.nextBytes(random);
         String plaintext = hex(random);
         tokens.put(name, hex(plaintext));
         save();

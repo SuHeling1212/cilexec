@@ -8,6 +8,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class BaselineChecksumTest {
     @Test
     void checksumTracksTheFrozenBaselineModules() {
-        assertEquals(-745_171_054, new V001__CilexecBaseline().getChecksum());
+        assertEquals(1_439_163_498, new V001__CilexecBaseline().getChecksum());
     }
 }

@@ -1,5 +1,6 @@
 package com.follarce.persistence.postgres.repository;
 
+import com.follarce.persistence.postgres.mapper.JsonCodec;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,21 @@ class JdbcProductionHardeningIT {
                 .cleanDisabled(true)
                 .load()
                 .migrate();
+    }
+
+    @Test
+    void effectWorkerCanInspectRunnerLivenessButCannotMutateSchedulerState() throws Exception {
+        try (Connection connection = effectConnection()) {
+            JdbcEffectRepository effects = new JdbcEffectRepository(connection, new JsonCodec());
+            assertTrue(effects.claimStalled(UUID.randomUUID(), Instant.now(), 300_000, 1)
+                    .isEmpty());
+            connection.commit();
+        }
+        try (Connection connection = effectConnection(); Statement statement = connection.createStatement()) {
+            assertThrows(SQLException.class, () ->
+                    statement.executeUpdate("UPDATE scheduler.runner SET status='FENCED'"));
+            connection.rollback();
+        }
     }
 
     @Test
@@ -471,6 +487,14 @@ class JdbcProductionHardeningIT {
         try (Statement statement = connection.createStatement()) {
             statement.execute("SET ROLE cilexec_runtime");
         }
+        return connection;
+    }
+
+    private static Connection effectConnection() throws SQLException {
+        Connection connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(),
+                "cilexec_effect_worker",
+                com.follarce.persistence.postgres.PostgresTestBootstrap.DEFAULT_PASSWORD);
+        connection.setAutoCommit(false);
         return connection;
     }
 
