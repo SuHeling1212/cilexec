@@ -71,7 +71,7 @@ already executed the tests. Formal mode rejects it. A normal build also runs
 Formal release mode is used by the tag workflow:
 
 ```bash
-python3 tools/release.py --formal --tag v1.2.3
+python3 tools/release.py --formal --tag v0.0.1
 ```
 
 It rejects a dirty tree, a `SNAPSHOT` or unknown version/revision, a tag other than
@@ -131,11 +131,11 @@ Release, then verify its listed files:
 
 ```bash
 cosign verify-blob \
-  --bundle cilexec-1.0.0-SHA256SUMS.sigstore.json \
+  --bundle cilexec-0.0.1-SHA256SUMS.sigstore.json \
   --certificate-identity-regexp '^https://github.com/SuHeling1212/cilexec/.github/workflows/release.yml@refs/tags/v[0-9].*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  cilexec-1.0.0-SHA256SUMS
-sha256sum -c cilexec-1.0.0-SHA256SUMS
+  cilexec-0.0.1-SHA256SUMS
+sha256sum -c cilexec-0.0.1-SHA256SUMS
 ```
 
 The deployment archive's `.env` pins `CILEXEC_IMAGE` to the published manifest digest. Verify

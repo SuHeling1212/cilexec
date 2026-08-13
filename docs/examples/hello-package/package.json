@@ -1,7 +1,7 @@
 {
   "namespace": "demo",
   "name": "hello",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "languageVersion": "fcl-1",
   "kind": "application",
   "modules": [

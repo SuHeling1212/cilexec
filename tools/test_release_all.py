@@ -87,9 +87,9 @@ class WindowsPackageVerificationTest(unittest.TestCase):
                 }
             contents["Cilexec.ps1"] = b""
             contents["compose.yml"] = b""
-            self.write_package(archive_path, "1.0.0", contents, images,
+            self.write_package(archive_path, "0.0.1", contents, images,
                                {"images": images})
-            release_all.verify_windows_zip(archive_path, "1.0.0")
+            release_all.verify_windows_zip(archive_path, "0.0.1")
 
     def test_rejects_modified_platform_archive(self) -> None:
         with tempfile.TemporaryDirectory() as name:
@@ -108,39 +108,39 @@ class WindowsPackageVerificationTest(unittest.TestCase):
                 images["amd64"]["archive"]: b"changed",
                 images["arm64"]["archive"]: b"arm64",
             }
-            self.write_package(archive_path, "1.0.0", contents, images,
+            self.write_package(archive_path, "0.0.1", contents, images,
                                {"images": images})
             with self.assertRaisesRegex(RuntimeError, "amd64"):
-                release_all.verify_windows_zip(archive_path, "1.0.0")
+                release_all.verify_windows_zip(archive_path, "0.0.1")
 
 
 class ShellInstallerVerificationTest(unittest.TestCase):
     def test_accepts_installer_with_embedded_uninstall_function(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
-            write_shell_installer(installer, "1.0.0")
-            release_all.verify_shell_installer(installer, "1.0.0")
+            installer = Path(name) / "cilexec-0.0.1-linux-amd64.sh"
+            write_shell_installer(installer, "0.0.1")
+            release_all.verify_shell_installer(installer, "0.0.1")
 
     def test_rejects_installer_without_uninstall_entry(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
-            write_shell_installer(installer, "1.0.0", uninstall_entry=False)
+            installer = Path(name) / "cilexec-0.0.1-linux-amd64.sh"
+            write_shell_installer(installer, "0.0.1", uninstall_entry=False)
             with self.assertRaisesRegex(RuntimeError, "uninstall entry"):
-                release_all.verify_shell_installer(installer, "1.0.0")
+                release_all.verify_shell_installer(installer, "0.0.1")
 
     def test_rejects_installer_without_embedded_uninstall_function(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
-            write_shell_installer(installer, "1.0.0", embedded_uninstall=False)
+            installer = Path(name) / "cilexec-0.0.1-linux-amd64.sh"
+            write_shell_installer(installer, "0.0.1", embedded_uninstall=False)
             with self.assertRaisesRegex(RuntimeError, "embedded uninstall"):
-                release_all.verify_shell_installer(installer, "1.0.0")
+                release_all.verify_shell_installer(installer, "0.0.1")
 
     def test_rejects_installer_with_incomplete_uninstall_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-1.0.0-linux-amd64.sh"
-            write_shell_installer(installer, "1.0.0", uninstall_cleanup=False)
+            installer = Path(name) / "cilexec-0.0.1-linux-amd64.sh"
+            write_shell_installer(installer, "0.0.1", uninstall_cleanup=False)
             with self.assertRaisesRegex(RuntimeError, "incomplete"):
-                release_all.verify_shell_installer(installer, "1.0.0")
+                release_all.verify_shell_installer(installer, "0.0.1")
 
 
 if __name__ == "__main__":

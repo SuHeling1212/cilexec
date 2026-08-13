@@ -7,8 +7,8 @@
       "type": "application",
       "group": "com.follarce",
       "name": "cilexec-release",
-      "version": "1.0.0",
-      "bom-ref": "pkg:maven/com.follarce/cilexec-release@1.0.0"
+      "version": "0.0.1",
+      "bom-ref": "pkg:maven/com.follarce/cilexec-release@0.0.1"
     }
   },
   "components": [
@@ -105,17 +105,17 @@
       "type": "application",
       "group": "com.follarce",
       "name": "cilexec-market-server",
-      "version": "1.0.0",
-      "bom-ref": "pkg:maven/com.follarce/cilexec-market-server@1.0.0",
-      "purl": "pkg:maven/com.follarce/cilexec-market-server@1.0.0"
+      "version": "0.0.1",
+      "bom-ref": "pkg:maven/com.follarce/cilexec-market-server@0.0.1",
+      "purl": "pkg:maven/com.follarce/cilexec-market-server@0.0.1"
     },
     {
       "type": "application",
       "group": "com.follarce",
       "name": "cilexec",
-      "version": "1.0.0",
-      "bom-ref": "pkg:maven/com.follarce/cilexec@1.0.0",
-      "purl": "pkg:maven/com.follarce/cilexec@1.0.0"
+      "version": "0.0.1",
+      "bom-ref": "pkg:maven/com.follarce/cilexec@0.0.1",
+      "purl": "pkg:maven/com.follarce/cilexec@0.0.1"
     },
     {
       "type": "library",
@@ -259,14 +259,14 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:maven/com.follarce/cilexec-release@1.0.0",
+      "ref": "pkg:maven/com.follarce/cilexec-release@0.0.1",
       "dependsOn": [
-        "pkg:maven/com.follarce/cilexec-market-server@1.0.0",
-        "pkg:maven/com.follarce/cilexec@1.0.0"
+        "pkg:maven/com.follarce/cilexec-market-server@0.0.1",
+        "pkg:maven/com.follarce/cilexec@0.0.1"
       ]
     },
     {
-      "ref": "pkg:maven/com.follarce/cilexec-market-server@1.0.0",
+      "ref": "pkg:maven/com.follarce/cilexec-market-server@0.0.1",
       "dependsOn": [
         "pkg:maven/com.google.code.gson/gson@2.13.2",
         "pkg:maven/com.google.errorprone/error_prone_annotations@2.41.0",
@@ -276,7 +276,7 @@
       ]
     },
     {
-      "ref": "pkg:maven/com.follarce/cilexec@1.0.0",
+      "ref": "pkg:maven/com.follarce/cilexec@0.0.1",
       "dependsOn": [
         "pkg:maven/ch.qos.logback/logback-classic@1.5.34",
         "pkg:maven/ch.qos.logback/logback-core@1.5.34",

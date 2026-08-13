@@ -135,12 +135,12 @@ hash returned by your configured market if it publishes a newer release:
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
-market.install("77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c")
-import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c" as "editor"
+market.install("c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff")
+import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff" as "editor"
 editor.open("notes.txt")
 ```
 
-Its package coordinate is `cilexec/editor/1.1.4`, and its public function is
+Its package coordinate is `cilexec/editor/0.0.1`, and its public function is
 `editor.open(path)`. A package is identified only by the SHA-256 of its `.db` file;
 two different hashes are two independent packages. `import` accepts the 64-character
 SHA-256 of an installed `.db` file, optionally with a private per-process alias, but
@@ -431,9 +431,9 @@ hash (last wins); processes that already linked a program keep the module they w
 linked with:
 
 ```fcl
-import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c" as "e"
-import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c"
-value = "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c".open("x.txt")
+import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff" as "e"
+import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff"
+value = "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff".open("x.txt")
 ```
 
 Process aliases are private to one process continuation. Reinstalling the same release is

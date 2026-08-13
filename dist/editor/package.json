@@ -1,7 +1,7 @@
 {
   "namespace": "cilexec",
   "name": "editor",
-  "version": "1.1.4",
+  "version": "0.0.1",
   "languageVersion": "fcl-1",
   "kind": "application",
   "modules": [
