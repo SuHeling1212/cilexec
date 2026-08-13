@@ -2,7 +2,11 @@
 
 import contextlib
 import io
+import json
+import sqlite3
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -118,6 +122,48 @@ class ReleaseIntegritySetTest(unittest.TestCase):
             declared = {line[66:] for line in
                         (root / release.SHA256_NAME).read_text(encoding="ascii").splitlines()}
             self.assertEqual(declared, set(release.expected_files(root)))
+
+
+class PackageBuildTest(unittest.TestCase):
+    def test_build_uses_current_sources_instead_of_old_release_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            distribution = root / "dist"
+            staging = root / "staging"
+            source = distribution / "editor"
+            old_package = distribution / "repository/packages/example/old/1.0/old.db"
+            source.mkdir(parents=True)
+            staging.mkdir()
+            old_package.parent.mkdir(parents=True)
+            old_package.write_bytes(b"old")
+            (distribution / "catalog.json").write_text(
+                json.dumps({"example/old/1.0": {}}), encoding="utf-8")
+            (source / "package.json").write_text(json.dumps({
+                "namespace": "example", "name": "editor", "version": "2.0",
+            }), encoding="utf-8")
+            (source / "market.json").write_text(
+                json.dumps({"summary": "Current editor"}), encoding="utf-8")
+
+            package_builder = types.ModuleType("tools.PackageBuild")
+
+            def build_package(_source: Path, output: Path) -> tuple[str, str]:
+                with sqlite3.connect(output) as connection:
+                    connection.execute("PRAGMA user_version = 2")
+                    connection.execute(
+                        "CREATE TABLE package_metadata(metadata_key TEXT, metadata_value TEXT)")
+                    connection.executemany(
+                        "INSERT INTO package_metadata VALUES (?, ?)",
+                        (("namespace", "example"), ("name", "editor"), ("version", "2.0")),
+                    )
+                return "example/editor/2.0", release.sha256(output)
+
+            package_builder.build = build_package
+            with patch.object(release, "DIST", distribution), \
+                    patch.dict(sys.modules, {"tools.PackageBuild": package_builder}):
+                catalog = release.build_packages(staging)
+
+            self.assertEqual(catalog, {"example/editor/2.0": {"summary": "Current editor"}})
+            self.assertFalse((staging / "repository/packages/example/old").exists())
 
 
 if __name__ == "__main__":

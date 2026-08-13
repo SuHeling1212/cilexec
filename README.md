@@ -44,7 +44,38 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
 
 ## Quick start
 
-Requirements: JDK 26, Maven 3.9+, PostgreSQL 17.1+.
+### Release package
+
+Docker Engine (Linux) or Docker Desktop (macOS/Windows) must already be running with the
+Docker Compose plugin available. The installer does not install Docker. Release packages embed
+the CilExec Runtime image, but not PostgreSQL; the first installation must be able to download
+the PostgreSQL image from its registry.
+
+On Linux, download the package matching the Docker host architecture (`linux-amd64` or
+`linux-arm64`), then run:
+
+```bash
+chmod +x cilexec-<version>-linux-<architecture>.sh
+./cilexec-<version>-linux-<architecture>.sh
+cd ~/cilexec
+./tools/Install.sh
+```
+
+The installer extracts to `~/cilexec` by default (override with `INSTALL_DIR`), verifies the
+Docker architecture, and loads the embedded Runtime image. `Install.sh` then creates secrets,
+starts PostgreSQL, applies migrations, starts the shared Runtime, and opens a terminal.
+
+On Windows, extract `cilexec-<version>-windows.zip` and run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Cilexec.ps1 install
+```
+
+See [`windows/README.md`](windows/README.md) for the complete Windows command reference.
+
+### Source checkout
+
+Docker and Docker Compose are required. Building the source also requires JDK 26 and Maven 3.9+.
 
 ```bash
 ./tools/Install.sh            # one command: secrets + PostgreSQL + migrations + terminal
@@ -67,6 +98,21 @@ Run one-off submissions from the host without the interactive shell:
 ./tools/Headless.sh 'io.println(value + 1)'     # 42; same durable REPL process per host terminal
 ```
 
+Common host commands:
+
+```bash
+./tools/Install.sh                                      # start/reuse Runtime and open a terminal
+./tools/Headless.sh 'io.println("hello")'               # submit FCL without the interactive shell
+./tools/HostMove.sh /absolute/report.pdf /docs/report.pdf alice
+./tools/Shell.sh                                        # enter the application or PostgreSQL container
+./tools/Uninstall.sh                                    # remove this instance and its database volume
+```
+
+Type `:exit` to leave the interactive terminal. This disconnects only that terminal; the shared
+Runtime and background processes remain running. A Linux release package can also uninstall via
+`./cilexec-<version>-linux-<architecture>.sh --uninstall`. Uninstall permanently removes that
+installation's PostgreSQL volume, so back it up first.
+
 Production operators should use the signed release image/artifacts and follow
 [release verification](docs/release.md) and the
 [backup, restore, and credential rotation runbook](docs/production-backup-restore.md).
@@ -76,7 +122,7 @@ Resources → Advanced) on a 16 GB host. The Runtime JVM, PostgreSQL, and the
 `mvn verify` integration suite each need a few GB; with the default 7.8 GB VM the
 host can run out of memory and the Java tooling or Runtime can be killed.
 
-Without Docker, run the JAR directly (a database must exist first):
+Without Docker, run the JAR directly after provisioning PostgreSQL 17.1+ yourself:
 
 ```bash
 java -jar target/cilexec-app.jar migrate

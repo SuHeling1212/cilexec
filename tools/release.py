@@ -223,18 +223,6 @@ def build_packages(staging: Path) -> dict[str, Any]:
         sys.path.pop(0)
 
     catalog: dict[str, Any] = {}
-    existing_repository = DIST / "repository"
-    existing_catalog = DIST / "catalog.json"
-    if existing_repository.is_dir():
-        shutil.copytree(existing_repository, staging / "repository", dirs_exist_ok=True)
-    if existing_catalog.is_file():
-        try:
-            previous = json.loads(existing_catalog.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            fail(f"Invalid existing release catalog: {error}")
-        if not isinstance(previous, dict):
-            fail("Existing release catalog must contain an object")
-        catalog.update(previous)
     built_coordinates: set[str] = set()
     for source in package_sources():
         manifest = json.loads((source / "package.json").read_text(encoding="utf-8"))
@@ -246,16 +234,9 @@ def build_packages(staging: Path) -> dict[str, Any]:
         namespace, name, version = coordinate.split("/", 2)
         output = staging / "repository" / "packages" / namespace / name / version / f"{name}.db"
         output.parent.mkdir(parents=True, exist_ok=True)
-        previous_digest = sha256(output) if output.is_file() else None
-        candidate = output.with_name(f".{name}.candidate.db") if previous_digest else output
-        actual_coordinate, digest = build_package(source, candidate)
-        if actual_coordinate != coordinate or sha256(candidate) != digest:
+        actual_coordinate, digest = build_package(source, output)
+        if actual_coordinate != coordinate or sha256(output) != digest:
             fail(f"Package builder returned inconsistent identity: {coordinate}")
-        if previous_digest is not None and previous_digest != digest:
-            candidate.unlink(missing_ok=True)
-            fail(f"Published package {coordinate} changed content; bump its version")
-        if candidate != output:
-            os.replace(candidate, output)
         output.chmod(0o644)
         catalog[coordinate] = market_metadata(source / "market.json")
         print(f"Built {coordinate} ({digest})", flush=True)
@@ -820,8 +801,7 @@ def verify(directory: Path, identity: dict[str, Any] | None = None) -> None:
 
 
 def publish(staging: Path) -> None:
-    # Package files become visible before the catalog that references them. Existing package
-    # versions were copied into staging, so replacing the repository never removes history.
+    # Replace the repository and catalog as one rollback-protected generated set.
     backup = Path(tempfile.mkdtemp(prefix=".release-backup-", dir=DIST))
     backed_up: list[str] = []
     installed: list[str] = []

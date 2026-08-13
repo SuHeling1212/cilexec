@@ -19,7 +19,36 @@
 
 ## 快速开始
 
-依赖：JDK 26、Maven 3.9+、PostgreSQL 17.1+。
+### 使用正式安装包
+
+前置条件：Docker Engine（Linux）或 Docker Desktop（macOS/Windows）已经启动，并且
+Docker Compose 插件可用。安装器不会安装 Docker。CilExec Runtime 镜像已包含在正式
+安装包中；PostgreSQL 镜像未包含，首次安装时必须能够从镜像仓库下载。
+
+Linux 根据 Docker 主机架构下载 `linux-amd64` 或 `linux-arm64` 安装包，然后运行：
+
+```bash
+chmod +x cilexec-<版本>-linux-<架构>.sh
+./cilexec-<版本>-linux-<架构>.sh
+cd ~/cilexec
+./tools/Install.sh
+```
+
+第一条安装命令将文件解压到 `~/cilexec`（可通过 `INSTALL_DIR` 修改），校验 Docker
+架构并加载内嵌 Runtime 镜像。`Install.sh` 随后创建密钥、启动 PostgreSQL、执行迁移、
+启动共享 Runtime 并进入终端。
+
+Windows 解压 `cilexec-<版本>-windows.zip` 后，在该目录运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Cilexec.ps1 install
+```
+
+完整 Windows 命令见 [`windows/README.md`](windows/README.md)。
+
+### 从源码运行
+
+前置条件：Docker 与 Docker Compose。构建源码还需要 JDK 26 和 Maven 3.9+。
 
 ```bash
 ./tools/Install.sh            # 一条命令：密钥 + PostgreSQL + 迁移 + 终端
@@ -41,10 +70,24 @@ return sum
 ./tools/Headless.sh 'io.println(value + 1)'     # 42；同一宿主终端的调用共享同一持久 REPL 进程
 ```
 
+常用宿主命令：
+
+```bash
+./tools/Install.sh                                      # 启动或复用 Runtime，并进入终端
+./tools/Headless.sh 'io.println("hello")'               # 非交互执行一段 FCL
+./tools/HostMove.sh /绝对路径/report.pdf /docs/report.pdf alice
+./tools/Shell.sh                                        # 进入应用或 PostgreSQL 容器
+./tools/Uninstall.sh                                    # 删除本安装实例及其数据库卷
+```
+
+退出交互终端请键入 `:exit`。这只断开当前终端，后台 Runtime 和进程继续运行。正式 Linux
+安装包也可直接执行 `./cilexec-<版本>-linux-<架构>.sh --uninstall`；卸载会永久删除该安装
+实例的 PostgreSQL 数据卷，执行前应先备份。
+
 生产环境应使用已签名的正式镜像和制品，并遵循[发行验证](docs/release.md)及
 [备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。
 
-不使用 Docker 时直接运行 JAR（需先有数据库）：
+不使用 Docker 时可直接运行 JAR（需自行准备 PostgreSQL 17.1+）：
 
 ```bash
 java -jar target/cilexec-app.jar migrate
