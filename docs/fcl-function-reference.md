@@ -11,13 +11,16 @@ the current terminal working directory by default; use `:cd` to change it. There
 
 ## FCL Language Essentials
 
-FCL is compiled statement by statement. Every executed line is persisted before the
-next one runs, so the engine can be killed and restarted without losing state.
+FCL is compiled into interpreter instructions. Each execution slice is one database
+transaction and one recovery checkpoint. Non-terminal processes execute one interpreter
+step per slice; terminal processes may batch up to 4,096 steps or 20 ms and stop when they
+suspend, execute a directive, complete, or fail. A crash rolls back the whole uncommitted
+slice, which may then replay from the preceding checkpoint.
 
 - **Comments.** Only `//` line comments exist; everything from `//` to the end of the
   line is ignored. `#` has nothing to do with comments.
 - **Length operator.** `#` is the only unary length operator. `#value` returns the
-  character count of a string and the element count of a list or map. Every use of
+  UTF-16 code-unit count of a string and the element count of a list or map. Every use of
   `#`, including forms like `#(...)`, is this operator; there is no comment syntax
   involving `#`. `#null` is `0`, and a single non-collection value has length `1`.
 - **Reserved words.** `func`, `if`, `else`, `while`, `break`, `continue`, `return`,
@@ -46,8 +49,9 @@ next one runs, so the engine can be killed and restarted without losing state.
   segments are preserved in relative paths.
 - **math.pow.** Throws a runtime error when the result is not finite (NaN or
   ±Infinity).
-- **String indexing.** `"abc"[1]` returns the character at that index; equality with
-  `"b"` holds and stays consistent across persistence and restart.
+- **String indexing.** String length, indexing, and text slice/search positions use Java
+  UTF-16 code units. `"abc"[1]` returns `"b"`; a supplementary Unicode character such as
+  an emoji occupies two positions and can be split by indexing or slicing.
 - **Function resolution.** User-defined or exported functions take precedence over
   built-in functions of the same name (dot-call resolution).
 
@@ -115,7 +119,8 @@ separately; to get an executable script, create an FCL file directly.
 All online users share one Runtime JVM, one database connection pool, and bounded
 worker pools. By default there are 10 scheduler workers and 6 effect workers.
 Processes beyond the worker count wait in a persisted FIFO queue; terminal processes
-run at most 4096 pure steps or 20 ms per time slice, then persist and re-queue. A
+run at most 4096 interpreter steps or 20 ms per time slice, stopping early on suspension,
+directive, completion, or failure, then persist and re-queue when ready. A
 separate event-driven Ctrl+C interrupt worker wakes only on PostgreSQL interrupt
 notifications; it never polls. Processes with a persistent interrupt flag are excluded
 from the regular scheduler workers and can only be picked up by the interrupt worker
@@ -124,17 +129,18 @@ and cancelled at a safe point.
 The editor is not a colon command and is not built into the Runtime. It is an SQLite
 FCL package distributed through the local market on the host. On first use it is
 downloaded and installed; afterwards it can be called directly from a persistent
-terminal context:
+terminal context. The example below is the repository's current editor release; use the
+hash returned by your configured market if it publishes a newer release:
 
 ```fcl
 market.configure("http://host.docker.internal:8787")
 market.update()
-market.install("71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab")
-import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "editor"
+market.install("77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c")
+import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c" as "editor"
 editor.open("notes.txt")
 ```
 
-Its package coordinate is `cilexec/editor/1.1.2`, and its public function is
+Its package coordinate is `cilexec/editor/1.1.4`, and its public function is
 `editor.open(path)`. A package is identified only by the SHA-256 of its `.db` file;
 two different hashes are two independent packages. `import` accepts the 64-character
 SHA-256 of an installed `.db` file, optionally with a private per-process alias, but
@@ -204,7 +210,7 @@ switch directories with `:cd`.
 | `path.resolve(path)` | Normalize a path string; does not change the terminal directory. |
 | `path.getFileName(path)` | Return the last path segment. |
 | `path.getParentPath(path)` | Return the parent path. Returns `"."` for a relative path without a slash; `..` segments are preserved in relative paths. Alias: `path.getParent(path)`. |
-| `path.isAbsolute(path)` | Check whether the path starts with `/`. |
+| `path.isAbsolute(path)` | Check whether the normalized path starts with `/`; a leading backslash is normalized to `/` and is also treated as absolute. |
 | `path.join(part1, part2, ...)` | Join and normalize path segments; no arguments returns `/`. |
 | `path.setAlias(name, path)` | Store a path alias in the current FCL context. |
 | `path.removeAlias(name)` | Remove an alias; returns whether it was removed. |
@@ -222,8 +228,8 @@ variables.
 `PWD`, `USER`, `USER_ID`, and `PID` are read-only dynamic environment variables
 provided by the Java Runtime; they cannot be changed via `env.set`, `env.remove`, or
 the shared environment interface. `PWD` is updated by the terminal's `:cd`; FCL
-processes can only read it. VFS functions require absolute paths and do not use `PWD`
-automatically. Scripts that need the current directory must spell it out:
+processes can only read it. Relative VFS paths resolve against the process's durable `PWD`;
+scripts may join it explicitly when they need the resolved absolute path as data:
 
 ```fcl
 absolute = path.join(env.get("PWD"), "note.txt")
@@ -286,7 +292,7 @@ intermediate state.
 
 | Call | Effect |
 | --- | --- |
-| `text.slice(value, start [, end])` | Slice a string by character index. |
+| `text.slice(value, start [, end])` | Slice a string by UTF-16 code-unit index. |
 | `text.split(value, delimiter)` | Split a string, keeping trailing empty items. |
 | `text.join(values, delimiter)` | Join an array with a delimiter. |
 | `text.indexOf(value, search [, start])` | Search forward from the given position; returns `-1` when not found. |
@@ -310,25 +316,25 @@ intermediate state.
 
 `targetUser` can be a username or a user UUID. Only administrators can pass another
 user; otherwise the current user is used. All reads and writes happen in the VFS and
-do not correspond to real host paths. Path arguments must be absolute; these
-functions do not read `PWD` automatically.
+do not correspond to real host paths. Relative paths resolve against the process's
+durable `PWD`, which `:cd` changes; paths beginning with `/` remain absolute.
 
 | Call | Effect |
 | --- | --- |
-| `file.read(path [, targetUser])` | Read UTF-8 file text. When a single FCL string would exceed the JVM limit, use `file.readChunk` instead. |
+| `file.read(path [, targetUser])` | Read a complete UTF-8 file into one FCL string, capped at 16 MiB. Use `file.readChunk` for larger files. |
 | `file.readChunk(path, offset, maximumBytes [, targetUser])` | Read a UTF-8 range; `offset` must be non-negative and each call reads at most 4 MiB. |
 | `file.size(path [, targetUser])` | Return the logical file size in bytes. |
 | `file.exists(path [, targetUser])` | Check whether a path exists. |
 | `file.listdir([path [, targetUser]])` | Return an array of metadata for the directory's children; without a path, list the VFS root `/`. |
 | `file.readMetaData(path [, targetUser])` | Return node metadata such as `nodeId`, `ownerId`, `type`, `objectHash`. |
 | `file.write(path, content [, targetUser])` | Create or overwrite a text file. |
-| `file.append(path, content [, targetUser])` | Append text using chunked storage; does not load the whole old file. |
+| `file.append(path, content [, targetUser])` | Append text. Own-user append uses chunked storage without loading the old file; administrator cross-user append currently loads the old content and therefore refuses an existing file over 16 MiB. |
 | `file.createFile(path [, content [, targetUser]])` | Create the file only if it does not exist. To specify only a target user, pass an empty string for the content position. |
 | `file.createDir(path [, targetUser])` | Create a directory. |
 | `file.removeFile(path [, targetUser])` | Delete a file. |
 | `file.removeDir(path [, targetUser])` | Delete an empty directory. |
 | `file.rename(path, newName [, targetUser])` | Rename within the same directory; `newName` cannot contain `/`. |
-| `file.link(linkPath, targetPath)` | Create a symbolic-link node whose content is the target path; only within the current user's scope. `file.read`, `file.readChunk`, and `file.size` follow links to the target file (chain limit 16 hops; cycles error out). |
+| `file.link(linkPath, targetPath)` | Create a symbolic-link node whose content is the target path; only within the current user's scope. `file.read`, `file.readChunk`, and `file.size` follow links to the target file (fewer than 16 links; cycles error out). |
 | `file.lock(path, leaseMilliseconds)` | Acquire a file lease lock; on success returns `{fencingToken, leaseUntil}`, on failure `null`. |
 | `file.renewLock(path, fencingToken, leaseMilliseconds)` | Renew a file lock. |
 | `file.unlock(path, fencingToken)` | Release a file lock held by the current process. |
@@ -350,7 +356,7 @@ control other users' processes.
 | `process.kill(pid)` | Terminate the given process; killing yourself is equivalent to `util.exit()`. Alias: `system.kill(pid)`. |
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
-| `process.fork()` | Copy the current FCL execution context into a child process and return the child PID. |
+| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. |
 | `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. The resolved absolute path is what gets persisted with the suspension. Terminal processes keep global variables, package bindings, and the working directory, and return to the same terminal when the target program ends; ordinary background processes terminate when the target program ends. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
@@ -389,10 +395,9 @@ connection handles that could be reused across a crash.
 ## Packages: `package`
 
 Packages are immutable SQLite `package.db` files. The recommended flow is
-`package.build` → `package.install` → `import` or `package.run`. `import` only
-imports a package; the target can be a binding name in the current user's default
-environment or the SHA-256 of an installed package database file; an alias is
-optional. Plain FCL source files use `include "path.fcl"`, which splices the file
+`package.build` → `package.install` → `import` or `package.run`. `import` accepts only
+the SHA-256 of an installed package database file; a private process alias is optional.
+Plain FCL source files use `include "path.fcl"`, which splices the file
 in place before compilation; `import` cannot be used for that. `package.json` must
 declare `kind`. An `application` must provide a zero-argument generic `run`
 entrypoint; a `library` is meant for import or dependency use and may have no
@@ -410,36 +415,33 @@ The host market's default index is
 
 | Call | Effect |
 | --- | --- |
-| `package.info(coordinateOrHash)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or a 64-character package hash; `(namespace, name, version)` as three arguments also works. |
+| `package.info(coordinateOrPackageHash)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or the internal logical-content `hash` returned by `package.install`; `(namespace, name, version)` as three arguments also works. It does not accept the `.db` file `sha256`. |
 | `package.list()` | Return registered package releases. |
 | `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. |
 | `package.build(manifestPath, outputPath)` | Read the `package.json` and declared files in the VFS and build a `.db` in the VFS. |
-| `package.run(packageHash [, entrypoint])` | Create a child process running a package entrypoint; the default entrypoint is `run`, and PID and other information are returned. |
-| `package.verify(coordinateOrHash)` | Verify that the package database objects still match the SHA-256 hash recorded at install time. The three-part coordinate also works as arguments. |
-| `package.resource(coordinateOrHash, resourcePath)` | Read a declared text resource from the package. |
-| `package.pin(packageHash)` | Mark a package hash as pinned for the current process environment. |
+| `package.run(databaseFileSha256 [, entrypoint])` | Create a child process running a package entrypoint. This call uses the installed `.db` file `sha256`; the default entrypoint is `run`, and PID and other information are returned. |
+| `package.verify(coordinateOrPackageHash)` | Verify that the package database object still matches the file hash recorded at install time. The three-part coordinate also works as arguments. It uses the internal logical-content hash, not the `.db` file `sha256`. |
+| `package.resource(coordinateOrPackageHash, resourcePath)` | Read a declared text resource from the package; hash lookup uses the internal logical-content hash. |
+| `package.pin(coordinateOrPackageHash)` | Validate that a release is installed and return its metadata. Despite the legacy name, this call does not create or change a process binding. |
 
 `import` accepts only the full SHA-256 of an installed package database, optionally
 with a private per-process alias; the qualifier is the hash itself when no alias is
-given. Importing the same alias again in the same session re-pins it to the newest
+given. Importing the same alias again in the same session binds it to the newest requested
 hash (last wins); processes that already linked a program keep the module they were
 linked with:
 
 ```fcl
-import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "e"
-import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab"
-value = "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab".open("x.txt")
+import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c" as "e"
+import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c"
+value = "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c".open("x.txt")
 ```
 
-Binding names are unique within one package environment. Reinstalling the same
-release is idempotent; a normal install cannot replace a binding with another
-release. To intentionally change a binding, use the explicit package management
-operations.
+Process aliases are private to one process continuation. Reinstalling the same release is
+idempotent. There is currently no `package.remove` or process-unpin FCL function.
 
 | Call | Effect |
 | --- | --- |
-| `package.remove(environmentUuid, binding)` | Synonym of `unpin`; removes a binding. |
-| `package.recover()` | Administrator recovery-check entrypoint; currently returns `true`. |
+| `package.recover()` | Administrator recovery-check placeholder; currently performs no repair and returns `true`. |
 
 ## Built-in Market: `market`
 
@@ -457,9 +459,9 @@ standalone server are described in `docs/package-market.md`.
 | `market.search(text)` | Search the local index by prefix over names, tags, and description words; version numbers are not searched. If no index exists, update first. |
 | `market.info(sha256)` | Look up a package record by the full SHA-256 of its distribution file. |
 | `market.download(sha256)` | Download in 4 MiB chunks and recompute the full file hash. |
-| `market.install(sha256)` | Recursively install exact-hash dependencies and create the default binding. |
+| `market.install(sha256)` | Recursively download and register exact-hash dependencies, then save a market receipt. It does not create an import alias. |
 | `market.list()` | List the current user's install records managed by the market. |
-| `market.uninstall(sha256)` | Remove the market install binding and the downloaded file. |
+| `market.uninstall(sha256)` | Remove the market receipt and downloaded VFS file. It does not remove the immutable runtime package release or existing process bindings. |
 | `market.help()` | Return help text for the market functions. |
 | `market.run()` | Return the built-in client version and help without requiring a configured mirror. |
 
@@ -502,7 +504,7 @@ when it knows the variable name.
 | Call | Effect |
 | --- | --- |
 | `ipc.sendDirect(pid, payload [, expiresAt])` | Send to one process. `expiresAt` is an optional ISO-8601 instant. |
-| `ipc.createChannel(channelId)` / `ipc.createTopic(topic)` | Create a durable channel or topic. |
+| `ipc.createChannel(name)` / `ipc.createTopic(name)` | Create a durable channel or topic. Channel creation returns a generated `channelId`; later channel calls use that UUID. |
 | `ipc.removeChannel(channelId)` / `ipc.removeTopic(topic)` | Remove a durable channel or topic. |
 | `ipc.subscribeChannel(channelId)` / `ipc.subscribeTopic(topic)` | Subscribe the current process to the channel or topic. |
 | `ipc.receive()` / `ipc.poll()` | Receive the next owned message; `receive` blocks until one arrives, `poll` returns the current head immediately. |
@@ -514,6 +516,10 @@ when it knows the variable name.
 
 Message rows are durable after consumption. Use `ipc.purge` to release retained
 payload references and message quota; pending unexpired deliveries are never purged.
+The database guarantees that one delivery can make the committed transition to
+`CONSUMED` at most once. `ipc.poll()` is reserve/ack: if application work happens after
+reservation but before `ipc.consume()` and the Runtime crashes, startup resets the
+unconsumed reservation and the message can be delivered again.
 
 ## System: `system`
 
@@ -525,8 +531,8 @@ payload references and message quota; pending unexpired deliveries are never pur
 | `system.kill(pid)` | Alias of `process.kill(pid)`. |
 | `system.exec(command)` | Administrator: execute a command from the host allow-list. `command` can be a string or an array of strings; it does not go through a shell, and `CILEXEC_FCL_EXEC_ALLOWLIST` must be set — no program is allowed by default. |
 | `system.invoke(qualifiedFunction [, argumentArray])` | Administrator: call another FCL function by string, for example `system.invoke("file.read", ["/x.txt", "alice"])`. It cannot call itself. |
-| `system.forceRemove(path)` | Administrator: delete the current user's file or directory by path. |
-| `system.forceRemove(targetUserUuid, nodeUuid)` | Administrator: force-delete a node of the given user. |
+| `system.forceRemove(path)` | Administrator: constrained deletion by path. It still refuses roots, mounts, versioned files, and non-empty directories. |
+| `system.forceRemove(targetUserUuid, nodeUuid)` | Administrator: the same constrained deletion by target user and node UUID. |
 | `system.resolveEffect(...)` | **Currently unavailable.** External effects are handled by the Runtime control plane. |
 | `system.reset(...)` | **Currently unavailable.** Runtime reset is not exposed to FCL. |
 
@@ -538,7 +544,7 @@ env.get("PWD")                     // current working directory (Java-managed, r
 user.getCurrentUser()               // current user UUID
 user.isLocal()                      // whether the current user is an administrator
 process.getList()                   // visible processes
-file.listdir(path.join(env.get("PWD"), ".")) // metadata of the current directory
+file.listdir(".")                   // metadata of the current directory
 package.list()                      // registered packages
 ```
 

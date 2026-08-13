@@ -120,6 +120,7 @@ public final class ProcessService {
             requireUpdated(transaction.processes().update(terminated,
                     terminating.stateVersion(), terminating.executionEpoch()));
             transaction.scheduler().release(current.identity().processUid(), current.executionEpoch());
+            transaction.timers().deleteForProcess(current.identity().processUid());
             transaction.audit().append(audit(ownerId, "process.terminate", terminated, now));
             return terminated;
         });

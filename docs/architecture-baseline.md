@@ -68,7 +68,7 @@ scheduling queues
 IPC, channels, topics, and broadcasts
 timers
 VFS
-packages and package environments
+package releases and process bindings
 external side effects
 terminal sessions
 audit and recovery
@@ -153,14 +153,17 @@ PostgreSQL and CilExec live in separate containers. CilExec must also support co
 
 ### 2.2 Networking
 
-The decision maps PostgreSQL 5432 to the host by default. The standard development configuration is:
+The standard Compose configuration exposes PostgreSQL only on the internal Compose network;
+it has no host `ports` mapping. Development tools that require direct database access may add
+an explicit loopback-only override:
 
 ```yaml
 ports:
   - "127.0.0.1:5432:5432"
 ```
 
-This is still "exposed to the host," but by default it binds only to the loopback address and is not directly reachable on the LAN.
+That optional override is exposed only to the host loopback and is not directly reachable on
+the LAN.
 
 Remote access requires explicit changes to the listen address, TLS, authentication, and firewall rules.
 
@@ -563,9 +566,10 @@ Responsibilities:
 
 In production the Runtime has no `CREATE/ALTER/DROP` privileges. Development environments may allow the Runtime to run migrations behind an explicit switch, but the standard Compose setup still uses a separate migrate service.
 
-### 5.2 CilExec Users Map to PostgreSQL LOGIN Roles
+### 5.2 CilExec Users Map to PostgreSQL Tenant Roles
 
-Every CilExec user corresponds to a PostgreSQL LOGIN role.
+Every CilExec user corresponds to a stable PostgreSQL `NOLOGIN`, `NOINHERIT` tenant role.
+The application password verifier is not a PostgreSQL login credential.
 
 Stable mapping:
 
@@ -602,7 +606,9 @@ SET LOCAL app.cilexec_user_id = '<uuid>';
 
 The runtime Role must have controlled membership that allows switching to user roles, but it must not be a PostgreSQL superuser and must not hold `BYPASSRLS`.
 
-Direct database login is an advanced capability. Even when the PostgreSQL port is mapped to the host, normal CilExec usage goes through the Runtime. If an administrator allows direct logins, RLS and database object privileges must still hold.
+Tenant roles cannot log in directly. Normal CilExec usage goes through the Runtime, which
+assumes the tenant role transaction-locally. Changing a tenant role to `LOGIN` is outside the
+supported security baseline.
 
 ### 5.4 Comprehensive RLS
 
@@ -741,8 +747,7 @@ READ COMMITTED
 Rationale:
 
 ```text
-transactions are short
-every FCL statement commits
+transactions are bounded execution slices
 conflicts are validated with state_version and row locks
 failed transactions allow bounded retries
 ```
@@ -778,33 +783,21 @@ append required audit events
 COMMIT
 ```
 
-A scheduling slice is at most 4096 pure FCL steps or 20 ms for terminal processes
-(one statement per slice for all other processes). Every committed slice is
+A scheduling slice is at most 4096 interpreter steps or 20 ms for terminal processes
+(one interpreter step per slice for all other processes). Every committed slice is
 therefore a recovery checkpoint.
 
-### 8.3 Forced Checkpoints
+### 8.3 Slice Boundaries and Replay
 
-The following operations all form explicit transaction boundaries:
+Terminal slices stop on suspension, directive, completion, failure, the 4,096-step limit,
+or the 20 ms limit. They do not currently force an immediate boundary after every VFS or IPC
+operation; those database changes commit or roll back with the rest of the slice. Effect
+requests and blocking operations suspend the continuation and therefore end the slice.
 
-```text
-fork
-IPC send/receive
-visible VFS modifications
-timer creation or waiting
-process suspension
-waiting for user input
-effect requests
-package import or binding changes
-process termination
-end of execution quantum
-```
-
-Terminal processes batch pure computation (at most 4096 FCL steps or 20 ms) in a
-single committed slice; a crash rolls the whole slice back and it is replayed from
-its first statement. This is safe only because the forced-checkpoint list above
-ensures that every statement with external effects, blocking, or user-visible
-behavior forms its own transaction boundary, so a slice contains only replayable
-pure statements. All other processes commit one statement per slice.
+A crash rolls the whole uncommitted slice back. Recovery resumes from the preceding committed
+continuation, so the interpreter steps in that slice may execute again. FCL-requested external
+HTTP, socket, and command operations are journaled before execution; host administration tools
+have separate transaction contracts and are not part of an FCL slice.
 
 ### 8.4 Conflict Control
 
@@ -845,7 +838,7 @@ meta instance/boot
 → timer
 → vfs node
 → object_store
-→ package environment/binding
+→ exact process package binding
 → effect
 → terminal
 → audit
@@ -956,7 +949,7 @@ FIFO
 
 A process entering READY is added to `scheduler.queue`.
 
-Claim sketch:
+The current claim path first selects the oldest eligible candidate without a row lock:
 
 ```sql
 SELECT process_uid
@@ -964,9 +957,12 @@ FROM scheduler.queue
 WHERE queue_state = 'READY'
   AND ready_at <= now()
 ORDER BY enqueued_at, process_uid
-FOR UPDATE SKIP LOCKED
 LIMIT 1;
 ```
+
+It then wins ownership through a process `READY → RUNNING` compare-and-set and commits the
+queue claim and durable lease in the same transaction. Competing workers retry after a lost
+CAS; the production algorithm does not use `FOR UPDATE SKIP LOCKED` for candidate selection.
 
 ### 10.1 Workers
 
@@ -1076,11 +1072,16 @@ DEAD
 
 ### 11.2 Delivery Semantics
 
-Within a single PostgreSQL instance, exactly-once consumption is implemented at the granularity of `ipc.delivery`:
+Within a single PostgreSQL instance, the committed state transition is at most once at the
+granularity of `ipc.delivery`:
 
 ```text
-a delivery may move from PENDING/RESERVED to CONSUMED exactly once
+a delivery may commit the transition from RESERVED to CONSUMED at most once
 ```
+
+This is not exactly-once application processing. A poll-based consumer that performs work and
+crashes before `ipc.consume()` leaves a RESERVED row; startup resets it to PENDING and it may
+be delivered again.
 
 Broadcast is not multiple processes contending for one row; each subscriber receives an independent delivery.
 
@@ -1159,9 +1160,10 @@ vfs.node
 └── updated_at
 ```
 
-### 13.2 First-Release Content Storage
+### 13.2 Content Storage
 
-Each content object is a single `bytea` in the first release:
+Small content is stored as one immutable object. Large logical files use immutable linked
+manifest chunks, all addressed through the same object store:
 
 ```text
 object_store.object
@@ -1172,7 +1174,8 @@ object_store.object
 └── created_at
 ```
 
-1 MiB chunking is not forced in the first release. Chunked formats are introduced later only if real benchmarks prove they are necessary.
+The logical file limit is 1 GiB. Range/download operations use at most 4 MiB per call, and
+whole-file reads into one FCL string are capped at 16 MiB.
 
 ### 13.3 Content Addressing
 
@@ -1196,9 +1199,11 @@ vfs.file_revision
 
 Retention policy is configurable.
 
-### 13.5 Host Mounts
+### 13.5 Host Imports and Reserved Mount Schema
 
-Explicit, high-privilege host-directory mounts are allowed.
+The schema and `VfsService` contain a constrained host-mount model, but the standard Runtime
+configuration does not supply allowed host-source keys or mount a host directory. Live
+host-directory mounts are therefore not a supported standard deployment feature today.
 
 All of the following must hold:
 
@@ -1210,7 +1215,10 @@ a CilExec capability grant
 a vfs.mount database record
 ```
 
-Ordinary FCL code cannot reach undeclared host paths. Host-to-VFS transfer is a host tool rather than an FCL function: `host move` streams one explicitly named regular file into PostgreSQL under a user holding `VFS_MOUNT_HOST`. Never mount the Docker Socket or a broad host directory for this feature.
+The supported host-to-VFS feature is the `host move` tool: it mounts one explicitly named
+regular file read-only into a disposable tool container, streams it into PostgreSQL under a
+user holding `VFS_MOUNT_HOST`, and retains the host source. It never mounts the Docker Socket
+or a broad host directory.
 
 ---
 
@@ -1308,32 +1316,15 @@ package.release_dependency.dependency_file_hash
 
 Coordinates are display-only. Installing a required dependency must find the exact file hash; optional dependencies may be missing.
 
-### 14.5 Package Environments
+### 14.5 Installation Records
 
-The first release implements explicit package environments:
-
-```text
-package.environment
-├── environment_id
-├── owner_id
-├── name
-├── parent_environment_id
-├── status
-└── created_at
-```
-
-Installation is:
-
-```text
-(environment_id, binding)
-→ package_hash
-```
-
-A user may create several environments, each binding different versions.
+The current schema has no `package.environment` table or shared default binding. Installation
+registers the immutable release and its derived indexes. The market client separately stores
+per-user receipts and downloaded files in VFS; those receipts do not create import aliases.
 
 ### 14.6 Process Bindings
 
-After a process resolves an import for the first time, the exact binding is persisted:
+When a process imports or runs a package, its exact private binding is persisted:
 
 ```text
 process.package_binding
@@ -1342,8 +1333,9 @@ process.package_binding
 └── package_hash
 ```
 
-Package identity is the SHA-256 of the `.db` file. A different hash is a different
-package; no later operation ever changes the exact hash pinned to a running process.
+Import lookup uses the SHA-256 of the `.db` file, while the binding row stores the package's
+internal logical-content hash. A private alias may be rebound by a later terminal submission;
+already linked execution state keeps its committed binding until the next program is linked.
 
 ### 14.7 Lifecycle Hooks
 
@@ -1377,12 +1369,11 @@ The package system provides no publisher signatures, trust states, or key manage
 
 ## 15. External Side Effects
 
-Every operation outside the database must enter the effect journal:
+Every FCL-requested HTTP, socket, or allow-listed command operation enters the effect journal:
 
 ```text
 HTTP
 socket
-host file writes
 external programs
 mail
 hardware
@@ -1430,9 +1421,19 @@ how UNKNOWN is handled
 
 UNKNOWN is handled by the effect type's policy; when it cannot be determined, it escalates to manual intervention instead of blind retry.
 
+Durable timers use `process.timer`, not effect rows. Explicit control-plane commands such as
+`host move` and logical export have their own bounded host-I/O and transaction contracts and
+are outside the FCL effect journal.
+
 Effect workers use a separate PostgreSQL role (`cilexec_effect_worker`) and their own bounded pool (default 6 workers).
 
-**Stall reclamation.** Effects stuck in EXECUTING are reclaimed: `claimStalled` moves an EXECUTING effect whose claiming runner has no live heartbeat to UNKNOWN after a 5-minute stall threshold, tagged with the `EFFECT_STALLED` failure code. A dedicated heartbeat thread refreshes every worker's runner heartbeat every 30 seconds while it is idle or executing a long effect, so `claimStalled` never mistakes a still-running effect for a dead one. A stalled effect may already have produced an external side effect, so it is resolved as UNKNOWN and follows the type's UNKNOWN policy (remote query, idempotent retry, or manual).
+**Stall reclamation.** Effects stuck in EXECUTING are reclaimed: `claimStalled` moves an
+EXECUTING effect whose claiming runner has no live heartbeat to UNKNOWN after a 5-minute stall
+threshold, tagged with `EFFECT_STALLED`. The heartbeat thread refreshes idle workers every 30
+seconds; a busy worker is deliberately allowed to become stale so an execution blocked past
+the threshold can be reclaimed. Effect handlers must therefore use explicit timeouts below the
+threshold. A reclaimed operation may already have produced an external side effect, so it
+follows the type's UNKNOWN policy (remote query, idempotent retry, or manual action).
 
 **Result persistence is decoupled from process wake-up.** The effect row and attempt commit first; waking the waiting process is a separate transaction. If the wake fails, the committed result is retained and the effect is never lost; a later scheduler wake or recovery path resumes the process. A wake conflict can never roll back a committed effect result.
 
@@ -1462,7 +1463,12 @@ set process.interrupt_requested
 
 Durable working directories, FCL process context, and per-user command history are persisted per session and survive reconnects and Runtime restarts.
 
-**Disconnect awareness.** Terminal sessions detect socket disconnects: end-of-stream on the socket wakes a blocked session loop so a disconnected client can no longer hold a session slot while polling forever. Idle connections time out after 60 seconds — a socket that never exchanged any byte is abandoned as a slot, while sessions that have already exchanged bytes stay connected. `:cd` with no argument reports a clean error instead of crashing the terminal.
+**Disconnect awareness.** Interactive terminal sessions use an input pump: end-of-stream wakes
+the blocked session loop and interrupts foreground work. A 60-second socket timeout is only a
+periodic wake-up for checking the durable idle policy; authenticated sessions close after their
+attached process remains PAUSED for the configured threshold. Headless submissions do not
+currently run this concurrent disconnect pump, so work may continue after the client leaves.
+`:cd` with no argument reports a clean error instead of crashing the terminal.
 
 **Administrator password verification is rate-limited.** Failed logins apply an exponential backoff; unknown usernames verify a dummy credential (to keep timing uniform) and share a separate, lower ceiling so one attacker cannot slow unrelated logins.
 
@@ -1530,18 +1536,18 @@ The HTTP server binds to `127.0.0.1` only; the endpoints are never reachable fro
 1. load non-secret configuration
 2. read credentials from secret files
 3. establish database connections
-4. verify PostgreSQL availability and schema version (SchemaVerifier;
-   failed or out-of-range migrations refuse startup; optional migrate-on-start)
-5. acquire the session advisory lock
-6. create meta.kernel_instance
-7. create meta.boot
-8. mark the previous boot CRASHED
-9. run semantic recovery (RecoveryCoordinator)
-10. start the scheduler
-11. start effect workers
-12. start IPC/timers
-13. start terminal/API
-14. readiness = true
+4. acquire the session advisory lock
+5. optionally run pending migrations with migrator credentials
+6. verify PostgreSQL availability and schema version (failed or out-of-range migrations refuse startup)
+7. create meta.kernel_instance
+8. create meta.boot
+9. mark the previous boot CRASHED
+10. run semantic recovery (RecoveryCoordinator)
+11. start the scheduler
+12. start effect workers
+13. start IPC/timers
+14. start terminal/API
+15. readiness = true
 ```
 
 ### 18.2 SIGTERM
@@ -1594,19 +1600,14 @@ container data-directory damage
 PostgreSQL major-version incompatibility
 ```
 
-### 19.2 First-Release Disaster Recovery
+### 19.2 Production Disaster Recovery
 
-The first release uses `pg_dump` logical backups.
-
-```text
-backup
-→ PostgreSQL custom-format dump
-→ role/global information exported separately as needed
-→ records CilExec and PostgreSQL versions
-→ verified
-```
-
-Restore must be automated and tested.
+Production recovery should use physical backups plus continuous WAL archiving when the chosen
+PostgreSQL platform supports them. An encrypted `pg_dumpall --roles-only` export and custom
+format `pg_dump` remain portability and fallback artifacts. The bundled Compose files do not
+configure a backup repository, WAL archive command, or restore automation; operators must
+provide and test those facilities. Repository automation currently verifies logical
+`pg_dump`/`pg_restore`, not physical restore or PITR. See `production-backup-restore.md`.
 
 ### 19.3 Major-Version Upgrades
 
@@ -1652,12 +1653,12 @@ Database tests must use a real PostgreSQL container; H2 or SQLite must never sim
 migration (including failed/out-of-range migration detection)
 RLS
 role switching
-per-statement transactions
+per-slice transactions
 state_version conflicts
 execution_epoch fencing
 FIFO claiming
 lease expiry and heartbeat extension
-IPC exactly-once delivery
+IPC committed-consumption transition and reserve/ack redelivery
 broadcast fan-out
 timer recovery and FIRED cleanup
 VFS atomic replacement
@@ -1668,13 +1669,13 @@ effect UNKNOWN and stall reclamation
 effect result committed without wake
 SIGTERM
 force kill
-pg_dump/restore
+logical pg_dump/restore
 dual-architecture images
 ```
 
 ### 20.2 Forced Crash Points
 
-At minimum:
+Required fault-injection targets (not all currently covered by automated tests):
 
 ```text
 right after BEGIN
@@ -1708,7 +1709,7 @@ The baseline at least includes:
 ```text
 idle memory
 startup-to-readiness time
-per-statement transaction throughput
+per-slice transaction throughput
 process recovery time
 1k/10k WAITING process resources
 IPC direct/channel/broadcast throughput
@@ -1769,13 +1770,13 @@ the Runtime reaches readiness after acquiring the control lock
 meta.instance
 meta.boot
 meta.kernel_instance
-user ↔ PostgreSQL LOGIN role
+user ↔ PostgreSQL NOLOGIN tenant role
 SET LOCAL ROLE
 RLS
 advisory lock
 ```
 
-## Phase 3: Programs, Processes, and Per-Statement Transactions
+## Phase 3: Programs, Processes, and Per-Slice Transactions
 
 ```text
 shared immutable programs
@@ -1913,11 +1914,11 @@ existing FCL external semantics stay compatible
 legacy file persistence is removed from the production path
 Compose is the standard environment from phase one
 PostgreSQL is the only authoritative state
-every FCL statement has an explicit transaction
+every execution slice has an explicit transaction
 full continuations are recoverable
 a single active Runtime is protected by the advisory lock
 stale epochs cannot commit
-CilExec users map to PostgreSQL LOGIN roles
+CilExec users map to PostgreSQL NOLOGIN, NOINHERIT tenant roles
 business tables use comprehensive RLS
 FIFO scheduling and leases are recoverable
 IPC direct/channel/topic/broadcast recover durably
@@ -1925,11 +1926,11 @@ timers do not depend on in-memory sleep
 VFS content lives in a content-addressed object store
 package.db is an immutable SQLite file
 the same coordinates never map to different hashes
-package environments and exact per-process hashes work
-all external side effects pass through the effect journal
+exact per-process package bindings work
+FCL-requested HTTP/socket/command effects pass through the effect journal
 audit is separated from ordinary logs
 SIGTERM and force kill are both tested
-pg_dump/restore has automated restore tests
+logical pg_dump/restore has automated restore tests
 application-level .db export is verifiable
 AMD64 and ARM64 CI both pass
 legacy .proc and legacy file persistence code are deleted
@@ -1950,23 +1951,23 @@ legacy .proc and legacy file persistence code are deleted
 | 7 | P0 | PostgreSQL and CilExec in one container? | B. Two separate containers |  |
 | 8 | P0 | Dedicated migration service? | B. A separate migrate container runs migrations first |  |
 | 9 | P0 | Where does Docker persistence live | C. Container writable layer | Disposable dev profile only; persistent instances must mount durable storage |
-| 10 | P1 | Docker network exposure | A. PostgreSQL 5432 exposed to the host by default |  |
+| 10 | P1 | Docker network exposure | PostgreSQL is Compose-network-only by default | Supersedes the earlier host-port choice; add an explicit loopback override for development access |
 | 11 | P0 | Startup ordering | B. Migrate after PostgreSQL is healthy; start CilExec after migration succeeds |  |
 | 12 | P1 | Behavior on SIGTERM | B. Run normal shutdown with a bounded grace period |  |
 | 13 | P1 | Container runs as root? | B. Fixed non-root user |  |
 | 14 | P1 | Supported image architectures | C. Publish both amd64 and arm64 |  |
 | 15 | P1 | Where the package local cache lives | C. tmpfs or a disposable cache directory |  |
 | 16 | P0 | Number of PostgreSQL system roles | B. owner, migrator, kernel, effect-worker, readonly separated |  |
-| 17 | P0 | Do normal CilExec users map to PostgreSQL roles | A. Every CilExec user is a database LOGIN role |  |
+| 17 | P0 | Do normal CilExec users map to PostgreSQL roles | Every CilExec user has a stable NOLOGIN, NOINHERIT tenant role | Runtime assumes it with SET LOCAL ROLE; terminal passwords are not database credentials |
 | 18 | P0 | May the Kernel modify database structure | C. Development yes, production no |  |
 | 19 | P2 | Enable Row-Level Security in the first release | A. Comprehensively, on all business tables |  |
 | 20 | P0 | How database passwords are provided | C. Docker secrets or an external secret manager |  |
 | 21 | P0 | How the single active Kernel is guaranteed | B. PostgreSQL session advisory lock |  |
 | 22 | P0 | What happens when the control connection drops | B. Stop claiming and committing, enter fenced state, exit the container |  |
 | 23 | P1 | Pure computation allowed during a temporary outage | B. Freeze all processes immediately |  |
-| 24 | P0 | Does every FCL statement map to a database transaction | A. Commit per statement |  |
-| 25 | P1 | Execution-quantum termination conditions (multi-select) | C. Visible external operation; D. blocking; E. user interrupt |  |
-| 26 | P0 | Forced checkpoint operations (multi-select) | A. fork; B. IPC send/receive; C. visible VFS modification; D. timer creation/wait; E. process suspension; F. user-input wait; G. effect request; H. package import; I. process termination; J. end of quantum | all |
+| 24 | P0 | Does every FCL statement map to a database transaction | One transaction per execution slice | Non-terminal: one interpreter step; terminal: up to 4,096 steps or 20 ms |
+| 25 | P1 | Execution-quantum termination conditions | Suspension, directive, completion, failure, step limit, or time limit | Database-visible calls do not all force an immediate boundary |
+| 26 | P0 | Forced checkpoint operations | Blocking/effect suspension and the end of the current slice | VFS and IPC writes commit or roll back with the slice |
 | 27 | P0 | Default transaction isolation | A. READ COMMITTED | per overall plan consistency |
 | 28 | P0 | Conflict handling | B. state_version optimistic concurrency with necessary row locks |  |
 | 29 | P1 | Auto-retry deadlocks/serialization failures | C. Bounded retries with jitter |  |
@@ -1978,32 +1979,32 @@ legacy .proc and legacy file persistence code are deleted
 | 35 | P0 | Handling of RUNNING processes after a crash | C. Classify by last checkpoint and wait reason |  |
 | 36 | P2 | How long terminated processes are retained | C. Keep metadata; archive or clean heavy state periodically | retention and cleanup configured |
 | 37 | P1 | First-release scheduling policy | A. FIFO |  |
-| 38 | P0 | Queue claiming mechanism | B. PostgreSQL FOR UPDATE SKIP LOCKED |  |
+| 38 | P0 | Queue claiming mechanism | Ordered lockless candidate selection plus process CAS | Queue claim and lease commit in the same transaction |
 | 39 | P1 | First-release worker count | C. Configurable, small by default |  |
 | 40 | P0 | Must leases expire | B. Expiry plus heartbeat |  |
-| 41 | P0 | First-release file content storage | A. One bytea per file |  |
+| 41 | P0 | First-release file content storage | Immutable object or linked manifest chunks | 1 GiB logical limit, 4 MiB ranges, 16 MiB whole FCL read |
 | 42 | P1 | Keep all historical file versions by default | C. Current version only by default; selected types versioned |  |
 | 43 | P0 | Use content addressing | B. Nodes point at immutable content objects |  |
 | 44 | P0 | Does the Object Store also hold package .db files | C. package.release only references object_store |  |
-| 45 | P1 | Allow host-directory VFS mounts | C. As an explicit, high-privilege mount |  |
+| 45 | P1 | Allow host-directory VFS mounts | Reserved schema/service model; not wired in standard deployment | Supported host feature is one-file `host move` |
 | 46 | P0 | Package .db storage format | A. SQLite |  |
 | 47 | P0 | Final package identity | C. canonicalized logical-content package_hash |  |
 | 48 | P0 | May one coordinate map to multiple hashes | B. Absolutely forbidden | immutable releases and version uniqueness |
 | 49 | P0 | Does PostgreSQL store the full package .db | A. Store the full bytes |  |
 | 50 | P0 | Content authority after import | A. The original .db is authoritative; indexes are derived data |  |
-| 51 | P0 | What "install" means | B. Establish binding → package_hash |  |
-| 52 | P0 | Package environments needed | B. Explicit environments, like separate dependency scopes |  |
+| 51 | P0 | What "install" means | Register immutable release and derived indexes | Market additionally stores a VFS receipt; aliases are created by import/run |
+| 52 | P0 | Package environments needed | No package.environment table in the current schema | Process bindings are private per process |
 | 53 | P0 | Does a process pin the hash when importing | B. Exact hash written after first resolution |  |
 | 54 | P0 | Package lifecycle hooks | A. Completely forbidden in the first release |  |
 | 55 | P1 | Package integrity policy | B. Only file hash and logical-content hash; no trust state |  |
 | 56 | P0 | Where package mutable data lives | B. A separate data scope in VFS |  |
-| 57 | P0 | IPC delivery semantics | C. Exactly-once within the database |  |
+| 57 | P0 | IPC delivery semantics | At-most-once committed CONSUMED transition | Reserve/ack processing can redeliver after a crash before consume |
 | 58 | P1 | Message consumption state machine | B. PENDING → RESERVED → CONSUMED / FAILED / DEAD |  |
 | 59 | P1 | Broadcast and channel support | C. Broadcasts, topics, and subscriptions |  |
 | 60 | P1 | Authoritative timer representation | B. Database timer rows; Java wakes them |  |
 | 61 | P1 | Terminal input granularity | B. Complete committed inputs only |  |
 | 62 | P0 | How Ctrl+C is expressed | B. Set a persistent interrupt_requested, handled at checkpoints |  |
-| 63 | P0 | Do all external operations enter the effect system | A. Yes |  |
+| 63 | P0 | Do all external operations enter the effect system | FCL HTTP/socket/command operations do | Timers and explicit host tools use separate durable contracts |
 | 64 | P0 | Effect re-execution policy | B. Every effect type declares idempotency and recovery policy |  |
 | 65 | P1 | How UNKNOWN effects are handled | C. Per effect type; manual intervention when undeterminable |  |
 | 66 | P1 | Do effect workers use a separate role | B. Separate cilexec_effect_worker |  |
@@ -2013,7 +2014,7 @@ legacy .proc and legacy file persistence code are deleted
 | 70 | P1 | Docker logging mode | B. stdout/stderr |  |
 | 71 | P1 | Provide health endpoints | C. Distinguish liveness and readiness |  |
 | 72 | P0 | Is a PostgreSQL volume a backup | B. No |  |
-| 73 | P1 | Disaster-recovery backup format | A. pg_dump logical backup |  |
+| 73 | P1 | Disaster-recovery backup format | Physical backup + continuous WAL for production; logical dumps as fallback | Bundled Compose does not configure either automatically; only logical restore is currently automated in tests |
 | 74 | P1 | Does CilExec provide its own logical export | B. Export an application-level .db artifact |  |
 | 75 | P0 | Export all of PostgreSQL's runtime state | B. Export only durable semantic state |  |
 | 76 | P1 | PostgreSQL major-version upgrade strategy | B. dump/restore |  |

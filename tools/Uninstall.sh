@@ -87,17 +87,32 @@ header() {
     echo ""
     printf "${BOLD}%s${NC}\n" "$*"
 }
+print_directory_entries() {
+    local directory="$1"
+    local found=false
+    local path
+    if [[ -d "$directory" ]]; then
+        for path in "$directory"/*; do
+            [[ -e "$path" || -L "$path" ]] || continue
+            printf '  %s\n' "$path"
+            found=true
+        done
+    fi
+    if [[ "$found" != true ]]; then
+        echo "  (无)"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # 确认
 # ---------------------------------------------------------------------------
 if [[ "$FORCE" != true ]]; then
     echo ""
-    printf "${RED}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}\n"
-    printf "${RED}${BOLD}║  警告：此操作将永久删除当前 CilExec 实例的数据！                    ║${NC}\n"
-    printf "${RED}${BOLD}║  包括容器、数据库卷、密码文件和默认导出文件。                        ║${NC}\n"
-    printf "${RED}${BOLD}║  此操作不可逆！                                                  ║${NC}\n"
-    printf "${RED}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}\n"
+    printf '%b%s%b\n' "$RED$BOLD" '╔══════════════════════════════════════════════════════════════╗' "$NC"
+    printf '%b%s%b\n' "$RED$BOLD" '║  警告：此操作将永久删除当前 CilExec 实例的数据！                    ║' "$NC"
+    printf '%b%s%b\n' "$RED$BOLD" '║  包括容器、数据库卷、密码文件和默认导出文件。                        ║' "$NC"
+    printf '%b%s%b\n' "$RED$BOLD" '║  此操作不可逆！                                                  ║' "$NC"
+    printf '%b%s%b\n' "$RED$BOLD" '╚══════════════════════════════════════════════════════════════╝' "$NC"
     echo ""
 
     if command -v docker >/dev/null 2>&1; then
@@ -132,23 +147,11 @@ if [[ "$FORCE" != true ]]; then
 
     echo ""
     echo "【密码文件】"
-    if [[ -d "$SECRET_DIR" ]] && ls "$SECRET_DIR"/* 2>/dev/null | grep -q .; then
-        ls -1 "$SECRET_DIR" 2>/dev/null | while read -r f; do
-            echo "  $SECRET_DIR/$f"
-        done
-    else
-        echo "  (无)"
-    fi
+    print_directory_entries "$SECRET_DIR"
 
     echo ""
     echo "【导出文件】"
-    if [[ -d "$EXPORT_DIR" ]] && ls "$EXPORT_DIR"/* 2>/dev/null | grep -q .; then
-        ls -1 "$EXPORT_DIR" 2>/dev/null | while read -r f; do
-            echo "  $EXPORT_DIR/$f"
-        done
-    else
-        echo "  (无)"
-    fi
+    print_directory_entries "$EXPORT_DIR"
 
     echo ""
     echo "──────────────────────────────────────────────"
@@ -306,9 +309,9 @@ info "Docker 构建缓存可能被其他项目使用，未执行全局清理"
 # 完成
 # ---------------------------------------------------------------------------
 echo ""
-printf "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}\n"
-printf "${GREEN}${BOLD}║  当前 CilExec 安装实例已移除。                                     ║${NC}\n"
-printf "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}\n"
+printf '%b%s%b\n' "$GREEN$BOLD" '╔══════════════════════════════════════════════════════════════╗' "$NC"
+printf '%b%s%b\n' "$GREEN$BOLD" '║  当前 CilExec 安装实例已移除。                                     ║' "$NC"
+printf '%b%s%b\n' "$GREEN$BOLD" '╚══════════════════════════════════════════════════════════════╝' "$NC"
 echo ""
 echo "已删除的内容："
 echo "  • 当前 Compose 实例的容器 ($COMPOSE_PROJECT_NAME)"

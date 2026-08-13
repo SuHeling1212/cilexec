@@ -1,17 +1,17 @@
 # CilExec
 
-**CilExec** 是一个可持久化的脚本与进程管理引擎：在 **PostgreSQL 支撑的运行时**上执行 **FCL**（Follarce CilExec Language）脚本。**PostgreSQL 是唯一权威状态**——任何时候杀死引擎再重启，所有工作都会从已提交的数据库行中重建，不会丢失任何数据。
+**CilExec** 是一个可持久化的脚本与进程管理引擎：在 **PostgreSQL 支撑的运行时**上执行 **FCL**（Follarce CilExec Language）脚本。**PostgreSQL 是唯一权威状态**。崩溃后，运行时从已提交的数据库行重建工作；尚未提交的事务会回滚，对应执行片段可能重放。
 
-> 为什么需要它：普通脚本运行时的进程状态保存在内存里，崩溃即丢失。CilExec 把每条有语义的 FCL 语句放进一个显式数据库事务中提交，因此长时间运行的脚本、定时器、消息队列和外部副作用都能跨重启存活，多租户隔离由数据库本身强制（行级安全 RLS）。
+> 为什么需要它：普通脚本运行时的进程状态保存在内存里，崩溃即丢失。CilExec 把每个执行切片放进一个显式数据库事务中提交，因此已提交的脚本状态、定时器、消息队列和外部效果记录都能跨重启存活，多租户隔离由数据库本身强制（行级安全 RLS）。
 
 ## 核心特性
 
 - **零内存状态** —— 程序、完整延续（continuation）、调度租约、IPC、定时器、VFS、包绑定、副作用日志、终端输入和审计事件全部存于 PostgreSQL；数据库 advisory lock 保证同一数据库只有一个活跃运行时。
-- **崩溃安全的延续** —— 每条语句后持久化完整解释器状态（变量、调用栈、程序计数器）；`state_version` + `execution_epoch` 围栏防止陈旧 worker 提交。
-- **天然多租户** —— 每个用户对应一个稳定 PostgreSQL LOGIN 角色并强制 RLS；`SYSTEM_ADMIN` 是应用级超级用户，绝不获得集群或宿主特权。
-- **内容寻址 VFS** —— 文件/目录/符号链接/挂载以 SHA-256 标识的不可变对象存储；跨用户管理操作经 SECURITY DEFINER API 并全程审计。
-- **不可变包** —— 离线构建的 SQLite `package.db` 发布物按精确 SHA-256 绑定；import 解析环境绑定或精确数据库哈希。
-- **日志化外部副作用** —— HTTP、socket、定时器、宿主命令以挂起延续 + 持久效果行方式执行，崩溃后可恢复（幂等键、停滞效果回收、心跳保护 worker）。
+- **崩溃安全的延续** —— 每个已提交执行切片持久化完整解释器状态（变量、调用栈、程序计数器）；`state_version` + `execution_epoch` 围栏防止陈旧 worker 提交。
+- **天然多租户** —— 每个用户对应一个稳定 PostgreSQL `NOLOGIN`、`NOINHERIT` 租户角色并强制 RLS；`SYSTEM_ADMIN` 是应用级超级用户，绝不获得集群或宿主特权。
+- **内容寻址 VFS** —— 可变命名空间节点指向不可变的 SHA-256 文件或符号链接内容；目录和挂载是关系型元数据。跨用户管理操作经 SECURITY DEFINER API 并全程审计。
+- **不可变包** —— 离线构建的 SQLite `package.db` 发布物按精确 SHA-256 标识；import 使用精确数据库文件哈希。
+- **日志化外部副作用** —— FCL 发起的 HTTP、socket 和白名单命令通过持久效果行执行。中断时外部结果可能进入 `UNKNOWN`，再按远端查询、幂等重试或人工处理。定时器使用独立的持久定时器行。
 - **持久化 IPC 与定时器** —— 直连/频道/主题/广播消息和定时器可跨重启唤醒暂停的进程。
 - **可验证导出** —— 基于单个只读快照的 PostgreSQL → SQLite 逻辑导出，端到端哈希校验。
 - **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；另有无头协议供宿主脚本调用。
@@ -56,7 +56,7 @@ java -jar target/cilexec-app.jar terminal
 | 概念 | 说明 |
 |---|---|
 | **FCL** | 脚本语言：`//` 注释、`#` 长度运算符、保留字、函数、循环、映射/列表、包导入。完整参考：[docs/fcl-function-reference.md](docs/fcl-function-reference.md) |
-| **进程与延续** | 进程是持久对象；每条语句后持久化完整解释器状态，并从断点精确恢复 |
+| **进程与延续** | 进程是持久对象；每个已提交切片持久化完整解释器状态。未提交切片会回滚，并可能在恢复后重放 |
 | **VFS** | 每用户内容寻址文件树（根为 `/`），管理员可见 `/Users/<name>`；宿主文件经 `host move` 导入 |
 | **包** | 不可变 SQLite 数据库，声明能力、入口点与精确哈希依赖 |
 | **副作用** | 日志化的外部操作（HTTP、socket、宿主命令），崩溃可恢复，按策略重试 |
@@ -64,12 +64,12 @@ java -jar target/cilexec-app.jar terminal
 ## 架构一览
 
 ```
-FCL 源码 → 编译器 → ProcessStatementExecutor（每个调度切片一条持久语句）
+FCL 源码 → 编译器 → ProcessStatementExecutor（每个执行切片一个事务）
         → 调度 worker（有界、租约式 FIFO）→ PostgreSQL（唯一状态存储）
         → 效果 worker（日志化副作用）· 定时器 · IPC · 终端 · VFS
 ```
 
-其余一切——连接池、线程、缓存——都是可丢弃的，启动时从已提交行重建。源码布局与设计决策见 [docs/architecture-baseline.md](docs/architecture-baseline.md)。
+非终端切片执行一个解释器步骤；终端切片最多批处理 4096 步或 20 毫秒，并在挂起、指令、完成或失败时结束。其余一切——连接池、线程、缓存——都是可丢弃的，启动时从已提交行重建。源码布局与设计决策见 [docs/architecture-baseline.md](docs/architecture-baseline.md)。
 
 ## 源码地图
 
@@ -93,7 +93,7 @@ src/main/resources/db/baseline/   已冻结的 V001 模块（角色、RLS、SQL 
 ## 构建与测试
 
 ```bash
-mvn clean test        # 293+ 单元与生命周期测试
+mvn clean test        # 单元与生命周期测试
 mvn clean verify      # 强制 PostgreSQL/崩溃恢复集成测试、质量门禁与 JAR
 ```
 

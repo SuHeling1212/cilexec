@@ -35,6 +35,7 @@ import com.follarce.domain.program.Program;
 import com.follarce.domain.scheduler.SchedulerClaim;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.terminal.TerminalSession;
+import com.follarce.domain.timer.ProcessTimer;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.FileRevision;
 import com.follarce.domain.vfs.StoredObject;
@@ -181,6 +182,7 @@ class ProgramServiceTest {
         final MemoryProcessRepository processes = new MemoryProcessRepository();
         final MemorySchedulerRepository scheduler = new MemorySchedulerRepository(processes);
         final MemoryTerminalRepository terminal = new MemoryTerminalRepository();
+        final MemoryTimerRepository timers = new MemoryTimerRepository();
         final MemoryIpcRepository ipc = new MemoryIpcRepository();
         final MemoryPackageRepository packages = new MemoryPackageRepository();
         final MemoryEffectRepository effects = new MemoryEffectRepository();
@@ -213,7 +215,7 @@ class ProgramServiceTest {
         @Override public SchedulerRepository scheduler() { return scheduler; }
         @Override public VfsRepository vfs() { return vfs; }
         @Override public IpcRepository ipc() { return ipc; }
-        @Override public TimerRepository timers() { return null; }
+        @Override public TimerRepository timers() { return timers; }
         @Override public PackageRepository packages() { return packages; }
         @Override public EffectRepository effects() { return effects; }
         @Override public AuthRepository auth() { return auth; }
@@ -223,6 +225,25 @@ class ProgramServiceTest {
         @Override public void commit() { }
         @Override public void rollback() { }
         @Override public void close() { }
+    }
+
+    static final class MemoryTimerRepository implements TimerRepository {
+        int processDeletes;
+        UUID deletedProcess;
+
+        @Override public void save(ProcessTimer timer) { }
+        @Override public Optional<ProcessTimer> findById(UUID timerId) { return Optional.empty(); }
+        @Override public List<ProcessTimer> claimDue(UUID runnerId, Instant now, int limit) {
+            return List.of();
+        }
+        @Override public boolean update(ProcessTimer timer, ProcessTimer.Status expectedStatus) {
+            return false;
+        }
+        @Override public int deleteForProcess(UUID processUid) {
+            processDeletes++;
+            deletedProcess = processUid;
+            return 0;
+        }
     }
 
     static final class MemoryEffectRepository implements EffectRepository {

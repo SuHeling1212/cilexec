@@ -7,6 +7,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -16,6 +18,29 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EditableTerminalInputTest {
+    @Test
+    void standaloneEscapeDoesNotConsumeTheFollowingKey() throws Exception {
+        try (PipedInputStream source = new PipedInputStream();
+             PipedOutputStream sink = new PipedOutputStream(source)) {
+            TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                    source, null);
+            PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                    StandardCharsets.UTF_8);
+            sink.write(27);
+            sink.flush();
+
+            assertEquals("{\"kind\":\"key\",\"key\":\"ESCAPE\",\"shift\":false,"
+                    + "\"ctrl\":false,\"alt\":false,\"text\":\"\"}",
+                    input.readKeyEvent(output));
+
+            sink.write('x');
+            sink.flush();
+            assertEquals("{\"kind\":\"key\",\"key\":\"x\",\"shift\":false,"
+                    + "\"ctrl\":false,\"alt\":false,\"text\":\"x\"}",
+                    input.readKeyEvent(output));
+        }
+    }
+
     @Test
     void decodesKeyEventsWithModifiersFunctionKeysAndPrintableText() throws Exception {
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(

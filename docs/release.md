@@ -8,7 +8,7 @@ Run from the project root:
 ./tools/release.sh
 ```
 
-To build the verified core distribution and every offline host package with one command:
+To build the verified core distribution and every host installer with one command:
 
 ```bash
 ./tools/release-all.sh
@@ -17,7 +17,10 @@ To build the verified core distribution and every offline host package with one 
 This produces `build/releases/<version>/cilexec-<version>-linux-amd64.sh`,
 `cilexec-<version>-linux-arm64.sh`, and `cilexec-<version>-windows.zip`. The Windows ZIP
 contains a native PowerShell controller and both Docker image architectures; installation does
-not require WSL, Git Bash, or a host JDK.
+not require WSL, Git Bash, or a host JDK. These installers embed the CilExec Runtime image but
+not the separate PostgreSQL image referenced by `compose.yml`. A first installation therefore
+requires that exact PostgreSQL image to be present in Docker already or available from the
+configured registry. They are not complete air-gapped installers.
 
 Windows runs:
 
@@ -96,11 +99,11 @@ repository policy can prevent a different credential from racing an OCI tag upda
 Ordinary pushes and pull requests run validation of Java, the market server, the host scripts,
 the Docker image, and the full release directory. Pushing a `v*` tag or manually running the
 `release-artifacts` workflow runs the full release flow, with PostgreSQL 17 and 18 both gating
-publication. Unprivileged jobs build and scan the exact verified JAR, OCI archive, and offline
+publication. Unprivileged jobs build and scan the exact verified JAR, OCI archive, and host
 artifacts before a separate narrowly privileged job uploads or signs anything. A tag publishes
 a signed amd64/arm64 GHCR image under an immutable version tag,
 creates a GitHub Release, and uploads the exact OCI archive, two architecture-specific
-offline installers, the Windows package, and a deployment archive pinned to the OCI manifest
+Runtime-image installers, the Windows package, and a deployment archive pinned to the OCI manifest
 digest. It does not publish a mutable `latest`
 tag. The release also includes `cilexec-<version>-windows.zip`, whose `Cilexec.ps1` entry point
 supports `install`, `terminal`, `headless`, `host-move`, `shell`, and `uninstall` directly from
@@ -108,8 +111,8 @@ PowerShell without WSL. The signed outer checksum file covers every GitHub Relea
 including `cilexec-image.oci.tar`. A manual run retains unsigned candidate installers as temporary artifacts and does not
 publish an OCI image or deployment archive. The formal archive contains
 the JARs, market repository/catalog, validated release metadata, SBOM, Compose/host tools,
-credential rotation tool, systemd templates, and production recovery runbook. Each offline
-installer contains its architecture-specific image.
+credential rotation tool, systemd templates, and production recovery runbook. Each installer
+contains its architecture-specific CilExec image; none currently contains PostgreSQL.
 
 After downloading the archive, verify it in the extraction directory:
 

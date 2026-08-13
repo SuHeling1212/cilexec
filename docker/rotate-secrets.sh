@@ -250,6 +250,8 @@ verify_login() {
     local role="$1"
     local secret_path="$2"
     local database="$3"
+    # Positional parameters must be expanded by the container shell.
+    # shellcheck disable=SC2016
     "${compose[@]}" exec -T postgres sh -eu -c \
         'PGPASSWORD="$(tr -d "\r\n" < "$1")" PGSSLMODE=verify-full \
          PGSSLROOTCERT=/run/cilexec-tls/ca.crt \

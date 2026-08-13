@@ -48,10 +48,6 @@ final class FclInputBuffer {
                 index = after;
                 continue;
             }
-            if (value == '#') {
-                comment = true;
-                continue;
-            }
             if (value == '/' && index + 1 < source.length()
                     && source.charAt(index + 1) == '/') {
                 comment = true;
@@ -105,11 +101,6 @@ final class FclInputBuffer {
                 continue;
             }
             if (quoted) {
-                result.append(value);
-                continue;
-            }
-            if (value == '#') {
-                comment = true;
                 result.append(value);
                 continue;
             }

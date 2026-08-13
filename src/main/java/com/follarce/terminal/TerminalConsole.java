@@ -118,11 +118,6 @@ public final class TerminalConsole implements Runnable {
                         result = control.submitAttachedInput(line);
                     } else {
                         remember(line);
-                        if (line.strip().equals("ls")
-                                || line.strip().equals("cd") || line.strip().startsWith("cd ")) {
-                            throw new IllegalArgumentException(
-                                    "Terminal command must start with :, for example :ls or :cd /path");
-                        }
                         result = line.isBlank() ? ""
                                 : control.evaluate(FclInputBuffer.stripContinuations(line));
                     }

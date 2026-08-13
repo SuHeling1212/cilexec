@@ -167,7 +167,7 @@ class RuntimeSignalIT {
             assertTrue(transcript.contains("authenticated as local"), transcript);
             assertTrue(transcript.contains("authenticated as alice"), transcript);
             assertTrue(transcript.contains("43"), transcript);
-            assertTrue(transcript.contains("\"answer\":42"), transcript);
+            assertTrue(transcript.matches("(?s).*\"answer\"\\s*:\\s*42.*"), transcript);
             assertTrue(transcript.contains("false"), transcript);
             assertEquals(1, count("SELECT count(*) FROM auth.user_account account "
                     + "JOIN auth.user_capability assignment USING (user_id) "

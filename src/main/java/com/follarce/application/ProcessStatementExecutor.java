@@ -215,6 +215,9 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             if (update != ProcessRepository.UpdateResult.UPDATED) {
                 throw new StatementConflictException("Statement state version is stale");
             }
+            if (terminal(target)) {
+                transaction.timers().deleteForProcess(current.identity().processUid());
+            }
 
             // Queue state and continuation become visible in the same commit. READY is
             // re-queued; wait/terminal/failure states are removed by repository policy.
@@ -547,6 +550,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             throw new StaleClaimException("Interrupt termination was fenced");
         }
         transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
+        transaction.timers().deleteForProcess(claim.processUid());
     }
 
     private void cancelTerminalSubmission(
@@ -591,6 +595,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             throw new StaleClaimException("Failure commit was fenced: " + update);
         }
         transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
+        transaction.timers().deleteForProcess(claim.processUid());
         transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
                 current.ownerId().toString(), "process.failed", "process",
                 current.identity().processUid().toString(), AuditEvent.Result.FAILED,
@@ -790,6 +795,12 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             default -> throw new IllegalStateException(
                     "Runtime reported FAILED without a failed continuation");
         };
+    }
+
+    private static boolean terminal(CilProcess.Status status) {
+        return status == CilProcess.Status.TERMINATED
+                || status == CilProcess.Status.FAILED
+                || status == CilProcess.Status.FAILED_RECOVERY;
     }
 
     private static CilProcess.Status waitingStatus(FclContinuation.WaitState wait) {

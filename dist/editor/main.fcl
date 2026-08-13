@@ -244,6 +244,7 @@ func ed_key(state, event) {
         if #event["text"] > 0 { return ed_insert(state, event["text"]) }
         return state
     }
+    if kind != "key" { return state }
     key = event["key"]
     if state["mode"] != "normal" { return ed_prompt_key(state, event) }
     lines = state["lines"]
@@ -424,7 +425,7 @@ func open(editorPath) {
     return null
 }
 
-// Universal zero-argument application entrypoint used by package.run("editor").
+// Universal zero-argument application entrypoint used by package.run("<editor-db-sha256>").
 func run() {
     return open("untitled.txt")
 }

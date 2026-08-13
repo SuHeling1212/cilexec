@@ -39,8 +39,8 @@ public final class TerminalReplService {
     private final FclCompiler compiler;
     private final FclPersistenceBridge bridge;
     private final FclContinuationCodec codec;
-    private final com.google.gson.Gson displayJson =
-            new com.google.gson.GsonBuilder().disableHtmlEscaping().create();
+    private static final com.google.gson.Gson DISPLAY_JSON = new com.google.gson.GsonBuilder()
+            .disableHtmlEscaping().setPrettyPrinting().create();
     private final Clock clock;
     private final Runnable workAvailable;
 
@@ -245,8 +245,8 @@ public final class TerminalReplService {
         return previous
                 .filter(value -> value.status() == CilProcess.Status.PAUSED)
                 .map(value -> bridge.restore(value.continuation()))
-                .filter(value -> value.scope().contains(LIBRARY_SCOPE_KEY))
-                .map(value -> value.scope().get(LIBRARY_SCOPE_KEY))
+                .filter(value -> value.globalScope().contains(LIBRARY_SCOPE_KEY))
+                .map(value -> value.globalScope().get(LIBRARY_SCOPE_KEY))
                 .map(value -> {
                     if (!(value instanceof String text)) {
                         throw new IllegalStateException("Persisted REPL library is invalid");
@@ -408,7 +408,25 @@ public final class TerminalReplService {
     }
 
     public String render(Object value) {
-        return displayJson.toJson(value);
+        return renderValue(value);
+    }
+
+    static String renderValue(Object value) {
+        if (value instanceof String text) {
+            String candidate = text.strip();
+            if (candidate.startsWith("{") || candidate.startsWith("[")) {
+                try {
+                    com.google.gson.JsonElement parsed =
+                            com.google.gson.JsonParser.parseString(candidate);
+                    if (parsed.isJsonObject() || parsed.isJsonArray()) {
+                        return DISPLAY_JSON.toJson(parsed);
+                    }
+                } catch (com.google.gson.JsonParseException ignored) {
+                    // Ordinary text that resembles JSON retains normal string rendering.
+                }
+            }
+        }
+        return DISPLAY_JSON.toJson(value);
     }
 
     public record Submission(CilProcess process, String source) {

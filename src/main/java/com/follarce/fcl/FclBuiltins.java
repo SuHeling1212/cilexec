@@ -351,12 +351,12 @@ public final class FclBuiltins {
                 })
                 .register("term", "color256", args -> {
                     arity(args, 2, "color256");
-                    return ansiPalette(stringAt(args, 0, "color256"), "38")
+                    return ansiPalette(args.get(0), "38")
                             + String.valueOf(args.get(1)) + "\u001b[0m";
                 })
                 .register("term", "bg256", args -> {
                     arity(args, 2, "bg256");
-                    return ansiPalette(stringAt(args, 0, "bg256"), "48")
+                    return ansiPalette(args.get(0), "48")
                             + String.valueOf(args.get(1)) + "\u001b[0m";
                 })
                 .register("term", "trueColor", args -> {
@@ -453,8 +453,9 @@ public final class FclBuiltins {
         };
     }
 
-    private static String ansiPalette(String indexText, String prefix) {
-        long index = integral(parseValue(indexText), "palette index");
+    private static String ansiPalette(Object value, String prefix) {
+        Object indexValue = value instanceof String text ? parseValue(text) : value;
+        long index = integral(indexValue, "palette index");
         if (index < 0 || index > 255) {
             throw new FclRuntimeException("Palette index must be between 0 and 255");
         }

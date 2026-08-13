@@ -121,7 +121,7 @@ market.update()
 | `market.download(sha256)` | 分块下载并重新计算完整文件 SHA-256。 |
 | `market.install(sha256)` | 递归安装精确哈希依赖；身份就是 SHA-256，不同哈希即不同包。 |
 | `market.list()` | 查看已安装包的 SHA-256 与坐标。 |
-| `market.uninstall(sha256)` | 移除已安装的包文件与其安装记录。 |
+| `market.uninstall(sha256)` | 移除下载的 VFS 文件与市场安装记录；不可变 Runtime 发布记录和现有进程绑定不受影响。 |
 | `market.help()` | 返回函数帮助。 |
 | `market.run()` | 返回客户端版本和帮助，不要求配置镜像。 |
 
@@ -131,8 +131,8 @@ market.update()
 market.configure("http://host.docker.internal:8787")
 market.update()
 market.search("editor")
-market.install("71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab")
-import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "editor"
+market.install("77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c")
+import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c" as "editor"
 editor.open("notes.txt")
 ```
 

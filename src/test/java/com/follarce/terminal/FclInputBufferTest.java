@@ -11,7 +11,9 @@ class FclInputBufferTest {
     void waitsForBalancedBlocksAndIgnoresQuotedOrCommentedDelimiters() {
         assertFalse(FclInputBuffer.complete("func run() {\nvalue = 1"));
         assertTrue(FclInputBuffer.complete("func run() {\nvalue = 1\n}"));
-        assertTrue(FclInputBuffer.complete("value = \"{\" # }"));
+        assertTrue(FclInputBuffer.complete("value = \"{\" // }"));
+        assertFalse(FclInputBuffer.complete("value = #("));
+        assertTrue(FclInputBuffer.complete("value = #[1, 2]"));
         assertTrue(FclInputBuffer.complete("items = [1, 2, 3]"));
     }
 
@@ -24,7 +26,7 @@ class FclInputBufferTest {
         assertTrue(FclInputBuffer.complete("value = 1 + \\\n2"));
         assertTrue(FclInputBuffer.complete("process.exec(\\\n\"/next.fcl\")"));
         assertTrue(FclInputBuffer.complete("value = \"line \\\\\\\\\""));
-        assertTrue(FclInputBuffer.complete("value = 1 # comment \\"));
+        assertFalse(FclInputBuffer.complete("value = #items \\"));
         assertTrue(FclInputBuffer.complete("value = 1 // comment \\"));
     }
 
@@ -38,7 +40,7 @@ class FclInputBufferTest {
                 FclInputBuffer.stripContinuations("first \\\r\nsecond\n"));
         assertEquals("value = \"a\\\nb\"\n",
                 FclInputBuffer.stripContinuations("value = \"a\\\nb\"\n"));
-        assertEquals("value = 1 # \\\n2\n",
-                FclInputBuffer.stripContinuations("value = 1 # \\\n2\n"));
+        assertEquals("value = #[1, 2]\n",
+                FclInputBuffer.stripContinuations("value = #[1, \\\n2]\n"));
     }
 }

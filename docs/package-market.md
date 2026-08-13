@@ -99,7 +99,7 @@ tells you explicitly to call `market.configure(...)`.
 | `market.download(sha256)` | Downloads in chunks and recomputes the full-file SHA-256. |
 | `market.install(sha256)` | Recursively installs exact-hash dependencies; identity is the SHA-256, so a different hash is a different package. |
 | `market.list()` | Lists installed package SHA-256s and their coordinates. |
-| `market.uninstall(sha256)` | Removes the installed package file and its receipt. |
+| `market.uninstall(sha256)` | Removes the downloaded VFS file and market receipt. The immutable Runtime release and existing process bindings remain. |
 | `market.help()` | Returns function help. |
 | `market.run()` | Returns the client version and help without requiring a configured origin. |
 
@@ -109,8 +109,8 @@ Installing an editor end to end:
 market.configure("http://host.docker.internal:8787")
 market.update()
 market.search("editor")
-market.install("71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab")
-import "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab" as "editor"
+market.install("77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c")
+import "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c" as "editor"
 editor.open("notes.txt")
 ```
 
@@ -128,8 +128,9 @@ ordinary single-VFS-file limit remains 1 GiB.
 
 ## Package Capabilities
 
-`package.run` executes an application package through its declared entrypoints. The
-entrypoint name — `package.run(packageHash, entrypoint)` — must be a valid FCL identifier; an
+`package.run` executes an application package through its declared entrypoints. The first
+argument is the installed `.db` file SHA-256. The entrypoint name —
+`package.run(databaseFileSha256, entrypoint)` — must be a valid FCL identifier; an
 invalid or reserved name is rejected at manifest validation time. Coordinate segments
 (namespace, name, and version parts) must be canonical: segments of `"."` or `".."` are
 rejected.

@@ -12,6 +12,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,6 +26,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TerminalReplServiceTest {
     private static final Instant NOW = Instant.parse("2026-07-26T10:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+
+    @Test
+    void prettyPrintsStructuredTerminalResultsAndJsonFileContent() {
+        Map<String, Object> packageRecord = new java.util.LinkedHashMap<>();
+        packageRecord.put("name", "editor");
+        packageRecord.put("version", "1.1.2");
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("ok", true);
+        value.put("packages", List.of(packageRecord));
+
+        String structured = TerminalReplService.renderValue(value);
+        String jsonFile = TerminalReplService.renderValue(
+                "{\"apiVersion\":\"cilexec.market/v1\",\"packages\":[]}");
+
+        assertEquals("""
+                {
+                  "ok": true,
+                  "packages": [
+                    {
+                      "name": "editor",
+                      "version": "1.1.2"
+                    }
+                  ]
+                }""", structured);
+        assertEquals("""
+                {
+                  "apiVersion": "cilexec.market/v1",
+                  "packages": []
+                }""", jsonFile);
+    }
+
+    @Test
+    void keepsOrdinaryAndMalformedJsonLikeTextAsStrings() {
+        assertEquals("\"hello\\nworld\"", TerminalReplService.renderValue("hello\nworld"));
+        assertEquals("\"{not json}\"", TerminalReplService.renderValue("{not json}"));
+    }
 
     @Test
     void wakesTheInProcessSchedulerAfterTheSubmissionCommits() {
@@ -259,9 +296,15 @@ class TerminalReplServiceTest {
                                 "main", "main.fcl")), java.util.List.of(), java.util.List.of(),
                         java.util.List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
                                 "run", "main", "run")),
-                        java.util.List.of(new com.follarce.package_manager.PackageManifest.Export(
-                                "greet", "main", "greet")), java.util.List.of()),
+                        java.util.List.of(
+                                new com.follarce.package_manager.PackageManifest.Export(
+                                        "greet", "main", "greet"),
+                                new com.follarce.package_manager.PackageManifest.Export(
+                                        "crash", "main", "crash")), java.util.List.of(
+                                new com.follarce.package_manager.PackageManifest.Capability(
+                                        "terminal.raw_input", true, "Test key input"))),
                 path -> ("func greet(value) { return \"Hello, \" + value }\n"
+                        + "func crash() { event = io.readKey(); return event[\"key\"] }\n"
                         + "func run() { return null }\n")
                         .getBytes(java.nio.charset.StandardCharsets.UTF_8));
         var descriptor = new com.follarce.persistence.sqlite.SqlitePackageReader().inspect(database);
@@ -293,8 +336,7 @@ class TerminalReplServiceTest {
 
         // The editor failure mode: a full-screen submission links the imported alias,
         // suspends on io.readKey, then crashes on a mouse event map that has no "key".
-        repl.submit(owner, sessionId,
-                "ok = m.greet(\"first\")\nevent = io.readKey()\nkey = event[\"key\"]");
+        repl.submit(owner, sessionId, "m.crash()");
         int guard = 0;
         while (persistence.processes.current.status() != CilProcess.Status.WAITING_INPUT
                 && guard++ < 30) {
@@ -329,10 +371,13 @@ class TerminalReplServiceTest {
         assertTrue(afterMouse.failed(),
                 "the mouse map must fail the submission exactly like the editor crash");
 
-        // The durable library and the process pin survive the failure: the alias still works.
-        repl.submit(owner, sessionId, "m.greet(\"again\")");
-        run(persistence, executor, owner);
-        assertEquals("Hello, again", repl.active(owner, sessionId).orElseThrow().result());
+        // The durable library and process pin survive the failure on every later submission.
+        for (int attempt = 0; attempt < 4; attempt++) {
+            repl.submit(owner, sessionId, "m.greet(\"again" + attempt + "\")");
+            run(persistence, executor, owner);
+            assertEquals("Hello, again" + attempt,
+                    repl.active(owner, sessionId).orElseThrow().result());
+        }
     }
 
     @Test

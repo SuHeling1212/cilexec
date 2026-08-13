@@ -89,18 +89,18 @@ class TerminalConsoleTest {
     }
 
     @Test
-    void explainsThatDirectoryCommandsNeedTheirColonPrefix() {
+    void allowsTerminalCommandNamesAsFclVariablesWithoutAColon() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         RecordingControl control = new RecordingControl();
-        String input = "ls\ncd /docs\n:exit\n";
+        String input = "cd = 1\nls = 2\n:exit\n";
 
         new TerminalConsole(new BufferedReader(new InputStreamReader(
                 new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)),
                 StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
                 control).run();
 
-        String transcript = output.toString(StandardCharsets.UTF_8);
-        assertTrue(transcript.contains("for example :ls or :cd /path"), transcript);
+        assertEquals(List.of("cd = 1", "ls = 2"), control.sources);
+        assertEquals(List.of("cd = 1", "ls = 2"), control.remembered);
         assertTrue(control.commands.isEmpty());
     }
 

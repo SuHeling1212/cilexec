@@ -118,6 +118,8 @@ class FclBuiltinsExhaustiveTest {
         assertEquals("\u001b[7mx\u001b[0m", call("term.inverse", "x"));
         assertEquals("\u001b[?25l", call("term.hideCursor"));
         assertEquals("\u001b[?25h", call("term.showCursor"));
+        assertEquals("\u001b[38;5;42mx\u001b[0m", call("term.color256", 42L, "x"));
+        assertEquals("\u001b[48;5;7mx\u001b[0m", call("term.bg256", "7", "x"));
         assertEquals(5L, call("term.displayWidth", "a中文"));
         assertEquals(1L, call("term.displayWidth", "e\u0301"));
         assertEquals(1L, call("term.displayWidth", "\u001b[31mx\u001b[0m"));
@@ -152,6 +154,7 @@ class FclBuiltinsExhaustiveTest {
         assertFailure("text.repeat", "a", 1_000_001L);
         assertFailure("path.join", 1L);
         assertFailure("term.color", "unknown", "x");
+        assertFailure("term.color256", 256L, "x");
         assertFailure("term.truncate", "x", -1L);
         assertFailure("term.cursorTo", 0L, 1L);
         assertFailure("term.cursorBack", 0L);

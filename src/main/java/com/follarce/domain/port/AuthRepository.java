@@ -28,7 +28,7 @@ public interface AuthRepository {
         throw new UnsupportedOperationException("Administrator user listing is not implemented");
     }
 
-    /** Creates the CilExec account and LOGIN role in the caller's current transaction. */
+    /** Creates the CilExec account and stable NOLOGIN tenant role in the current transaction. */
     default UserAccount createUserByAdministrator(UUID administratorId, UUID userId,
                                                    String username, char[] password,
                                                    Set<Capability> capabilities,
@@ -36,7 +36,7 @@ public interface AuthRepository {
         throw new UnsupportedOperationException("Atomic administrator user creation is not implemented");
     }
 
-    /** Disables the CilExec account and LOGIN role in the caller's current transaction. */
+    /** Disables the CilExec account and its stable tenant role in the current transaction. */
     default UserAccount disableUserByAdministrator(UUID administratorId, UUID userId,
                                                     UUID auditEventId, Instant at) {
         throw new UnsupportedOperationException("Atomic administrator user disable is not implemented");
@@ -44,7 +44,7 @@ public interface AuthRepository {
 
     void saveUser(UserAccount user);
 
-    /** Provisions or rotates the stable PostgreSQL LOGIN role in this same transaction. */
+    /** Provisions the stable PostgreSQL NOLOGIN tenant role in this same transaction. */
     String provisionPrincipal(UUID userId, char[] password);
 
     /** Verifies a terminal credential without exposing a database LOGIN principal. */

@@ -28,7 +28,7 @@ class MarketEditorPackageTest {
     Path temporaryDirectory;
 
     @Test
-    void mouseAndPasteEventsNeverCrashTheEditorDispatch() throws Exception {
+    void nonKeyEventsNeverCrashTheEditorDispatch() throws Exception {
         Path output = temporaryDirectory.resolve("editor.db");
         new PackageBuilder().build(Path.of("dist/editor"), output);
         byte[] database = java.nio.file.Files.readAllBytes(output);
@@ -40,6 +40,8 @@ class MarketEditorPackageTest {
                 Map.of("kind", "mouse", "button", "LEFT", "action", "PRESS",
                         "x", 5L, "y", 3L),
                 Map.of("kind", "paste", "text", "inserted"),
+                Map.of("kind", "focus", "focus", true),
+                Map.of("kind", "raw", "sequence", "ESC?"),
                 Map.of("kind", "key", "key", "CTRL_X", "text", ""),
                 Map.of("kind", "key", "key", "y", "text", "y"));
         AtomicInteger eventIndex = new AtomicInteger();
@@ -84,7 +86,7 @@ class MarketEditorPackageTest {
         byte[] database = java.nio.file.Files.readAllBytes(output);
         SqlitePackageReader reader = new SqlitePackageReader();
 
-        assertEquals("cilexec/editor/1.1.2", descriptor.coordinate());
+        assertEquals("cilexec/editor/1.1.4", descriptor.coordinate());
         assertEquals(com.follarce.domain.packageinfo.PackageKind.APPLICATION, descriptor.kind());
         assertEquals(List.of("run"), descriptor.entrypoints().stream()
                 .map(value -> value.name()).toList());

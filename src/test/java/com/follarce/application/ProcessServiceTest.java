@@ -50,6 +50,8 @@ class ProcessServiceTest {
         assertTrue(terminated.continuation().waitState().isEmpty());
         assertTrue(terminated.continuation().globalVariables().isEmpty());
         assertEquals(1, fixture.persistence.scheduler.releases);
+        assertEquals(1, fixture.persistence.timers.processDeletes);
+        assertEquals(terminated.identity().processUid(), fixture.persistence.timers.deletedProcess);
     }
 
     @Test

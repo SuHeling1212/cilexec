@@ -33,6 +33,9 @@ Other commands:
 
 The ZIP contains both amd64 and arm64 Linux-container images. The installer checks Docker
 Desktop's architecture, verifies the matching embedded archive, and loads only that image.
+The separate PostgreSQL image is not embedded. On first installation Docker Desktop must
+already contain the exact image referenced by `compose.yml` or be able to download it. This
+package is therefore not a complete air-gapped bundle.
 
 `uninstall` permanently removes this installation's containers, PostgreSQL volume, generated
 credentials, TLS identity, and default exports. It does not remove other CilExec installations,

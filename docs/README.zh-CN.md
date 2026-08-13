@@ -7,7 +7,7 @@ the PostgreSQL-backed rewrite. The project coordinates are still `com.follarce:c
 the entry point is still `com.follarce.Main`.
 
 PostgreSQL is the only authoritative runtime state. Programs, complete continuations,
-process identities, FIFO queues and leases, IPC, timers, VFS nodes, package environments,
+process identities, FIFO queues and leases, IPC, timers, VFS nodes, package releases and bindings,
 external effects, terminal input, and audit events are all saved in database transactions.
 JVM threads, caches, and task queues may be lost at any time; after a restart everything is
 reconstructed from the database. There is no `.proc` snapshot format and no
@@ -35,15 +35,18 @@ reconstructed from the database. There is no `.proc` snapshot format and no
 
 ## Core Constraints
 
-- Each FCL semantic statement corresponds to exactly one explicit database commit.
+- Each execution slice corresponds to one explicit database commit. Non-terminal slices run
+  one interpreter step; terminal slices may batch up to 4,096 steps or 20 ms.
 - `state_version + execution_epoch` prevents stale workers from committing.
 - A PostgreSQL advisory lock guarantees only one active Runtime per database.
 - PIDs are monotonic and never reused.
 - IPC supports direct, channel, topic, and broadcast; timers do not rely on in-memory sleeps.
 - VFS content uses SHA-256 content-addressed objects; packages are read-only, immutable
   SQLite `.db` files.
-- All external operations (HTTP, sockets, host writes) must enter the effect journal first.
-- CilExec users map to stable PostgreSQL LOGIN roles; user tables enforce forced RLS.
+- FCL-requested HTTP, socket, and allow-listed command operations enter the effect journal.
+  Durable timers and explicit host administration tools use separate persisted workflows.
+- CilExec users map to stable PostgreSQL `NOLOGIN`, `NOINHERIT` tenant roles; user tables
+  enforce forced RLS.
 - `//` is the only comment syntax; `#` is only the length operator.
 
 ## Build
@@ -80,7 +83,7 @@ Ephemeral database:
 docker compose -f compose.yml -f docker/compose/ephemeral.yml up --build
 ```
 
-Persistent volume (the volume is not a backup; use `pg_dump` for production backups):
+Persistent volume (the volume is not a backup; follow the production backup runbook):
 
 ```bash
 docker compose -f compose.yml -f docker/compose/persistent.yml up --build

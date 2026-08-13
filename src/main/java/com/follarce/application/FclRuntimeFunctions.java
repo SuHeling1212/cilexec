@@ -830,6 +830,10 @@ public final class FclRuntimeFunctions {
                         return transaction.auth().findUsersByAdministrator(process.ownerId())
                                 .stream().anyMatch(user -> user.userId().equals(identity));
                     } catch (IllegalArgumentException ignored) {
+                        if (transaction.auth().findVisibleUsername(process.ownerId())
+                                .map(username -> username.equalsIgnoreCase(value)).orElse(false)) {
+                            return true;
+                        }
                         if (!isAdministrator()) return false;
                         return transaction.auth().findUsersByAdministrator(process.ownerId())
                                 .stream().anyMatch(user -> user.username().equalsIgnoreCase(value));
@@ -2421,12 +2425,7 @@ public final class FclRuntimeFunctions {
     }
 
     private String normalize(String source) {
-        if (source == null || source.isBlank() || !source.replace('\\', '/').startsWith("/")) {
-            throw new FclRuntimeException(
-                    "Absolute VFS path required; scripts may explicitly resolve a relative path "
-                            + "with path.join(env.get(\"PWD\"), path)");
-        }
-        return FclPath.normalizeAbsolute(source);
+        return FclPath.resolve(continuation, source);
     }
 
     private static String parentDirectory(String absolutePath) {

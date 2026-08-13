@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "version": "1.0.0",
-  "revision": "4d60965c431a284c017f74ef2f8438b44142a486-dirty",
+  "revision": "69d9e2790b2afb95e7fe59220bf81aa1a5c75ae6-dirty",
   "formal": false,
   "tag": null,
   "artifacts": {
@@ -10,12 +10,12 @@
       "size": 1065
     },
     "MARKET.md": {
-      "sha256": "e40fcf7e57a1e28474bc2d6f2cc7138a7d0d4f5f7300390e3873f55588dd9ba0",
-      "size": 9160
+      "sha256": "2d72c150eb840e53139c8c1c9715df8cca4c25c33d94b392f100dafc81d67a70",
+      "size": 11178
     },
     "RELEASE.txt": {
-      "sha256": "071c119778094a8eaa42230493f7d31ea02368a99ec09551e5b467d6516478dc",
-      "size": 762
+      "sha256": "5b26fcfe333177e53f923db82a98784032c33ec11aa369647423d9f1fea06d6c",
+      "size": 817
     },
     "SBOM.cdx.json": {
       "sha256": "bfc0c8a410a0f90f96327a7b1dea0921e6f93b0d2f367b8237f5af95ed4854fd",
@@ -26,16 +26,16 @@
       "size": 1452
     },
     "catalog.json": {
-      "sha256": "ac9708aa0bb3094a0760b7416ea815aa3cb08fe30fdc107f9ac41b2d43c8ffa7",
-      "size": 1176
+      "sha256": "e1efccd3bba545c2a64d61cc283401a88e53ad7c4b62a7418519de42e18d2692",
+      "size": 1762
     },
     "cilexec-app.jar": {
-      "sha256": "091d5cfd099d105a386d70748ca1d58a75ea53e3713d6bff05f1e7ab2f5506ab",
-      "size": 21230321
+      "sha256": "dc85b224e3314984225f38e71391c46e6f308dd19179ff331b50c8a121c7b2de",
+      "size": 21233296
     },
     "cilexec-market-server.jar": {
-      "sha256": "5baaddb323890c317c1d995faf386ab4611c287a6e5688dcadda6f121013ef57",
-      "size": 14769923
+      "sha256": "055ffdbd9459c49244688e6c6084bde1b211aa10838edcfe17c658e99b001537",
+      "size": 14793271
     },
     "market-dependencies.txt": {
       "sha256": "8c5d85a6e1f18d5b4af5252ea12cb3c7ed79351979962ebf5e425ee24969ffcd",
@@ -55,6 +55,14 @@
     },
     "repository/packages/cilexec/editor/1.1.2/editor.db": {
       "sha256": "71048f6ccae389128e25a3dc52b9de067a1c1de11ddc38468db0c8bfabc417ab",
+      "size": 53248
+    },
+    "repository/packages/cilexec/editor/1.1.3/editor.db": {
+      "sha256": "dcaccd9d61f64f5d8274cfca7a18b52175088fb14dfd711a333992d668dea29b",
+      "size": 53248
+    },
+    "repository/packages/cilexec/editor/1.1.4/editor.db": {
+      "sha256": "77b9ad46feeb6f0a140a18589b797b51c5917e374d2a312f363ae103f63dd78c",
       "size": 53248
     },
     "runtime-dependencies.txt": {

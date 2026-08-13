@@ -193,12 +193,52 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void fileReadResolvesARelativePathAgainstTheProcessWorkingDirectory() {
+        Fixture fixture = new Fixture("content = file.read(\"index.json\")\n",
+                com.follarce.extension.SourceExtensionIndex.catalog());
+        StoredObject content = StoredObject.create(new BinaryContent(
+                "market index".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                "application/json", NOW);
+        fixture.persistence.vfs.saveObject(content);
+        com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
+                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        fixture.persistence.vfs.insertNode(root);
+        com.follarce.domain.vfs.VfsNode market = new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.of(root.nodeId()), fixture.ownerId, "market",
+                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        fixture.persistence.vfs.insertNode(market);
+        fixture.persistence.vfs.insertNode(new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.of(market.nodeId()), fixture.ownerId, "index.json",
+                com.follarce.domain.vfs.VfsNode.Type.FILE, Optional.of(content.objectHash()),
+                java.util.Set.of(), false, NOW, NOW));
+        FclContinuation runtime = new FclContinuation();
+        runtime.scope().put(com.follarce.fcl.FclPath.SCOPE_KEY, "/market");
+        Continuation seeded = new FclPersistenceBridge(new FclContinuationCodec())
+                .persist(fixture.processUid, fixture.program, initial(fixture.program), runtime);
+        CilProcess original = fixture.persistence.processes.current;
+        fixture.persistence.processes.current = new CilProcess(original.identity(),
+                original.ownerId(), original.status(), original.stateVersion(),
+                original.executionEpoch(), seeded, original.parentProcessUid(),
+                original.createdAt(), original.updatedAt());
+
+        fixture.executor.executeSlice(fixture.claim);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals("market index", restored.scope().get("content"));
+    }
+
+    @Test
     void failsAnUnknownHashImportWithoutPermanentWaits() {
         Fixture unresolved = new Fixture("import \"" + "f".repeat(64)
                 + "\"\nvalue = 1\n");
         unresolved.executor.executeSlice(unresolved.claim);
         assertEquals(CilProcess.Status.FAILED,
                 unresolved.persistence.processes.current.status());
+        assertEquals(1, unresolved.persistence.timers.processDeletes);
         assertTrue(new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(unresolved.persistence.processes.current.continuation()).failed());
 
@@ -206,6 +246,7 @@ class ProcessStatementExecutorTest {
         failed.executor.executeSlice(failed.claim);
         assertEquals(CilProcess.Status.FAILED,
                 failed.persistence.processes.current.status());
+        assertEquals(1, failed.persistence.timers.processDeletes);
         FclContinuation failure = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(failed.persistence.processes.current.continuation());
         assertTrue(failure.halted());
@@ -567,6 +608,8 @@ class ProcessStatementExecutorTest {
         assertEquals(CilProcess.Status.TERMINATED,
                 fixture.persistence.processes.current.status());
         assertEquals(1, fixture.persistence.scheduler.releases);
+        assertEquals(1, fixture.persistence.timers.processDeletes);
+        assertEquals(fixture.processUid, fixture.persistence.timers.deletedProcess);
         assertTrue(new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(fixture.persistence.processes.current.continuation()).halted());
     }
@@ -746,6 +789,8 @@ class ProcessStatementExecutorTest {
         assertEquals(1, fixture.persistence.scheduler.releases);
         assertFalse(fixture.persistence.terminal.interrupt);
         assertEquals(0, fixture.persistence.processes.current.continuation().programCounter());
+        assertEquals(1, fixture.persistence.timers.processDeletes);
+        assertEquals(fixture.processUid, fixture.persistence.timers.deletedProcess);
     }
 
     private static SchedulerClaim claim(UUID processUid, UUID ownerId, long epoch) {

@@ -112,6 +112,7 @@ class FclSystemFunctionsExternalIT {
                 received = swapPool.get("shared", "message")
                 environmentUser = env.get("USER")
                 environmentUserId = env.get("USER_ID")
+                validatesOwnUsername = user.validateUser(environmentUser)
                 pid = process.getPID()
                 ownProcesses = process.getList()
                 functions = system.ls()
@@ -133,6 +134,7 @@ class FclSystemFunctionsExternalIT {
         assertEquals("ready", ownerRuntime.scope().get("received"));
         assertEquals(owner.username(), ownerRuntime.scope().get("environmentUser"));
         assertEquals(owner.userId().toString(), ownerRuntime.scope().get("environmentUserId"));
+        assertEquals(true, ownerRuntime.scope().get("validatesOwnUsername"));
         assertEquals(false, ownerRuntime.scope().get("foreignHomeVisible"));
         assertEquals(ownerProcess.identity().pid(), ownerRuntime.scope().get("pid"));
         @SuppressWarnings("unchecked")

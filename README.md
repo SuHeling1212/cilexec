@@ -2,12 +2,12 @@
 
 **CilExec** is a durable scripting and process-management engine. It runs **FCL** (Follarce
 CilExec Language) programs on a PostgreSQL-backed runtime where **PostgreSQL is the only
-authoritative state** — kill the engine at any moment and restart it: work is reconstructed
-from committed database rows, with nothing lost.
+authoritative state**. After a crash, the Runtime reconstructs work from committed database
+rows. An in-flight transaction is rolled back and its execution slice may run again.
 
 > Why it exists: ordinary scripting runtimes keep process state in memory and lose it on
-> crash. CilExec commits every semantic FCL statement in one explicit database transaction,
-> so long-running scripts, timers, message queues, and external side effects survive restarts
+> crash. CilExec commits each execution slice in one explicit database transaction, so
+> committed scripts, timers, message queues, and external-effect records survive restarts
 > and multi-tenant isolation is enforced by the database itself (forced Row-Level Security).
 
 ## Highlights
@@ -16,19 +16,22 @@ from committed database rows, with nothing lost.
   package bindings, effect journals, terminal input, and audit events all live in PostgreSQL;
   one advisory lock guarantees a single active runtime per database.
 - **Crash-safe continuations** — the full interpreter state (variables, call stack, program
-  counter) is serialized after every statement; `state_version` + `execution_epoch` fencing
-  prevents stale workers from committing.
-- **Multi-tenant by design** — every user maps to a stable PostgreSQL LOGIN role with forced
+  counter) is serialized after every committed execution slice; `state_version` +
+  `execution_epoch` fencing prevents stale workers from committing.
+- **Multi-tenant by design** — every user maps to a stable PostgreSQL `NOLOGIN`, `NOINHERIT`
+  tenant role with forced
   RLS; `SYSTEM_ADMIN` is an application-level superuser that never receives cluster or host
   privileges.
-- **Content-addressed VFS** — files, directories, symlinks, and mounts stored as immutable
-  objects identified by SHA-256, with cross-user administration audited through
+- **Content-addressed VFS** — mutable namespace nodes point to immutable SHA-256-addressed
+  file or symlink content; directories and mounts are relational metadata. Cross-user
+  administration is audited through
   `SECURITY DEFINER` APIs.
 - **Immutable packages** — offline-built SQLite `package.db` releases bound by exact SHA-256;
-  imports resolve either an environment binding or the exact database hash.
-- **Journaled external effects** — HTTP, sockets, timers, and host commands suspend the
-  continuation and resume through durable effect rows; outcomes survive crashes
-  (idempotency keys, stalled-effect reclamation, heartbeat-protected workers).
+  imports use the exact database-file hash.
+- **Journaled external effects** — FCL HTTP, socket, and allow-listed command requests suspend
+  the continuation and resume through durable effect rows. An interrupted external outcome
+  can become `UNKNOWN` and is resolved by query, idempotent retry, or manual action. Timers
+  use their own durable timer rows.
 - **Durable IPC & timers** — direct/channel/topic/broadcast messaging and timers that wake
   paused processes across restarts.
 - **Verified exports** — logical PostgreSQL → SQLite export from one read-only snapshot,
@@ -85,7 +88,7 @@ java -jar target/cilexec-app.jar terminal
 | Concept | What it is |
 |---|---|
 | **FCL** | The scripting language: `//` comments, `#` length operator, reserved keywords, functions, loops, maps/lists, package imports. Full reference: [docs/fcl-function-reference.md](docs/fcl-function-reference.md) |
-| **Process & continuation** | A process is a durable object; its full interpreter state is persisted after every statement and resumed exactly where it stopped |
+| **Process & continuation** | A process is durable; its full interpreter state is persisted after each committed slice. An uncommitted slice rolls back and may replay after recovery |
 | **VFS** | Per-user content-addressed file tree at `/`, with `/Users/<name>` visible to administrators; host files enter via `host move` |
 | **Packages** | Immutable SQLite databases with declared capabilities, entrypoints, and exact-hash dependencies |
 | **Effects** | Journaled external operations (HTTP, sockets, host commands) that survive crashes and recover by policy |
@@ -93,12 +96,14 @@ java -jar target/cilexec-app.jar terminal
 ## Architecture at a glance
 
 ```
-FCL source → compiler → ProcessStatementExecutor (one durable statement per scheduling slice)
+FCL source → compiler → ProcessStatementExecutor (one transaction per execution slice)
           → scheduler workers (bounded, lease-based FIFO) → PostgreSQL (only state store)
           → effect workers (journaled side effects) · timers · IPC · terminal · VFS
 ```
 
-Everything else — pools, threads, caches — is disposable and rebuilt from committed rows on
+Non-terminal slices execute one interpreter step. Terminal slices may batch up to 4,096 steps
+or 20 ms and stop on suspension, directive, completion, or failure. Everything else — pools,
+threads, caches — is disposable and rebuilt from committed rows on
 startup. Source layout and design decisions: [docs/architecture-baseline.md](docs/architecture-baseline.md).
 
 ## Repository map

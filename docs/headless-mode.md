@@ -37,12 +37,13 @@ CI or TTY-less environments must explicitly set a stable, non-sensitive context 
 
 Different context IDs do not share variables. Do not treat the context ID as an
 authentication credential; every invocation must still supply the CilExec user's password.
-Headless input is capped at 4 MiB so a single socket request cannot exhaust Runtime memory.
+The protocol frame is capped at 4 MiB of UTF-8 source bytes. The shared REPL submission limit
+is lower: at most 256 KiB characters. Both limits apply.
 
-The session protocol is unchanged. The connection is a loopback socket with a fixed idle
-timeout of 60 seconds, and the server senses disconnects: an end-of-stream on the socket is
-the authoritative disconnect signal, which interrupts any running session work and closes
-that authenticated connection only.
+The session protocol uses an in-container loopback socket. Unlike the interactive terminal,
+the current headless request path does not run a concurrent disconnect pump while FCL is
+executing. If the client disconnects during execution, the submitted work may continue until
+it completes, suspends, fails, or is interrupted through another control path.
 
 Automation without a TTY can supply the one-line password from protected standard input;
 do not append anything after it, because the FCL source is already provided by the script

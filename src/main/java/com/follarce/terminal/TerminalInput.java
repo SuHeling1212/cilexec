@@ -161,6 +161,7 @@ public interface TerminalInput {
     /** A small dependency-free line editor for a real TTY. */
     final class EditableTerminalInput implements TerminalInput {
         private static final int HISTORY_LIMIT = TerminalService.COMMAND_HISTORY_LIMIT;
+        private static final long ESCAPE_SEQUENCE_WAIT_NANOS = 30_000_000L;
         /**
          * Kitty keyboard protocol (push): asks the terminal to disambiguate modifier
          * keys, so Shift+Enter arrives as CSI 13;2u instead of a plain CR on
@@ -332,7 +333,8 @@ public interface TerminalInput {
             }
 
             if (first == 27) {
-                int prefix = stream.read();
+                int prefix = readEscapeContinuation();
+                if (prefix < 0) return keyEvent("ESCAPE", false, false, false);
                 if (prefix == '[') {
                     int code = stream.read();
                     if (code == 'I') return "{\"kind\":\"focus\",\"focus\":true}";
@@ -372,10 +374,25 @@ public interface TerminalInput {
                         default -> rawEvent(escapeSequence(first, prefix, code));
                     };
                 }
-                if (prefix < 0) return null;
                 return rawEvent(escapeSequence(first, prefix, -1));
             }
             return decodePlainEvent(first);
+        }
+
+        /** Distinguishes a standalone Escape key from the start of an ANSI sequence. */
+        private int readEscapeContinuation() throws IOException {
+            long deadline = System.nanoTime() + ESCAPE_SEQUENCE_WAIT_NANOS;
+            while (stream.available() == 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return -1;
+                java.util.concurrent.locks.LockSupport.parkNanos(
+                        Math.min(remaining, 1_000_000L));
+                if (Thread.currentThread().isInterrupted()) {
+                    Thread.currentThread().interrupt();
+                    return -1;
+                }
+            }
+            return stream.read();
         }
 
         private String decodePlainEvent(int first) throws IOException {

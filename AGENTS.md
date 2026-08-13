@@ -32,7 +32,7 @@ Cilexec is a **process management & scripting engine** that runs FCL (Follarce C
 
 ### Core Design Principle: "Zero Memory State"
 
-The system has **no in-memory runtime state that survives crashes**. Every semantic FCL statement commits in one explicit database transaction; disposable JVM objects (threads, caches, task queues) may accelerate execution, but a restart always reconstructs work from committed PostgreSQL rows. The engine can be killed and restarted without data loss. A PostgreSQL advisory lock guarantees one active runtime per database, and `state_version` + `execution_epoch` fencing prevents stale workers from committing.
+The system has **no in-memory semantic state required for crash recovery**. Every execution slice commits in one explicit database transaction; disposable JVM objects (threads, caches, task queues) may accelerate execution, but a restart reconstructs work from committed PostgreSQL rows. An in-flight slice rolls back and may replay. A PostgreSQL advisory lock guarantees one active runtime per database, and `state_version` + `execution_epoch` fencing prevents stale workers from committing.
 
 ### Key Packages
 
@@ -65,15 +65,15 @@ The system has **no in-memory runtime state that survives crashes**. Every seman
 ```
 FCL source → FclCompiler (lexer, parser, continuation program)
            → ProcessStatementExecutor (pattern-match: if/while/func/import/return/etc.,
-              one execution slice — terminal processes batch up to 4096 pure steps
-              or 20 ms, all others one statement — committed per slice)
+              one execution slice — terminal processes batch up to 4096 steps
+              or 20 ms, all others one interpreter step — committed per slice)
            → FclExpressionEvaluator (expression evaluation)
            → JdbcTransactionExecutor (commit state to PostgreSQL after each slice)
 ```
 
 Language notes: `//` is the only comment syntax; `#` is only the length operator. Statement
 keywords are reserved. Each process's full continuation (variables, call stack, program
-counter) is serialized to PostgreSQL rows after every statement.
+counter) is serialized to PostgreSQL rows after every committed slice.
 
 ### Threading Model
 
@@ -89,7 +89,7 @@ in the durable FIFO queue.
 - Coarse capabilities defined in `Capability` (`PROCESS_CREATE`, `PROCESS_CONTROL_OWN`/`ANY`,
   `VFS_READ`/`WRITE`/`MOUNT_HOST`, `PACKAGE_IMPORT`/`BIND`, `EFFECT_REQUEST`,
   `TERMINAL_ATTACH`, `AUDIT_READ`, `SYSTEM_ADMIN`) and checked via `Authorization.require()`.
-- CilExec users map to stable PostgreSQL LOGIN roles; user tables use **forced RLS**, so row
+- CilExec users map to stable PostgreSQL `NOLOGIN`, `NOINHERIT` tenant roles; user tables use **forced RLS**, so row
   ownership isolation is enforced by the database itself.
 - `SYSTEM_ADMIN` is the CilExec application superuser: it satisfies every capability and has an
   explicit forced-RLS policy over all user runtime data, but never receives PostgreSQL
@@ -129,11 +129,11 @@ or a broad host directory for this feature.
   `scheduler.workers + effect.workers + 2`; the invariant is enforced at config load.
 - **SQLite packages:** package databases are immutable, read-only SQLite files (format v2)
   identified and rechecked by SHA-256; runtime linking follows the exact-hash graph.
-- **Zero memory state:** all runtime state is persisted to PostgreSQL after each statement;
+- **Zero memory state:** all authoritative runtime state is persisted to PostgreSQL after each committed slice;
   recovery validates continuations, leases, IPC, timers, effects, and security invariants.
 - **Configuration files:** `src/main/resources/cilexec-defaults.properties` (defaults),
   environment overrides (`CILEXEC_*`), Docker secrets under `docker/secrets/`.
 - **Health endpoints:** `GET /health/live` and `GET /health/ready` on an HTTP server bound to
   `127.0.0.1` only (internal to the container).
-- **Import/include:** `import` resolves installed package bindings or exact `.db` SHA-256;
+- **Import/include:** `import` resolves an exact installed `.db` SHA-256;
   `include` expands VFS source files before compilation.

@@ -6,7 +6,7 @@ Date: 2026-07-26 (rewritten in English and synced with current behavior: 2026-08
 
 > 2026-07-26 implementation note: `SYSTEM_ADMIN`, `AdminVfsService`, cross-user audit,
 > VFS list/write/create/rename/constrained-delete, and the administrator FCL file
-> functions are complete. Ordinary LOGIN roles remain under forced RLS. This document
+> functions are complete. Ordinary `NOLOGIN`, `NOINHERIT` tenant roles remain under forced RLS. This document
 > reflects the shipped design rather than the earlier planning sketch: the interactive
 > terminal is delivered by the TCP `TerminalServer` plus `DatabaseTerminalControl`,
 > process and package management are FCL functions rather than shell subcommands, and
@@ -138,12 +138,14 @@ named durable context for host tooling.
 
 - Sessions are durable: working directory, FCL process context, and command history
   are persisted and resume after reconnect or Runtime restart.
-- **Disconnect detection.** The input pump treats end-of-stream on the socket as the
+- **Interactive disconnect detection.** The interactive input pump treats end-of-stream on the socket as the
   authoritative disconnect signal and wakes the blocked session loop, so a
   disconnected client never keeps a session slot (or a polling loop) alive forever.
-- **Idle timeout.** The socket read timeout is 60 seconds. A socket that never
-  exchanged any byte is abandoned as a slot; sessions that have already exchanged
-  bytes stay connected.
+- **Idle timeout.** A 60-second socket timeout periodically wakes interactive reads so the
+  server can check the durable session policy. An authenticated session is closed only when
+  its attached process has remained `PAUSED` for the configured idle threshold (60 minutes
+  by default). Pre-authentication connections do not currently have a separate 60-second
+  lifetime limit.
 - `:exit` closes only the calling transport; `:logout` returns to the login prompt
   without losing REPL state; both leave the shared Runtime and background processes
   running.
@@ -153,8 +155,8 @@ named durable context for host tooling.
 A control frame (`\0`-prefixed) carries interrupt and dimension events, so Ctrl+C
 works while FCL is executing. The session supports:
 
-- free-form **FCL input** (default mode): expressions and statements run as a new
-  durable FCL process; `func`/`if`/`while` blocks continue on a `...>` multiline
+- free-form **FCL input** (default mode): expressions and statements reuse one
+  durable FCL process for the terminal context; `func`/`if`/`while` blocks continue on a `...>` multiline
   prompt, `Shift+Enter` inserts a line break without submitting (so continued lines
   work even with balanced delimiters), and a trailing `\` before Enter (C-style line
   continuation) keeps the submission open, joining the lines before compilation. The
@@ -163,7 +165,9 @@ works while FCL is executing. The session supports:
 - **attached input**: when a process waits in `io.input()`, the prompt changes to
   `pid:?` and the next line is delivered verbatim; terminal commands still start
   with `:`, and `::text` sends raw input beginning with `:`;
-- key-mode input (`io.readKey`) with Up/Down history and Left/Right cursor editing.
+- key-mode input (`io.readKey`) forwards structured raw key, mouse, paste, focus, timeout,
+  and unknown-sequence events to FCL. REPL history and cursor editing apply only to normal
+  editable line mode.
 
 ### 3.4 Colon Commands
 
@@ -175,25 +179,29 @@ The terminal command set (prefix with `:`):
 | `:cd <vfs-path>` | Change the durable working directory; the target must be a directory. `:cd` with no argument reports an error instead of crashing. |
 | `:pwd` | Print the working directory. |
 | `:ls [vfs-path]` | List the current or given directory; directory names end with `/`. |
-| `:clear` | Clear the screen. |
+| `:clear` (alias `:cls`) | Clear the screen. |
 | `:logout` | Return to login, keeping the user's terminal state and working directory. |
-| `:exit` | Disconnect only this terminal connection; the shared Runtime and background processes continue. |
+| `:exit` (alias `:quit`) | Disconnect only this terminal connection; the shared Runtime and background processes continue. |
 | `:shutdown` | Ask for the administrator password and stop the shared Runtime; only users with `SYSTEM_ADMIN` may use it. |
 
-Plain `ls`/`cd` without the `:` prefix are rejected with a hint rather than
-misparsed.
+Plain input without `:` is FCL. Consequently `ls` and `cd` remain legal FCL identifiers;
+directory commands must use `:ls` and `:cd`.
 
 ### 3.5 REPL Execution Model
 
-Every FCL submission is a durable process: `TerminalReplService` compiles the
-source, creates a process, enqueues it in the FIFO scheduler, and the terminal
-polls the committed status until the process reaches a terminal state or starts
-waiting for input. A top-level `return` ends the process and its value becomes the
-program result rendered at the prompt. Terminal processes share the bounded worker
+Each terminal context reuses one durable process identity. `TerminalReplService` compiles
+each submission as a new immutable program, attaches it to that process, enqueues it in the
+FIFO scheduler, and waits for the process to return to `PAUSED` or start waiting for input.
+A top-level `return` completes the submission; its value is rendered at the prompt and the
+same PID remains available for the next submission. Terminal processes share the bounded worker
 pools (default 10 scheduler workers, 6 effect workers) and the shared connection
 pool; processes beyond the worker count wait in the durable queue. A terminal
-process executes at most 4096 pure steps or 20 ms per scheduler slice, then
-persists and re-enqueues.
+process executes at most 4096 interpreter steps or 20 ms per scheduler slice and stops early
+on suspension, directive, completion, or failure, then persists and re-enqueues when ready.
+
+REPL rendering uses indented JSON for maps and arrays. A string whose trimmed content is a
+valid JSON object or array is displayed as that parsed JSON for readability; this affects only
+display, not the persisted string value. Other strings are rendered as JSON strings.
 
 ---
 
@@ -252,7 +260,9 @@ File functions accept an optional trailing target user, e.g.
 `file.read("/home/a.txt", "alice")`; ordinary users may only reach their own files,
 while `SYSTEM_ADMIN` holders may reach any user's files (each cross-user access
 leaves an audit record). `system.*` functions, `user.*` user administration, and
-`socket.bind`/`socket.accept` require administrator authority.
+`system.*` management functions and `user.*` administration require administrator authority.
+Direct `socket.bind`/`socket.accept` calls use the ordinary external-effect capability and
+the built-in handler restricts binds to loopback; they are not administrator-only.
 
 ### 5.3 Process Control Ownership Rules
 
