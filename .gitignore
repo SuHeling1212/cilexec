@@ -47,5 +47,6 @@ fcl-vscode/.codewhale/
 fcl-vscode/
 
 # Local Docker secrets (only the placeholder ignore file is tracked)
+!docker/secrets/
 docker/secrets/*
 !docker/secrets/.gitignore
