@@ -189,7 +189,7 @@ class TerminalReplServiceTest {
     }
 
     @Test
-    void executesPureTerminalInstructionsInOneDurableSchedulerSlice() {
+    void executesPureTerminalInstructionsAcrossBoundedSchedulerSlices() {
         ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
         UUID owner = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
@@ -203,21 +203,13 @@ class TerminalReplServiceTest {
                 new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
 
         repl.submit(owner, sessionId, "first = 1\nsecond = first + 1");
-        CilProcess current = persistence.processes.current;
-        CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
-        persistence.processes.current = claimed;
-        SchedulerClaim claim = new SchedulerClaim(claimed.identity().processUid(), owner,
-                UUID.randomUUID(), UUID.randomUUID(), claimed.executionEpoch(), NOW, NOW,
-                NOW.plus(Duration.ofMinutes(1)));
-        persistence.scheduler.lease = claim;
-
-        executor.executeSlice(claim);
+        run(persistence, executor, owner);
 
         TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
         assertEquals(CilProcess.Status.PAUSED, snapshot.status());
         assertEquals(1L, snapshot.variables().get("first"));
         assertEquals(2L, snapshot.variables().get("second"));
-        assertEquals(1, persistence.scheduler.releases);
+        assertTrue(persistence.scheduler.releases >= 1);
     }
 
     @Test
