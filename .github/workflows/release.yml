@@ -148,6 +148,16 @@ jobs:
             --image-arm64 cilexec:release-arm64 \
             --output-directory platform-release
           cp platform-release/cilexec-"$version"-windows.zip .
+      - name: Reclaim packaging workspace
+        run: |
+          version="${{ steps.identity.outputs.version }}"
+          rm -f /tmp/cilexec-release-amd64.tar /tmp/cilexec-release-arm64.tar
+          rm -rf platform-release target market-server/target
+          rm -f build/cilexec-"$version"-linux-amd64.sh \
+            build/cilexec-"$version"-linux-arm64.sh
+          docker image rm cilexec:release-amd64 cilexec:release-arm64 || true
+          docker buildx prune --all --force
+          df -h "$GITHUB_WORKSPACE"
       - name: Assemble deploy archive
         if: github.ref_type == 'tag'
         run: |
