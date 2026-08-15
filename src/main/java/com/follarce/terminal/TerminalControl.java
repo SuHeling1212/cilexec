@@ -7,7 +7,7 @@ import java.util.UUID;
 /** Application boundary used by host terminal transports. */
 @FunctionalInterface
 public interface TerminalControl {
-    enum AttachedInputMode { NONE, LINE, KEY }
+    enum AttachedInputMode { NONE, LINE, KEY, KEY_BATCH }
 
     String execute(ShellCommand command);
 
@@ -73,5 +73,10 @@ public interface TerminalControl {
     /** Unique route for output belonging to this authenticated terminal session. */
     default Optional<UUID> outputRouteId() {
         return Optional.empty();
+    }
+
+    /** ANSI private modes to restore for the process attached to this terminal session. */
+    default String terminalRestoreSequence() {
+        return "";
     }
 }

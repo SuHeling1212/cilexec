@@ -26,7 +26,8 @@ public final class V001__CilexecBaseline extends BaseJavaMigration {
             "db/baseline/environment_permissions.sql",
             "db/baseline/password_vfs_runtime.sql",
             "db/baseline/terminal_runtime.sql",
-            "db/baseline/production_hardening.sql");
+            "db/baseline/production_hardening.sql",
+            "db/baseline/package_lifecycle.sql");
 
     @Override
     public Integer getChecksum() {

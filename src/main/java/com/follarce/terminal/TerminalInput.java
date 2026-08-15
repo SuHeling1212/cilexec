@@ -10,6 +10,7 @@ import java.io.PushbackInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 
@@ -81,6 +82,11 @@ public interface TerminalInput {
         if (key == null) return null;
         return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(key)
                 + "\",\"shift\":false,\"ctrl\":false,\"alt\":false,\"text\":\"\"}";
+    }
+
+    /** Reads one key event, optionally coalescing printable text within a short bounded window. */
+    default String readKeyEvent(PrintWriter output, boolean coalesceText) throws IOException {
+        return readKeyEvent(output);
     }
 
     static String jsonEscape(String value) {
@@ -161,6 +167,9 @@ public interface TerminalInput {
     /** A small dependency-free line editor for a real TTY. */
     final class EditableTerminalInput implements TerminalInput {
         private static final int HISTORY_LIMIT = TerminalService.COMMAND_HISTORY_LIMIT;
+        private static final int MAX_TEXT_BATCH_CODE_POINTS = 64;
+        private static final long MAX_TEXT_BATCH_WAIT_NANOS = 20_000_000L;
+        private static final long TEXT_BATCH_POLL_NANOS = 1_000_000L;
         private static final long ESCAPE_SEQUENCE_WAIT_NANOS = 30_000_000L;
         /**
          * Kitty keyboard protocol (push): asks the terminal to disambiguate modifier
@@ -292,10 +301,52 @@ public interface TerminalInput {
 
         @Override
         public String readKeyEvent(PrintWriter output) throws IOException {
+            return readKeyEvent(output, false);
+        }
+
+        @Override
+        public String readKeyEvent(PrintWriter output, boolean coalesceText) throws IOException {
             if (console != null && keyMode == null) keyMode = RawMode.enable();
-            String event = decodeEvent(stream.read());
+            int first = stream.read();
+            String event = coalesceText && !inPaste
+                    ? decodeTextBatch(first) : decodeEvent(first);
             if (console != null) TerminalDimensions.refresh();
             return event;
+        }
+
+        /** Coalesces printable text for at most 20 ms from the first code point. */
+        private String decodeTextBatch(int first) throws IOException {
+            String firstText = decodePrintableText(first);
+            if (firstText == null) return decodeEvent(first);
+            StringBuilder text = new StringBuilder(firstText);
+            int codePoints = firstText.codePointCount(0, firstText.length());
+            long deadline = System.nanoTime() + MAX_TEXT_BATCH_WAIT_NANOS;
+            while (codePoints < MAX_TEXT_BATCH_CODE_POINTS
+                    && awaitTextBatchInput(deadline)) {
+                int next = stream.read();
+                if (next < 0) break;
+                String nextText = decodePrintableText(next);
+                if (nextText == null) {
+                    unread(next);
+                    break;
+                }
+                text.append(nextText);
+                codePoints += nextText.codePointCount(0, nextText.length());
+            }
+            if (codePoints == 1) return keyEvent(firstText, false, false, false, firstText);
+            return "{\"kind\":\"paste\",\"text\":\"" + jsonEscape(text.toString()) + "\"}";
+        }
+
+        private boolean awaitTextBatchInput(long deadline) throws IOException {
+            while (stream.available() == 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return false;
+                LockSupport.parkNanos(Math.min(remaining, TEXT_BATCH_POLL_NANOS));
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException("Terminal input interrupted");
+                }
+            }
+            return true;
         }
 
         /** Decodes one input event, buffering bracketed-paste content across reads. */
@@ -404,12 +455,17 @@ public interface TerminalInput {
                 return "{\"kind\":\"key\",\"key\":\"CTRL_" + (char) ('A' + first - 1)
                         + "\",\"shift\":false,\"ctrl\":true,\"alt\":false,\"text\":\"\"}";
             }
-            if (first < 128) {
-                String text = String.valueOf((char) first);
-                return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(text)
-                        + "\",\"shift\":false,\"ctrl\":false,\"alt\":false,\"text\":\""
-                        + jsonEscape(text) + "\"}";
+            String text = decodePrintableText(first);
+            if (text == null) return null;
+            return keyEvent(text, false, false, false, text);
+        }
+
+        private String decodePrintableText(int first) throws IOException {
+            if (first < 0 || first == 27 || first == '\r' || first == '\n' || first == '\t'
+                    || first == 127 || first == 8 || first > 0 && first < 27) {
+                return null;
             }
+            if (first < 128) return String.valueOf((char) first);
             int length = first >= 0xF0 ? 4 : first >= 0xE0 ? 3 : 2;
             byte[] bytes = new byte[length];
             bytes[0] = (byte) first;
@@ -418,10 +474,7 @@ public interface TerminalInput {
                 if (next < 0) return null;
                 bytes[index] = (byte) next;
             }
-            String text = new String(bytes, StandardCharsets.UTF_8);
-            return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(text)
-                    + "\",\"shift\":false,\"ctrl\":false,\"alt\":false,\"text\":\""
-                    + jsonEscape(text) + "\"}";
+            return new String(bytes, StandardCharsets.UTF_8);
         }
 
         /** Decodes CSI <param>;<modifier><letter> modified-key sequences. */
@@ -523,9 +576,14 @@ public interface TerminalInput {
         }
 
         private static String keyEvent(String key, boolean shift, boolean ctrl, boolean alt) {
-            return "{\"kind\":\"key\",\"key\":\"" + key
+            return keyEvent(key, shift, ctrl, alt, "");
+        }
+
+        private static String keyEvent(String key, boolean shift, boolean ctrl, boolean alt,
+                                       String text) {
+            return "{\"kind\":\"key\",\"key\":\"" + jsonEscape(key)
                     + "\",\"shift\":" + shift + ",\"ctrl\":" + ctrl
-                    + ",\"alt\":" + alt + ",\"text\":\"\"}";
+                    + ",\"alt\":" + alt + ",\"text\":\"" + jsonEscape(text) + "\"}";
         }
 
         private static String rawEvent(String sequence) {

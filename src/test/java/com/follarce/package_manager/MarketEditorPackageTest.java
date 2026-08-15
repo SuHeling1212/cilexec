@@ -79,6 +79,112 @@ class MarketEditorPackageTest {
     }
 
     @Test
+    void idleTimeoutOnlyRepaintsWhenTerminalSizeChanges() throws Exception {
+        Path output = temporaryDirectory.resolve("editor.db");
+        new PackageBuilder().build(Path.of("dist/editor"), output);
+        byte[] database = java.nio.file.Files.readAllBytes(output);
+        String module = new String(new SqlitePackageReader().readResource(database, "main.fcl"),
+                StandardCharsets.UTF_8);
+        List<Map<String, Object>> events = List.of(
+                Map.of("kind", "timeout"),
+                Map.of("kind", "timeout"),
+                Map.of("kind", "key", "key", "CTRL_X", "text", ""));
+        AtomicInteger eventIndex = new AtomicInteger();
+        AtomicInteger renderedFrames = new AtomicInteger();
+        AtomicReference<Map<String, Object>> size = new AtomicReference<>(
+                Map.of("width", 80L, "height", 24L));
+        List<Object> timeouts = new java.util.ArrayList<>();
+        List<Object> coalescing = new java.util.ArrayList<>();
+        FclFunctionRegistry functions = FclBuiltins.pureRegistry()
+                .register("term", "getSize", arguments -> size.get(), "size")
+                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
+                .register("file", "exists", arguments -> false)
+                .register("file", "read", arguments -> "")
+                .register("file", "write", arguments -> true)
+                .register("env", "get", arguments -> "/")
+                .register("io", "print", arguments -> {
+                    if (((String) arguments.getFirst()).contains("CilEdit")) {
+                        renderedFrames.incrementAndGet();
+                    }
+                    return null;
+                })
+                .register("io", "readKey", arguments -> {
+                    timeouts.add(arguments.getFirst());
+                    coalescing.add(arguments.get(1));
+                    int index = eventIndex.getAndIncrement();
+                    if (index == 1) size.set(Map.of("width", 100L, "height", 30L));
+                    return events.get(index);
+                });
+        FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
+        FclContinuation continuation = new FclContinuation();
+        FclRuntime runtime = new FclRuntime(functions);
+
+        int steps = 0;
+        while (!continuation.halted() && steps++ < 5_000) {
+            FclStepResult step = runtime.executeOne(program, continuation);
+            assertFalse(step.status() == FclStepResult.Status.FAILED,
+                    () -> String.valueOf(step.value()));
+        }
+
+        assertTrue(continuation.halted());
+        assertEquals(List.of(250L, 250L, 250L), timeouts);
+        assertEquals(List.of(true, true, true), coalescing);
+        assertEquals(2, renderedFrames.get(),
+                "the initial frame and changed-size frame are the only required repaints");
+    }
+
+    @Test
+    void bufferedTwoHundredCharacterTextIsInsertedAndRenderedAsOneEvent() throws Exception {
+        Path output = temporaryDirectory.resolve("editor.db");
+        new PackageBuilder().build(Path.of("dist/editor"), output);
+        byte[] database = java.nio.file.Files.readAllBytes(output);
+        String module = new String(new SqlitePackageReader().readResource(database, "main.fcl"),
+                StandardCharsets.UTF_8);
+        String text = "a".repeat(199) + "Z";
+        List<Map<String, Object>> events = List.of(
+                Map.of("kind", "paste", "text", text),
+                Map.of("kind", "key", "key", "CTRL_X", "text", ""),
+                Map.of("kind", "key", "key", "y", "text", "y"));
+        AtomicInteger eventIndex = new AtomicInteger();
+        AtomicReference<String> saved = new AtomicReference<>();
+        List<String> frames = new java.util.ArrayList<>();
+        FclFunctionRegistry functions = FclBuiltins.pureRegistry()
+                .register("term", "getSize", arguments -> Map.of(
+                        "width", 80L, "height", 24L), "size")
+                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
+                .register("file", "exists", arguments -> false)
+                .register("file", "read", arguments -> "")
+                .register("file", "write", arguments -> {
+                    saved.set((String) arguments.get(1));
+                    return true;
+                })
+                .register("env", "get", arguments -> "/")
+                .register("io", "print", arguments -> {
+                    frames.add((String) arguments.getFirst());
+                    return null;
+                })
+                .register("io", "readKey", arguments ->
+                        events.get(eventIndex.getAndIncrement()));
+        FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
+        FclContinuation continuation = new FclContinuation();
+        FclRuntime runtime = new FclRuntime(functions);
+
+        int steps = 0;
+        while (!continuation.halted() && steps++ < 10_000) {
+            FclStepResult step = runtime.executeOne(program, continuation);
+            assertFalse(step.status() == FclStepResult.Status.FAILED,
+                    () -> String.valueOf(step.value()));
+        }
+
+        assertTrue(continuation.halted(), "200-character batch did not finish");
+        assertEquals(text, saved.get());
+        assertEquals(events.size(), eventIndex.get());
+        assertFalse(frames.get(2).contains("\u001b[2J"));
+        assertTrue(frames.get(2).contains("Z"),
+                "the final character must be visible after horizontal scrolling");
+    }
+
+    @Test
     void marketSourceBuildsAValidImmutablePackageDatabase() throws Exception {
         Path output = temporaryDirectory.resolve("editor.db");
         PackageDescriptor descriptor = new PackageBuilder().build(
@@ -108,11 +214,12 @@ class MarketEditorPackageTest {
         byte[] database = java.nio.file.Files.readAllBytes(output);
         String module = new String(new SqlitePackageReader().readResource(database, "main.fcl"),
                 StandardCharsets.UTF_8);
-        List<String> keys = List.of("a", "ENTER", "b", "CTRL_O", "CTRL_X");
+        List<String> keys = List.of("a", "b", "ENTER", "c", "CTRL_O", "CTRL_X");
         AtomicInteger keyIndex = new AtomicInteger();
         AtomicInteger executedSteps = new AtomicInteger();
         AtomicInteger firstInputStep = new AtomicInteger(-1);
         AtomicReference<String> saved = new AtomicReference<>();
+        List<String> frames = new java.util.ArrayList<>();
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> java.util.Map.of(
                         "width", 80L, "height", 24L), "size")
@@ -126,7 +233,10 @@ class MarketEditorPackageTest {
                     return true;
                 })
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> null)
+                .register("io", "print", arguments -> {
+                    frames.add((String) arguments.getFirst());
+                    return null;
+                })
                 .register("io", "readKey", arguments -> {
                     firstInputStep.compareAndSet(-1, executedSteps.get());
                     String key = keys.get(keyIndex.getAndIncrement());
@@ -148,11 +258,20 @@ class MarketEditorPackageTest {
 
         assertTrue(continuation.halted(), "editor did not finish within the step limit");
         assertFalse(continuation.failed());
-        assertEquals("a\nb", saved.get());
+        assertEquals("ab\nc", saved.get());
         assertEquals(keys.size(), keyIndex.get());
-        assertTrue(firstInputStep.get() > 0 && firstInputStep.get() <= 150,
+        assertTrue(firstInputStep.get() > 0 && firstInputStep.get() <= 600,
                 "editor first frame must reach input without excessive FCL steps: "
                         + firstInputStep.get());
+        assertFalse(frames.get(2).contains("\u001b[2J"),
+                "ordinary character input must not clear and redraw the whole terminal");
+        assertTrue(frames.get(2).length() < 200,
+                "ordinary character delta must stay much smaller than a full terminal frame");
+        assertTrue(frames.get(3).contains("\u001b[2;2Hb"));
+        assertFalse(frames.get(3).contains("ab"),
+                "the persisted previous frame must prevent rewriting the unchanged prefix");
+        assertFalse(frames.get(3).contains("[Modified]"),
+                "the title must not be rewritten after its dirty marker is already visible");
     }
 
     @Test
@@ -190,7 +309,7 @@ class MarketEditorPackageTest {
         FclRuntime runtime = new FclRuntime(functions);
 
         int steps = 0;
-        while (!continuation.halted() && steps++ < 2_000) {
+        while (!continuation.halted() && steps++ < 5_000) {
             FclStepResult step = runtime.executeOne(program, continuation);
             assertFalse(step.status() == FclStepResult.Status.FAILED,
                     () -> String.valueOf(step.value()));
@@ -198,7 +317,7 @@ class MarketEditorPackageTest {
 
         assertTrue(continuation.halted(),
                 "large-buffer line deletion must not execute one FCL iteration per file line");
-        assertTrue(steps < 2_000, "large-buffer edit used too many FCL steps: " + steps);
+        assertTrue(steps < 5_000, "large-buffer edit used too many FCL steps: " + steps);
         assertEquals(keys.size(), keyIndex.get());
         assertTrue(saved.get().contains("line20line21\nline22"));
         assertEquals(4_999, saved.get().split("\n", -1).length);

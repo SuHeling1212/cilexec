@@ -307,6 +307,15 @@ final class FclPersistenceBridge {
         if (key.equals("input") || key.startsWith("input:")) {
             // Preserve the key-mode sub-key so timer-driven input timeouts are never
             // delivered to a line-input wait. Old persisted INPUT waits carry no target.
+            if (key.startsWith("input:key:")) {
+                try {
+                    return Optional.of(new Continuation.WaitState(Continuation.WaitKind.INPUT,
+                            Optional.of(UUID.fromString(key.substring("input:key:".length()))),
+                            Optional.empty()));
+                } catch (IllegalArgumentException malformedTimerId) {
+                    return Optional.empty();
+                }
+            }
             return Optional.of(new Continuation.WaitState(Continuation.WaitKind.INPUT,
                     key.equals("input") ? Optional.empty()
                             : Optional.of(UUID.nameUUIDFromBytes(
@@ -334,7 +343,8 @@ final class FclPersistenceBridge {
 
     private static String externalWaitKey(Continuation.WaitState wait) {
         return switch (wait.kind()) {
-            case INPUT -> wait.targetId().isEmpty() ? "input" : "input:key";
+            case INPUT -> wait.targetId().isEmpty() ? "input"
+                    : "input:key:" + wait.targetId().orElseThrow();
             case IPC -> "ipc:" + requiredTarget(wait);
             case TIMER -> "timer:" + requiredTarget(wait);
             case EFFECT -> "effect:" + requiredTarget(wait);

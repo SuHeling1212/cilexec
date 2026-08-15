@@ -90,7 +90,7 @@ public final class FclProgramLinker {
                 String internal = localNames.get(entry.getKey());
                 FclProgram.Function linked = new FclProgram.Function(internal,
                         source.parameters(), source.entryPoint() + offset,
-                        source.endPoint() + offset);
+                        source.endPoint() + offset, context.module().packageIdentity());
                 bind(functions, internal, linked);
             }
             for (Export export : context.module().exports()) {

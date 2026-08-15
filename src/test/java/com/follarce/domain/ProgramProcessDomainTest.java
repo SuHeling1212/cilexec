@@ -168,6 +168,20 @@ class ProgramProcessDomainTest {
                 () -> running.acceptSubmission(submitted, T0.plusSeconds(1)));
     }
 
+    @Test
+    void retriedUpdatesPreserveTheCommittedMonotonicTimestamp() {
+        CilProcess running = new CilProcess(
+                new ProcessIdentity(UUID.randomUUID(), 11), UUID.randomUUID(),
+                CilProcess.Status.RUNNING, 2, 3, continuation(Optional.empty()),
+                Optional.empty(), T0, T0.plusSeconds(2));
+
+        CilProcess paused = running.commitStatement(continuation(Optional.empty()),
+                CilProcess.Status.PAUSED, 2, 3, T0.plusSeconds(1));
+
+        assertEquals(T0.plusSeconds(2), paused.updatedAt());
+        assertEquals(3, paused.stateVersion());
+    }
+
     private static Continuation continuation(Optional<Continuation.WaitState> waitState) {
         return new Continuation(UUID.randomUUID(), hash("program"), 0, List.of(), List.of(),
                 List.of(), List.of(), waitState, Map.of(), Map.of(), "fcl-1", "runtime-1");

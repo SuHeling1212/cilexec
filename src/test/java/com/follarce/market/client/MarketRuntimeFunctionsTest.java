@@ -67,9 +67,11 @@ class MarketRuntimeFunctionsTest {
                 .contains("market.install"));
         assertEquals(MarketRuntimeFunctions.CLIENT_VERSION,
                 ((Map<?, ?>) registry.invoke("market.run", List.of(), invocation)).get("version"));
-        assertEquals(true, registry.invoke("market.uninstall", List.of(sha256), invocation));
+        Object uninstalled = registry.invoke("market.uninstall", List.of(sha256), invocation);
+        assertEquals(true, ((Map<?, ?>) uninstalled).get("removed"));
         assertTrue(((List<?>) registry.invoke("market.list", List.of(), invocation)).isEmpty());
-        assertEquals(false, registry.invoke("market.uninstall", List.of(sha256), invocation));
+        Object uninstalledAgain = registry.invoke("market.uninstall", List.of(sha256), invocation);
+        assertEquals(0L, ((Map<?, ?>) uninstalledAgain).get("marketCacheRemoved"));
     }
 
     @Test
@@ -187,6 +189,7 @@ class MarketRuntimeFunctionsTest {
         private final Map<String, String> environment = new LinkedHashMap<>();
         private final Map<String, String> files = new LinkedHashMap<>();
         private final Map<String, String> coordinates = new LinkedHashMap<>();
+        private final Map<String, String> installedPackages = new LinkedHashMap<>();
         private final byte[] packageBytes;
         private final String packageId;
         private String index;
@@ -230,9 +233,26 @@ class MarketRuntimeFunctionsTest {
         @Override public Map<String, Object> install(String path) {
             installs++;
             String hash = path.substring(path.length() - 67, path.length() - 3);
-            return Map.of("sha256", hash,
-                    "coordinate", coordinates.getOrDefault(hash, "cilexec/editor/1.0.0"),
-                    "hash", hash);
+            String coordinate = coordinates.getOrDefault(hash, "cilexec/editor/1.0.0");
+            installedPackages.put(hash, coordinate);
+            return Map.of("sha256", hash, "coordinate", coordinate, "hash", hash);
         }
+        @Override public Map<String, Object> uninstall(String packageId) {
+            boolean present = installedPackages.remove(packageId) != null;
+            return Map.of("removed", present, "packagesRemoved", present ? 1L : 0L,
+                    "dependenciesRemoved", 0L, "processesRemoved", 0L, "bindingsRemoved", 0L,
+                    "cacheFilesRemoved", 0L, "dataNodesRemoved", 0L, "releasesPurged", 0L,
+                    "objectsPurged", 0L);
+        }
+        @Override public List<Map<String, Object>> marketInstallations() {
+            return installedPackages.entrySet().stream().map(entry -> {
+                String[] parts = entry.getValue().split("/");
+                return Map.<String, Object>of("sha256", entry.getKey(),
+                        "coordinate", entry.getValue(), "namespace", parts[0],
+                        "name", parts[1], "version", parts[2],
+                        "packageHash", entry.getKey());
+            }).toList();
+        }
+        @Override public void registerCacheNode(String path, String sha256) { }
     }
 }

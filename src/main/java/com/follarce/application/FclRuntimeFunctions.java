@@ -7,6 +7,9 @@ import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.effect.EffectRequest;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.PackageIndex;
+import com.follarce.domain.packageinfo.PackageInstallation;
+import com.follarce.domain.packageinfo.PackageDataUsage;
+import com.follarce.domain.packageinfo.PackageUninstallResult;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.ipc.IpcChannel;
 import com.follarce.domain.ipc.IpcMessage;
@@ -37,6 +40,7 @@ import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclScope;
+import com.follarce.fcl.TerminalModeState;
 import com.follarce.fcl.FclSuspension;
 import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
@@ -44,6 +48,7 @@ import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.package_manager.PackageCoordinateConflictException;
 import com.follarce.package_manager.PackageBuilder;
+import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;
 import com.follarce.market.client.MarketRuntimeFunctions;
 import com.follarce.terminal.TerminalDimensions;
@@ -52,8 +57,10 @@ import com.follarce.timer.TimerService;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -126,6 +133,7 @@ public final class FclRuntimeFunctions {
         registerUsers();
         registerNetworkAndSockets();
         registerPackages();
+        registerPackageData();
         registerMarket();
         registerSwapPool();
         registerIpc();
@@ -348,7 +356,10 @@ public final class FclRuntimeFunctions {
                     return terminalInput(invocation, true, false);
                 })
                 .registerContextual("io", "readKey", (args, invocation) -> {
-                    if (args.size() > 1) arity(args, 1, "io.readKey");
+                    if (args.size() > 2) {
+                        throw new FclRuntimeException(
+                                "io.readKey expects optional timeout and coalesceText arguments");
+                    }
                     long timeout = -1;
                     if (!args.isEmpty()) {
                         timeout = integer(args.getFirst(), "io.readKey timeout milliseconds");
@@ -357,7 +368,15 @@ public final class FclRuntimeFunctions {
                                     "io.readKey timeout must be between 0 and 86400000 milliseconds");
                         }
                     }
-                    return readKey(invocation, timeout);
+                    boolean coalesceText = false;
+                    if (args.size() == 2) {
+                        if (!(args.get(1) instanceof Boolean value)) {
+                            throw new FclRuntimeException(
+                                    "io.readKey coalesceText must be boolean");
+                        }
+                        coalesceText = value;
+                    }
+                    return readKey(invocation, timeout, coalesceText);
                 })
                 .registerContextual("util", "sleep", (args, invocation) -> {
                     arity(args, 1, "util.sleep");
@@ -460,6 +479,7 @@ public final class FclRuntimeFunctions {
                 TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
                 ? global.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
                 : process.identity().processUid().toString();
+        if (route instanceof String) TerminalModeState.capture(global, text);
         return Map.of("text", text, "newline", newline, "routeId", display(route));
     }
 
@@ -904,10 +924,11 @@ public final class FclRuntimeFunctions {
                 .register("package", "list", args -> {
                     arity(args, 0, "package.list");
                     Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
-                    return transaction.packages().findReleases().stream()
+                    return transaction.packages().findInstalledReleases(process.ownerId()).stream()
                             .map(FclRuntimeFunctions::packageMap).toList();
                 })
                 .register("package", "install", args -> installPackage(args))
+                .register("package", "uninstall", args -> uninstallPackage(args))
                 .register("package", "build", args -> buildPackage(args))
                 .register("package", "run", args -> runPackage(args))
                 .register("package", "verify", args -> {
@@ -937,11 +958,194 @@ public final class FclRuntimeFunctions {
                     return decodeUtf8(content, "package.resource");
                 })
                 .register("package", "pin", args -> pinPackage(args))
+                .register("package", "dataInfo", args -> packageDataInfo(args))
+                .register("package", "dataList", args -> packageDataList(args))
+                .register("package", "dataRead", args -> packageDataRead(args))
+                .register("package", "dataExport", args -> packageDataExport(args))
+                .register("package", "dataImport", args -> packageDataImport(args))
+                .register("package", "dataClear", args -> packageDataClear(args))
+                .register("package", "dataQuota", args -> packageDataQuota(args))
+                .register("package", "setDataQuota", args -> packageSetDataQuota(args))
+                .register("package", "clearDataQuota", args -> packageClearDataQuota(args))
                 .register("package", "recover", args -> {
                     arity(args, 0, "package.recover");
                     Authorization.requireAdministrator(transaction, process.ownerId());
-                    return true;
+                    Map<String, Object> report = transaction.packages()
+                            .recoverReport(process.ownerId());
+                    audit("package.recover", process.identity().processUid(), Map.of(
+                            "ok", Boolean.toString(Boolean.TRUE.equals(report.get("ok"))),
+                            "issues", Integer.toString(
+                                    report.get("issues") instanceof List<?> issues
+                                            ? issues.size() : 0)));
+                    return Map.copyOf(report);
                 });
+    }
+
+    /**
+     * Private package data functions. The current package identity comes from the
+     * linked function provenance carried by the invocation; top-level user code
+     * and ordinary VFS paths can never address another package's data space.
+     */
+    private void registerPackageData() {
+        registry.registerContextual("packageData", "root", (args, invocation) -> {
+            arity(args, 0, "packageData.root");
+            return "package-data://" + requirePackageDataFile(invocation).value() + "/";
+        }, "packageRoot");
+        registry.registerContextual("packageData", "exists", (args, invocation) -> {
+            arity(args, 1, "packageData.exists");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.exists path");
+            return packageDataEntryExists(fileHash, path);
+        }, "packageExists");
+        registry.registerContextual("packageData", "read", (args, invocation) -> {
+            arity(args, 1, "packageData.read");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.read path");
+            byte[] content = transaction.packages().readDataEntry(
+                    process.ownerId(), fileHash, path);
+            if (content == null) throw new FclRuntimeException(
+                    "Unknown package data file: " + path);
+            return decodeUtf8(content, "packageData.read");
+        }, "packageRead");
+        registry.registerContextual("packageData", "readChunk", (args, invocation) -> {
+            arity(args, 3, "packageData.readChunk");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.readChunk path");
+            long offset = integer(args.get(1), "packageData.readChunk offset");
+            long maximum = integer(args.get(2), "packageData.readChunk maximumBytes");
+            if (offset < 0 || maximum < 0 || maximum > MAX_IN_MEMORY_READ_BYTES) {
+                throw new FclRuntimeException("Invalid packageData.readChunk range");
+            }
+            byte[] content = transaction.packages().readDataEntry(
+                    process.ownerId(), fileHash, path);
+            if (content == null) throw new FclRuntimeException(
+                    "Unknown package data file: " + path);
+            if (offset >= content.length) return "";
+            long end = Math.min(content.length, offset + maximum);
+            return decodeUtf8(java.util.Arrays.copyOfRange(content, (int) offset, (int) end),
+                    "packageData.readChunk");
+        }, "packageReadChunk");
+        registry.registerContextual("packageData", "write", (args, invocation) -> {
+            arity(args, 2, "packageData.write");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.write path");
+            byte[] content = string(args.get(1), "packageData.write value")
+                    .getBytes(StandardCharsets.UTF_8);
+            long expected = packageDataVersion(fileHash, path);
+            transaction.packages().writeDataEntry(process.ownerId(), fileHash, path,
+                    content, TEXT, expected);
+            return true;
+        }, "packageWrite");
+        registry.registerContextual("packageData", "append", (args, invocation) -> {
+            arity(args, 2, "packageData.append");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.append path");
+            long expected = packageDataVersion(fileHash, path);
+            if (expected < 0) {
+                throw new FclRuntimeException("packageData.append target does not exist: "
+                        + path);
+            }
+            byte[] content = string(args.get(1), "packageData.append value")
+                    .getBytes(StandardCharsets.UTF_8);
+            transaction.packages().appendDataEntry(process.ownerId(), fileHash, path,
+                    content, expected);
+            return true;
+        }, "packageAppend");
+        registry.registerContextual("packageData", "mkdir", (args, invocation) -> {
+            arity(args, 1, "packageData.mkdir");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            transaction.packages().mkdirDataEntry(process.ownerId(), fileHash,
+                    string(args.getFirst(), "packageData.mkdir path"));
+            return true;
+        }, "packageMkdir");
+        registry.registerContextual("packageData", "list", (args, invocation) -> {
+            arity(args, 1, "packageData.list");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.list path");
+            return transaction.packages().listDataEntries(process.ownerId(), fileHash, path)
+                    .stream().map(PackageDataEntryMap::of).toList();
+        }, "packageList");
+        registry.registerContextual("packageData", "remove", (args, invocation) -> {
+            arity(args, 1, "packageData.remove");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            return transaction.packages().removeDataEntry(process.ownerId(), fileHash,
+                    string(args.getFirst(), "packageData.remove path"));
+        }, "packageRemove");
+        registry.registerContextual("packageData", "rename", (args, invocation) -> {
+            arity(args, 2, "packageData.rename");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            transaction.packages().renameDataEntry(process.ownerId(), fileHash,
+                    string(args.getFirst(), "packageData.rename source"),
+                    string(args.get(1), "packageData.rename destination"));
+            return true;
+        }, "packageRename");
+        registry.registerContextual("packageData", "size", (args, invocation) -> {
+            arity(args, 1, "packageData.size");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String path = string(args.getFirst(), "packageData.size path");
+            byte[] content = transaction.packages().readDataEntry(
+                    process.ownerId(), fileHash, path);
+            if (content == null) throw new FclRuntimeException(
+                    "Unknown package data file: " + path);
+            return (long) content.length;
+        }, "packageSize");
+        registry.registerContextual("packageData", "usage", (args, invocation) -> {
+            arity(args, 0, "packageData.usage");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            PackageDataUsage usage = transaction.packages().findDataUsage(
+                    process.ownerId(), fileHash);
+            return Map.of("logicalBytes", usage.logicalBytes(), "quota", usage.quota(),
+                    "files", usage.files());
+        }, "packageUsage");
+    }
+
+    private record PackageDataEntryMap(String name, String type, long size) {
+        static Map<String, Object> of(com.follarce.domain.packageinfo.PackageDataEntry entry) {
+            return Map.of("name", entry.relativePath(), "type", entry.entryType(),
+                    "size", entry.byteSize());
+        }
+    }
+
+    /** Resolves the current package's private data space from linked provenance. */
+    private ObjectHash requirePackageDataFile(FclFunctionRegistry.Invocation invocation) {
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        String identity = invocation.packageIdentity();
+        if (identity == null) {
+            throw new FclRuntimeException(
+                    "packageData functions can only be called from installed package code");
+        }
+        PackageRelease release = transaction.packages().findRelease(
+                        new PackageRelease.Hash(new ObjectHash(identity)))
+                .orElseThrow(() -> new FclRuntimeException(
+                        "Linked package release is missing"));
+        if (transaction.packages().findInstalledReleaseByDatabaseFileHash(
+                process.ownerId(), release.databaseFileHash()).isEmpty()) {
+            throw new FclRuntimeException("Linked package is not installed for the current user");
+        }
+        return release.databaseFileHash();
+    }
+
+    private boolean packageDataEntryExists(ObjectHash fileHash, String path) {
+        if (transaction.packages().readDataEntry(process.ownerId(), fileHash, path) != null) {
+            return true;
+        }
+        int separator = path.lastIndexOf('/');
+        String parent = separator <= 0 ? "" : path.substring(0, separator);
+        String name = separator <= 0 ? path : path.substring(separator + 1);
+        return transaction.packages().listDataEntries(process.ownerId(), fileHash, parent)
+                .stream().anyMatch(entry -> entry.relativePath().equals(name));
+    }
+
+    /** Returns the durable CAS version of a package data file, or -1 when absent. */
+    private long packageDataVersion(ObjectHash fileHash, String path) {
+        int separator = path.lastIndexOf('/');
+        String parent = separator <= 0 ? "" : path.substring(0, separator);
+        String name = separator <= 0 ? path : path.substring(separator + 1);
+        return transaction.packages().listDataEntries(process.ownerId(), fileHash, parent)
+                .stream()
+                .filter(entry -> entry.relativePath().equals(name) && !entry.isDirectory())
+                .mapToLong(com.follarce.domain.packageinfo.PackageDataEntry::stateVersion)
+                .findFirst().orElse(-1);
     }
 
     private void registerMarket() {
@@ -1006,6 +1210,43 @@ public final class FclRuntimeFunctions {
                 }
                 return (Map<String, Object>) map;
             }
+
+            @Override @SuppressWarnings("unchecked")
+            public Map<String, Object> uninstall(String packageId) {
+                Object removed = uninstallPackage(List.of(packageId));
+                if (!(removed instanceof Map<?, ?> map)) {
+                    throw new FclRuntimeException("Package uninstaller returned an invalid result");
+                }
+                return (Map<String, Object>) map;
+            }
+
+            @Override
+            public List<Map<String, Object>> marketInstallations() {
+                return transaction.packages().findInstallations(process.ownerId()).stream()
+                        .filter(installation -> installation.source().equals("MARKET"))
+                        .map(installation -> {
+                            Map<String, Object> item = new LinkedHashMap<>();
+                            item.put("sha256", installation.rootFileHash().value());
+                            item.put("coordinate", installation.rootCoordinate().key());
+                            item.put("namespace", installation.rootCoordinate().namespace());
+                            item.put("name", installation.rootCoordinate().name());
+                            item.put("version", installation.rootCoordinate().version());
+                            installation.members().stream()
+                                    .filter(member -> member.dependencyDepth() == 0)
+                                    .findFirst()
+                                    .ifPresent(member -> item.put("packageHash",
+                                            member.packageHash().value()));
+                            return Map.copyOf(item);
+                        }).toList();
+            }
+
+            @Override
+            public void registerCacheNode(String path, String sha256) {
+                VfsNode node = requireNode(normalize(path));
+                requireType(node, VfsNode.Type.FILE, "market cache");
+                transaction.packages().registerManagedNode(process.ownerId(), node.nodeId(),
+                        new ObjectHash(sha256), "MARKET_CACHE");
+            }
         }).register(registry);
     }
 
@@ -1043,11 +1284,239 @@ public final class FclRuntimeFunctions {
         }
         release = transaction.packages().findRelease(release.coordinate()).orElseThrow(
                 () -> new IllegalStateException("Installed package release is missing"));
+        List<PackageInstallation.Member> closure = installationClosure(release);
+        transaction.packages().publishInstallation(UUID.randomUUID(), process.ownerId(),
+                release.databaseFileHash(), "LOCAL", closure, now);
         audit("package.install", node.nodeId(), Map.of(
                 "coordinate", release.coordinate().key(), "writeResult", result.name()));
         Map<String, Object> installed = new LinkedHashMap<>(packageMap(release));
         installed.putAll(descriptorMap(descriptor));
         return Map.copyOf(installed);
+    }
+
+    /**
+     * Resolves the complete exact-hash dependency closure of one package release.
+     * Required dependencies must already be installed; optional dependencies join
+     * the closure only when their releases are installed.
+     */
+    private List<PackageInstallation.Member> installationClosure(PackageRelease root) {
+        Map<String, PackageInstallation.Member> members = new LinkedHashMap<>();
+        Deque<PackageRelease> queue = new ArrayDeque<>();
+        Map<String, Integer> depths = new LinkedHashMap<>();
+        members.put(root.packageHash().value().value(), new PackageInstallation.Member(
+                root.coordinate(), root.packageHash().value(), root.databaseFileHash(), 0, false));
+        depths.put(root.packageHash().value().value(), 0);
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            PackageRelease current = queue.removeFirst();
+            int depth = depths.getOrDefault(current.packageHash().value().value(), 0);
+            StoredObject database = transaction.vfs().findObject(current.databaseObjectHash())
+                    .orElseThrow(() -> new FclRuntimeException(
+                            "Installed package database is missing"));
+            PackageDescriptor descriptor = new SqlitePackageReader().inspect(
+                    database.content().bytes());
+            for (PackageIndex.Dependency dependency : descriptor.dependencyIndex()) {
+                Optional<PackageRelease> installed = transaction.packages()
+                        .findReleaseByDatabaseFileHash(dependency.databaseFileHash());
+                if (installed.isEmpty()) continue;
+                PackageRelease dependencyRelease = installed.orElseThrow();
+                String key = dependencyRelease.packageHash().value().value();
+                if (members.containsKey(key)) continue;
+                if (members.size() >= 256) {
+                    throw new FclRuntimeException("Package dependency closure exceeds 256 packages");
+                }
+                int next = Math.addExact(depth, 1);
+                if (next > 64) {
+                    throw new FclRuntimeException("Package dependency depth exceeds 64");
+                }
+                members.put(key, new PackageInstallation.Member(
+                        dependencyRelease.coordinate(), dependencyRelease.packageHash().value(),
+                        dependencyRelease.databaseFileHash(), next, dependency.optional()));
+                depths.put(key, next);
+                queue.addLast(dependencyRelease);
+            }
+        }
+        return List.copyOf(members.values());
+    }
+
+    private Object uninstallPackage(List<Object> args) {
+        if (args.isEmpty() || args.size() > 2) throw new FclRuntimeException(
+                "package.uninstall expects a package SHA-256 and optional options map");
+        String packageId = string(args.getFirst(), "package.uninstall package");
+        if (!packageId.matches("(?i)[0-9a-f]{64}")) {
+            throw new FclRuntimeException(
+                    "package.uninstall requires a 64-character package SHA-256");
+        }
+        boolean force = false;
+        if (args.size() == 2) {
+            if (!(args.get(1) instanceof Map<?, ?> options)) {
+                throw new FclRuntimeException("package.uninstall options must be a map");
+            }
+            Object requested = options.get("force");
+            if (requested != null) {
+                if (!(requested instanceof Boolean)) {
+                    throw new FclRuntimeException("package.uninstall force must be boolean");
+                }
+                force = (Boolean) requested;
+            }
+        }
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        if (force) {
+            Authorization.require(transaction, process.ownerId(), Capability.PROCESS_CONTROL_OWN);
+        }
+        ObjectHash fileHash = new ObjectHash(packageId.toLowerCase(Locale.ROOT));
+        PackageUninstallResult result = transaction.packages().uninstall(
+                process.ownerId(), fileHash, force, process.identity().processUid());
+        audit("package.uninstall", process.identity().processUid(), Map.of(
+                "packageFileSha256", fileHash.value(),
+                "force", Boolean.toString(force),
+                "removed", Boolean.toString(result.removed()),
+                "packagesRemoved", Integer.toString(result.packagesRemoved()),
+                "dependenciesRemoved", Integer.toString(result.dependenciesRemoved()),
+                "processesRemoved", Integer.toString(result.processesRemoved()),
+                "dataNodesRemoved", Integer.toString(result.dataNodesRemoved()),
+                "releasesPurged", Integer.toString(result.releasesPurged()),
+                "objectsPurged", Integer.toString(result.objectsPurged())));
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("removed", result.removed());
+        summary.put("packagesRemoved", (long) result.packagesRemoved());
+        summary.put("dependenciesRemoved", (long) result.dependenciesRemoved());
+        summary.put("processesRemoved", (long) result.processesRemoved());
+        summary.put("bindingsRemoved", (long) result.bindingsRemoved());
+        summary.put("cacheFilesRemoved", (long) result.cacheFilesRemoved());
+        summary.put("dataNodesRemoved", (long) result.dataNodesRemoved());
+        summary.put("releasesPurged", (long) result.releasesPurged());
+        summary.put("objectsPurged", (long) result.objectsPurged());
+        return Map.copyOf(summary);
+    }
+
+    private ObjectHash requireInstalledFileHash(List<Object> args, String function) {
+        if (args.isEmpty() || args.size() > 2) throw new FclRuntimeException(
+                function + " expects a package SHA-256 and optional target user");
+        String packageId = string(args.getFirst(), function + " package");
+        if (!packageId.matches("(?i)[0-9a-f]{64}")) {
+            throw new FclRuntimeException(
+                    function + " requires a 64-character package SHA-256");
+        }
+        return new ObjectHash(packageId.toLowerCase(Locale.ROOT));
+    }
+
+    private Object packageDataInfo(List<Object> args) {
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataInfo");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        PackageDataUsage usage = transaction.packages().findDataUsage(
+                process.ownerId(), fileHash);
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("spaceId", usage.spaceId());
+        info.put("packageHash", usage.packageHash().value());
+        info.put("databaseFileSha256", usage.databaseFileHash().value());
+        info.put("logicalBytes", usage.logicalBytes());
+        info.put("quota", usage.quota());
+        info.put("files", usage.files());
+        info.put("updatedAt", usage.updatedAt().toString());
+        return Map.copyOf(info);
+    }
+
+    private Object packageDataList(List<Object> args) {
+        if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                "package.dataList expects a package SHA-256 and optional path");
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataList");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        String path = args.size() == 2
+                ? string(args.get(1), "package.dataList path") : "";
+        return transaction.packages().listDataEntries(process.ownerId(), fileHash, path)
+                .stream().map(entry -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("name", entry.relativePath());
+                    item.put("type", entry.entryType());
+                    item.put("size", entry.byteSize());
+                    return Map.copyOf(item);
+                }).toList();
+    }
+
+    private Object packageDataRead(List<Object> args) {
+        arity(args, 2, "package.dataRead");
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataRead");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        String path = string(args.get(1), "package.dataRead path");
+        byte[] content = transaction.packages().readDataEntry(
+                process.ownerId(), fileHash, path);
+        if (content == null) throw new FclRuntimeException("Unknown package data file: " + path);
+        return decodeUtf8(content, "package.dataRead");
+    }
+
+    private Object packageDataExport(List<Object> args) {
+        arity(args, 2, "package.dataExport");
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataExport");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
+        String destination = normalize(string(args.get(1), "package.dataExport destination"));
+        if (resolve(destination).isPresent()) {
+            throw new FclRuntimeException("package.dataExport destination exists: " + destination);
+        }
+        byte[] archive = PackageDataService.exportArchive(transaction, process.ownerId(),
+                fileHash);
+        String nodeId = writeBinary(destination, archive, "application/vnd.sqlite3");
+        audit("package.dataExport", process.identity().processUid(), Map.of(
+                "packageFileSha256", fileHash.value(), "destination", destination,
+                "bytes", Integer.toString(archive.length)));
+        return Map.of("path", destination, "nodeId", nodeId, "bytes", archive.length);
+    }
+
+    private Object packageDataImport(List<Object> args) {
+        arity(args, 2, "package.dataImport");
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataImport");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        Authorization.require(transaction, process.ownerId(), Capability.VFS_READ);
+        VfsNode node = requireNode(string(args.get(1), "package.dataImport source"));
+        requireType(node, VfsNode.Type.FILE, "package.dataImport");
+        byte[] archive = readLogicalObject(node.currentObjectHash().orElseThrow(),
+                MAX_PACKAGE_DATABASE_BYTES, "package.dataImport archive");
+        long imported = PackageDataService.importArchive(transaction, process.ownerId(),
+                fileHash, archive);
+        audit("package.dataImport", process.identity().processUid(), Map.of(
+                "packageFileSha256", fileHash.value(), "entries", Long.toString(imported)));
+        return Map.of("entries", imported);
+    }
+
+    private Object packageDataClear(List<Object> args) {
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataClear");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        long removed = transaction.packages().clearDataEntries(process.ownerId(), fileHash);
+        audit("package.dataClear", process.identity().processUid(), Map.of(
+                "packageFileSha256", fileHash.value(), "entries", Long.toString(removed)));
+        return Map.of("entriesRemoved", removed);
+    }
+
+    private Object packageDataQuota(List<Object> args) {
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataQuota");
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        return transaction.packages().findDataQuota(process.ownerId(), fileHash);
+    }
+
+    private Object packageSetDataQuota(List<Object> args) {
+        arity(args, 3, "package.setDataQuota");
+        UUID owner = owner(args, 1);
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.setDataQuota");
+        long quotaBytes = integer(args.get(2), "package.setDataQuota bytes");
+        if (quotaBytes < 0) throw new FclRuntimeException(
+                "package.setDataQuota bytes cannot be negative");
+        transaction.packages().setDataQuota(process.ownerId(), owner, fileHash, quotaBytes);
+        audit("package.setDataQuota", process.identity().processUid(), Map.of(
+                "targetUser", owner.toString(), "packageFileSha256", fileHash.value(),
+                "quotaBytes", Long.toString(quotaBytes)));
+        return Map.of("quota", quotaBytes);
+    }
+
+    private Object packageClearDataQuota(List<Object> args) {
+        arity(args, 2, "package.clearDataQuota");
+        UUID owner = owner(args, 1);
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.clearDataQuota");
+        transaction.packages().clearDataQuota(process.ownerId(), owner, fileHash);
+        audit("package.clearDataQuota", process.identity().processUid(), Map.of(
+                "targetUser", owner.toString(), "packageFileSha256", fileHash.value()));
+        return true;
     }
 
     private Object buildPackage(List<Object> args) {
@@ -1089,7 +1558,8 @@ public final class FclRuntimeFunctions {
         }
         String entrypointName = args.size() == 2
                 ? string(args.get(1), "package entrypoint") : "run";
-        PackageRelease release = transaction.packages().findReleaseByDatabaseFileHash(
+        PackageRelease release = transaction.packages().findInstalledReleaseByDatabaseFileHash(
+                        process.ownerId(),
                         new ObjectHash(packageId.toLowerCase(java.util.Locale.ROOT)))
                 .orElseThrow(() -> new FclRuntimeException("Installed package release is missing"));
         StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
@@ -1162,25 +1632,31 @@ public final class FclRuntimeFunctions {
         if (args.size() == 1) {
             String identity = string(args.getFirst(), function + " package");
             if (identity.matches("[0-9a-fA-F]{64}")) {
-                release = transaction.packages().findRelease(
-                        new PackageRelease.Hash(new ObjectHash(identity.toLowerCase(
-                                java.util.Locale.ROOT))));
+                release = transaction.packages().findInstalledReleaseByDatabaseFileHash(
+                        process.ownerId(),
+                        new ObjectHash(identity.toLowerCase(java.util.Locale.ROOT)));
             } else {
                 String[] coordinate = identity.split("/", 3);
                 if (coordinate.length != 3) throw new FclRuntimeException(
                         function + " requires namespace/name/version or a package hash");
-                release = transaction.packages().findRelease(new PackageRelease.Coordinate(
-                        coordinate[0], coordinate[1], coordinate[2]));
+                release = installedCoordinate(coordinate[0], coordinate[1], coordinate[2]);
             }
         } else if (args.size() == 3) {
-            release = transaction.packages().findRelease(new PackageRelease.Coordinate(
-                    string(args.get(0), "package namespace"),
+            release = installedCoordinate(string(args.get(0), "package namespace"),
                     string(args.get(1), "package name"),
-                    string(args.get(2), "package version")));
+                    string(args.get(2), "package version"));
         } else {
             throw new FclRuntimeException(function + " expects one or three package arguments");
         }
         return release.orElseThrow(() -> new FclRuntimeException("Unknown package release"));
+    }
+
+    private Optional<PackageRelease> installedCoordinate(String namespace, String name,
+                                                          String version) {
+        return transaction.packages().findInstalledReleases(process.ownerId()).stream()
+                .filter(release -> release.coordinate().key().equals(
+                        namespace + "/" + name + "/" + version))
+                .findFirst();
     }
 
     private static Map<String, Object> packageMap(PackageRelease release) {
@@ -1648,7 +2124,8 @@ public final class FclRuntimeFunctions {
      * immediately; otherwise the process waits in key mode, with an optional durable timer
      * delivering a timeout event when no key arrives.
      */
-    private Object readKey(FclFunctionRegistry.Invocation invocation, long timeout) {
+    private Object readKey(FclFunctionRegistry.Invocation invocation, long timeout,
+                           boolean coalesceText) {
         FclContinuation continuation = invocation.continuation();
         if (continuation.scope().contains(ProcessInbox.TERMINAL_INPUT)) {
             return parseTerminalEvent(display(continuation.scope()
@@ -1661,14 +2138,15 @@ public final class FclRuntimeFunctions {
             }
             return parseTerminalEvent(display(timerResult));
         }
-        if (timeout >= 0) {
-            UUID timerId = UUID.randomUUID();
+        UUID timerId = timeout >= 0 ? UUID.randomUUID() : null;
+        if (timerId != null) {
             transaction.timers().save(new ProcessTimer(timerId,
                     process.identity().processUid(), now.plus(Duration.ofMillis(timeout)),
                     ProcessTimer.Status.SCHEDULED, now, Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.of(typed(TimerService.TERMINAL_INPUT_TIMEOUT))));
         }
-        continuation.waitFor("input:key", Map.of("rawKey", true));
+        continuation.waitFor(timerId != null ? "input:key:" + timerId : "input:key",
+                Map.of("rawKey", true, "coalesceText", coalesceText));
         throw FclSuspension.suspend();
     }
 

@@ -1,15 +1,24 @@
 package com.follarce.persistence.postgres.repository;
 
+import com.follarce.domain.packageinfo.PackageDataEntry;
+import com.follarce.domain.packageinfo.PackageDataUsage;
 import com.follarce.domain.packageinfo.PackageIndex;
+import com.follarce.domain.packageinfo.PackageInstallation;
 import com.follarce.domain.packageinfo.PackageRelease;
+import com.follarce.domain.packageinfo.PackageUninstallResult;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.port.PackageRepository;
+import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import com.follarce.persistence.postgres.mapper.JsonCodec;
+import com.google.gson.reflect.TypeToken;
+import java.lang.reflect.Type;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -161,6 +170,425 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
                 rows.getString("import_name"),
                 new PackageRelease.Hash(JdbcValues.hash(rows.getBytes("package_hash"))),
                 rows.getTimestamp("resolved_at").toInstant());
+    }
+
+    // ------------------------------------------------------------------
+    // Per-user installation ledger
+    // ------------------------------------------------------------------
+
+    private static final Type MAP_TYPE = new TypeToken<Map<String, Object>>() { }.getType();
+    private static final Type LIST_TYPE = new TypeToken<List<Map<String, Object>>>() { }.getType();
+
+    @Override
+    public boolean publishInstallation(UUID installationId, UUID ownerId,
+                                       ObjectHash rootFileHash, String source,
+                                       List<PackageInstallation.Member> members,
+                                       Instant at) {
+        List<Map<String, Object>> memberJson = members.stream().map(member -> fields(
+                "packageHash", member.packageHash().value(),
+                "dependencyDepth", member.dependencyDepth(),
+                "optional", member.optional())).toList();
+        String sql = "SELECT package.publish_installation(?,?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, installationId);
+            statement.setBytes(2, JdbcValues.hash(rootFileHash));
+            statement.setString(3, source);
+            statement.setObject(4, JdbcValues.json(json.write(memberJson)));
+            statement.setTimestamp(5, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Installation publication returned no result");
+                }
+                Map<String, Object> result = json.read(rows.getString(1), MAP_TYPE);
+                return Boolean.TRUE.equals(result.get("created"));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.publishInstallation", exception);
+        }
+    }
+
+    @Override
+    public List<PackageInstallation> findInstallations(UUID ownerId) {
+        String sql = "SELECT package.list_user_installations()";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next()) return List.of();
+            List<Map<String, Object>> installations = json.read(rows.getString(1), LIST_TYPE);
+            List<PackageInstallation> result = new ArrayList<>(installations.size());
+            for (Map<String, Object> installation : installations) {
+                String coordinate = text(installation.get("rootCoordinate"),
+                        "installation root coordinate");
+                String[] parts = coordinate.split("/", 3);
+                List<Map<String, Object>> members = json.read(
+                        json.write(installation.get("members")), LIST_TYPE);
+                List<PackageInstallation.Member> mapped = new ArrayList<>(members.size());
+                for (Map<String, Object> member : members) {
+                    String memberCoordinate = text(member.get("coordinate"),
+                            "installation member coordinate");
+                    String[] memberParts = memberCoordinate.split("/", 3);
+                    mapped.add(new PackageInstallation.Member(
+                            new PackageRelease.Coordinate(memberParts[0], memberParts[1],
+                                    memberParts[2]),
+                            new ObjectHash(text(member.get("packageHash"),
+                                    "installation member hash")),
+                            new ObjectHash(text(member.get("databaseFileSha256"),
+                                    "installation member file hash")),
+                            integer(member.get("dependencyDepth"), "dependency depth"),
+                            Boolean.TRUE.equals(member.get("optional"))));
+                }
+                result.add(new PackageInstallation(text(installation.get("installationId"),
+                        "installation id"), ownerId,
+                        new PackageRelease.Coordinate(parts[0], parts[1], parts[2]),
+                        new ObjectHash(text(installation.get("rootFileSha256"),
+                                "installation root file hash")),
+                        text(installation.get("source"), "installation source"),
+                        Instant.parse(text(installation.get("installedAt"),
+                                "installation timestamp")), List.copyOf(mapped)));
+            }
+            return List.copyOf(result);
+        } catch (SQLException exception) {
+            throw failure("package.findInstallations", exception);
+        }
+    }
+
+    @Override
+    public Optional<PackageRelease> findInstalledReleaseByDatabaseFileHash(
+            UUID ownerId, ObjectHash databaseFileHash) {
+        Optional<PackageRelease> release = findReleaseByDatabaseFileHash(databaseFileHash);
+        if (release.isEmpty()) return Optional.empty();
+        String sql = "SELECT package.installed_release(?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next() || rows.getString(1) == null) return Optional.empty();
+                return release;
+            }
+        } catch (SQLException exception) {
+            throw failure("package.findInstalledRelease", exception);
+        }
+    }
+
+    @Override
+    public List<PackageRelease> findInstalledReleases(UUID ownerId) {
+        List<PackageInstallation> installations = findInstallations(ownerId);
+        Map<String, PackageRelease> releases = new LinkedHashMap<>();
+        for (PackageInstallation installation : installations) {
+            for (PackageInstallation.Member member : installation.members()) {
+                findRelease(new PackageRelease.Hash(member.packageHash())).ifPresent(release ->
+                        releases.put(release.packageHash().value().value(), release));
+            }
+        }
+        return List.copyOf(releases.values());
+    }
+
+    @Override
+    public PackageUninstallResult uninstall(UUID ownerId, ObjectHash databaseFileHash,
+                                            boolean force, UUID callerProcessUid) {
+        String sql = "SELECT package.uninstall_package(?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setBoolean(2, force);
+            statement.setObject(3, callerProcessUid);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package uninstall returned no result");
+                }
+                Map<String, Object> summary = json.read(rows.getString(1), MAP_TYPE);
+                return new PackageUninstallResult(
+                        Boolean.TRUE.equals(summary.get("removed")),
+                        integer(summary.get("packagesRemoved"), "packagesRemoved"),
+                        integer(summary.get("dependenciesRemoved"), "dependenciesRemoved"),
+                        integer(summary.get("processesRemoved"), "processesRemoved"),
+                        integer(summary.get("bindingsRemoved"), "bindingsRemoved"),
+                        integer(summary.get("cacheFilesRemoved"), "cacheFilesRemoved"),
+                        integer(summary.get("dataNodesRemoved"), "dataNodesRemoved"),
+                        integer(summary.get("releasesPurged"), "releasesPurged"),
+                        integer(summary.get("objectsPurged"), "objectsPurged"));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.uninstall", exception);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Per-user per-package private data
+    // ------------------------------------------------------------------
+
+    @Override
+    public PackageDataUsage findDataUsage(UUID ownerId, ObjectHash databaseFileHash) {
+        String sql = "SELECT package.data_usage(?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data usage returned no result");
+                }
+                Map<String, Object> usage = json.read(rows.getString(1), MAP_TYPE);
+                return new PackageDataUsage(text(usage.get("spaceId"), "space id"), ownerId,
+                        new ObjectHash(text(usage.get("packageHash"),
+                                "package hash")),
+                        new ObjectHash(text(usage.get("databaseFileSha256"),
+                                "database file hash")),
+                        number(usage.get("logicalBytes"), "logical bytes"),
+                        number(usage.get("quota"), "quota"),
+                        number(usage.get("files"), "files"),
+                        Instant.parse(text(usage.get("updatedAt"), "usage updated at")));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.findDataUsage", exception);
+        }
+    }
+
+    @Override
+    public byte[] readDataEntry(UUID ownerId, ObjectHash databaseFileHash, String path) {
+        String sql = "SELECT package.data_read(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return null;
+                return rows.getBytes(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("package.readDataEntry", exception);
+        }
+    }
+
+    @Override
+    public PackageDataEntry writeDataEntry(UUID ownerId, ObjectHash databaseFileHash,
+                                           String path, byte[] content, String mediaType,
+                                           long expectedVersion) {
+        String sql = "SELECT package.data_write(?,?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            statement.setBytes(3, content);
+            statement.setString(4, mediaType);
+            statement.setLong(5, expectedVersion);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data write returned no result");
+                }
+                Map<String, Object> result = json.read(rows.getString(1), MAP_TYPE);
+                return new PackageDataEntry(path, "FILE",
+                        Optional.of(ObjectHash.sha256(
+                                new com.follarce.domain.vfs.BinaryContent(content))),
+                        content.length,
+                        number(result.get("version"), "data entry version"),
+                        Optional.of(Instant.now()));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.writeDataEntry", exception);
+        }
+    }
+
+    @Override
+    public PackageDataEntry appendDataEntry(UUID ownerId, ObjectHash databaseFileHash,
+                                            String path, byte[] content, long expectedVersion) {
+        String sql = "SELECT package.data_append(?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            statement.setBytes(3, content);
+            statement.setLong(4, expectedVersion);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data append returned no result");
+                }
+                Map<String, Object> result = json.read(rows.getString(1), MAP_TYPE);
+                return new PackageDataEntry(path, "FILE", Optional.empty(),
+                        number(result.get("bytes"), "appended bytes"),
+                        number(result.get("version"), "data entry version"),
+                        Optional.of(Instant.now()));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.appendDataEntry", exception);
+        }
+    }
+
+    @Override
+    public List<PackageDataEntry> listDataEntries(UUID ownerId, ObjectHash databaseFileHash,
+                                                  String path) {
+        String sql = "SELECT package.data_list(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return List.of();
+                List<Map<String, Object>> entries = json.read(rows.getString(1), LIST_TYPE);
+                List<PackageDataEntry> result = new ArrayList<>(entries.size());
+                for (Map<String, Object> entry : entries) {
+                    result.add(new PackageDataEntry(text(entry.get("name"), "data entry name"),
+                            text(entry.get("type"), "data entry type"), Optional.empty(),
+                            number(entry.get("size"), "data entry size"),
+                            number(entry.get("version"), "data entry version"),
+                            Optional.empty()));
+                }
+                return List.copyOf(result);
+            }
+        } catch (SQLException exception) {
+            throw failure("package.listDataEntries", exception);
+        }
+    }
+
+    @Override
+    public boolean removeDataEntry(UUID ownerId, ObjectHash databaseFileHash, String path) {
+        String sql = "SELECT package.data_remove(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data remove returned no result");
+                }
+                Map<String, Object> result = json.read(rows.getString(1), MAP_TYPE);
+                return Boolean.TRUE.equals(result.get("removed"));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.removeDataEntry", exception);
+        }
+    }
+
+    @Override
+    public PackageDataEntry renameDataEntry(UUID ownerId, ObjectHash databaseFileHash,
+                                            String from, String to) {
+        String sql = "SELECT package.data_rename(?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, from);
+            statement.setString(3, to);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data rename returned no result");
+                }
+                return new PackageDataEntry(to, "FILE", Optional.empty(), 0, 0,
+                        Optional.of(Instant.now()));
+            }
+        } catch (SQLException exception) {
+            throw failure("package.renameDataEntry", exception);
+        }
+    }
+
+    @Override
+    public void mkdirDataEntry(UUID ownerId, ObjectHash databaseFileHash, String path) {
+        String sql = "SELECT package.data_mkdir(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data mkdir returned no result");
+                }
+            }
+        } catch (SQLException exception) {
+            throw failure("package.mkdirDataEntry", exception);
+        }
+    }
+
+    @Override
+    public long clearDataEntries(UUID ownerId, ObjectHash databaseFileHash) {
+        String sql = "SELECT package.data_clear(?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data clear returned no result");
+                }
+                Map<String, Object> result = json.read(rows.getString(1), MAP_TYPE);
+                return number(result.get("entriesRemoved"), "entriesRemoved");
+            }
+        } catch (SQLException exception) {
+            throw failure("package.clearDataEntries", exception);
+        }
+    }
+
+    @Override
+    public long findDataQuota(UUID ownerId, ObjectHash databaseFileHash) {
+        return findDataUsage(ownerId, databaseFileHash).quota();
+    }
+
+    @Override
+    public void setDataQuota(UUID administratorId, UUID ownerId, ObjectHash databaseFileHash,
+                             long quotaBytes) {
+        String sql = "SELECT package.set_data_quota(?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            statement.setBytes(2, JdbcValues.hash(databaseFileHash));
+            statement.setLong(3, quotaBytes);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package quota override returned no result");
+                }
+            }
+        } catch (SQLException exception) {
+            throw failure("package.setDataQuota", exception);
+        }
+    }
+
+    @Override
+    public void clearDataQuota(UUID administratorId, UUID ownerId, ObjectHash databaseFileHash) {
+        String sql = "SELECT package.clear_data_quota(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, ownerId);
+            statement.setBytes(2, JdbcValues.hash(databaseFileHash));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package quota override returned no result");
+                }
+            }
+        } catch (SQLException exception) {
+            throw failure("package.clearDataQuota", exception);
+        }
+    }
+
+    @Override
+    public void registerManagedNode(UUID ownerId, UUID nodeId, ObjectHash databaseFileHash,
+                                    String purpose) {
+        String sql = "SELECT package.register_managed_node(?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, nodeId);
+            statement.setBytes(2, JdbcValues.hash(databaseFileHash));
+            statement.setString(3, purpose);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Managed node registration returned no result");
+                }
+            }
+        } catch (SQLException exception) {
+            throw failure("package.registerManagedNode", exception);
+        }
+    }
+
+    @Override
+    public Map<String, Object> recoverReport(UUID administratorId) {
+        String sql = "SELECT package.recover_report()";
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rows = statement.executeQuery()) {
+            if (!rows.next()) {
+                throw new IllegalStateException("Package recovery report returned no result");
+            }
+            return json.read(rows.getString(1), MAP_TYPE);
+        } catch (SQLException exception) {
+            throw failure("package.recoverReport", exception);
+        }
+    }
+
+    private static String text(Object value, String description) {
+        if (!(value instanceof String string)) {
+            throw new IllegalStateException(description + " is not text: " + value);
+        }
+        return string;
+    }
+
+    private static int integer(Object value, String description) {
+        return (int) number(value, description);
+    }
+
+    private static long number(Object value, String description) {
+        if (!(value instanceof Number number)) {
+            throw new IllegalStateException(description + " is not numeric: " + value);
+        }
+        return number.longValue();
     }
 
     private Optional<PackageRelease> findRelease(String operation, String condition, Binder binder) {

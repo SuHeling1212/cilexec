@@ -50,8 +50,18 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
 
     @Override
     public Optional<TerminalSession> findSession(UUID sessionId) {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT * FROM terminal.session WHERE session_id=?")) {
+        return findSession(sessionId, false);
+    }
+
+    @Override
+    public Optional<TerminalSession> findSessionForUpdate(UUID sessionId) {
+        return findSession(sessionId, true);
+    }
+
+    private Optional<TerminalSession> findSession(UUID sessionId, boolean lock) {
+        String sql = "SELECT * FROM terminal.session WHERE session_id=?"
+                + (lock ? " FOR UPDATE" : "");
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, sessionId);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) return Optional.empty();
@@ -66,7 +76,8 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
                 ));
             }
         } catch (SQLException exception) {
-            throw failure("terminal.findSession", exception);
+            throw failure(lock ? "terminal.findSessionForUpdate" : "terminal.findSession",
+                    exception);
         }
     }
 

@@ -209,6 +209,11 @@ public final class TerminalServer implements AutoCloseable {
                         transported.bind(account.userId(), control::interruptForeground);
                         control.outputRouteId().ifPresent(
                                 routeId -> TerminalOutputRouter.attach(routeId, sessionOutput));
+                        String restore = control.terminalRestoreSequence();
+                        if (!restore.isEmpty()) {
+                            sessionOutput.print(restore);
+                            sessionOutput.flush();
+                        }
                         return control;
                     },
                     administratorUsername).run();
@@ -405,7 +410,7 @@ public final class TerminalServer implements AutoCloseable {
     }
 
     /** Receives control frames independently, so Ctrl-C works while FCL is executing. */
-    private static final class DimensionInputStream extends FilterInputStream {
+    static final class DimensionInputStream extends FilterInputStream {
         private static final int END_OF_STREAM = -1;
         private volatile java.util.UUID ownerId;
         private volatile TerminalDimensions.Size size = new TerminalDimensions.Size(80, 24);
@@ -418,7 +423,7 @@ public final class TerminalServer implements AutoCloseable {
         private final ArrayBlockingQueue<Integer> input =
                 new ArrayBlockingQueue<>(MAX_BUFFERED_INPUT_BYTES);
 
-        private DimensionInputStream(InputStream input, long idleDisconnectNanos) {
+        DimensionInputStream(InputStream input, long idleDisconnectNanos) {
             super(input);
             this.idleDisconnectNanos = idleDisconnectNanos;
             Thread.ofVirtual().name("cilexec-terminal-input").start(this::pump);
@@ -479,6 +484,20 @@ public final class TerminalServer implements AutoCloseable {
                     Thread.interrupted();
                 }
             }
+        }
+
+        /**
+         * Reports buffered bytes actually available to {@code read()}. The default
+         * FilterInputStream implementation delegates to the raw socket, which the pump
+         * thread drains as fast as it can; by the time an escape-sequence parser checks
+         * {@code available()}, the socket may already be empty even though the queue still
+         * holds the sequence's continuation bytes. That made CSI sequences such as
+         * {@code ESC [ A} split into a standalone ESCAPE key plus literal {@code [} and
+         * {@code A} text events whenever the pump won the race.
+         */
+        @Override
+        public int available() {
+            return input.size();
         }
 
         private void pump() {

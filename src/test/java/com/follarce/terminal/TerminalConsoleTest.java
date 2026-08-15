@@ -122,6 +122,21 @@ class TerminalConsoleTest {
     }
 
     @Test
+    void coalescesBufferedTextOnlyWhenTheAttachedProcessOptsIn() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl();
+        control.batchKeyMode = true;
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(
+                "buffered text".getBytes(StandardCharsets.UTF_8)), () -> 80);
+
+        new TerminalConsole(input, new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        assertEquals(List.of("{\"kind\":\"paste\",\"text\":\"buffered text\"}"),
+                control.attachedInputs);
+    }
+
+    @Test
     void treatsCtrlCAsGlobalCancellationInsteadOfEditorInput() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         AtomicInteger modeChecks = new AtomicInteger();
@@ -140,6 +155,7 @@ class TerminalConsoleTest {
 
         assertTrue(control.attachedInputs.isEmpty());
         assertTrue(control.commands.isEmpty());
+        assertEquals(1, control.interrupts);
     }
 
     @Test
@@ -166,6 +182,30 @@ class TerminalConsoleTest {
                 "a crashed full-screen FCL program must leave alternate screen and "
                         + "mouse/paste/focus reporting: " + transcript);
         assertTrue(transcript.contains("error: Map key does not exist: key"), transcript);
+    }
+
+    @Test
+    void resetsAndInterruptsWhenKeyDeliveryFailsBeforeTheFclErrorIsReturned() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        RecordingControl control = new RecordingControl() {
+            @Override public AttachedInputMode attachedInputMode() {
+                return AttachedInputMode.KEY;
+            }
+            @Override public String submitAttachedInput(String input) {
+                throw new IllegalStateException("delivery failed");
+            }
+        };
+
+        TerminalConsole.Outcome outcome = new TerminalConsole(new BufferedReader(
+                new InputStreamReader(new ByteArrayInputStream("x".getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).runSession();
+
+        String transcript = output.toString(StandardCharsets.UTF_8);
+        assertEquals(TerminalConsole.Outcome.END_OF_INPUT, outcome);
+        assertEquals(1, control.interrupts);
+        assertTrue(transcript.contains("\u001b[?1049l\u001b[?1002l\u001b[?1006l"
+                + "\u001b[?2004l\u001b[?1004l\u001b[?25h\u001b[2J\u001b[H"), transcript);
     }
 
     @Test
@@ -248,7 +288,9 @@ class TerminalConsoleTest {
         final List<String> remembered = new ArrayList<>();
         boolean waiting;
         boolean keyMode;
+        boolean batchKeyMode;
         boolean shutdownRequested;
+        int interrupts;
         boolean shutdownAllowed = true;
         String shutdownPassword;
         String username = "administrator";
@@ -270,6 +312,7 @@ class TerminalConsoleTest {
         @Override public String submitAttachedInput(String input) {
             waiting = false;
             keyMode = false;
+            batchKeyMode = false;
             attachedInputs.add(input);
             return "accepted";
         }
@@ -279,6 +322,7 @@ class TerminalConsoleTest {
         }
 
         @Override public AttachedInputMode attachedInputMode() {
+            if (batchKeyMode) return AttachedInputMode.KEY_BATCH;
             if (keyMode) return AttachedInputMode.KEY;
             return TerminalControl.super.attachedInputMode();
         }
@@ -298,6 +342,11 @@ class TerminalConsoleTest {
 
         @Override public boolean canShutdown() {
             return shutdownAllowed;
+        }
+
+        @Override public boolean interruptForeground() {
+            interrupts++;
+            return true;
         }
     }
 }

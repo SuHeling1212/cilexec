@@ -8,6 +8,7 @@ import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.timer.ProcessTimer;
+import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 
 import java.time.Clock;
@@ -23,6 +24,7 @@ public final class TimerService {
     /** Marker payload of io.readKey(timeout) timers, delivered as a terminal timeout event. */
     public static final String TERMINAL_INPUT_TIMEOUT = "terminal-input-timeout";
     public static final String TERMINAL_TIMEOUT_EVENT = "{\"kind\":\"timeout\"}";
+    private static final FclContinuationCodec CONTINUATION_CODEC = new FclContinuationCodec();
     private final TransactionExecutor runtimeTransactions;
     private final UserTransactionExecutor userTransactions;
     private final Clock clock;
@@ -87,12 +89,11 @@ public final class TimerService {
                 if (process.isPresent()) {
                     CilProcess current = process.get();
                     boolean inputTimeout = isTerminalInputTimeout(timer)
-                            && isWaitingForTerminalInput(current);
+                            && isWaitingForTerminalInput(current, timer.timerId());
                     if (isWaitingFor(current, timer.timerId()) || inputTimeout) {
                         Continuation resumedContinuation = inputTimeout
-                                ? resumeWith(current.continuation(), ProcessInbox.TERMINAL_INPUT,
-                                Optional.of(new Continuation.PersistedValue("string",
-                                        TERMINAL_TIMEOUT_EVENT)))
+                                 ? resumeWith(current.continuation(), ProcessInbox.TERMINAL_INPUT,
+                                 Optional.of(terminalTimeoutPayload()))
                                 : resume(current.continuation(), timer.payload());
                         CilProcess.Status target = wakeTarget(current);
                         CilProcess ready = current.commitStatement(resumedContinuation,
@@ -172,15 +173,36 @@ public final class TimerService {
 
     static boolean isTerminalInputTimeout(ProcessTimer timer) {
         return timer.payload().map(value ->
-                TERMINAL_INPUT_TIMEOUT.equals(value.canonicalPayload())).orElse(false);
+                TERMINAL_INPUT_TIMEOUT.equals(decodePayload(value))).orElse(false);
+    }
+
+    /** Terminal inbox values use the same typed envelope as persisted continuation variables. */
+    static Continuation.PersistedValue terminalTimeoutPayload() {
+        return new Continuation.PersistedValue(
+                CONTINUATION_CODEC.valueType(TERMINAL_TIMEOUT_EVENT),
+                CONTINUATION_CODEC.valueToJson(TERMINAL_TIMEOUT_EVENT));
+    }
+
+    /**
+     * Timer payloads store the codec-encoded value envelope
+     * ({@code {"type":"string","value":...}}) rather than the raw string, so a
+     * direct {@code canonicalPayload()} comparison can never match. Decode the
+     * envelope the same way continuation variables are restored.
+     */
+    private static Object decodePayload(Continuation.PersistedValue value) {
+        try {
+            return CONTINUATION_CODEC.valueFromJson(value.canonicalPayload());
+        } catch (RuntimeException malformed) {
+            return value.canonicalPayload();
+        }
     }
 
     /** A process blocked on io.readKey (key-mode input wait) can receive a timeout event. */
-    static boolean isWaitingForTerminalInput(CilProcess process) {
+    static boolean isWaitingForTerminalInput(CilProcess process, UUID timerId) {
         return process.status() == CilProcess.Status.WAITING_INPUT
                 && process.continuation().waitState().map(wait ->
                         wait.kind() == Continuation.WaitKind.INPUT
-                                && wait.targetId().isPresent()).orElse(false);
+                                && wait.targetId().equals(Optional.of(timerId))).orElse(false);
     }
 
     private static CilProcess.Status wakeTarget(CilProcess process) {

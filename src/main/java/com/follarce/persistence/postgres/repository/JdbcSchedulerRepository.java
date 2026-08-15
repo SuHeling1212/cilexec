@@ -51,17 +51,14 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
 
     private Optional<SchedulerClaim> claim(UUID runnerId, UUID bootId, Instant now,
                                            Duration leaseDuration, boolean interrupted) {
-        // Deliberately lockless select: claimProcess updates the process row with a
-        // status CAS that makes claiming mutually exclusive, and the UPDATE acquires the
-        // row lock in the same order (queue row first via markQueueClaimed, process row
-        // via claimProcess) as every other scheduler path. Locking the process row inside
-        // this SELECT previously created an AB-BA deadlock with effect-worker wake
-        // transactions (which lock the process row first and the queue row second).
+        // Lock only the process row so competing workers skip the same FIFO head without
+        // reversing the process-then-queue lock order used by wake transactions.
         String select = "SELECT queue.process_uid, queue.owner_id FROM scheduler.queue AS queue "
                 + "JOIN process.process AS process ON process.process_uid=queue.process_uid "
                 + "WHERE queue.queue_state='READY' AND queue.ready_at<=? AND process.status='READY' "
                 + "AND process.interrupt_requested=" + interrupted + " "
-                + "ORDER BY queue.enqueued_at, queue.process_uid LIMIT 1";
+                + "ORDER BY queue.enqueued_at, queue.process_uid LIMIT 1 "
+                + "FOR UPDATE OF process SKIP LOCKED";
         try {
             ensureRunner(runnerId, bootId, now);
             try (PreparedStatement statement = connection.prepareStatement(select)) {

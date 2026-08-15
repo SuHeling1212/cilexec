@@ -11,11 +11,20 @@ import java.util.Objects;
 
 /** Immutable compiled FCL program. */
 public final class FclProgram {
+    /**
+     * Linked package functions carry the 64-character logical package hash in
+     * {@code packageIdentity}; user-defined and validation-only functions carry
+     * {@code null}.
+     */
     public record Function(String name, List<String> parameters, int entryPoint,
-                           int endPoint) {
+                           int endPoint, String packageIdentity) {
         public Function {
             Objects.requireNonNull(name, "name");
             parameters = List.copyOf(parameters);
+        }
+
+        public Function(String name, List<String> parameters, int entryPoint, int endPoint) {
+            this(name, parameters, entryPoint, endPoint, null);
         }
     }
 

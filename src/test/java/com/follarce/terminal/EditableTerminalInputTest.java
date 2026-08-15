@@ -5,12 +5,15 @@ import org.junit.jupiter.api.Test;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -18,6 +21,90 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EditableTerminalInputTest {
+    @Test
+    void coalescesOnlyAlreadyBufferedPrintableTextAndPreservesControlOrder() throws Exception {
+        byte[] source = "ab中🙂\u001b[Acd".getBytes(StandardCharsets.UTF_8);
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(source), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"paste\",\"text\":\"ab中🙂\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"key\",\"key\":\"UP\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"paste\",\"text\":\"cd\"}",
+                input.readKeyEvent(output, true));
+    }
+
+    @Test
+    void capsBufferedTextBatchesAtSixtyFourCodePoints() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(
+                "a".repeat(70).getBytes(StandardCharsets.UTF_8)), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"paste\",\"text\":\"" + "a".repeat(64) + "\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"paste\",\"text\":\"aaaaaa\"}",
+                input.readKeyEvent(output, true));
+    }
+
+    @Test
+    void coalescesPrintableTextThatArrivesWithinTwentyMilliseconds() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(
+                new DelayedSecondByteInputStream('a', 'b', 5), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"paste\",\"text\":\"ab\"}",
+                input.readKeyEvent(output, true));
+    }
+
+    @Test
+    void textBatchWaitHasABoundedTwentyMillisecondDeadline() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(
+                new ByteArrayInputStream(new byte[]{'x'}), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        long started = System.nanoTime();
+        assertEquals("{\"kind\":\"key\",\"key\":\"x\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"x\"}",
+                input.readKeyEvent(output, true));
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+        assertTrue(elapsedMillis >= 10, "batch mode must briefly wait for transport bytes");
+        assertTrue(elapsedMillis < 250, "batch mode must not wait indefinitely: "
+                + elapsedMillis + " ms");
+    }
+
+    @Test
+    void controlInputArrivingDuringBatchWindowKeepsItsOrder() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(
+                new DelayedSecondByteInputStream('a', 3, 5), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"key\",\"key\":\"a\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"a\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"key\",\"key\":\"CTRL_C\",\"shift\":false,"
+                + "\"ctrl\":true,\"alt\":false,\"text\":\"\"}",
+                input.readKeyEvent(output, true));
+    }
+
+    @Test
+    void laterTextDoesNotResetTheTwentyMillisecondDeadline() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(new DelayedSecondByteInputStream(
+                new int[]{'a', 'b', 'c'}, new long[]{0, 15, 25}), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"paste\",\"text\":\"ab\"}",
+                input.readKeyEvent(output, true));
+    }
+
     @Test
     void standaloneEscapeDoesNotConsumeTheFollowingKey() throws Exception {
         try (PipedInputStream source = new PipedInputStream();
@@ -58,6 +145,38 @@ class EditableTerminalInputTest {
                 + "\"alt\":false,\"text\":\"x\"}", input.readKeyEvent(output));
         assertEquals("{\"kind\":\"key\",\"key\":\"LEFT\",\"shift\":true,\"ctrl\":false,"
                 + "\"alt\":false,\"text\":\"\"}", input.readKeyEvent(output));
+    }
+
+    /**
+     * The remote session buffers socket bytes in a queue drained by a pump thread.
+     * available() must report the queue, not the raw socket: by the time an escape
+     * parser checks it, the pump may already have drained the socket even though the
+     * sequence continuation bytes are still queued. Reporting the raw socket made
+     * CSI sequences split into a standalone ESCAPE key plus literal text.
+     */
+    @Test
+    void escapeSequencesSurviveWhenThePumpHasDrainedTheSocket() throws Exception {
+        java.io.PipedInputStream socket = new java.io.PipedInputStream();
+        java.io.PipedOutputStream writer = new java.io.PipedOutputStream(socket);
+        TerminalServer.DimensionInputStream transported = new TerminalServer.DimensionInputStream(
+                socket, java.time.Duration.ofMinutes(1).toNanos());
+        writer.write(new byte[]{27, '[', 'A'});
+        writer.flush();
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        while (transported.available() < 3 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertTrue(transported.available() >= 3,
+                "queued bytes must be visible through available()");
+
+        TerminalInput input = TerminalInput.remoteRaw(transported, () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+        assertEquals("{\"kind\":\"key\",\"key\":\"UP\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"\"}",
+                input.readKeyEvent(output));
+        writer.close();
+        socket.close();
     }
 
     @Test
@@ -484,5 +603,43 @@ class EditableTerminalInputTest {
             offset += token.length();
         }
         return count;
+    }
+
+    private static final class DelayedSecondByteInputStream extends InputStream {
+        private final int[] bytes;
+        private final long[] availableAfterNanos;
+        private int offset;
+        private long startedAt;
+
+        private DelayedSecondByteInputStream(int first, int second, long delayMillis) {
+            this(new int[]{first, second}, new long[]{0, delayMillis});
+        }
+
+        private DelayedSecondByteInputStream(int[] bytes, long[] availableAfterMillis) {
+            this.bytes = bytes.clone();
+            this.availableAfterNanos = java.util.Arrays.stream(availableAfterMillis)
+                    .map(TimeUnit.MILLISECONDS::toNanos).toArray();
+        }
+
+        @Override
+        public int read() {
+            if (offset == 0) {
+                startedAt = System.nanoTime();
+            }
+            if (offset >= bytes.length) return -1;
+            long remaining;
+            while ((remaining = startedAt + availableAfterNanos[offset]
+                    - System.nanoTime()) > 0) {
+                LockSupport.parkNanos(remaining);
+            }
+            return bytes[offset++];
+        }
+
+        @Override
+        public int available() {
+            if (offset == 0) return 1;
+            return offset < bytes.length && System.nanoTime() >= startedAt
+                    + availableAfterNanos[offset] ? 1 : 0;
+        }
     }
 }

@@ -278,6 +278,39 @@ public final class FclBuiltins {
                             : value.length();
                     return (long) value.lastIndexOf(search, start);
                 })
+                .register("text", "commonPrefixLength", args -> {
+                    arity(args, 2, "commonPrefixLength");
+                    String first = stringAt(args, 0, "commonPrefixLength");
+                    String second = stringAt(args, 1, "commonPrefixLength");
+                    int firstIndex = 0;
+                    int secondIndex = 0;
+                    while (firstIndex < first.length() && secondIndex < second.length()) {
+                        int firstCodePoint = first.codePointAt(firstIndex);
+                        int secondCodePoint = second.codePointAt(secondIndex);
+                        if (firstCodePoint != secondCodePoint) break;
+                        firstIndex += Character.charCount(firstCodePoint);
+                        secondIndex += Character.charCount(secondCodePoint);
+                    }
+                    return (long) firstIndex;
+                })
+                .register("text", "commonSuffixLength", args -> {
+                    arity(args, 2, "commonSuffixLength");
+                    String first = stringAt(args, 0, "commonSuffixLength");
+                    String second = stringAt(args, 1, "commonSuffixLength");
+                    int firstIndex = first.length();
+                    int secondIndex = second.length();
+                    int matched = 0;
+                    while (firstIndex > 0 && secondIndex > 0) {
+                        int firstCodePoint = first.codePointBefore(firstIndex);
+                        int secondCodePoint = second.codePointBefore(secondIndex);
+                        if (firstCodePoint != secondCodePoint) break;
+                        int width = Character.charCount(firstCodePoint);
+                        firstIndex -= width;
+                        secondIndex -= Character.charCount(secondCodePoint);
+                        matched += width;
+                    }
+                    return (long) matched;
+                })
                 .register("text", "repeat", args -> {
                     arity(args, 2, "repeat");
                     String value = stringAt(args, 0, "repeat");

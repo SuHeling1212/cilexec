@@ -54,19 +54,28 @@ public final class TerminalConsole implements Runnable {
             while (true) {
                 try {
                     TerminalControl.AttachedInputMode inputMode = control.attachedInputMode();
-                    if (inputMode == TerminalControl.AttachedInputMode.KEY) {
-                        String event = input.readKeyEvent(output);
+                    if (inputMode == TerminalControl.AttachedInputMode.KEY
+                            || inputMode == TerminalControl.AttachedInputMode.KEY_BATCH) {
+                        String event = input.readKeyEvent(output,
+                                inputMode == TerminalControl.AttachedInputMode.KEY_BATCH);
                         if (event == null) return Outcome.END_OF_INPUT;
                         if (event.contains("\"key\":\"CTRL_C\"")) {
-                            input.finishKeyMode();
-                            output.print(EXIT_FULL_SCREEN);
-                            output.flush();
+                            leaveFullScreen();
+                            control.interruptForeground();
                             continue;
                         }
-                        String result = control.submitAttachedInput(event);
+                        String result;
+                        try {
+                            result = control.submitAttachedInput(event);
+                        } catch (RuntimeException failure) {
+                            // A failed key delivery used to fall through to the generic error
+                            // handler, leaving the editor's alternate screen and input modes live.
+                            leaveFullScreen();
+                            control.interruptForeground();
+                            throw failure;
+                        }
                         if (result != null && result.startsWith("error")) {
-                            input.finishKeyMode();
-                            output.print(EXIT_FULL_SCREEN);
+                            leaveFullScreen();
                             output.println(result);
                         }
                         continue;
@@ -187,6 +196,12 @@ public final class TerminalConsole implements Runnable {
     private static boolean sameFailure(RuntimeException previous, RuntimeException current) {
         return previous != null && previous.getClass().equals(current.getClass())
                 && java.util.Objects.equals(previous.getMessage(), current.getMessage());
+    }
+
+    private void leaveFullScreen() throws IOException {
+        input.finishKeyMode();
+        output.print(EXIT_FULL_SCREEN);
+        output.flush();
     }
 
     private void remember(String line) {

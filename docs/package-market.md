@@ -99,7 +99,7 @@ tells you explicitly to call `market.configure(...)`.
 | `market.download(sha256)` | Downloads in chunks and recomputes the full-file SHA-256. |
 | `market.install(sha256)` | Recursively installs exact-hash dependencies; identity is the SHA-256, so a different hash is a different package. |
 | `market.list()` | Lists installed package SHA-256s and their coordinates. |
-| `market.uninstall(sha256)` | Removes the downloaded VFS file and market receipt. The immutable Runtime release and existing process bindings remain. |
+| `market.uninstall(sha256)` | Delegates to the core package uninstaller: removes the private data space, installation records, process bindings, and globally unreferenced release payloads; additionally deletes the market download cache and receipt. Ordinary user documents and other users' installations are never removed. |
 | `market.help()` | Returns function help. |
 | `market.run()` | Returns the client version and help without requiring a configured origin. |
 
@@ -126,6 +126,23 @@ Runtime additionally revalidates the SQLite structure, package-internal hashes, 
 declaration, and the exact dependency graph. The market package limit is 64 MiB; the
 ordinary single-VFS-file limit remains 1 GiB.
 
+Downloaded `.db` files under `/market/packages/` are registered as managed artifacts in
+the database. Uninstallation deletes them and reports the count as `cacheFilesRemoved`;
+ordinary user files are never registered or touched.
+
+## Private Package Data
+
+Every user and exact installed package release owns an isolated private data space
+(`package-data://<database-file-sha256>/`) with a default quota of 256 MiB. Package
+code writes to it with the `packageData.*` functions, which require the declared
+`package.data` capability and resolve the space from the linked package identity;
+other packages and ordinary VFS paths cannot reach it. Users inspect, export,
+import, and clear the space with `package.dataInfo`, `package.dataList`,
+`package.dataRead`, `package.dataExport`, `package.dataImport`, and
+`package.dataClear`. Uninstallation removes the private space, the market download
+cache, the installation ledger, and process bindings, and garbage-collects
+globally unreferenced release payloads; ordinary user documents are never touched.
+
 ## Package Capabilities
 
 `package.run` executes an application package through its declared entrypoints. The first
@@ -145,6 +162,7 @@ uses a capability that was not declared. The audit covers the following mapping:
 | `io.writeFile`, `file.*` write operations | `vfs.write` |
 | `util.input`, `io.input`, `io.readKey`, `io.readChar` | `terminal.raw_input` |
 | `market.configure`, `market.update`, `market.download`, `market.install`, `market.uninstall` | `package.manage` |
+| `packageData.*` private data functions | `package.data` |
 | `process.exec`, `process.kill`, `process.pause`, `process.continue`, `process.getList` | `process.control` |
 | `user.validateUser`, `user.getListOfUsers`, `user.removeUser` | `system.admin` |
 

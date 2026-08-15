@@ -80,7 +80,8 @@ final class FclExpressionEvaluator {
                 throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments));
             }
             Object value = functions.invoke(call.name(), arguments,
-                    new FclFunctionRegistry.Invocation(call.id(), continuation));
+                    new FclFunctionRegistry.Invocation(call.id(), continuation,
+                            currentPackageIdentity()));
             FclContinuation.PendingStatement current = continuation.pendingStatement();
             if (current == null) {
                 current = new FclContinuation.PendingStatement(continuation.programCounter());
@@ -90,5 +91,16 @@ final class FclExpressionEvaluator {
         }
         throw new FclRuntimeException("Unsupported expression node: "
                 + expression.getClass().getSimpleName());
+    }
+
+    /**
+     * Resolves the package identity of the function currently being executed from
+     * the innermost call frame. Top-level program code has no package identity.
+     */
+    private String currentPackageIdentity() {
+        List<FclContinuation.CallFrame> frames = continuation.callStack();
+        if (frames.isEmpty()) return null;
+        FclProgram.Function function = program.function(frames.getLast().functionName());
+        return function == null ? null : function.packageIdentity();
     }
 }

@@ -71,6 +71,49 @@ class PostgresBackupRestoreIT {
             provision.executeQuery().close();
         }
 
+        // Package lifecycle and private data are authoritative PostgreSQL state
+        // and must survive the backup/restore cycle with usage intact.
+        try (Connection connection = migratorConnection(SOURCE, SOURCE.getDatabaseName());
+             Statement statement = connection.createStatement()) {
+            statement.execute("SET ROLE cilexec_owner");
+            statement.execute("INSERT INTO object_store.object("
+                    + "object_hash,byte_size,media_type,content) VALUES ("
+                    + "sha256('backup-package-content'::bytea),"
+                    + "octet_length('backup-package-content'::bytea),"
+                    + "'application/vnd.sqlite3','backup-package-content'::bytea)");
+            statement.execute("INSERT INTO package.release(package_hash,namespace,"
+                    + "package_name,package_version,database_object_hash,database_file_hash,"
+                    + "package_format_version,metadata_json,imported_by,created_at) VALUES ("
+                    + "sha256('backup-package-content'::bytea),'demo','backup-pkg','1.0.0',"
+                    + "sha256('backup-package-content'::bytea),"
+                    + "sha256('backup-package-content'::bytea),2,'{}'::jsonb,'" + ownerId
+                    + "'::uuid,clock_timestamp())");
+            statement.execute("INSERT INTO package.release_identity(package_hash,namespace,"
+                    + "package_name,package_version,database_file_hash) VALUES ("
+                    + "sha256('backup-package-content'::bytea),'demo','backup-pkg','1.0.0',"
+                    + "sha256('backup-package-content'::bytea))");
+            statement.execute("INSERT INTO package.installation_root("
+                    + "installation_id,owner_id,root_package_hash,source) VALUES ('"
+                    + UUID.randomUUID() + "'::uuid,'" + ownerId + "'::uuid,"
+                    + "sha256('backup-package-content'::bytea),'LOCAL')");
+            statement.execute("INSERT INTO package.installation_member("
+                    + "installation_id,owner_id,package_hash,dependency_depth,optional) "
+                    + "SELECT installation_id,'" + ownerId + "'::uuid,"
+                    + "sha256('backup-package-content'::bytea),0,false "
+                    + "FROM package.installation_root WHERE owner_id='" + ownerId + "'::uuid");
+            statement.execute("INSERT INTO package.data_space("
+                    + "space_id,owner_id,package_hash,database_file_hash,logical_bytes) VALUES ('"
+                    + UUID.randomUUID() + "'::uuid,'" + ownerId + "'::uuid,"
+                    + "sha256('backup-package-content'::bytea),"
+                    + "sha256('backup-package-content'::bytea),22)");
+            statement.execute("INSERT INTO package.data_entry(space_id,relative_path,"
+                    + "entry_type,object_hash,byte_size,state_version) "
+                    + "SELECT space_id,'note.txt','FILE',"
+                    + "sha256('backup-package-content'::bytea),22,1 "
+                    + "FROM package.data_space WHERE owner_id='" + ownerId + "'::uuid");
+            statement.execute("RESET ROLE");
+        }
+
         assertExec(SOURCE.execInContainer("pg_dump", "--username=" + SOURCE.getUsername(),
                 "--dbname=" + SOURCE.getDatabaseName(), "--format=custom",
                 "--file=/tmp/cilexec.backup"));
@@ -107,6 +150,23 @@ class PostgresBackupRestoreIT {
                             + "AND NOT rolcanlogin AND NOT rolinherit"));
             assertEquals(1, count(connection,
                     "SELECT pg_has_role('cilexec_runtime','" + roleName + "','MEMBER')::integer"));
+            assertEquals(1, count(connection,
+                    "SELECT count(*) FROM package.release WHERE package_hash="
+                            + "sha256('backup-package-content'::bytea)"));
+            assertEquals(1, count(connection,
+                    "SELECT count(*) FROM package.release_identity"));
+            assertEquals(1, count(connection,
+                    "SELECT count(*) FROM package.installation_root WHERE owner_id='"
+                            + ownerId + "'::uuid"));
+            assertEquals(1, count(connection,
+                    "SELECT count(*) FROM package.installation_member WHERE owner_id='"
+                            + ownerId + "'::uuid"));
+            assertEquals(1, count(connection,
+                    "SELECT count(*) FROM package.data_space WHERE owner_id='"
+                            + ownerId + "'::uuid AND logical_bytes=22"));
+            assertEquals(1, count(connection,
+                    "SELECT count(*) FROM package.data_entry WHERE relative_path='note.txt' "
+                            + "AND byte_size=22"));
         }
     }
 

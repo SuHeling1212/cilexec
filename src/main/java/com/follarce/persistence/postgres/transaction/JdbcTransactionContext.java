@@ -28,6 +28,7 @@ import com.follarce.persistence.postgres.repository.JdbcTerminalRepository;
 import com.follarce.persistence.postgres.repository.JdbcTimerRepository;
 import com.follarce.persistence.postgres.repository.JdbcVfsRepository;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -76,6 +77,18 @@ public final class JdbcTransactionContext implements TransactionContext {
     @Override public AuditRepository audit() { return audit; }
     @Override public TerminalRepository terminal() { return terminal; }
     @Override public EnvironmentRepository environment() { return environment; }
+
+    @Override
+    public void setLocalSetting(String name, String value) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT set_config(?,?,true)")) {
+            statement.setString(1, name);
+            statement.setString(2, value);
+            statement.execute();
+        } catch (SQLException exception) {
+            throw SqlStateClassifier.classify("transaction.setLocalSetting", exception);
+        }
+    }
 
     @Override
     public void commit() {

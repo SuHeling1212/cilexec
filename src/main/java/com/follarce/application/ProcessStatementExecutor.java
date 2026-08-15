@@ -688,7 +688,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     "include requires a compiled source dependency; unresolved include: " + target);
             return;
         }
-        Optional<PackageRelease> release = directRelease(transaction, target);
+        Optional<PackageRelease> release = directRelease(transaction, process, target);
         if (release.isEmpty()) {
             continuation.rejectDirective("Unresolved package import: " + target);
             return;
@@ -704,10 +704,12 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     }
 
     static Optional<PackageRelease> directRelease(
-            com.follarce.domain.port.TransactionContext transaction, String target) {
+            com.follarce.domain.port.TransactionContext transaction, CilProcess process,
+            String target) {
         if (!isSha256(target)) return Optional.empty();
-        return transaction.packages().findReleaseByDatabaseFileHash(new ObjectHash(
-                target.toLowerCase(java.util.Locale.ROOT)));
+        return transaction.packages().findInstalledReleaseByDatabaseFileHash(
+                process.ownerId(),
+                new ObjectHash(target.toLowerCase(java.util.Locale.ROOT)));
     }
 
     static boolean isSha256(String target) {

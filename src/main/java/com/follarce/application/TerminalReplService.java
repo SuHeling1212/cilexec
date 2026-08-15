@@ -19,6 +19,7 @@ import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclScope;
+import com.follarce.fcl.TerminalModeState;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 
 import java.time.Clock;
@@ -84,21 +85,24 @@ public final class TerminalReplService {
         Submission submission = transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.PROCESS_CREATE);
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
-            TerminalSession session = transaction.terminal().findSession(sessionId)
+            TerminalSession session = transaction.terminal().findSessionForUpdate(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
             if (!session.ownerId().equals(ownerId) || session.status() != TerminalSession.Status.OPEN) {
                 throw new SecurityException("Terminal session is not open for this user");
             }
 
-            Optional<CilProcess> previous = transaction.terminal().findActiveAttachment(sessionId)
+            Optional<CilProcess> attached = transaction.terminal().findActiveAttachment(sessionId)
                     .flatMap(attachment -> transaction.processes().findByUid(attachment.processUid()));
-            if (previous.isPresent()
-                    && previous.orElseThrow().status() != CilProcess.Status.PAUSED) {
+            if (attached.isPresent() && !attached.orElseThrow().isTerminal()
+                    && attached.orElseThrow().status() != CilProcess.Status.PAUSED) {
                 throw new IllegalStateException("Attached PID "
-                        + previous.orElseThrow().identity().pid()
+                        + attached.orElseThrow().identity().pid()
                         + " must be PAUSED before accepting input; current status is "
-                        + previous.orElseThrow().status());
+                        + attached.orElseThrow().status());
             }
+            // A deterministic runtime failure cannot be resumed. Replace the terminal
+            // attachment so the user can immediately start a clean REPL process.
+            Optional<CilProcess> previous = attached.filter(process -> !process.isTerminal());
             String library = accumulatedLibrary(previous);
             PreparedSource prepared = replSource(expandedSubmission, library);
             UUID processUid = previous.map(value -> value.identity().processUid())
@@ -159,6 +163,25 @@ public final class TerminalReplService {
                         .map(this::snapshot));
     }
 
+    /** Replays terminal modes committed by the attached process before it next renders. */
+    public String terminalRestoreSequence(UUID ownerId, UUID sessionId) {
+        return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction ->
+                transaction.terminal().findActiveAttachment(sessionId)
+                        .flatMap(attachment -> transaction.processes()
+                                .findByUid(attachment.processUid()))
+                        .filter(process -> process.status() == CilProcess.Status.WAITING_INPUT)
+                        .filter(process -> {
+                            FclContinuation continuation = bridge.restore(process.continuation());
+                            return continuation.waitState().kind()
+                                    == FclContinuation.WaitKind.EXTERNAL
+                                    && continuation.waitState().key() != null
+                                    && continuation.waitState().key().startsWith("input:key");
+                        })
+                        .map(process -> TerminalModeState.replay(
+                                bridge.restore(process.continuation()).globalScope()))
+                        .orElse(""));
+    }
+
     public Map<String, Object> variables(UUID ownerId, UUID sessionId) {
         return active(ownerId, sessionId).map(Snapshot::variables).orElse(Map.of());
     }
@@ -186,7 +209,9 @@ public final class TerminalReplService {
         return new Snapshot(process.identity().pid(), process.status(), runtime.result(),
                 immutableVariables(variables), runtime.failed(),
                 runtime.waitState().kind() == FclContinuation.WaitKind.EXTERNAL
-                        && "input:key".equals(runtime.waitState().key()),
+                        && runtime.waitState().key() != null
+                        && runtime.waitState().key().startsWith("input:key"),
+                Boolean.TRUE.equals(runtime.waitState().payload().get("coalesceText")),
                 runtime.exceptionStack().stream()
                 .map(frame -> frame.type() + ": " + frame.message()).toList());
     }
@@ -362,7 +387,10 @@ public final class TerminalReplService {
             boolean resolvable = transaction.packages()
                     .findProcessBinding(processUid, name).isPresent();
             if (!resolvable) {
-                resolvable = ProcessStatementExecutor.directRelease(transaction, target)
+                resolvable = transaction.packages()
+                        .findInstalledReleaseByDatabaseFileHash(ownerId,
+                                new com.follarce.domain.vfs.ObjectHash(
+                                        target.toLowerCase(java.util.Locale.ROOT)))
                         .isPresent();
             }
             if (!resolvable) {
@@ -434,7 +462,7 @@ public final class TerminalReplService {
 
     public record Snapshot(long pid, CilProcess.Status status, Object result,
                            Map<String, Object> variables, boolean failed, boolean keyInput,
-                           List<String> errors) {
+                           boolean coalesceTextInput, List<String> errors) {
         public Snapshot {
             variables = immutableVariables(variables);
             errors = List.copyOf(errors);

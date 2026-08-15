@@ -17,6 +17,11 @@ public interface TerminalRepository {
 
     Optional<TerminalSession> findSession(UUID sessionId);
 
+    /** Locks a session before allocating its next durable input sequence or attachment. */
+    default Optional<TerminalSession> findSessionForUpdate(UUID sessionId) {
+        return findSession(sessionId);
+    }
+
     /** Most recently active durable session for one authenticated user. */
     default Optional<TerminalSession> findOpenSession(UUID ownerId) {
         throw new UnsupportedOperationException("Open terminal lookup is not implemented");

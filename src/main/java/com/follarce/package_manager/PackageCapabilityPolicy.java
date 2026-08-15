@@ -21,7 +21,7 @@ public final class PackageCapabilityPolicy {
     private static final Set<String> KNOWN = Set.of(
             "vfs.read", "vfs.write", "terminal.raw_input", "network.http",
             "network.socket", "process.create", "process.control", "package.manage",
-            "system.admin");
+            "package.data", "system.admin");
     private static final Map<String, Set<Capability>> APPLICATION = Map.of(
             "vfs.read", Set.of(Capability.VFS_READ),
             "vfs.write", Set.of(Capability.VFS_WRITE),
@@ -31,6 +31,7 @@ public final class PackageCapabilityPolicy {
             "process.create", Set.of(Capability.PROCESS_CREATE),
             "process.control", Set.of(Capability.PROCESS_CONTROL_OWN),
             "package.manage", Set.of(Capability.PACKAGE_IMPORT, Capability.PACKAGE_BIND),
+            "package.data", Set.of(Capability.PACKAGE_BIND),
             "system.admin", Set.of(Capability.SYSTEM_ADMIN));
 
     private final Set<String> required;
@@ -169,6 +170,9 @@ public final class PackageCapabilityPolicy {
         if (call.startsWith("market.") && !Set.of("market.origin", "market.search",
                 "market.info", "market.list", "market.help", "market.run").contains(call)) {
             return java.util.Optional.of("package.manage");
+        }
+        if (call.startsWith("packageData.")) {
+            return java.util.Optional.of("package.data");
         }
         if (call.startsWith("package.") && !call.equals("package.info")
                 && !call.equals("package.list") && !call.equals("package.verify")

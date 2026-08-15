@@ -47,7 +47,7 @@ class PortContractTest {
         Set<String> expected = Set.of(
                 "programs", "processes", "scheduler", "ipc", "timers", "vfs",
                 "packages", "effects", "auth", "audit", "terminal", "environment",
-                "commit", "rollback", "close");
+                "commit", "rollback", "close", "setLocalSetting");
         assertTrue(methods.containsAll(expected));
         assertEquals(expected.size(), methods.size());
     }

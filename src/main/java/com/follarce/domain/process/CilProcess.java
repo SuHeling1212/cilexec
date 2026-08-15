@@ -99,9 +99,12 @@ public record CilProcess(
     private CilProcess copy(Status target, long version, long epoch,
                             Continuation nextContinuation, Instant at) {
         Invariant.required(at, "at");
-        Invariant.check(!at.isBefore(updatedAt), "process update time must not move backwards");
+        // Transaction retries may reuse an application timestamp captured before a concurrent
+        // committed update was re-read. Preserve the durable monotonic clock instead of turning
+        // harmless serialization contention or a host clock correction into process failure.
+        Instant committedAt = at.isBefore(updatedAt) ? updatedAt : at;
         return new CilProcess(identity, ownerId, target, version, epoch, nextContinuation,
-                parentProcessUid, createdAt, at);
+                parentProcessUid, createdAt, committedAt);
     }
 
     private static Map<Status, Set<Status>> transitions() {

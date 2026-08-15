@@ -31,11 +31,10 @@ class JdbcSchedulerRepositoryTest {
         String interrupted = capture.selects.get(1);
         assertTrue(normal.contains("process.interrupt_requested=false"));
         assertTrue(interrupted.contains("process.interrupt_requested=true"));
-        // The claim select must stay lockless: locking the process row here created an
-        // AB-BA deadlock with effect-worker wake transactions. Exclusive claiming is
-        // provided by the claimProcess status CAS instead.
-        assertFalse(normal.contains("FOR UPDATE"));
-        assertFalse(interrupted.contains("FOR UPDATE"));
+        assertTrue(normal.contains("FOR UPDATE OF process SKIP LOCKED"));
+        assertTrue(interrupted.contains("FOR UPDATE OF process SKIP LOCKED"));
+        assertFalse(normal.contains("FOR UPDATE OF queue"));
+        assertFalse(interrupted.contains("FOR UPDATE OF queue"));
         assertTrue(capture.statements.stream().anyMatch(sql ->
                 sql.contains("WITH released AS MATERIALIZED")
                         && sql.contains("cilexec_scheduler_work")

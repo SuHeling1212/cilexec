@@ -14,6 +14,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Guard logic that decides whether a fired timer resumes a waiting terminal process. */
@@ -52,28 +53,58 @@ class TimerServiceTest {
                 timer(new Continuation.PersistedValue("null", "null"))));
     }
 
+    /**
+     * The runtime persists timer payloads through the FCL value codec, so the
+     * stored canonical payload is the typed envelope
+     * ({@code {"type":"string","value":"terminal-input-timeout"}}), never the
+     * bare marker. The guard must decode the envelope or io.readKey timeouts
+     * are never delivered and full-screen programs lose their idle repaint.
+     */
+    @Test
+    void recognizesTheCodecEncodedTerminalInputTimeoutMarker() {
+        com.follarce.fcl.FclContinuationCodec codec =
+                new com.follarce.fcl.FclContinuationCodec();
+        assertTrue(TimerService.isTerminalInputTimeout(timer(
+                new Continuation.PersistedValue(
+                        codec.valueType(TimerService.TERMINAL_INPUT_TIMEOUT),
+                        codec.valueToJson(TimerService.TERMINAL_INPUT_TIMEOUT)))));
+        assertFalse(TimerService.isTerminalInputTimeout(timer(
+                new Continuation.PersistedValue(
+                        codec.valueType("other"), codec.valueToJson("other")))));
+    }
+
+    @Test
+    void encodesTheDeliveredTimeoutAsAContinuationValue() {
+        Continuation.PersistedValue payload = TimerService.terminalTimeoutPayload();
+        assertEquals("string", payload.type());
+        assertEquals(TimerService.TERMINAL_TIMEOUT_EVENT,
+                new com.follarce.fcl.FclContinuationCodec().valueFromJson(
+                        payload.canonicalPayload()));
+    }
+
     @Test
     void acceptsOnlyKeyModeInputWaitsForTimeoutDelivery() {
-        UUID keyWait = UUID.nameUUIDFromBytes("input:key".getBytes());
         CilProcess waitingKey = process(CilProcess.Status.WAITING_INPUT,
                 new Continuation.WaitState(Continuation.WaitKind.INPUT,
-                        Optional.of(keyWait), Optional.empty()));
-        assertTrue(TimerService.isWaitingForTerminalInput(waitingKey));
+                        Optional.of(TIMER_ID), Optional.empty()));
+        assertTrue(TimerService.isWaitingForTerminalInput(waitingKey, TIMER_ID));
+        assertFalse(TimerService.isWaitingForTerminalInput(waitingKey, UUID.randomUUID()),
+                "a stale timeout must not wake a later readKey wait");
 
         CilProcess waitingLine = process(CilProcess.Status.WAITING_INPUT,
                 new Continuation.WaitState(Continuation.WaitKind.INPUT,
                         Optional.empty(), Optional.empty()));
-        assertFalse(TimerService.isWaitingForTerminalInput(waitingLine));
+        assertFalse(TimerService.isWaitingForTerminalInput(waitingLine, TIMER_ID));
 
         CilProcess waitingTimer = process(CilProcess.Status.WAITING_TIMER,
                 new Continuation.WaitState(Continuation.WaitKind.TIMER,
                         Optional.of(TIMER_ID), Optional.empty()));
-        assertFalse(TimerService.isWaitingForTerminalInput(waitingTimer));
+        assertFalse(TimerService.isWaitingForTerminalInput(waitingTimer, TIMER_ID));
 
         CilProcess running = process(CilProcess.Status.RUNNING,
                 new Continuation.WaitState(Continuation.WaitKind.INPUT,
-                        Optional.of(keyWait), Optional.empty()));
-        assertFalse(TimerService.isWaitingForTerminalInput(running));
+                        Optional.of(TIMER_ID), Optional.empty()));
+        assertFalse(TimerService.isWaitingForTerminalInput(running, TIMER_ID));
     }
 
     @Test

@@ -27,7 +27,8 @@ class FclBuiltinsExhaustiveTest {
                 "util.toString", "util.string", "util.length",
                 "array.insert", "array.removeAt",
                 "text.slice", "text.split", "text.join", "text.indexOf",
-                "text.lastIndexOf", "text.repeat", "text.replace",
+                "text.lastIndexOf", "text.commonPrefixLength", "text.commonSuffixLength",
+                "text.repeat", "text.replace",
                 "path.normalize", "path.resolve", "path.getFileName",
                 "path.getParentPath", "path.getParent", "path.isAbsolute", "path.join",
                 "term.color", "term.paint", "term.bold", "term.dim", "term.reset",
@@ -88,6 +89,9 @@ class FclBuiltinsExhaustiveTest {
         assertEquals("a/1/true", call("text.join", List.of("a", 1L, true), "/"));
         assertEquals(3L, call("text.indexOf", "ababa", "ba", 2L));
         assertEquals(3L, call("text.lastIndexOf", "ababa", "ba"));
+        assertEquals(3L, call("text.commonPrefixLength", "ab中x", "ab中y"));
+        assertEquals(3L, call("text.commonSuffixLength", "x中ab", "y中ab"));
+        assertEquals(0L, call("text.commonPrefixLength", "🙂a", "🙃a"));
         assertEquals("ababab", call("text.repeat", "ab", 3L));
         assertEquals("xcxc", call("text.replace", "abcabc", "ab", "x"));
 

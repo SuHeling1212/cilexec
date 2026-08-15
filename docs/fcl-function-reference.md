@@ -297,6 +297,8 @@ intermediate state.
 | `text.join(values, delimiter)` | Join an array with a delimiter. |
 | `text.indexOf(value, search [, start])` | Search forward from the given position; returns `-1` when not found. |
 | `text.lastIndexOf(value, search [, start])` | Search backward from the given position; returns `-1` when not found. |
+| `text.commonPrefixLength(first, second)` | Return the UTF-16 length of the longest shared prefix without splitting a Unicode code point. |
+| `text.commonSuffixLength(first, second)` | Return the UTF-16 length of the longest shared suffix without splitting a Unicode code point. |
 | `text.repeat(value, count)` | Repeat a string. |
 | `text.replace(value, search, replacement)` | Replace all matching text. |
 
@@ -308,7 +310,7 @@ intermediate state.
 | `io.println(value)` | Print with a newline. Alias: `util.println(value)`. |
 | `io.input([prompt])` | Wait for one full line of input. Alias: `util.input([prompt])`. While a process waits for input, the terminal prompt becomes `pid:?`. |
 | `io.readChar()` | Wait for input and return the first character; empty input returns an empty string. |
-| `io.readKey([timeoutMs])` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"focus","focus":true}` for focus events; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. |
+| `io.readKey([timeoutMs[, coalesceText]])` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"focus","focus":true}` for focus events; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. When `coalesceText` is `true`, up to 64 printable characters arriving within 20 milliseconds of the first are returned as one paste event; the deadline never resets and control events keep their order. |
 | `io.readFile(path [, targetUser])` | Alias of `file.read`. |
 | `io.writeFile(path, content [, targetUser])` | Alias of `file.write`. |
 
@@ -416,8 +418,9 @@ The host market's default index is
 | Call | Effect |
 | --- | --- |
 | `package.info(coordinateOrPackageHash)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or the internal logical-content `hash` returned by `package.install`; `(namespace, name, version)` as three arguments also works. It does not accept the `.db` file `sha256`. |
-| `package.list()` | Return registered package releases. |
-| `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. |
+| `package.list()` | Return the releases effectively installed for the current user. |
+| `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. Creates the current user's installation root, the exact dependency closure, and a private data space. |
+| `package.uninstall(databaseFileSha256 [, options])` | Atomically remove the package for the current user. By default active process bindings and dependent installations block the uninstall; `{"force": true}` removes dependent current-user roots and purges affected processes. Deletes private data, orphan dependencies, and globally unreferenced release payloads. Returns a summary map. |
 | `package.build(manifestPath, outputPath)` | Read the `package.json` and declared files in the VFS and build a `.db` in the VFS. |
 | `package.run(databaseFileSha256 [, entrypoint])` | Create a child process running a package entrypoint. This call uses the installed `.db` file `sha256`; the default entrypoint is `run`, and PID and other information are returned. |
 | `package.verify(coordinateOrPackageHash)` | Verify that the package database object still matches the file hash recorded at install time. The three-part coordinate also works as arguments. It uses the internal logical-content hash, not the `.db` file `sha256`. |
@@ -426,7 +429,8 @@ The host market's default index is
 
 `import` accepts only the full SHA-256 of an installed package database, optionally
 with a private per-process alias; the qualifier is the hash itself when no alias is
-given. Importing the same alias again in the same session binds it to the newest requested
+given. Only packages effectively installed for the current user can be imported or
+run. Importing the same alias again in the same session binds it to the newest requested
 hash (last wins); processes that already linked a program keep the module they were
 linked with:
 
@@ -437,11 +441,60 @@ value = "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff".open(
 ```
 
 Process aliases are private to one process continuation. Reinstalling the same release is
-idempotent. There is currently no `package.remove` or process-unpin FCL function.
+idempotent and preserves the package's private data.
 
 | Call | Effect |
 | --- | --- |
-| `package.recover()` | Administrator recovery-check placeholder; currently performs no repair and returns `true`. |
+| `package.recover()` | Administrator consistency report over package lifecycle state. Returns `{ok, issues}`; a healthy database reports an empty issue list. Detects data usage mismatches, installations without releases, bindings without installations, and spaces without installations. |
+
+## Private Package Data: `packageData` and user data management
+
+Every user and exact installed package release owns an isolated private data space
+at `package-data://<database-file-sha256>/`. It is not an ordinary VFS path: other
+packages and arbitrary `file.*` paths cannot reach it, and different package
+versions never share data automatically.
+
+| Call | Effect |
+| --- | --- |
+| `packageData.root()` | Return the current package's virtual root URI. |
+| `packageData.exists(path)` | Return whether a file or directory entry exists. |
+| `packageData.read(path)` | Read one private file as text. |
+| `packageData.readChunk(path, offset, maximumBytes)` | Bounded random-access read. |
+| `packageData.write(path, value)` | Create or CAS-replace a private file. |
+| `packageData.append(path, value)` | CAS-append text to a private file. |
+| `packageData.mkdir(path)` | Create a private directory entry. |
+| `packageData.list(path)` | List direct children of a private directory. |
+| `packageData.remove(path)` | Remove a file or empty directory entry. |
+| `packageData.rename(source, destination)` | Rename inside the same private space. |
+| `packageData.size(path)` | Return a private file's byte size. |
+| `packageData.usage()` | Return `{logicalBytes, quota, files}` for the private space. |
+
+`packageData.*` can only be called from installed package code; the calling package's
+identity comes from the linked function provenance, and a package can never address
+another package's space. The package manifest must declare the `package.data`
+capability. Top-level user FCL calls are rejected.
+
+Users manage their own package data through the `package` namespace:
+
+| Call | Effect |
+| --- | --- |
+| `package.dataInfo(databaseFileSha256)` | Usage, quota, file count, and timestamps. |
+| `package.dataList(databaseFileSha256 [, path])` | List private entries. |
+| `package.dataRead(databaseFileSha256, path)` | Read one private file as text. |
+| `package.dataExport(databaseFileSha256, destinationVfsPath)` | Write a deterministic SQLite archive of the private space to the user's VFS. The archive is an ordinary user file and survives uninstallation. |
+| `package.dataImport(databaseFileSha256, sourceVfsPath)` | Merge an exported archive into the private space of the installed package. |
+| `package.dataClear(databaseFileSha256)` | Delete every private entry but keep the empty space. |
+| `package.dataQuota(databaseFileSha256)` | Return the effective quota in bytes. |
+| `package.setDataQuota(user, databaseFileSha256, bytes)` | Administrator quota override; cannot be set below current usage. |
+| `package.clearDataQuota(user, databaseFileSha256)` | Remove an administrator quota override. |
+
+The default quota is 256 MiB per user and exact package. Exact-version isolation is
+deliberate: version migration is an explicit `package.dataExport` +
+`package.dataImport` pair.
+
+Uninstallation removes the private data space, Market caches, installation records,
+and process bindings; ordinary user documents and exported archives are never
+deleted.
 
 ## Built-in Market: `market`
 
@@ -460,8 +513,8 @@ standalone server are described in `docs/package-market.md`.
 | `market.info(sha256)` | Look up a package record by the full SHA-256 of its distribution file. |
 | `market.download(sha256)` | Download in 4 MiB chunks and recompute the full file hash. |
 | `market.install(sha256)` | Recursively download and register exact-hash dependencies, then save a market receipt. It does not create an import alias. |
-| `market.list()` | List the current user's install records managed by the market. |
-| `market.uninstall(sha256)` | Remove the market receipt and downloaded VFS file. It does not remove the immutable runtime package release or existing process bindings. |
+| `market.list()` | List the current user's MARKET installations from the installation ledger. |
+| `market.uninstall(sha256)` | Delegate to the core `package.uninstall` and additionally remove the market download cache and receipt. It does not remove ordinary user documents or other users' installations. |
 | `market.help()` | Return help text for the market functions. |
 | `market.run()` | Return the built-in client version and help without requiring a configured mirror. |
 

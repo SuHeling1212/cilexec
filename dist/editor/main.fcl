@@ -16,8 +16,8 @@ func ed_fit(value, width) {
     return visible + text.repeat(" ", width - term.displayWidth(visible))
 }
 
-// The size is sampled at every layout/render pass.  An idle repaint every 100 ms
-// (io.readKey with a timeout) makes a resize visible without waiting for a key.
+// The size is sampled at every layout/render pass. A low-rate input timeout checks
+// for resize without continuously repainting an unchanged screen.
 func ed_width() {
     size = term.getSize()
     return ed_max(1, size["width"])
@@ -53,8 +53,14 @@ func ed_fix(state) {
         state["top"] = state["row"] - height + 1
     }
     if state["col"] < state["left"] { state["left"] = state["col"] }
-    while state["left"] < state["col"] and ed_segment_width(line, state["left"], state["col"]) >= width {
-        state["left"] = state["left"] + 1
+    if state["left"] < state["col"] and ed_segment_width(line, state["left"], state["col"]) >= width {
+        // Keep a right-side margin so horizontal scrolling happens in chunks instead
+        // of rebuilding the frame after every character beyond the terminal edge.
+        margin = ed_min(16, ed_max(1, width - 1))
+        state["left"] = ed_min(state["col"], state["left"] + margin)
+        while state["left"] < state["col"] and ed_segment_width(line, state["left"], state["col"]) >= width {
+            state["left"] = state["left"] + 1
+        }
     }
     if state["top"] < 0 { state["top"] = 0 }
     if state["left"] < 0 { state["left"] = 0 }
@@ -328,67 +334,163 @@ func ed_key(state, event) {
     return state
 }
 
-func ed_render_help(state) {
-    width = ed_width()
-    screen = term.hideCursor() + term.clear()
-    screen = screen + term.inverse(ed_fit(" CilEdit Help", width)) + "\r\n"
-    screen = screen + ed_fit("Ctrl-O / Ctrl-S  Save file", width) + "\r\n"
-    screen = screen + ed_fit("Ctrl-X  Exit (asks before discarding changes)", width) + "\r\n"
-    screen = screen + ed_fit("Ctrl-W  Search forward", width) + "\r\n"
-    screen = screen + ed_fit("Ctrl-K  Cut current line; Ctrl-U Paste cut line", width) + "\r\n"
-    screen = screen + ed_fit("Arrows, Home, End, PageUp, PageDown move", width) + "\r\n"
-    screen = screen + ed_fit("Backspace, Delete, Enter and Tab edit", width) + "\r\n\r\n"
-    return screen + ed_fit("Press any key to return", width) + term.hideCursor()
+func ed_frame_row(value, width, inverse) {
+    return {text: ed_fit(value, width), inverse: inverse}
 }
 
-func ed_render(state) {
-    if state["mode"] == "help" { return ed_render_help(state) }
+func ed_frame_help(state) {
+    width = ed_width()
+    height = ed_body_height()
+    frameHeight = height + 3
+    help = [
+        "Ctrl-O / Ctrl-S  Save file",
+        "Ctrl-X  Exit (asks before discarding changes)",
+        "Ctrl-W  Search forward",
+        "Ctrl-K  Cut current line; Ctrl-U Paste cut line",
+        "Arrows, Home, End, PageUp, PageDown move",
+        "Backspace, Delete, Enter and Tab edit",
+        "",
+        "Press any key to return"
+    ]
+    rows = [ed_frame_row(" CilEdit Help", width, true)]
+    index = 0
+    while #rows < frameHeight {
+        value = ""
+        if index < #help { value = help[index] }
+        rows = array.insert(rows, #rows, ed_frame_row(value, width, false))
+        index = index + 1
+    }
+    return {
+        width: width,
+        height: frameHeight,
+        rows: rows,
+        cursorRow: 1,
+        cursorCol: 1,
+        cursorVisible: false
+    }
+}
+
+func ed_frame(state) {
+    if state["mode"] == "help" { return ed_frame_help(state) }
     width = ed_width()
     height = ed_body_height()
     title = " CilEdit  " + state["path"]
     if state["dirty"] { title = title + "  [Modified]" }
-    screen = term.hideCursor() + term.clear() + term.inverse(ed_fit(title, width)) + "\r\n"
+    rows = [ed_frame_row(title, width, true)]
     visibleRow = 0
     available = ed_min(height, #state["lines"] - state["top"])
     while visibleRow < available {
         lineIndex = state["top"] + visibleRow
         line = state["lines"][lineIndex]
         start = ed_min(state["left"], #line)
-        screen = screen + ed_fit(text.slice(line, start), width)
-        screen = screen + "\r\n"
+        rows = array.insert(rows, #rows, ed_frame_row(text.slice(line, start), width, false))
         visibleRow = visibleRow + 1
     }
-    remaining = height - visibleRow
-    if remaining > 0 {
-        screen = screen + text.repeat(ed_fit("~", width) + "\r\n", remaining)
+    while visibleRow < height {
+        rows = array.insert(rows, #rows, ed_frame_row("~", width, false))
+        visibleRow = visibleRow + 1
     }
     status = " line " + util.toString(state["row"] + 1) + "/" + util.toString(#state["lines"])
     status = status + "  col " + util.toString(state["col"] + 1)
-    screen = screen + term.inverse(ed_fit(status, width)) + "\r\n"
+    rows = array.insert(rows, #rows, ed_frame_row(status, width, true))
     footerText = ""
     if state["mode"] == "exit" {
         footerText = "Save modified buffer?  Y Yes   N No   Esc Cancel"
-        screen = screen + ed_fit(footerText, width)
     } else {
         if state["mode"] == "search" {
             footerText = "Search: " + state["query"]
-            screen = screen + ed_fit(footerText, width)
         } else {
             footerText = "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
             if #state["message"] > 0 { footerText = state["message"] }
-            screen = screen + ed_fit(footerText, width)
         }
     }
-    if state["mode"] == "exit" { return screen + term.hideCursor() }
+    rows = array.insert(rows, #rows, ed_frame_row(footerText, width, false))
+    cursorRow = 1
+    cursorCol = 1
+    cursorVisible = false
     if state["mode"] == "search" {
-        promptColumn = ed_min(width, term.displayWidth(term.sanitize(footerText)) + 1)
-        return screen + term.cursorTo(height + 3, promptColumn) + term.showCursor()
+        cursorRow = height + 3
+        cursorCol = ed_min(width, term.displayWidth(term.sanitize(footerText)) + 1)
+        cursorVisible = true
+    } else {
+        if state["mode"] != "exit" {
+            cursorRow = state["row"] - state["top"] + 2
+            line = state["lines"][state["row"]]
+            cursorText = text.slice(line, state["left"], state["col"])
+            cursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
+            cursorVisible = true
+        }
     }
-    cursorRow = state["row"] - state["top"] + 2
-    line = state["lines"][state["row"]]
-    cursorText = text.slice(line, state["left"], state["col"])
-    cursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
-    return screen + term.cursorTo(cursorRow, cursorCol) + term.showCursor()
+    return {
+        width: width,
+        height: height + 3,
+        rows: rows,
+        cursorRow: cursorRow,
+        cursorCol: cursorCol,
+        cursorVisible: cursorVisible
+    }
+}
+
+func ed_style_row(row) {
+    if row["inverse"] { return term.inverse(row["text"]) }
+    return row["text"]
+}
+
+func ed_frame_cursor(frame) {
+    if frame["cursorVisible"] {
+        return term.cursorTo(frame["cursorRow"], frame["cursorCol"]) + term.showCursor()
+    }
+    return term.hideCursor()
+}
+
+func ed_render_full(frame) {
+    screen = term.hideCursor() + term.clear()
+    index = 0
+    while index < #frame["rows"] {
+        screen = screen + ed_style_row(frame["rows"][index])
+        if index + 1 < #frame["rows"] { screen = screen + "\r\n" }
+        index = index + 1
+    }
+    return screen + ed_frame_cursor(frame)
+}
+
+func ed_row_delta(previous, next, rowNumber) {
+    if previous["inverse"] == next["inverse"] and previous["text"] == next["text"] {
+        return ""
+    }
+    if previous["inverse"] != next["inverse"] {
+        return term.cursorTo(rowNumber, 1) + ed_style_row(next)
+    }
+    oldText = previous["text"]
+    newText = next["text"]
+    start = text.commonPrefixLength(oldText, newText)
+    suffix = text.commonSuffixLength(text.slice(oldText, start), text.slice(newText, start))
+    oldEnd = #oldText - suffix
+    newEnd = #newText - suffix
+    oldSuffixColumn = term.displayWidth(term.sanitize(text.slice(oldText, 0, oldEnd)))
+    newSuffixColumn = term.displayWidth(term.sanitize(text.slice(newText, 0, newEnd)))
+    if oldSuffixColumn != newSuffixColumn { newEnd = #newText }
+    column = term.displayWidth(term.sanitize(text.slice(newText, 0, start))) + 1
+    replacement = text.slice(newText, start, newEnd)
+    if next["inverse"] { replacement = term.inverse(replacement) }
+    return term.cursorTo(rowNumber, column) + replacement
+}
+
+func ed_render_delta(previous, next) {
+    if previous["width"] != next["width"] or previous["height"] != next["height"] {
+        return ed_render_full(next)
+    }
+    changes = ""
+    index = 0
+    while index < #next["rows"] {
+        changes = changes + ed_row_delta(previous["rows"][index], next["rows"][index], index + 1)
+        index = index + 1
+    }
+    cursorChanged = previous["cursorVisible"] != next["cursorVisible"]
+    if previous["cursorRow"] != next["cursorRow"] { cursorChanged = true }
+    if previous["cursorCol"] != next["cursorCol"] { cursorChanged = true }
+    if #changes == 0 and !cursorChanged { return "" }
+    return term.hideCursor() + changes + ed_frame_cursor(next)
 }
 
 func open(editorPath) {
@@ -409,16 +511,90 @@ func open(editorPath) {
         clipboard: "",
         message: ""
     }
+    editorSize = term.getSize()
+    editorWidth = editorSize["width"]
+    editorHeight = editorSize["height"]
     io.print(term.alternate(true) + term.mouse(true) + term.paste(true) + term.hideCursor())
-    io.print(ed_render(editorState))
+    editorFrame = ed_frame(editorState)
+    io.print(ed_render_full(editorFrame))
     while editorState["running"] {
-        editorEvent = io.readKey(50)
+        editorEvent = io.readKey(250, true)
         if editorEvent["kind"] == "timeout" {
-            // Idle repaint: a resize becomes visible within 100 ms without pressing a key.
-            io.print(ed_render(editorState))
+            nextSize = term.getSize()
+            if nextSize["width"] != editorWidth or nextSize["height"] != editorHeight {
+                editorWidth = nextSize["width"]
+                editorHeight = nextSize["height"]
+                nextFrame = ed_frame(editorState)
+                editorOutput = ed_render_delta(editorFrame, nextFrame)
+                if #editorOutput > 0 { io.print(editorOutput) }
+                editorFrame = nextFrame
+            }
         } else {
+            previousRow = editorState["row"]
+            previousTop = editorState["top"]
+            previousLeft = editorState["left"]
+            previousMode = editorState["mode"]
             editorState = ed_key(editorState, editorEvent)
-            if editorState["running"] { io.print(ed_render(editorState)) }
+            if editorState["running"] {
+                currentSize = term.getSize()
+                fastNormal = previousMode == "normal" and editorState["mode"] == "normal"
+                if previousRow != editorState["row"] { fastNormal = false }
+                if previousTop != editorState["top"] { fastNormal = false }
+                if previousLeft != editorState["left"] { fastNormal = false }
+                if currentSize["width"] != editorWidth or currentSize["height"] != editorHeight {
+                    fastNormal = false
+                }
+                if fastNormal {
+                    editorChanges = ""
+                    nextTitleText = " CilEdit  " + editorState["path"]
+                    if editorState["dirty"] { nextTitleText = nextTitleText + "  [Modified]" }
+                    nextTitle = ed_frame_row(nextTitleText, editorWidth, true)
+                    editorChanges = editorChanges + ed_row_delta(editorFrame["rows"][0], nextTitle, 1)
+                    editorFrame["rows"][0] = nextTitle
+
+                    bodyRow = editorState["row"] - editorState["top"] + 2
+                    currentLine = editorState["lines"][editorState["row"]]
+                    lineStart = ed_min(editorState["left"], #currentLine)
+                    nextBody = ed_frame_row(text.slice(currentLine, lineStart), editorWidth, false)
+                    editorChanges = editorChanges + ed_row_delta(editorFrame["rows"][bodyRow - 1], nextBody, bodyRow)
+                    editorFrame["rows"][bodyRow - 1] = nextBody
+
+                    statusRow = editorFrame["height"] - 1
+                    nextStatusText = " line " + util.toString(editorState["row"] + 1) + "/" + util.toString(#editorState["lines"])
+                    nextStatusText = nextStatusText + "  col " + util.toString(editorState["col"] + 1)
+                    nextStatus = ed_frame_row(nextStatusText, editorWidth, true)
+                    editorChanges = editorChanges + ed_row_delta(editorFrame["rows"][statusRow - 1], nextStatus, statusRow)
+                    editorFrame["rows"][statusRow - 1] = nextStatus
+
+                    nextFooterText = "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
+                    if #editorState["message"] > 0 { nextFooterText = editorState["message"] }
+                    nextFooter = ed_frame_row(nextFooterText, editorWidth, false)
+                    editorChanges = editorChanges + ed_row_delta(editorFrame["rows"][editorFrame["height"] - 1], nextFooter, editorFrame["height"])
+                    editorFrame["rows"][editorFrame["height"] - 1] = nextFooter
+
+                    cursorText = text.slice(currentLine, editorState["left"], editorState["col"])
+                    nextCursorRow = bodyRow
+                    nextCursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
+                    cursorChanged = editorFrame["cursorVisible"] == false
+                    if editorFrame["cursorRow"] != nextCursorRow { cursorChanged = true }
+                    if editorFrame["cursorCol"] != nextCursorCol { cursorChanged = true }
+                    editorFrame["cursorVisible"] = true
+                    editorFrame["cursorRow"] = nextCursorRow
+                    editorFrame["cursorCol"] = nextCursorCol
+                    editorOutput = ""
+                    if #editorChanges > 0 or cursorChanged {
+                        editorOutput = term.hideCursor() + editorChanges + ed_frame_cursor(editorFrame)
+                    }
+                    if #editorOutput > 0 { io.print(editorOutput) }
+                } else {
+                    nextFrame = ed_frame(editorState)
+                    editorOutput = ed_render_delta(editorFrame, nextFrame)
+                    if #editorOutput > 0 { io.print(editorOutput) }
+                    editorFrame = nextFrame
+                    editorWidth = nextFrame["width"]
+                    editorHeight = nextFrame["height"]
+                }
+            }
         }
     }
     io.print(term.alternate(false) + term.mouse(false) + term.paste(false) + term.showCursor())

@@ -128,6 +128,11 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     @Override
+    public String terminalRestoreSequence() {
+        return repl.terminalRestoreSequence(user.userId(), sessionId);
+    }
+
+    @Override
     public void shutdown(char[] password) {
         java.util.Objects.requireNonNull(password, "password");
         if (!isAdmin()) {
@@ -149,9 +154,9 @@ public final class DatabaseTerminalControl implements TerminalControl {
     public String submitAttachedInput(String input) {
         TerminalReplService.Snapshot active = repl.active(user.userId(), sessionId)
                 .orElseThrow(() -> new IllegalStateException("No process is attached"));
-        if (active.status() != CilProcess.Status.WAITING_INPUT) {
-            throw new IllegalStateException("Attached PID is not waiting for input");
-        }
+        // io.readKey(timeout) briefly becomes READY or waits for a repaint output effect when
+        // its timer fires. TerminalService durably queues input during that transition and the
+        // executor delivers it at the next input wait; rejecting it here loses real keystrokes.
         terminals.submit(user.userId(), sessionId, input);
         return await(active.pid());
     }
@@ -167,8 +172,9 @@ public final class DatabaseTerminalControl implements TerminalControl {
     public AttachedInputMode attachedInputMode() {
         return repl.active(user.userId(), sessionId)
                 .filter(snapshot -> snapshot.status() == CilProcess.Status.WAITING_INPUT)
-                .map(snapshot -> snapshot.keyInput()
-                        ? AttachedInputMode.KEY : AttachedInputMode.LINE)
+                .map(snapshot -> snapshot.coalesceTextInput()
+                        ? AttachedInputMode.KEY_BATCH
+                        : snapshot.keyInput() ? AttachedInputMode.KEY : AttachedInputMode.LINE)
                 .orElse(AttachedInputMode.NONE);
     }
 
@@ -342,7 +348,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
     private TerminalReplService.Snapshot snapshot(long pid) {
         CilProcess process = findProcess(pid);
         return new TerminalReplService.Snapshot(pid, process.status(), null, Map.of(),
-                process.status() == CilProcess.Status.FAILED, false, List.of());
+                process.status() == CilProcess.Status.FAILED, false, false, List.of());
     }
 
     private String renderFinished(TerminalReplService.Snapshot snapshot) {

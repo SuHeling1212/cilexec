@@ -1,6 +1,7 @@
 package com.follarce.application;
 
 import com.follarce.domain.process.CilProcess;
+import com.follarce.domain.port.Isolation;
 import com.follarce.domain.scheduler.SchedulerClaim;
 import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.fcl.FclCompiler;
@@ -81,6 +82,22 @@ class TerminalReplServiceTest {
         assertEquals(1, wakes.get(),
                 "same-JVM submissions must not depend solely on a lossy database notification");
         assertEquals(CilProcess.Status.READY, persistence.processes.current.status());
+    }
+
+    @Test
+    void rawTerminalInputUsesReadCommittedProcessLocking() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+
+        new com.follarce.terminal.TerminalService(persistence, CLOCK)
+                .submit(owner, sessionId, "x");
+
+        assertEquals(Isolation.READ_COMMITTED, persistence.lastIsolation,
+                "raw input must wait for the current process-row writer instead of aborting "
+                        + "a serializable snapshot");
     }
 
     @Test
@@ -186,6 +203,37 @@ class TerminalReplServiceTest {
         TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
         assertEquals(CilProcess.Status.WAITING_INPUT, snapshot.status());
         assertTrue(snapshot.keyInput());
+        assertFalse(snapshot.coalesceTextInput());
+    }
+
+    @Test
+    void exposesPersistedCoalescedTextWaitModeForOptedInPrograms() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        repl.submit(owner, sessionId, "io.readKey(250, true)");
+        CilProcess current = persistence.processes.current;
+        CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+        persistence.processes.current = claimed;
+        SchedulerClaim claim = new SchedulerClaim(claimed.identity().processUid(), owner,
+                UUID.randomUUID(), UUID.randomUUID(), claimed.executionEpoch(), NOW, NOW,
+                NOW.plus(Duration.ofMinutes(1)));
+        persistence.scheduler.lease = claim;
+        executor.executeSlice(claim);
+
+        TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
+        assertEquals(CilProcess.Status.WAITING_INPUT, snapshot.status());
+        assertTrue(snapshot.keyInput());
+        assertTrue(snapshot.coalesceTextInput());
     }
 
     @Test

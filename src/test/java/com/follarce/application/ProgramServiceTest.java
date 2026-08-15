@@ -514,6 +514,8 @@ class ProgramServiceTest {
     static final class MemoryPackageRepository implements PackageRepository {
         final Map<String, ProcessPackageBinding> processBindings = new LinkedHashMap<>();
         final Map<PackageRelease.Hash, PackageRelease> releases = new LinkedHashMap<>();
+        final Map<UUID, List<com.follarce.domain.packageinfo.PackageInstallation.Member>> published =
+                new LinkedHashMap<>();
 
         @Override public ReleaseWriteResult registerRelease(PackageIndex packageIndex) {
             throw new UnsupportedOperationException();
@@ -540,6 +542,22 @@ class ProgramServiceTest {
                     .filter(binding -> binding.processUid().equals(processUid))
                     .sorted(java.util.Comparator.comparing(ProcessPackageBinding::importName))
                     .toList();
+        }
+        @Override public boolean publishInstallation(UUID installationId, UUID ownerId,
+                                                     ObjectHash rootFileHash, String source,
+                                                     List<com.follarce.domain.packageinfo.PackageInstallation.Member> members,
+                                                     Instant at) {
+            published.put(installationId, members);
+            return true;
+        }
+        @Override public Optional<PackageRelease> findInstalledReleaseByDatabaseFileHash(
+                UUID ownerId, ObjectHash databaseFileHash) {
+            return releases.values().stream()
+                    .filter(release -> release.databaseFileHash().equals(databaseFileHash))
+                    .findFirst();
+        }
+        @Override public List<PackageRelease> findInstalledReleases(UUID ownerId) {
+            return List.copyOf(releases.values());
         }
     }
 

@@ -129,8 +129,8 @@ public final class TerminalService {
     public TerminalSession.Input submit(UUID ownerId, UUID sessionId, String completeInput) {
         Instant now = clock.instant();
         TerminalSession.Input submitted = transactions.inUserTransaction(ownerId,
-                Isolation.SERIALIZABLE, transaction -> {
-            TerminalSession current = transaction.terminal().findSession(sessionId)
+                Isolation.READ_COMMITTED, transaction -> {
+            TerminalSession current = transaction.terminal().findSessionForUpdate(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
             requireOwner(current, ownerId);
             TerminalSession.Input input = current.commitInput(completeInput, now);
@@ -167,7 +167,7 @@ public final class TerminalService {
         Instant now = clock.instant();
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
-            TerminalSession session = transaction.terminal().findSession(sessionId)
+            TerminalSession session = transaction.terminal().findSessionForUpdate(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
             requireOwner(session, ownerId);
             if (session.status() != TerminalSession.Status.OPEN) {
@@ -249,7 +249,7 @@ public final class TerminalService {
     public TerminalSession close(UUID ownerId, UUID sessionId) {
         Instant now = clock.instant();
         return transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED, transaction -> {
-            TerminalSession current = transaction.terminal().findSession(sessionId)
+            TerminalSession current = transaction.terminal().findSessionForUpdate(sessionId)
                     .orElseThrow(() -> new IllegalArgumentException("Unknown terminal session"));
             requireOwner(current, ownerId);
             TerminalSession closed = current.close(now);

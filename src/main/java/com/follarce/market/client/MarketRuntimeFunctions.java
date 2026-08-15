@@ -124,24 +124,22 @@ public final class MarketRuntimeFunctions {
 
     private Object list(List<Object> arguments) {
         arity(arguments, 0, "market.list");
-        return receipts().stream().map(Receipt::asMap).toList();
+        return host.marketInstallations();
     }
 
     private Object uninstall(List<Object> arguments) {
         arity(arguments, 1, "market.uninstall");
         String packageId = packageId(arguments.getFirst());
+        Map<String, Object> core = host.uninstall(packageId);
         List<Receipt> current = receipts();
         List<Receipt> retained = new ArrayList<>();
-        boolean removed = false;
         for (Receipt receipt : current) {
-            if (!receipt.sha256().equals(packageId)) {
-                retained.add(receipt);
-                continue;
-            }
-            removed = host.removeFile(packagePath(packageId)) || removed;
+            if (!receipt.sha256().equals(packageId)) retained.add(receipt);
         }
         if (retained.size() != current.size()) saveReceipts(retained);
-        return removed;
+        Map<String, Object> result = new LinkedHashMap<>(core);
+        result.put("marketCacheRemoved", core.get("cacheFilesRemoved"));
+        return Map.copyOf(result);
     }
 
     private Object help(List<Object> arguments) {
@@ -185,6 +183,7 @@ public final class MarketRuntimeFunctions {
                 throw new FclRuntimeException(
                         "Downloaded package identity does not match the market index");
             }
+            host.registerCacheNode(packagePath(packageId), packageId);
             Receipt receipt = new Receipt(packageId, record.coordinate(), record.namespace(),
                     record.name(), record.version(), text(installed.get("hash"),
                     "installed package hash"));
@@ -579,5 +578,8 @@ public final class MarketRuntimeFunctions {
         Object httpGet(String url, FclFunctionRegistry.Invocation invocation);
         Object download(String url, String path, FclFunctionRegistry.Invocation invocation);
         Map<String, Object> install(String path);
+        Map<String, Object> uninstall(String packageId);
+        List<Map<String, Object>> marketInstallations();
+        void registerCacheNode(String path, String sha256);
     }
 }
