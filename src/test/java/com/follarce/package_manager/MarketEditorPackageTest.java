@@ -179,7 +179,8 @@ class MarketEditorPackageTest {
         assertTrue(continuation.halted(), "200-character batch did not finish");
         assertEquals(text, saved.get());
         assertEquals(events.size(), eventIndex.get());
-        assertFalse(frames.get(2).contains("\u001b[2J"));
+        assertTrue(frames.get(2).contains("\u001b[2J"),
+                "a buffered edit must produce a full screen redraw");
         assertTrue(frames.get(2).contains("Z"),
                 "the final character must be visible after horizontal scrolling");
     }
@@ -260,18 +261,15 @@ class MarketEditorPackageTest {
         assertFalse(continuation.failed());
         assertEquals("ab\nc", saved.get());
         assertEquals(keys.size(), keyIndex.get());
-        assertTrue(firstInputStep.get() > 0 && firstInputStep.get() <= 600,
+        assertTrue(firstInputStep.get() > 0 && firstInputStep.get() <= 150,
                 "editor first frame must reach input without excessive FCL steps: "
                         + firstInputStep.get());
-        assertFalse(frames.get(2).contains("\u001b[2J"),
-                "ordinary character input must not clear and redraw the whole terminal");
-        assertTrue(frames.get(2).length() < 200,
-                "ordinary character delta must stay much smaller than a full terminal frame");
-        assertTrue(frames.get(3).contains("\u001b[2;2Hb"));
-        assertFalse(frames.get(3).contains("ab"),
-                "the persisted previous frame must prevent rewriting the unchanged prefix");
-        assertFalse(frames.get(3).contains("[Modified]"),
-                "the title must not be rewritten after its dirty marker is already visible");
+        assertTrue(frames.get(2).contains("\u001b[2J"),
+                "ordinary character input must redraw the full terminal");
+        assertTrue(frames.get(3).contains("ab"),
+                "the full redraw must show the current buffer state");
+        assertTrue(frames.get(3).contains("[Modified]"),
+                "the full redraw must show the dirty marker");
     }
 
     @Test

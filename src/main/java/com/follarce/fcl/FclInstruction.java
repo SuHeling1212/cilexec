@@ -48,7 +48,8 @@ public sealed interface FclInstruction permits FclInstruction.Assignment,
     record Return(int line, FclExpression value, boolean implicit) implements FclInstruction {}
 
     record FunctionDeclaration(int line, String name, List<String> parameters,
-                               int bodyTarget, int endTarget) implements FclInstruction {
+                               int bodyTarget, int endTarget,
+                               boolean publicBinding) implements FclInstruction {
         public FunctionDeclaration {
             Objects.requireNonNull(name, "name");
             parameters = List.copyOf(parameters);

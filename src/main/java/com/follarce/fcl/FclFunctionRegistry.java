@@ -25,13 +25,18 @@ public final class FclFunctionRegistry {
 
     /** Per-call interpreter context; it contains no JDBC or host resource. */
     public record Invocation(long expressionId, FclContinuation continuation,
-                             String packageIdentity) {
+                             String packageIdentity, FclProgram program) {
         public Invocation {
             Objects.requireNonNull(continuation, "continuation");
         }
 
         public Invocation(long expressionId, FclContinuation continuation) {
-            this(expressionId, continuation, null);
+            this(expressionId, continuation, null, null);
+        }
+
+        public Invocation(long expressionId, FclContinuation continuation,
+                          String packageIdentity) {
+            this(expressionId, continuation, packageIdentity, null);
         }
     }
 

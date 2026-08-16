@@ -17,12 +17,15 @@ import com.follarce.fcl.FclBuiltins;
 import com.follarce.fcl.FclCompileException;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclInstruction;
+import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramLinker;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclScope;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
@@ -54,6 +57,7 @@ import java.util.function.Supplier;
 public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private static final int MAX_TERMINAL_STEPS_PER_SLICE = 4_096;
     private static final long MAX_TERMINAL_SLICE_NANOS = Duration.ofMillis(20).toNanos();
+    static final String SOURCE_IMPORTS_SCOPE_KEY = "cilexec.fcl.sourceImports";
     private final UserTransactionExecutor transactions;
     private final FclRuntime fixedRuntime;
     private final FclProgramCodec programCodec;
@@ -66,6 +70,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private final BoundedCache<ObjectHash, FclProgram> programCache = new BoundedCache<>(128);
     private final BoundedCache<ObjectHash, CachedPackage> packageCache = new BoundedCache<>(64);
     private final FclProgramLinker programLinker = new FclProgramLinker();
+    private final FclSourceIncludes sourceIncludes = new FclSourceIncludes();
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions) {
         this(transactions, SourceExtensionIndex.catalog(), null, new FclProgramCodec(),
@@ -161,6 +166,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             try {
                 compiled = loadProgram(transaction, program);
                 compiled = linkPackages(transaction, current, compiled, program);
+                compiled = linkSourceImports(continuation, compiled);
+                compiled = compiled.withoutFunctions(continuation.disabledFunctions());
             } catch (IllegalArgumentException | IllegalStateException
                     | FclRuntimeException | FclCompileException failure) {
                 failDeterministic(transaction, current, claim, failure, now);
@@ -191,7 +198,13 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     previousForPersistence = initialContinuation(committedProgram);
                     break;
                 }
-                resolveDirective(transaction, current, continuation, now);
+                try {
+                    resolveDirective(transaction, current, continuation, now);
+                } catch (IllegalArgumentException | IllegalStateException
+                        | FclRuntimeException | FclCompileException failure) {
+                    failDeterministic(transaction, current, claim, failure, now);
+                    return PostCommitSignal.NONE;
+                }
                 deliverPendingTerminalInput(transaction, current, continuation, now);
                 if (terminalSliceBoundary(step, continuation)
                         || System.nanoTime() - sliceStarted >= MAX_TERMINAL_SLICE_NANOS) {
@@ -689,6 +702,11 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             return;
         }
         Optional<PackageRelease> release = directRelease(transaction, process, target);
+        if (!isSha256(target)) {
+            resolveSourceImport(transaction, process, continuation, wait, target);
+            continuation.clearWait();
+            return;
+        }
         if (release.isEmpty()) {
             continuation.rejectDirective("Unresolved package import: " + target);
             return;
@@ -701,6 +719,108 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 release.orElseThrow().packageHash(), now);
         transaction.packages().saveProcessBinding(resolved);
         continuation.clearWait();
+    }
+
+    private void resolveSourceImport(com.follarce.domain.port.TransactionContext transaction,
+                                     CilProcess process, FclContinuation continuation,
+                                     FclContinuation.WaitState wait, String target) {
+        String origin = FclPath.resolve(continuation, target);
+        String source = sourceIncludes.expandFile(transaction, process.ownerId(), target,
+                FclPath.current(continuation));
+        String binding = importName(wait, target);
+        FclProgram imported = new FclCompiler().compile(source);
+        List<FclProgramLinker.Export> exports = sourceExports(imported, wait.payload());
+        Map<String, Object> bindings = sourceBindings(imported);
+        FclProgramLinker.Module module = new FclProgramLinker.Module(origin, binding, source, exports,
+                bindings);
+        programLinker.validateLibraryModule(module);
+        Map<String, Object> imports = sourceImports(continuation);
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("origin", origin);
+        value.put("source", source);
+        value.put("bindings", bindings);
+        Object alias = wait.payload().get("alias");
+        if (alias instanceof String text) value.put("alias", text);
+        imports.put(binding, value);
+        continuation.globalScope().put(SOURCE_IMPORTS_SCOPE_KEY, imports);
+    }
+
+    private FclProgram linkSourceImports(FclContinuation continuation, FclProgram base) {
+        Map<String, Object> imports = sourceImports(continuation);
+        if (imports.isEmpty()) return base;
+        List<FclProgramLinker.Module> modules = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : imports.entrySet()) {
+            if (!(entry.getValue() instanceof Map<?, ?> value)
+                    || !(value.get("origin") instanceof String origin)
+                    || !(value.get("source") instanceof String source)) {
+                throw new FclRuntimeException("Persisted source import is invalid: " + entry.getKey());
+            }
+            Map<String, Object> payload = new LinkedHashMap<>();
+            if (value.get("alias") instanceof String alias) payload.put("alias", alias);
+            FclProgram imported = new FclCompiler().compile(source);
+            modules.add(new FclProgramLinker.Module(origin, entry.getKey(), source,
+                    sourceExports(imported, payload), persistedSourceBindings(value)));
+        }
+        return programLinker.link(base, modules);
+    }
+
+    private static List<FclProgramLinker.Export> sourceExports(FclProgram imported,
+                                                                Map<String, Object> payload) {
+        Object alias = payload.get("alias");
+        return imported.functions().entrySet().stream()
+                .filter(entry -> entry.getValue().publicBinding())
+                .map(Map.Entry::getKey)
+                .map(name -> new FclProgramLinker.Export(name,
+                        List.of(alias instanceof String prefix ? prefix + "." + name : name)))
+                .toList();
+    }
+
+    private static Map<String, Object> sourceBindings(FclProgram imported) {
+        FclRuntime runtime = new FclRuntime(FclBuiltins.pureRegistry());
+        FclContinuation initialization = new FclContinuation();
+        int steps = 0;
+        FclProgram program = imported.initializationProgram();
+        while (!initialization.halted() && steps++ < 4_096) {
+            FclStepResult step = runtime.executeOne(program, initialization);
+            if (step.status() == FclStepResult.Status.FAILED) {
+                throw new FclRuntimeException("Source import initializer failed: " + step.value());
+            }
+        }
+        if (!initialization.halted()) {
+            throw new FclRuntimeException("Source import initializer exceeds 4096 steps");
+        }
+        return initialization.scope().values();
+    }
+
+    private static Map<String, Object> persistedSourceBindings(Map<?, ?> sourceImport) {
+        Object value = sourceImport.get("bindings");
+        if (!(value instanceof Map<?, ?> bindings)) {
+            throw new FclRuntimeException("Persisted source import bindings are invalid");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        bindings.forEach((name, binding) -> {
+            if (!(name instanceof String text)) throw new FclRuntimeException(
+                    "Persisted source import binding name is invalid");
+            result.put(text, binding);
+        });
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> sourceImports(FclContinuation continuation) {
+        FclScope root = continuation.globalScope();
+        if (!root.contains(SOURCE_IMPORTS_SCOPE_KEY)) return new LinkedHashMap<>();
+        Object value = root.get(SOURCE_IMPORTS_SCOPE_KEY);
+        if (!(value instanceof Map<?, ?> map)) {
+            throw new FclRuntimeException("Persisted source imports are invalid");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((name, binding) -> {
+            if (!(name instanceof String text)) throw new FclRuntimeException(
+                    "Persisted source import name is invalid");
+            result.put(text, binding);
+        });
+        return result;
     }
 
     static Optional<PackageRelease> directRelease(
@@ -740,7 +860,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 ? normalized.toLowerCase(java.util.Locale.ROOT) : normalized;
     }
 
-    private static ExecutionReplacement resolveExecutionReplacement(
+    private ExecutionReplacement resolveExecutionReplacement(
             com.follarce.domain.port.TransactionContext transaction,
             FclContinuation continuation
     ) {
@@ -765,6 +885,17 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             ProcessInbox.keys().forEach(name -> {
                 if (replacement.scope().contains(name)) replacement.scope().remove(name);
             });
+            String library = TerminalReplService.librarySource(replacement);
+            String executedSource = loadProgram(transaction, target).source();
+            // process.exec compiles the inherited REPL library before the target source so the
+            // target can call existing helpers. Only retain declarations introduced by the file.
+            if (!library.isEmpty() && executedSource.startsWith(library)) {
+                executedSource = executedSource.substring(library.length());
+            }
+            String updated = TerminalReplService.appendFunctionDeclarations(library, executedSource);
+            if (!updated.isBlank()) {
+                replacement.globalScope().put(TerminalReplService.LIBRARY_SCOPE_KEY, updated);
+            }
         }
         return new ExecutionReplacement(target, replacement);
     }

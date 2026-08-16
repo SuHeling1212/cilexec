@@ -28,6 +28,12 @@ class FclLanguageExhaustiveTest {
                 comparison = base == 14 and grouped >= 20 and 2 < 3 and 3 <= 3
                 shortAnd = false and missingValue
                 shortOr = true or missingValue
+                symbolicNot = !false
+                textualNot = not false
+                spacedTextualNot = not    0
+                textualNotAnd = not false and false
+                textualNotOr = not true or true
+                textualNotString = not ""
                 text = "你" + "好" + 1
                 values = [1, {name: "before"}, [3]]
                 values[1]["name"] = "after"
@@ -58,6 +64,11 @@ class FclLanguageExhaustiveTest {
         assertEquals(true, state.scope().get("comparison"));
         assertEquals(false, state.scope().get("shortAnd"));
         assertEquals(true, state.scope().get("shortOr"));
+        assertEquals(state.scope().get("symbolicNot"), state.scope().get("textualNot"));
+        assertEquals(true, state.scope().get("spacedTextualNot"));
+        assertEquals(false, state.scope().get("textualNotAnd"));
+        assertEquals(true, state.scope().get("textualNotOr"));
+        assertEquals(true, state.scope().get("textualNotString"));
         assertEquals("你好1", state.scope().get("text"));
         assertEquals(Map.of("answer", 4L, "truth", true), state.scope().get("object"));
         assertEquals(List.of(1L, List.of(2L)), state.scope().get("original"));
@@ -159,7 +170,9 @@ class FclLanguageExhaustiveTest {
                 "import \"bad-name\"",
                 "import \"editor\" as \"bad-name\"",
                 "value = 9223372036854775808",
-                "true = 1")) {
+                "true = 1",
+                "not = 1",
+                "func not() { return 1 }")) {
             assertThrows(FclCompileException.class, () -> compiler.compile(source), source);
         }
     }

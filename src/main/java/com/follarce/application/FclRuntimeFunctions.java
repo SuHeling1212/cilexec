@@ -483,18 +483,109 @@ public final class FclRuntimeFunctions {
         return Map.of("text", text, "newline", newline, "routeId", display(route));
     }
 
-    /** Removes one current-scope user binding so its persisted value can be reclaimed. */
+    /** Exposes and releases process-local symbols without mutating shared runtime functions. */
     private void registerMemory() {
+        registry.registerContextual("memory", "list", (args, invocation) -> {
+            if (args.size() > 1) throw new FclRuntimeException(
+                    "memory.list expects an optional boolean or options map");
+            MemoryListOptions options = memoryListOptions(args);
+            return Map.of("variables", memoryVariables(invocation.continuation(),
+                            options.includeParents()),
+                    "functions", memoryFunctions(invocation, options.includeRuntime()));
+        }, "ls");
         registry.registerContextual("memory", "destroy", (args, invocation) -> {
             arity(args, 1, "memory.destroy");
             String name = string(args.getFirst(), "variable name");
             if (reservedScopeKey(name)) {
                 throw new FclRuntimeException("memory.destroy cannot remove runtime state: " + name);
             }
-            if (!invocation.continuation().scope().contains(name)) return false;
-            releaseValue(invocation.continuation().scope().remove(name), new IdentityHashMap<>());
-            return true;
+            boolean removed = false;
+            if (invocation.continuation().scope().contains(name)) {
+                releaseValue(invocation.continuation().scope().remove(name), new IdentityHashMap<>());
+                removed = true;
+            }
+            FclProgram current = invocation.program();
+            if (current != null && current.function(name) != null) {
+                invocation.continuation().disableFunction(name);
+                FclScope root = invocation.continuation().globalScope();
+                if (root.contains(TerminalReplService.LIBRARY_SCOPE_KEY)) {
+                    Object library = root.get(TerminalReplService.LIBRARY_SCOPE_KEY);
+                    if (library instanceof String source) {
+                        root.put(TerminalReplService.LIBRARY_SCOPE_KEY,
+                                TerminalReplService.removeFunctionDeclaration(source, name));
+                    }
+                }
+                removed = true;
+            }
+            return removed;
         }, "unset", "release");
+    }
+
+    private static Map<String, Object> memoryVariables(FclContinuation continuation,
+                                                        boolean includeParents) {
+        Map<String, Object> variables = new LinkedHashMap<>();
+        if (includeParents && continuation.globalScope() != continuation.scope()) {
+            continuation.globalScope().values().forEach((name, value) -> {
+                if (visibleMemoryVariable(name)) variables.put(name, value);
+            });
+        }
+        continuation.scope().values().forEach((name, value) -> {
+            if (visibleMemoryVariable(name)) variables.put(name, value);
+        });
+        return variables;
+    }
+
+    private List<Map<String, Object>> memoryFunctions(FclFunctionRegistry.Invocation invocation,
+                                                       boolean includeRuntime) {
+        Map<String, Map<String, Object>> functions = new LinkedHashMap<>();
+        FclProgram current = invocation.program();
+        if (current != null) {
+            current.functions().forEach((name, function) -> {
+                if (name.startsWith("__pkg_") || invocation.continuation().functionDisabled(name)) {
+                    return;
+                }
+                String origin = function.packageIdentity();
+                functions.put(name, Map.of("name", name,
+                        "kind", origin == null ? "defined" : "imported",
+                        "origin", origin == null ? "" : origin,
+                        "mutable", true));
+            });
+        }
+        if (includeRuntime) {
+            registry.qualifiedNames().forEach(name -> {
+                String namespace = name.substring(0, name.indexOf('.'));
+                functions.putIfAbsent(name, Map.of("name", name,
+                        "kind", extensions.namespaces().contains(namespace)
+                                ? "extension" : "builtin",
+                        "origin", "", "mutable", false));
+            });
+        }
+        return List.copyOf(functions.values());
+    }
+
+    private static MemoryListOptions memoryListOptions(List<Object> args) {
+        if (args.isEmpty()) return new MemoryListOptions(false, false);
+        Object option = args.getFirst();
+        if (option instanceof Boolean includeParents) {
+            return new MemoryListOptions(includeParents, false);
+        }
+        if (!(option instanceof Map<?, ?> values)) {
+            throw new FclRuntimeException("memory.list option must be a boolean or map");
+        }
+        return new MemoryListOptions(mapBoolean(values, "includeParents"),
+                mapBoolean(values, "includeRuntime"));
+    }
+
+    private static boolean mapBoolean(Map<?, ?> values, String name) {
+        Object value = values.get(name);
+        if (value == null) return false;
+        return bool(value, "memory.list " + name);
+    }
+
+    private record MemoryListOptions(boolean includeParents, boolean includeRuntime) { }
+
+    private static boolean visibleMemoryVariable(String name) {
+        return !reservedScopeKey(name) && !name.equals("path.aliases");
     }
 
     private static boolean reservedScopeKey(String name) {
@@ -3173,6 +3264,12 @@ public final class FclRuntimeFunctions {
         if (!(value instanceof String text)) throw new FclRuntimeException(field
                 + " must be a string");
         return text;
+    }
+
+    private static boolean bool(Object value, String field) {
+        if (!(value instanceof Boolean result)) throw new FclRuntimeException(field
+                + " must be a boolean");
+        return result;
     }
 
     private static String display(Object value) {

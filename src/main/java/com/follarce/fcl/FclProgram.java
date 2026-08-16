@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
+import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,14 +19,19 @@ public final class FclProgram {
      * {@code null}.
      */
     public record Function(String name, List<String> parameters, int entryPoint,
-                           int endPoint, String packageIdentity) {
+                            int endPoint, String packageIdentity, boolean publicBinding,
+                            Map<String, Object> moduleBindings) {
         public Function {
             Objects.requireNonNull(name, "name");
             parameters = List.copyOf(parameters);
+            Map<String, Object> bindings = new LinkedHashMap<>();
+            if (moduleBindings != null) moduleBindings.forEach((key, value) ->
+                    bindings.put(key, FclValues.deepCopy(value)));
+            moduleBindings = Collections.unmodifiableMap(bindings);
         }
 
         public Function(String name, List<String> parameters, int entryPoint, int endPoint) {
-            this(name, parameters, entryPoint, endPoint, null);
+            this(name, parameters, entryPoint, endPoint, null, true, Map.of());
         }
     }
 
@@ -51,6 +58,31 @@ public final class FclProgram {
 
     public Function function(String name) {
         return functions.get(name);
+    }
+
+    /** Returns a resolver view without process-locally removed mutable function bindings. */
+    public FclProgram withoutFunctions(java.util.Set<String> disabled) {
+        if (disabled == null || disabled.isEmpty()) return this;
+        Map<String, Function> remaining = new LinkedHashMap<>(functions);
+        disabled.forEach(remaining::remove);
+        return new FclProgram(instructions, remaining, source);
+    }
+
+    /** Executes only top-level assignments as private module initialization. */
+    public FclProgram initializationProgram() {
+        BitSet functionBodies = new BitSet(instructions.size());
+        functions.values().forEach(function ->
+                functionBodies.set(function.entryPoint(), function.endPoint()));
+        List<FclInstruction> filtered = new ArrayList<>(instructions);
+        for (int index = 0; index < filtered.size(); index++) {
+            if (functionBodies.get(index)) continue;
+            FclInstruction instruction = filtered.get(index);
+            if (instruction instanceof FclInstruction.Assignment
+                    || instruction instanceof FclInstruction.FunctionDeclaration
+                    || instruction instanceof FclInstruction.Jump) continue;
+            filtered.set(index, new FclInstruction.Jump(instruction.line(), index + 1));
+        }
+        return new FclProgram(filtered, functions, source);
     }
 
     public String sourceHash() {

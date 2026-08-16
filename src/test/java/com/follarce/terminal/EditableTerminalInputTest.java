@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.io.PushbackInputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +48,20 @@ class EditableTerminalInputTest {
         assertEquals("{\"kind\":\"paste\",\"text\":\"" + "a".repeat(64) + "\"}",
                 input.readKeyEvent(output, true));
         assertEquals("{\"kind\":\"paste\",\"text\":\"aaaaaa\"}",
+                input.readKeyEvent(output, true));
+    }
+
+    @Test
+    void capsUnicodeTextBatchesAtSixtyFourCodePoints() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(
+                "中".repeat(65).getBytes(StandardCharsets.UTF_8)), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"paste\",\"text\":\"" + "中".repeat(64) + "\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"key\",\"key\":\"中\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"中\"}",
                 input.readKeyEvent(output, true));
     }
 
@@ -102,6 +117,24 @@ class EditableTerminalInputTest {
                 StandardCharsets.UTF_8);
 
         assertEquals("{\"kind\":\"paste\",\"text\":\"ab\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"key\",\"key\":\"c\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"c\"}",
+                input.readKeyEvent(output, true));
+    }
+
+    @Test
+    void preservesUnicodeWhoseContinuationArrivesAfterTheBatchDeadline() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(new DelayedSecondByteInputStream(
+                new int[]{'a', 0xE4, 0xB8, 0xAD}, new long[]{0, 15, 25, 25}), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"key\",\"key\":\"a\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"a\"}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"key\",\"key\":\"中\",\"shift\":false,"
+                + "\"ctrl\":false,\"alt\":false,\"text\":\"中\"}",
                 input.readKeyEvent(output, true));
     }
 
@@ -479,6 +512,19 @@ class EditableTerminalInputTest {
         byte[] source = ("ab\u001b[1;2D X\n").getBytes(StandardCharsets.UTF_8);
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
                 new ByteArrayInputStream(source), null);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("ab X", input.editSubmission(output, "test> ", "...> ", true,
+                FclInputBuffer::complete));
+    }
+
+    @Test
+    void shiftEnterLookaheadRestoresBytesFromASmallSuppliedPushbackStream() throws Exception {
+        InputStream source = new PushbackInputStream(new ByteArrayInputStream(
+                "ab\u001b[1;2D X\n".getBytes(StandardCharsets.UTF_8)), 1);
+        TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
+                source, null);
         PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
                 StandardCharsets.UTF_8);
 

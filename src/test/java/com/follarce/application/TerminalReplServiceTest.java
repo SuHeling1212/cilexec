@@ -177,6 +177,68 @@ class TerminalReplServiceTest {
     }
 
     @Test
+    void retainsFunctionsDeclaredAlongsideTopLevelTerminalStatements() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        repl.submit(owner, sessionId, "func hi() { return \"hello\" }\nvalue = 2");
+        run(persistence, executor, owner);
+        assertEquals(2L, repl.variables(owner, sessionId).get("value"));
+
+        repl.submit(owner, sessionId, "hi()");
+        run(persistence, executor, owner);
+        assertEquals("hello", repl.active(owner, sessionId).orElseThrow().result());
+    }
+
+    @Test
+    void importsVfsSourceFunctionsIntoTheCurrentTerminalProcess() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        var source = com.follarce.domain.vfs.StoredObject.create(
+                new com.follarce.domain.vfs.BinaryContent(
+                        "value = 1\nprintln(\"loaded\")\nprivate func helper() { return value + 1 }\n"
+                                .concat("public func hi() { return helper() }\n").getBytes(
+                                java.nio.charset.StandardCharsets.UTF_8)),
+                ProgramService.SOURCE_MEDIA_TYPE, NOW);
+        persistence.vfs.saveObject(source);
+        var root = new com.follarce.domain.vfs.VfsNode(UUID.randomUUID(), Optional.empty(), owner,
+                "/", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        persistence.vfs.insertNode(root);
+        persistence.vfs.insertNode(new com.follarce.domain.vfs.VfsNode(UUID.randomUUID(),
+                Optional.of(root.nodeId()), owner, "library.fcl",
+                com.follarce.domain.vfs.VfsNode.Type.FILE, Optional.of(source.objectHash()),
+                java.util.Set.of(), false, NOW, NOW));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        repl.submit(owner, sessionId, "import \"library.fcl\" as \"lib\"");
+        run(persistence, executor, owner);
+
+        repl.submit(owner, sessionId, "lib.hi()");
+        run(persistence, executor, owner);
+        assertEquals(2L, repl.active(owner, sessionId).orElseThrow().result());
+        assertFalse(repl.variables(owner, sessionId).containsKey("value"),
+                "source import must not run ordinary top-level statements");
+    }
+
+    @Test
     void exposesRawKeyWaitModeForFullScreenFclPrograms() {
         ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
         UUID owner = UUID.randomUUID();

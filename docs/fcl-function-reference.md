@@ -24,7 +24,7 @@ slice, which may then replay from the preceding checkpoint.
   `#`, including forms like `#(...)`, is this operator; there is no comment syntax
   involving `#`. `#null` is `0`, and a single non-collection value has length `1`.
 - **Reserved words.** `func`, `if`, `else`, `while`, `break`, `continue`, `return`,
-  `import`, `include`, `as`, `and`, `or`, `true`, `false`, `null` cannot be used as
+  `import`, `include`, `as`, `and`, `or`, `not`, `public`, `private`, `true`, `false`, `null` cannot be used as
   identifiers, function names, or parameter names; doing so is a compile error.
 - **String escapes.** Only `\n`, `\t`, `\r`, `\\`, `\"` are valid. Any other escape
   (for example `\q` or `\u0041`) is a compile error.
@@ -54,6 +54,15 @@ slice, which may then replay from the preceding checkpoint.
   an emoji occupies two positions and can be split by indexing or slicing.
 - **Function resolution.** User-defined or exported functions take precedence over
   built-in functions of the same name (dot-call resolution).
+- **Boolean operators.** `not value` is the textual spelling of `!value`; `and` and
+  `or` short-circuit and use FCL truthiness (`0`, `null`, `false`, and `""` are false).
+- **Function scopes.** Every invocation has fresh parameters and locals. Reads resolve
+  local bindings first and then the lexical program/root scope; assignments always write
+  the current invocation. A callee cannot see a caller's locals, so FCL is not dynamically
+  scoped. Root bindings and call frames are persisted across suspension and recovery.
+- **Module visibility.** `public func` exports a module function (and is the default for
+  an unqualified `func`); `private func` is an implementation function. Private functions
+  remain callable by module functions but are not callable from imported module clients.
 
 ## Start With These Examples
 
@@ -142,9 +151,11 @@ editor.open("notes.txt")
 
 Its package coordinate is `cilexec/editor/0.0.1`, and its public function is
 `editor.open(path)`. A package is identified only by the SHA-256 of its `.db` file;
-two different hashes are two independent packages. `import` accepts the 64-character
-SHA-256 of an installed `.db` file, optionally with a private per-process alias, but
-never a human-readable name or a `namespace/name/version` coordinate.
+ two different hashes are two independent packages. `import` accepts either the
+ 64-character SHA-256 of an installed `.db` file or a VFS `.fcl` source path. Package
+ imports are immutable installed releases; source imports are private mutable process
+ bindings and never install a package. Neither form accepts a human-readable package
+ coordinate.
 
 ## General Data & Permission Rules
 
@@ -156,7 +167,8 @@ never a human-readable name or a `namespace/name/version` coordinate.
 | Paths | Relative paths are based on the `:pwd` result; a leading `/` is an absolute VFS path. |
 | Administrators | The initial `local` account has `SYSTEM_ADMIN`. Functions authorize as the currently logged-in user. |
 | External operations | Input, printing, HTTP, sockets, and system commands suspend the FCL process and resume it automatically when done. |
-| Releasing variables | `memory.destroy("name")` (aliases `memory.unset("name")`, `memory.release("name")`) recursively clears the array/object container immediately and removes the variable binding from the current scope; after this statement commits, the value no longer appears in the persisted continuation. Returns `true` if the variable was actually removed, `false` if it did not exist. FCL values are deep-copied on assignment; there are no shared object aliases. It does not delete VFS files or packages. |
+| Symbol view | `memory.list([includeParents])` (alias `memory.ls`) returns a snapshot `{variables, functions}` of current-process mutable functions and visible variables. Variables are only from the current scope unless `includeParents` is true, in which case lexical root values are included with local shadowing. Pass `{"includeRuntime":true}` (and optionally `"includeParents":true`) to include immutable built-ins, aliases, and extensions. Functions list `name`, `kind`, `origin`, and `mutable`. |
+| Releasing symbols | `memory.destroy("name")` (aliases `memory.unset("name")`, `memory.release("name")`) removes a current-scope variable and/or a mutable current-process function binding. It never deletes a parent variable, VFS file, package, built-in, or Java extension. A removed function affects future resolution only and is isolated from other processes. FCL values are deep-copied on assignment; there are no shared object aliases. |
 | Listing real names | `system.ls()` returns every qualified function name and alias callable in this Runtime. |
 | Java extensions | `system.extensions()` returns the fixed list of extensions sealed into the system at build time. |
 
@@ -359,7 +371,7 @@ control other users' processes.
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
 | `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. |
-| `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. The resolved absolute path is what gets persisted with the suspension. Terminal processes keep global variables, package bindings, and the working directory, and return to the same terminal when the target program ends; ordinary background processes terminate when the target program ends. |
+| `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. Terminal processes keep global variables, package bindings, working directory, and successfully declared top-level functions when they return to the terminal; ordinary background processes terminate when the target program ends. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
 | `process.gc([pid])` | Manually remove terminal processes (TERMINATED/FAILED) and their persisted state (continuation, variables, events, timers, package pins). Without a PID it removes every terminal process and returns the count removed; with a PID it removes only that process when it has already ended and returns `true`. Running, suspended, and waiting processes are never removed, and `system_kill`ed processes cannot be revived. Administrator (`SYSTEM_ADMIN`) only. |
@@ -397,10 +409,16 @@ connection handles that could be reused across a crash.
 ## Packages: `package`
 
 Packages are immutable SQLite `package.db` files. The recommended flow is
-`package.build` → `package.install` → `import` or `package.run`. `import` accepts only
+`package.build` → `package.install` → `import` or `package.run`. A hash import accepts
 the SHA-256 of an installed package database file; a private process alias is optional.
-Plain FCL source files use `include "path.fcl"`, which splices the file
-in place before compilation; `import` cannot be used for that. `package.json` must
+`import "path.fcl" [as "alias"]` creates a mutable source-library binding in the current
+process. It compiles and links the module functions without executing ordinary top-level
+expressions, effects, or control flow. Top-level assignments initialize private module
+bindings for the imported module's functions and never create caller variables. Only `public func` declarations are exported; `private func`
+declarations remain available to their module's public functions as internal implementation.
+Without an alias public functions are bare names; with one they are `alias.function`.
+`include "path.fcl"` remains source splice: its top-level statements execute and its public
+function declarations persist in a terminal context. `package.json` must
 declare `kind`. An `application` must provide a zero-argument generic `run`
 entrypoint; a `library` is meant for import or dependency use and may have no
 entrypoint. The dependency manifest is stored in full inside the package; each entry
@@ -427,12 +445,12 @@ The host market's default index is
 | `package.resource(coordinateOrPackageHash, resourcePath)` | Read a declared text resource from the package; hash lookup uses the internal logical-content hash. |
 | `package.pin(coordinateOrPackageHash)` | Validate that a release is installed and return its metadata. Despite the legacy name, this call does not create or change a process binding. |
 
-`import` accepts only the full SHA-256 of an installed package database, optionally
+Package `import` accepts the full SHA-256 of an installed package database, optionally
 with a private per-process alias; the qualifier is the hash itself when no alias is
 given. Only packages effectively installed for the current user can be imported or
-run. Importing the same alias again in the same session binds it to the newest requested
-hash (last wins); processes that already linked a program keep the module they were
-linked with:
+run. Importing the same package alias again in the same session binds it to the newest
+requested hash (last wins). Source imports resolve relative to the process PWD, remain
+private to that process, and persist as exact loaded source bindings across recovery:
 
 ```fcl
 import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff" as "e"

@@ -77,11 +77,56 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void memoryListsVisibleSymbolsAndOnlyRemovesMutableCurrentProcessBindings() {
+        Fixture fixture = new Fixture("""
+                value = 7
+                func hi() { return value }
+                symbols = memory.list(true)
+                allSymbols = memory.list({includeRuntime: true})
+                removedValue = memory.destroy("value")
+                removedFunction = memory.destroy("hi")
+                removedBuiltin = memory.destroy("io.print")
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
+                || fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+            fixture.executor.executeSlice(fixture.claim);
+            CilProcess current = fixture.persistence.processes.current;
+            if (current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+        }
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("removedValue"));
+        assertEquals(true, restored.scope().get("removedFunction"));
+        assertEquals(false, restored.scope().get("removedBuiltin"));
+        assertFalse(restored.scope().contains("value"));
+        assertTrue(restored.functionDisabled("hi"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> symbols = (Map<String, Object>) restored.scope().get("symbols");
+        assertEquals(7L, ((Map<?, ?>) symbols.get("variables")).get("value"));
+        assertTrue(((List<?>) symbols.get("functions")).stream().anyMatch(value ->
+                value instanceof Map<?, ?> function && "hi".equals(function.get("name"))
+                        && Boolean.TRUE.equals(function.get("mutable"))));
+        assertFalse(((List<?>) symbols.get("functions")).stream().anyMatch(value ->
+                value instanceof Map<?, ?> function && "io.print".equals(function.get("name"))));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> allSymbols = (Map<String, Object>) restored.scope().get("allSymbols");
+        assertTrue(((List<?>) allSymbols.get("functions")).stream().anyMatch(value ->
+                value instanceof Map<?, ?> function && "io.print".equals(function.get("name"))));
+    }
+
+    @Test
     void execCompilesAVfsPathAndPreservesTheExistingProcessIdentity() {
         Fixture fixture = new Fixture("process.exec(\"/next.fcl\")\noldTail = 99\n",
                 com.follarce.extension.SourceExtensionIndex.catalog());
         StoredObject source = StoredObject.create(new BinaryContent(
-                "replacement = plusOne(retained)\n".getBytes(
+                "func afterExec() { return retained + 2 }\nreplacement = plusOne(retained)\n".getBytes(
                         java.nio.charset.StandardCharsets.UTF_8)),
                 ProgramService.SOURCE_MEDIA_TYPE, NOW);
         fixture.persistence.vfs.saveObject(source);
@@ -142,6 +187,7 @@ class ProcessStatementExecutorTest {
         assertEquals(42L, restored.scope().get("replacement"));
         assertEquals(41L, restored.scope().get("retained"));
         assertFalse(restored.scope().contains("oldTail"));
+        assertTrue(TerminalReplService.librarySource(restored).contains("func afterExec"));
         assertEquals(originalIdentity, fixture.persistence.processes.current.identity());
         assertEquals(CilProcess.Status.PAUSED,
                 fixture.persistence.processes.current.status());

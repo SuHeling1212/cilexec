@@ -200,7 +200,7 @@ public final class FclRuntime {
         FclContinuation.PendingStatement callerPending = continuation.pendingStatement();
         continuation.mutableCallStack().add(new FclContinuation.CallFrame(returnPointer,
                 continuation.scope(), callerPending, call.expressionId(), call.name()));
-        FclScope functionScope = new FclScope();
+        FclScope functionScope = new FclScope(function.moduleBindings());
         for (int index = 0; index < function.parameters().size(); index++) {
             functionScope.put(function.parameters().get(index), call.arguments().get(index));
         }

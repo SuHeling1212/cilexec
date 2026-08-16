@@ -75,6 +75,67 @@ class FclRuntimeTest {
     }
 
     @Test
+    void functionsReadTheLexicalRootWithoutLeakingOrUsingCallerLocals() {
+        FclProgram program = compiler.compile("""
+                root = 10
+                func readRoot() { return root }
+                func shadowRoot() { root = 20; return root }
+                func readCallerLocal() { return callerLocal }
+                func caller() { callerLocal = 99; return readCallerLocal() }
+                inherited = readRoot()
+                shadowed = shadowRoot()
+                after = root
+                """);
+        FclContinuation continuation = new FclContinuation();
+
+        while (!continuation.halted()) {
+            FclStepResult step = runtime.executeOne(program, continuation);
+            assertFalse(step.status() == FclStepResult.Status.FAILED,
+                    () -> String.valueOf(step.value()));
+        }
+
+        assertEquals(10L, continuation.scope().get("inherited"));
+        assertEquals(20L, continuation.scope().get("shadowed"));
+        assertEquals(10L, continuation.scope().get("after"));
+        assertFalse(continuation.scope().contains("callerLocal"));
+
+        FclProgram dynamicScopeAttempt = compiler.compile("""
+                func readCallerLocal() { return callerLocal }
+                func caller() { callerLocal = 99; return readCallerLocal() }
+                caller()
+                """);
+        FclContinuation rejected = new FclContinuation();
+        FclStepResult last = null;
+        while (!rejected.halted()) last = runtime.executeOne(dynamicScopeAttempt, rejected);
+        assertEquals(FclStepResult.Status.FAILED, last.status());
+        assertTrue(String.valueOf(last.value()).contains("Undefined variable: callerLocal"));
+    }
+
+    @Test
+    void privateFunctionsRemainAvailableInternallyButNotFromTopLevel() {
+        FclProgram publicProgram = compiler.compile("""
+                private func helper() { return 7 }
+                public func api() { return helper() }
+                value = api()
+                """);
+        FclContinuation publicContinuation = new FclContinuation();
+        runToCompletion(publicProgram, publicContinuation);
+        assertEquals(7L, publicContinuation.scope().get("value"));
+
+        FclProgram privateProgram = compiler.compile("""
+                private func helper() { return 7 }
+                helper()
+                """);
+        FclContinuation privateContinuation = new FclContinuation();
+        FclStepResult last = null;
+        while (!privateContinuation.halted()) {
+            last = runtime.executeOne(privateProgram, privateContinuation);
+        }
+        assertEquals(FclStepResult.Status.FAILED, last.status());
+        assertTrue(String.valueOf(last.value()).contains("Undefined function: helper"));
+    }
+
+    @Test
     void turnsInvalidUserCallArityIntoADurableFailure() {
         FclProgram program = compiler.compile("""
                 func identity(value) { return value }

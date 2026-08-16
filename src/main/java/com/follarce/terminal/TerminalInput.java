@@ -168,6 +168,7 @@ public interface TerminalInput {
     final class EditableTerminalInput implements TerminalInput {
         private static final int HISTORY_LIMIT = TerminalService.COMMAND_HISTORY_LIMIT;
         private static final int MAX_TEXT_BATCH_CODE_POINTS = 64;
+        private static final int PUSHBACK_CAPACITY = 4;
         private static final long MAX_TEXT_BATCH_WAIT_NANOS = 20_000_000L;
         private static final long TEXT_BATCH_POLL_NANOS = 1_000_000L;
         private static final long ESCAPE_SEQUENCE_WAIT_NANOS = 30_000_000L;
@@ -194,11 +195,10 @@ public interface TerminalInput {
         }
 
         EditableTerminalInput(InputStream stream, Console console, IntSupplier terminalWidth) {
-            // A single-byte pushback lets malformed UTF-8 continuation bytes be re-read as
-            // ordinary input instead of being silently consumed.
+            // Shift+Enter lookahead can restore four bytes. Wrap even an existing pushback
+            // stream so its original capacity cannot make that restoration fail.
             InputStream source = java.util.Objects.requireNonNull(stream, "stream");
-            this.stream = source instanceof PushbackInputStream pushback
-                    ? pushback : new PushbackInputStream(source, 1);
+            this.stream = new PushbackInputStream(source, PUSHBACK_CAPACITY);
             this.console = console;
             this.terminalWidth = java.util.Objects.requireNonNull(terminalWidth,
                     "terminalWidth");
@@ -325,11 +325,12 @@ public interface TerminalInput {
                     && awaitTextBatchInput(deadline)) {
                 int next = stream.read();
                 if (next < 0) break;
-                String nextText = decodePrintableText(next);
+                String nextText = decodePrintableTextBeforeDeadline(next, deadline);
                 if (nextText == null) {
                     unread(next);
                     break;
                 }
+                if (nextText.isEmpty()) break;
                 text.append(nextText);
                 codePoints += nextText.codePointCount(0, nextText.length());
             }
@@ -338,15 +339,15 @@ public interface TerminalInput {
         }
 
         private boolean awaitTextBatchInput(long deadline) throws IOException {
-            while (stream.available() == 0) {
+            while (true) {
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) return false;
+                if (stream.available() > 0) return true;
                 LockSupport.parkNanos(Math.min(remaining, TEXT_BATCH_POLL_NANOS));
                 if (Thread.currentThread().isInterrupted()) {
                     throw new IOException("Terminal input interrupted");
                 }
             }
-            return true;
         }
 
         /** Decodes one input event, buffering bracketed-paste content across reads. */
@@ -475,6 +476,34 @@ public interface TerminalInput {
                 bytes[index] = (byte) next;
             }
             return new String(bytes, StandardCharsets.UTF_8);
+        }
+
+        /**
+         * Decodes a batch code point without allowing its continuation bytes to cross the
+         * batch deadline. A partial code point is restored for the following input event.
+         */
+        private String decodePrintableTextBeforeDeadline(int first, long deadline)
+                throws IOException {
+            if (first < 0 || first == 27 || first == '\r' || first == '\n' || first == '\t'
+                    || first == 127 || first == 8 || first > 0 && first < 27) {
+                return null;
+            }
+            if (first < 128) return String.valueOf((char) first);
+            int length = first >= 0xF0 ? 4 : first >= 0xE0 ? 3 : 2;
+            int[] bytes = new int[length];
+            bytes[0] = first;
+            for (int index = 1; index < length; index++) {
+                if (!awaitTextBatchInput(deadline)) {
+                    pushBack(bytes, index);
+                    return "";
+                }
+                int next = stream.read();
+                if (next < 0) return null;
+                bytes[index] = next;
+            }
+            byte[] utf8 = new byte[length];
+            for (int index = 0; index < length; index++) utf8[index] = (byte) bytes[index];
+            return new String(utf8, StandardCharsets.UTF_8);
         }
 
         /** Decodes CSI <param>;<modifier><letter> modified-key sequences. */

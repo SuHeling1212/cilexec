@@ -38,7 +38,7 @@ final class FclExpressionEvaluator {
             return FclValues.deepCopy(literal.value());
         }
         if (expression instanceof FclExpression.Variable variable) {
-            return FclValues.deepCopy(continuation.scope().get(variable.name()));
+            return FclValues.deepCopy(continuation.variable(variable.name()));
         }
         if (expression instanceof FclExpression.ArrayLiteral array) {
             List<Object> result = new ArrayList<>(array.elements().size());
@@ -75,13 +75,18 @@ final class FclExpressionEvaluator {
             }
             List<Object> arguments = new ArrayList<>(call.arguments().size());
             for (FclExpression argument : call.arguments()) arguments.add(evaluate(argument));
-            FclProgram.Function userFunction = program.function(call.name());
+            FclProgram.Function userFunction = continuation.functionDisabled(call.name())
+                    ? null : program.function(call.name());
+            if (userFunction != null && !userFunction.publicBinding()
+                    && continuation.callStack().isEmpty()) {
+                userFunction = null;
+            }
             if (userFunction != null) {
                 throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments));
             }
             Object value = functions.invoke(call.name(), arguments,
                     new FclFunctionRegistry.Invocation(call.id(), continuation,
-                            currentPackageIdentity()));
+                            currentPackageIdentity(), program));
             FclContinuation.PendingStatement current = continuation.pendingStatement();
             if (current == null) {
                 current = new FclContinuation.PendingStatement(continuation.programCounter());

@@ -18,6 +18,7 @@ import java.util.Objects;
  */
 public final class FclContinuation {
     public static final int FORMAT_VERSION = 2;
+    public static final String DISABLED_FUNCTIONS_SCOPE_KEY = "cilexec.fcl.disabledFunctions";
 
     public enum WaitKind {
         NONE,
@@ -163,6 +164,60 @@ public final class FclContinuation {
 
     public FclScope scope() {
         return scope;
+    }
+
+    /**
+     * Resolves a variable in the current invocation and then its lexical program scope.
+     * FCL currently permits declarations only at top level, so every user function closes
+     * over the durable root scope rather than over the caller's locals.
+     */
+    public Object variable(String name) {
+        if (scope.contains(name)) return scope.get(name);
+        FclScope root = globalScope();
+        if (root != scope && root.contains(name)) return root.get(name);
+        return scope.get(name);
+    }
+
+    /** Process-local user/import binding removals, persisted with the lexical root scope. */
+    public boolean functionDisabled(String name) {
+        FclScope root = globalScope();
+        if (!root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) return false;
+        Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
+        return values instanceof List<?> list && list.contains(name);
+    }
+
+    public java.util.Set<String> disabledFunctions() {
+        FclScope root = globalScope();
+        if (!root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) return java.util.Set.of();
+        Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
+        if (!(values instanceof List<?> list)) return java.util.Set.of();
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (Object value : list) if (value instanceof String name) names.add(name);
+        return java.util.Set.copyOf(names);
+    }
+
+    public void disableFunction(String name) {
+        FclScope root = globalScope();
+        List<Object> names = new ArrayList<>();
+        if (root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) {
+            Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
+            if (values instanceof List<?> list) names.addAll(list);
+        }
+        if (!names.contains(name)) names.add(name);
+        root.put(DISABLED_FUNCTIONS_SCOPE_KEY, names);
+    }
+
+    /** An explicit new declaration restores that process-local binding. */
+    public void enableFunctions(java.util.Collection<String> declared) {
+        if (declared == null || declared.isEmpty()) return;
+        FclScope root = globalScope();
+        if (!root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) return;
+        Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
+        if (!(values instanceof List<?> list)) return;
+        List<Object> names = new ArrayList<>(list);
+        names.removeIf(value -> value instanceof String name && declared.contains(name));
+        if (names.isEmpty()) root.remove(DISABLED_FUNCTIONS_SCOPE_KEY);
+        else root.put(DISABLED_FUNCTIONS_SCOPE_KEY, names);
     }
 
     /** Durable outermost scope retained across function returns and terminal submissions. */

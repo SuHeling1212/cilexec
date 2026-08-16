@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,12 +19,21 @@ public final class FclProgramLinker {
     }
 
     public record Module(String packageIdentity, String moduleName, String source,
-                         List<Export> exports) {
+                          List<Export> exports, Map<String, Object> bindings) {
         public Module {
             Objects.requireNonNull(packageIdentity, "packageIdentity");
             Objects.requireNonNull(moduleName, "moduleName");
             Objects.requireNonNull(source, "source");
             exports = List.copyOf(exports);
+            Map<String, Object> copied = new LinkedHashMap<>();
+            if (bindings != null) bindings.forEach((name, value) ->
+                    copied.put(name, FclValues.deepCopy(value)));
+            bindings = Map.copyOf(copied);
+        }
+
+        public Module(String packageIdentity, String moduleName, String source,
+                      List<Export> exports) {
+            this(packageIdentity, moduleName, source, exports, Map.of());
         }
     }
 
@@ -90,7 +98,8 @@ public final class FclProgramLinker {
                 String internal = localNames.get(entry.getKey());
                 FclProgram.Function linked = new FclProgram.Function(internal,
                         source.parameters(), source.entryPoint() + offset,
-                        source.endPoint() + offset, context.module().packageIdentity());
+                        source.endPoint() + offset, context.module().packageIdentity(),
+                        source.publicBinding(), context.module().bindings());
                 bind(functions, internal, linked);
             }
             for (Export export : context.module().exports()) {
@@ -112,6 +121,12 @@ public final class FclProgramLinker {
                     .append(context.module().source());
         }
         return new FclProgram(instructions, functions, linkedSource.toString());
+    }
+
+    /** Validates a source import before its durable binding is committed. */
+    public void validateLibraryModule(Module module) {
+        Objects.requireNonNull(module, "module");
+        requireLibraryModule(module, compiler.compile(module.source()));
     }
 
     private static Map<String, Map<String, String>> internalNames(List<Context> contexts) {
@@ -160,7 +175,7 @@ public final class FclProgramLinker {
         if (instruction instanceof FclInstruction.FunctionDeclaration value) {
             return new FclInstruction.FunctionDeclaration(value.line(),
                     localNames.get(value.name()), value.parameters(), value.bodyTarget() + offset,
-                    value.endTarget() + offset);
+                    value.endTarget() + offset, value.publicBinding());
         }
         if (instruction instanceof FclInstruction.Jump value) {
             return new FclInstruction.Jump(value.line(), value.target() + offset);
@@ -233,15 +248,11 @@ public final class FclProgramLinker {
     }
 
     private static void requireLibraryModule(Module module, FclProgram program) {
-        BitSet bodies = new BitSet(program.instructions().size());
-        for (FclProgram.Function function : program.functions().values()) {
-            bodies.set(function.entryPoint(), function.endPoint());
-        }
-        for (int index = 0; index < program.instructions().size(); index++) {
-            if (bodies.get(index)) continue;
-            if (!(program.instructions().get(index) instanceof FclInstruction.FunctionDeclaration)) {
-                throw new FclRuntimeException("Package module must contain only top-level function "
-                        + "declarations: " + module.moduleName());
+        for (FclInstruction instruction : program.instructions()) {
+            if (instruction instanceof FclInstruction.Import
+                    || instruction instanceof FclInstruction.Include) {
+                throw new FclRuntimeException("Imported module cannot contain import/include "
+                        + "directives: " + module.moduleName());
             }
         }
     }

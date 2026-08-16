@@ -36,6 +36,16 @@ final class FclSourceIncludes {
                 new ArrayDeque<>());
     }
 
+    /** Reads one regular FCL source file and recursively expands its include directives. */
+    String expandFile(TransactionContext transaction, UUID ownerId, String source,
+                      String workingDirectory) {
+        Expansion expansion = new Expansion(transaction, ownerId);
+        String absolute = FclPath.resolve(workingDirectory, source);
+        String file = expansion.readUtf8File(absolute);
+        expansion.consume(file);
+        return expansion.expand(file, parent(absolute), new ArrayDeque<>());
+    }
+
     private static final class Expansion {
         private final TransactionContext transaction;
         private final UUID ownerId;

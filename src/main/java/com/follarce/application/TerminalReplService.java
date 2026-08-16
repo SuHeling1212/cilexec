@@ -116,6 +116,7 @@ public final class TerminalReplService {
             Program program = programs.compileAndSaveIn(transaction, prepared.source());
 
             FclContinuation runtime = nextSubmission(previous);
+            runtime.enableFunctions(functionNames(expandedSubmission));
             runtime.scope().put(TERMINAL_PROCESS_SCOPE_KEY, true);
             runtime.scope().put(TERMINAL_SESSION_SCOPE_KEY, sessionId.toString());
             runtime.scope().put(FclPath.SCOPE_KEY,
@@ -244,7 +245,8 @@ public final class TerminalReplService {
             return new PreparedSource(changedLibrary, changedLibrary);
         }
         String importedLibrary = importsFrom(compiled);
-        String nextLibrary = mergeImports(existingLibrary, importedLibrary);
+        String nextLibrary = appendFunctionDeclarations(
+                mergeImports(existingLibrary, importedLibrary), normalized);
         if (!importedLibrary.isEmpty()) {
             compiler.compile(nextLibrary);
         }
@@ -382,6 +384,7 @@ public final class TerminalReplService {
         for (FclInstruction instruction : compiled.instructions()) {
             if (!(instruction instanceof FclInstruction.Import value)) continue;
             String target = ProcessStatementExecutor.normalizeImport(value.target());
+            if (!ProcessStatementExecutor.isSha256(target)) continue;
             String name = value.alias() != null ? value.alias() : target;
             if (!validated.add(name)) continue;
             boolean resolvable = transaction.packages()
@@ -426,6 +429,131 @@ public final class TerminalReplService {
         }
         return source;
     }
+
+    /** Keeps top-level definitions from mixed REPL/include/exec source without replaying code. */
+    static String appendFunctionDeclarations(String library, String source) {
+        String declarations = functionDeclarations(source);
+        if (declarations.isBlank()) return library;
+        String combined = library == null || library.isBlank() ? declarations
+                : library + (library.endsWith("\n") ? "" : "\n") + declarations;
+        new FclCompiler().compile(combined);
+        return combined;
+    }
+
+    /** Removes a mutable process-local source function without touching package/runtime code. */
+    static String removeFunctionDeclaration(String library, String name) {
+        if (library == null || library.isBlank()) return library == null ? "" : library;
+        StringBuilder remaining = new StringBuilder(library.length());
+        int cursor = 0;
+        for (FunctionDeclaration declaration : declarations(library)) {
+            if (!declaration.name().equals(name)) continue;
+            remaining.append(library, cursor, declaration.start());
+            cursor = declaration.end();
+        }
+        remaining.append(library, cursor, library.length());
+        return remaining.toString();
+    }
+
+    private static String functionDeclarations(String source) {
+        StringBuilder declarations = new StringBuilder();
+        for (FunctionDeclaration declaration : declarations(source)) {
+            declarations.append(source, declaration.start(), declaration.end());
+            if (!declarations.toString().endsWith("\n")) declarations.append('\n');
+        }
+        return declarations.toString();
+    }
+
+    private static java.util.Set<String> functionNames(String source) {
+        return declarations(source).stream().map(FunctionDeclaration::name)
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+    }
+
+    /** Minimal source scanner: FCL functions are top-level and braces in strings/comments are ignored. */
+    private static List<FunctionDeclaration> declarations(String source) {
+        List<FunctionDeclaration> result = new java.util.ArrayList<>();
+        int depth = 0;
+        int index = 0;
+        while (index < source.length()) {
+            char current = source.charAt(index);
+            if (current == '"') {
+                index = skipString(source, index + 1);
+                continue;
+            }
+            if (current == '/' && index + 1 < source.length() && source.charAt(index + 1) == '/') {
+                index = skipLine(source, index + 2);
+                continue;
+            }
+            if (current == '{') { depth++; index++; continue; }
+            if (current == '}') { depth = Math.max(0, depth - 1); index++; continue; }
+            int declarationStart = index;
+            int functionStart = index;
+            if (depth == 0 && (source.startsWith("public", index) || source.startsWith("private", index))
+                    && wordBoundary(source, index - 1)
+                    && wordBoundary(source, index + (source.startsWith("public", index) ? 6 : 7))) {
+                functionStart = skipSpace(source, index + (source.startsWith("public", index) ? 6 : 7));
+            }
+            if (depth == 0 && source.startsWith("func", functionStart)
+                    && wordBoundary(source, functionStart - 1)
+                    && wordBoundary(source, functionStart + 4)) {
+                int nameStart = skipSpace(source, functionStart + 4);
+                int nameEnd = nameStart;
+                while (nameEnd < source.length() && (Character.isLetterOrDigit(source.charAt(nameEnd))
+                        || source.charAt(nameEnd) == '_')) nameEnd++;
+                if (nameEnd == nameStart) { index = functionStart + 4; continue; }
+                int body = source.indexOf('{', nameEnd);
+                if (body < 0) { index = nameEnd; continue; }
+                int end = matchingBrace(source, body);
+                if (end < 0) { index = body + 1; continue; }
+                result.add(new FunctionDeclaration(source.substring(nameStart, nameEnd), declarationStart,
+                        end + 1));
+                index = end + 1;
+                continue;
+            }
+            index++;
+        }
+        return result;
+    }
+
+    private static int matchingBrace(String source, int open) {
+        int depth = 1;
+        for (int index = open + 1; index < source.length(); index++) {
+            char current = source.charAt(index);
+            if (current == '"') { index = skipString(source, index + 1) - 1; continue; }
+            if (current == '/' && index + 1 < source.length() && source.charAt(index + 1) == '/') {
+                index = skipLine(source, index + 2) - 1;
+                continue;
+            }
+            if (current == '{') depth++;
+            if (current == '}' && --depth == 0) return index;
+        }
+        return -1;
+    }
+
+    private static int skipString(String source, int index) {
+        while (index < source.length()) {
+            if (source.charAt(index) == '\\') { index += 2; continue; }
+            if (source.charAt(index++) == '"') break;
+        }
+        return index;
+    }
+
+    private static int skipLine(String source, int index) {
+        while (index < source.length() && source.charAt(index) != '\n'
+                && source.charAt(index) != '\r') index++;
+        return index;
+    }
+
+    private static int skipSpace(String source, int index) {
+        while (index < source.length() && Character.isWhitespace(source.charAt(index))) index++;
+        return index;
+    }
+
+    private static boolean wordBoundary(String source, int index) {
+        return index < 0 || index >= source.length() || !(Character.isLetterOrDigit(source.charAt(index))
+                || source.charAt(index) == '_');
+    }
+
+    private record FunctionDeclaration(String name, int start, int end) {}
 
     private static void requireUpdated(
             com.follarce.domain.port.ProcessRepository.UpdateResult result) {

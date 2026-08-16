@@ -99,6 +99,8 @@ class FclCodecAndRegistryTest {
                         + "a".repeat(64) + "\" as numbers"));
         assertThrows(FclCompileException.class,
                 () -> new FclCompiler().compile("import \"editor\""));
+        assertDoesNotThrow(() -> new FclCompiler().compile(
+                "import \"library.fcl\" as \"library\""));
         assertThrows(FclCompileException.class,
                 () -> new FclCompiler().compile("import \"editor.*\""));
         assertThrows(FclCompileException.class,

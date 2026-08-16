@@ -14,7 +14,7 @@ public final class FclCompiler {
             java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final java.util.Set<String> RESERVED_WORDS = java.util.Set.of(
             "func", "if", "else", "while", "break", "continue", "return",
-            "import", "include", "as", "and", "or",
+            "import", "include", "as", "and", "or", "not", "public", "private",
             "true", "false", "null");
     public FclProgram compile(String source) {
         Objects.requireNonNull(source, "source");
@@ -294,7 +294,18 @@ public final class FclCompiler {
                 if (!topLevel || functionDepth != 0) {
                     fail(start, "Functions may only be declared at top level");
                 }
-                function(start);
+                function(start, true);
+                return;
+            }
+            if (word("public") || word("private")) {
+                boolean publicBinding = previous().text().equals("public");
+                if (!topLevel || functionDepth != 0) {
+                    fail(start, "Functions may only be declared at top level");
+                }
+                Token function = consume(Type.IDENTIFIER, "Expected 'func' after visibility modifier");
+                if (!function.text().equals("func")) fail(function,
+                        "Expected 'func' after visibility modifier");
+                function(start, publicBinding);
                 return;
             }
             if (word("if")) {
@@ -337,7 +348,7 @@ public final class FclCompiler {
             assignmentOrExpression(start);
         }
 
-        private void function(Token start) {
+        private void function(Token start, boolean publicBinding) {
             Token name = consume(Type.IDENTIFIER, "Expected function name");
             requireBindableIdentifier(name, "Function name");
             if (functions.containsKey(name.text())) {
@@ -360,16 +371,16 @@ public final class FclCompiler {
             consume(Type.RIGHT_PAREN, "Expected ')' after parameters");
             int declarationPointer = instructions.size();
             instructions.add(new FclInstruction.FunctionDeclaration(start.line(), name.text(),
-                    parameters, -1, -1));
+                    parameters, -1, -1, publicBinding));
             openBlock("Expected '{' before function body");
             int bodyTarget = instructions.size();
             block(0, 1);
             instructions.add(new FclInstruction.Return(start.line(), literal(null), true));
             int endTarget = instructions.size();
             instructions.set(declarationPointer, new FclInstruction.FunctionDeclaration(
-                    start.line(), name.text(), parameters, bodyTarget, endTarget));
+                    start.line(), name.text(), parameters, bodyTarget, endTarget, publicBinding));
             functions.put(name.text(), new FclProgram.Function(name.text(), parameters,
-                    bodyTarget, endTarget));
+                    bodyTarget, endTarget, null, publicBinding, Map.of()));
         }
 
         private void conditional(Token start, int loopDepth, int functionDepth) {
@@ -446,9 +457,12 @@ public final class FclCompiler {
                             + "import \"<64-hex-sha256>\"").literal());
             String identity = target.endsWith(".*")
                     ? target.substring(0, target.length() - 2) : target;
-            if (!identity.matches("(?i)[0-9a-f]{64}")) {
-                fail(previous(), "Import target must be a 64-character package database "
-                        + "SHA-256; package identity is the hash");
+            boolean packageHash = identity.matches("(?i)[0-9a-f]{64}");
+            boolean sourceFile = !target.endsWith(".*") && target.toLowerCase(
+                    java.util.Locale.ROOT).endsWith(".fcl");
+            if (!packageHash && !sourceFile) {
+                fail(previous(), "Import target must be a 64-character package database SHA-256 "
+                        + "or a .fcl source path");
             }
             String alias = null;
             if (word("as")) {
@@ -575,9 +589,15 @@ public final class FclCompiler {
 
         private FclExpression unary() {
             List<String> operators = new ArrayList<>();
-            while (match(Type.BANG, Type.MINUS, Type.HASH)) {
-                requireOperatorDepth(operators.size() + 1);
-                operators.add(previous().text());
+            while (true) {
+                if (match(Type.BANG, Type.MINUS, Type.HASH)) {
+                    operators.add(previous().text());
+                } else if (word("not")) {
+                    operators.add("!");
+                } else {
+                    break;
+                }
+                requireOperatorDepth(operators.size());
             }
             FclExpression expression = postfix();
             for (int index = operators.size() - 1; index >= 0; index--) {
