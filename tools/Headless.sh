@@ -25,8 +25,8 @@ hash_text() {
     fi
 }
 
-# Keep this byte-for-byte compatible with Install.sh, which uses echo and therefore
-# includes a trailing newline in the project-directory hash. The Compose project name
+# Keep this byte-for-byte compatible with Install.sh, which uses printf with a trailing newline
+# in the project-directory hash. The Compose project name
 # must match or headless mode would inspect a different Runtime project.
 project_hash="$(printf '%s\n' "$project_dir" | hash_text)"
 project_hash="${project_hash:0:8}"

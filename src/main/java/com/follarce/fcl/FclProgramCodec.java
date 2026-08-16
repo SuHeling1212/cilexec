@@ -9,13 +9,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
-/** Stable source-plus-hash persistence format for compiled programs. */
+/** Serializes program source with a SHA-256 integrity check and recompiles it on decode. */
 public final class FclProgramCodec {
     /**
-     * Compiled artifact format version. Bump whenever compiler semantics change so
-     * previously persisted programs are rejected instead of silently miscompiled.
-     * Version 2: '#' is the length operator only, statement keywords are reserved,
-     * else-if chains are supported, and top-level return is rejected.
+     * Persisted source format version. Decoding requires this version before recompiling the
+     * stored source and verifying its hash; instructions are not serialized.
      */
     public static final int FORMAT_VERSION = 2;
 

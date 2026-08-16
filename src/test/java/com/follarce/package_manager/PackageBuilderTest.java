@@ -117,6 +117,14 @@ class PackageBuilderTest {
     }
 
     @Test
+    void requiresSimpleNonReservedEntrypointNames() {
+        for (String name : List.of("not", "public", "private", "run.now", "run-entry")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new PackageManifest.Entrypoint(name, "main", "run"));
+        }
+    }
+
+    @Test
     void storesThePackageAuthorInTheMetadataTable() throws Exception {
         PackageManifest authored = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
                 PackageKind.APPLICATION,

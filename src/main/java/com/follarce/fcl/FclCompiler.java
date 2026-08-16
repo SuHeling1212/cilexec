@@ -380,7 +380,7 @@ public final class FclCompiler {
             instructions.set(declarationPointer, new FclInstruction.FunctionDeclaration(
                     start.line(), name.text(), parameters, bodyTarget, endTarget, publicBinding));
             functions.put(name.text(), new FclProgram.Function(name.text(), parameters,
-                    bodyTarget, endTarget, null, publicBinding, Map.of()));
+                    bodyTarget, endTarget, null, publicBinding, null));
         }
 
         private void conditional(Token start, int loopDepth, int functionDepth) {

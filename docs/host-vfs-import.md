@@ -16,7 +16,7 @@ and migrates the database before every import:
 
 The target user is a required argument. It must be an active, named CilExec user holding
 the `VFS_MOUNT_HOST` and `VFS_WRITE` capabilities; the `local` superuser is rejected as the
-import target by default. Importing to it would be refused even when requested explicitly.
+import target unconditionally. Importing to `local` is refused even when requested explicitly.
 
 The target VFS parent directory must already exist, and the target file must not exist
 (see failure behavior below). The source file must be a regular file; symlinks are

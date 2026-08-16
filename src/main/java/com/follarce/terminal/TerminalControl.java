@@ -16,7 +16,7 @@ public interface TerminalControl {
         throw new UnsupportedOperationException("FCL evaluation is not available");
     }
 
-    /** Sends raw input to the attached process when it is waiting on io.input(). */
+    /** Sends raw input to the attached process while it is waiting for terminal input. */
     default String submitAttachedInput(String input) {
         throw new UnsupportedOperationException("Attached process input is not available");
     }
@@ -43,12 +43,12 @@ public interface TerminalControl {
         return "cilexec> ";
     }
 
-    /** Username of the authenticated session, shown when its password is verified. */
+    /** Username of the authenticated terminal session. */
     default String username() {
         return "administrator";
     }
 
-    /** Persistent command history for the authenticated user, oldest first. */
+    /** Command history for the authenticated user, oldest first. */
     default List<String> commandHistory() {
         return List.of();
     }
@@ -75,7 +75,7 @@ public interface TerminalControl {
         return Optional.empty();
     }
 
-    /** ANSI private modes to restore for the process attached to this terminal session. */
+    /** Terminal mode sequence to replay for the process attached to this terminal session. */
     default String terminalRestoreSequence() {
         return "";
     }

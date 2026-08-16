@@ -103,7 +103,7 @@ public record PackageManifest(
 
     public record Entrypoint(String name, String module, String function) {
         public Entrypoint {
-            name = identifier(name, "entrypoint name");
+            name = fclIdentifier(name, "entrypoint name");
             module = identifier(module, "entrypoint module");
             function = identifier(function, "entrypoint function");
         }
@@ -167,6 +167,17 @@ public record PackageManifest(
     private static String identifier(String value, String name) {
         value = text(value, name);
         if (!value.matches("[A-Za-z_][A-Za-z0-9_.-]{0,127}")) {
+            throw new IllegalArgumentException("Unsupported " + name + ": " + value);
+        }
+        return value;
+    }
+
+    private static String fclIdentifier(String value, String name) {
+        value = text(value, name);
+        if (!value.matches("[A-Za-z_][A-Za-z0-9_]{0,127}") || Set.of(
+                "func", "if", "else", "while", "break", "continue", "return",
+                "import", "include", "as", "and", "or", "not", "public", "private",
+                "true", "false", "null").contains(value)) {
             throw new IllegalArgumentException("Unsupported " + name + ": " + value);
         }
         return value;

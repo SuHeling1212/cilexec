@@ -418,9 +418,10 @@ public final class FclRuntimeFunctions {
     }
 
     /**
-     * Returns 0 for a Runtime/extension function and the installed package database SHA-256
-     * for an imported FCL function. A null result means that the name is not callable in the
-     * current program, or that it is a function defined by the user's own source.
+     * Returns 0 for a runtime or extension function and the database-file SHA-256 for an
+     * descriptor-listed export or entrypoint in a package bound to this process. Returns null
+     * for source-imported and base-program functions, missing names, and ambiguous unqualified
+     * package exports.
      */
     private Object functionOrigin(String identifier) {
         if (identifier.isBlank()) throw new FclRuntimeException(
@@ -699,8 +700,8 @@ public final class FclRuntimeFunctions {
                     if (args.size() < 1 || args.size() > 3) throw new FclRuntimeException(
                             "file.createFile expects path, optional content and target user");
                     String content = args.size() >= 2 ? display(args.get(1)) : "";
-                    return writeText(string(args.getFirst(), "file.createFile path"),
-                            content, false, owner(args, 2));
+                    return createText(string(args.getFirst(), "file.createFile path"),
+                            content, owner(args, 2));
                 })
                 .register("file", "createDir", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
@@ -1796,12 +1797,13 @@ public final class FclRuntimeFunctions {
 
     private static boolean isSafeFclIdentifier(String value) {
         return value != null
-                && value.matches("[A-Za-z_][A-Za-z0-9_]*")
+                && value.matches("[A-Za-z_][A-Za-z0-9_]{0,127}")
                 && !value.equals("func") && !value.equals("if") && !value.equals("else")
                 && !value.equals("while") && !value.equals("break")
                 && !value.equals("continue") && !value.equals("return")
                 && !value.equals("import") && !value.equals("include")
                 && !value.equals("as") && !value.equals("and") && !value.equals("or")
+                && !value.equals("not") && !value.equals("public") && !value.equals("private")
                 && !value.equals("true") && !value.equals("false") && !value.equals("null");
     }
 
@@ -2682,6 +2684,18 @@ public final class FclRuntimeFunctions {
         return current.nodeId().toString();
     }
 
+    private String createText(String source, String content, UUID owner) {
+        RoutedPath routed = route(source, owner);
+        source = routed.path();
+        owner = routed.ownerId();
+        requireFileAccess(owner, Capability.VFS_WRITE);
+        if (resolve(source, owner).isPresent()) {
+            throw new FclRuntimeException("Path already exists: " + normalize(source));
+        }
+        return createContentNode(source, content.getBytes(StandardCharsets.UTF_8),
+                VfsNode.Type.FILE, false, TEXT, owner, true).nodeId().toString();
+    }
+
     private String writeBinary(String source, byte[] bytes, String mediaType) {
         return writeBinary(source, bytes, mediaType, "package.build");
     }
@@ -2756,6 +2770,12 @@ public final class FclRuntimeFunctions {
 
     private VfsNode createContentNode(String source, byte[] bytes, VfsNode.Type type,
                                       boolean revisions, String mediaType, UUID owner) {
+        return createContentNode(source, bytes, type, revisions, mediaType, owner, false);
+    }
+
+    private VfsNode createContentNode(String source, byte[] bytes, VfsNode.Type type,
+                                      boolean revisions, String mediaType, UUID owner,
+                                      boolean rejectExisting) {
         VfsFileLimits.requireWithinLimit(bytes.length);
         RoutedPath routed = route(source, owner);
         source = routed.path();
@@ -2774,6 +2794,10 @@ public final class FclRuntimeFunctions {
                         UUID.randomUUID(), parent.parent().nodeId(), parent.name(), object,
                         revisions, UUID.randomUUID(), UUID.randomUUID(), now);
             } catch (RuntimeException conflict) {
+                if (rejectExisting) {
+                    existingChildAfterConflict(source, owner, parent, conflict);
+                    throw new FclRuntimeException("Path already exists: " + normalize(source));
+                }
                 return existingChildAfterConflict(source, owner, parent, conflict);
             }
         }
@@ -2786,6 +2810,10 @@ public final class FclRuntimeFunctions {
             transaction.vfs().insertNode(node);
             inserted = true;
         } catch (RuntimeException conflict) {
+            if (rejectExisting) {
+                existingChildAfterConflict(source, owner, parent, conflict);
+                throw new FclRuntimeException("Path already exists: " + normalize(source));
+            }
             node = existingChildAfterConflict(source, owner, parent, conflict);
             inserted = false;
         }

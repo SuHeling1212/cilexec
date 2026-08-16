@@ -75,7 +75,9 @@ See [`windows/README.md`](windows/README.md) for the complete Windows command re
 
 ### Source checkout
 
-Docker and Docker Compose are required. Building the source also requires JDK 26 and Maven 3.9+.
+Installing or running a source checkout with `Install.sh` requires Docker and the Docker
+Compose plugin; the image build supplies JDK 26 and Maven 3.9+ in Docker. Running Maven
+directly on the host instead requires JDK 26 and Maven 3.9+.
 
 ```bash
 ./tools/Install.sh            # one command: secrets + PostgreSQL + migrations + terminal

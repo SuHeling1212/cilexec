@@ -166,11 +166,7 @@ public final class FclContinuation {
         return scope;
     }
 
-    /**
-     * Resolves a variable in the current invocation and then its lexical program scope.
-     * FCL currently permits declarations only at top level, so every user function closes
-     * over the durable root scope rather than over the caller's locals.
-     */
+    /** Resolves a base-program variable in the current invocation and then its global scope. */
     public Object variable(String name) {
         if (scope.contains(name)) return scope.get(name);
         FclScope root = globalScope();

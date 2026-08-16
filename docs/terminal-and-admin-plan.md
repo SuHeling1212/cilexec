@@ -1,8 +1,8 @@
-# Terminal + Administrator Global Management — Implementation Plan and Current State
+# Terminal + Administrator Global Management: Current State and Historical Plan
 
-Status: administrator VFS, cross-user access, and the FCL system APIs are **implemented**;
-the durable interactive terminal is **implemented** (server, session, REPL, bootstrap)
-Date: 2026-07-26 (rewritten in English and synced with current behavior: 2026-08-03)
+Status: administrator VFS, cross-user access, FCL system APIs, and the durable interactive
+terminal are **implemented**. The earlier planning assumptions are retained below as historical
+context, not pending work.
 
 > 2026-07-26 implementation note: `SYSTEM_ADMIN`, `AdminVfsService`, cross-user audit,
 > VFS list/write/create/rename/constrained-delete, and the administrator FCL file
@@ -45,7 +45,7 @@ Date: 2026-07-26 (rewritten in English and synced with current behavior: 2026-08
 | `Authorization` (capability gates) | `auth/Authorization.java` | Implemented |
 | `RuntimeBootstrap.startTerminalServer()` (assembly) | `app/RuntimeBootstrap.java` | Implemented |
 
-### 1.2 What the Earlier Plan Assumed and What Actually Shipped
+### 1.2 Historical Plan vs. Shipped Behavior
 
 The original plan sketched an in-process `TerminalConsole` with `TerminalControl`
 commands such as `run`, `ps`, `inspect`, `admin-ps`, and `admin-kill`. The shipped
@@ -212,9 +212,10 @@ display, not the persisted string value. Other strings are rendered as JSON stri
 `TerminalAccessService` authenticates against application-owned credential
 verifiers (never the host OS). On first use, `isFirstUse()` triggers bootstrap: the
 `local` administrator account is created with `SYSTEM_ADMIN`. Ordinary registrations
-receive `USER_CAPABILITIES` (PROCESS_CREATE, PROCESS_CONTROL_OWN, VFS_READ,
-VFS_WRITE, PACKAGE_IMPORT, PACKAGE_BIND, EFFECT_REQUEST, TERMINAL_ATTACH,
-AUDIT_READ).
+receive only `USER_CAPABILITIES`: `PROCESS_CREATE`, `PROCESS_CONTROL_OWN`,
+`VFS_READ`, `VFS_WRITE`, `TERMINAL_ATTACH`, and `AUDIT_READ`. `PACKAGE_IMPORT`,
+`PACKAGE_BIND`, `EFFECT_REQUEST`, `VFS_MOUNT_HOST`, `PROCESS_CONTROL_ANY`, and
+administrator authority require explicit grants.
 
 ### 4.2 Rate-Limited Password Verification
 
@@ -287,9 +288,9 @@ are retained per type and purged by the maintenance loop.
 
 ---
 
-## 6. Database Changes
+## 6. Database Baseline
 
-### 6.1 Baseline: system_admin Capability
+### 6.1 Implemented V001 Module: system_admin Capability
 
 ```sql
 -- administrator capability section of db/baseline/administrator_storage.sql
@@ -303,12 +304,12 @@ ON CONFLICT (capability_key) DO NOTHING;
 RESET ROLE;
 ```
 
-### 6.2 No Schema Change for the Terminal
+### 6.2 Implemented Terminal Storage
 
-The terminal reuses the existing `terminal.*` session/input tables and the existing
-process/scheduler machinery; no VFS, RLS, or process-table schema changes are
-needed. The `system_admin` capability row and the `*ByAdministrator` RLS policies
-are the only baseline additions.
+The terminal uses the `terminal.*` session/input tables and the existing process/scheduler
+machinery. Its durable storage, the `system_admin` capability, and administrator RLS policies
+are part of the frozen modular V001 baseline. V002 is active and is limited to the effect active-
+quota index; it is not a terminal migration.
 
 ---
 
@@ -328,8 +329,9 @@ are the only baseline additions.
 ## 8. Verification
 
 - `mvn compile` succeeds.
-- `mvn test` passes (JUnit 5 unit/lifecycle/crash-recovery suites; integration tests
-  require a running PostgreSQL).
+- `mvn test` passes for `*Test` unit suites.
+- `mvn verify` passes for the full `*Test` and `*IT` suite; `*IT` requires Docker and
+  PostgreSQL/Testcontainers.
 - Starting the Runtime brings up the terminal server; logging in presents the
   `cilexec>` prompt.
 - `:help` lists the colon commands; FCL input evaluates as a durable process and a

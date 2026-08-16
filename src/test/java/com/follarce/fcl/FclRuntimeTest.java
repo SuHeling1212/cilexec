@@ -75,14 +75,12 @@ class FclRuntimeTest {
     }
 
     @Test
-    void functionsReadTheLexicalRootWithoutLeakingOrUsingCallerLocals() {
+    void baseFunctionsReadGlobalVariablesButNotCallerLocals() {
         FclProgram program = compiler.compile("""
                 root = 10
                 func readRoot() { return root }
                 func shadowRoot() { root = 20; return root }
-                func readCallerLocal() { return callerLocal }
-                func caller() { callerLocal = 99; return readCallerLocal() }
-                inherited = readRoot()
+                result = readRoot()
                 shadowed = shadowRoot()
                 after = root
                 """);
@@ -94,19 +92,18 @@ class FclRuntimeTest {
                     () -> String.valueOf(step.value()));
         }
 
-        assertEquals(10L, continuation.scope().get("inherited"));
+        assertEquals(10L, continuation.scope().get("result"));
         assertEquals(20L, continuation.scope().get("shadowed"));
         assertEquals(10L, continuation.scope().get("after"));
-        assertFalse(continuation.scope().contains("callerLocal"));
 
-        FclProgram dynamicScopeAttempt = compiler.compile("""
+        FclProgram callerScopeAttempt = compiler.compile("""
                 func readCallerLocal() { return callerLocal }
                 func caller() { callerLocal = 99; return readCallerLocal() }
                 caller()
                 """);
-        FclContinuation rejected = new FclContinuation();
+        FclContinuation rejectedCaller = new FclContinuation();
         FclStepResult last = null;
-        while (!rejected.halted()) last = runtime.executeOne(dynamicScopeAttempt, rejected);
+        while (!rejectedCaller.halted()) last = runtime.executeOne(callerScopeAttempt, rejectedCaller);
         assertEquals(FclStepResult.Status.FAILED, last.status());
         assertTrue(String.valueOf(last.value()).contains("Undefined variable: callerLocal"));
     }
@@ -133,6 +130,24 @@ class FclRuntimeTest {
         }
         assertEquals(FclStepResult.Status.FAILED, last.status());
         assertTrue(String.valueOf(last.value()).contains("Undefined function: helper"));
+    }
+
+    @Test
+    void sourceImportUsesItsOwnPersistedModuleGlobals() {
+        FclProgram base = compiler.compile("result = module.read()\n");
+        String moduleSource = """
+                value = 1
+                public func read() { return value }
+                """;
+        FclProgram linked = new FclProgramLinker().link(base, List.of(
+                new FclProgramLinker.Module("/module.fcl", "module", moduleSource,
+                        List.of(new FclProgramLinker.Export("read", List.of("module.read"))),
+                        Map.of("value", 1L))));
+        FclContinuation continuation = new FclContinuation();
+        runToCompletion(linked, continuation);
+
+        assertEquals(1L, continuation.scope().get("result"));
+        assertFalse(continuation.scope().contains("value"));
     }
 
     @Test

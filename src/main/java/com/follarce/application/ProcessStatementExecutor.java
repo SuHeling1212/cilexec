@@ -166,7 +166,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             try {
                 compiled = loadProgram(transaction, program);
                 compiled = linkPackages(transaction, current, compiled, program);
-                compiled = linkSourceImports(continuation, compiled);
+                compiled = linkSourceImports(transaction, current, program, continuation, now, compiled);
                 compiled = compiled.withoutFunctions(continuation.disabledFunctions());
             } catch (IllegalArgumentException | IllegalStateException
                     | FclRuntimeException | FclCompileException failure) {
@@ -199,7 +199,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     break;
                 }
                 try {
-                    resolveDirective(transaction, current, continuation, now);
+                    resolveDirective(transaction, current, committedProgram, continuation, now);
                 } catch (IllegalArgumentException | IllegalStateException
                         | FclRuntimeException | FclCompileException failure) {
                     failDeterministic(transaction, current, claim, failure, now);
@@ -689,6 +689,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private void resolveDirective(
             com.follarce.domain.port.TransactionContext transaction,
             CilProcess process,
+            Program program,
             FclContinuation continuation,
             Instant now
     ) {
@@ -703,7 +704,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         }
         Optional<PackageRelease> release = directRelease(transaction, process, target);
         if (!isSha256(target)) {
-            resolveSourceImport(transaction, process, continuation, wait, target);
+            resolveSourceImport(transaction, process, program, continuation, wait, target, now);
             continuation.clearWait();
             return;
         }
@@ -722,33 +723,36 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     }
 
     private void resolveSourceImport(com.follarce.domain.port.TransactionContext transaction,
-                                     CilProcess process, FclContinuation continuation,
-                                     FclContinuation.WaitState wait, String target) {
+                                     CilProcess process, Program program,
+                                     FclContinuation continuation,
+                                     FclContinuation.WaitState wait, String target, Instant now) {
         String origin = FclPath.resolve(continuation, target);
         String source = sourceIncludes.expandFile(transaction, process.ownerId(), target,
                 FclPath.current(continuation));
         String binding = importName(wait, target);
         FclProgram imported = new FclCompiler().compile(source);
         List<FclProgramLinker.Export> exports = sourceExports(imported, wait.payload());
-        Map<String, Object> bindings = sourceBindings(imported);
-        FclProgramLinker.Module module = new FclProgramLinker.Module(origin, binding, source, exports,
-                bindings);
+        FclProgramLinker.Module module = new FclProgramLinker.Module(origin, binding, source, exports);
         programLinker.validateLibraryModule(module);
         Map<String, Object> imports = sourceImports(continuation);
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("origin", origin);
         value.put("source", source);
-        value.put("bindings", bindings);
+        value.put("bindings", initializeSourceModule(transaction, process, program, imported, now));
         Object alias = wait.payload().get("alias");
         if (alias instanceof String text) value.put("alias", text);
         imports.put(binding, value);
         continuation.globalScope().put(SOURCE_IMPORTS_SCOPE_KEY, imports);
     }
 
-    private FclProgram linkSourceImports(FclContinuation continuation, FclProgram base) {
+    private FclProgram linkSourceImports(com.follarce.domain.port.TransactionContext transaction,
+                                         CilProcess process, Program program,
+                                         FclContinuation continuation, Instant now,
+                                         FclProgram base) {
         Map<String, Object> imports = sourceImports(continuation);
         if (imports.isEmpty()) return base;
         List<FclProgramLinker.Module> modules = new ArrayList<>();
+        boolean updated = false;
         for (Map.Entry<String, Object> entry : imports.entrySet()) {
             if (!(entry.getValue() instanceof Map<?, ?> value)
                     || !(value.get("origin") instanceof String origin)
@@ -758,10 +762,71 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             Map<String, Object> payload = new LinkedHashMap<>();
             if (value.get("alias") instanceof String alias) payload.put("alias", alias);
             FclProgram imported = new FclCompiler().compile(source);
+            Map<String, Object> bindings = persistedSourceBindings(value);
+            if (bindings == null) {
+                FclProgramLinker.Module module = new FclProgramLinker.Module(origin, entry.getKey(),
+                        source, sourceExports(imported, payload));
+                programLinker.validateLibraryModule(module);
+                bindings = initializeSourceModule(transaction, process, program, imported, now);
+                Map<String, Object> migrated = new LinkedHashMap<>();
+                value.forEach((key, entryValue) -> {
+                    if (key instanceof String text) migrated.put(text, entryValue);
+                });
+                migrated.put("bindings", bindings);
+                imports.put(entry.getKey(), migrated);
+                updated = true;
+            }
             modules.add(new FclProgramLinker.Module(origin, entry.getKey(), source,
-                    sourceExports(imported, payload), persistedSourceBindings(value)));
+                    sourceExports(imported, payload), bindings));
         }
+        if (updated) continuation.globalScope().put(SOURCE_IMPORTS_SCOPE_KEY, imports);
         return programLinker.link(base, modules);
+    }
+
+    /**
+     * Python-style source modules run once at import time. Their resulting top-level scope is
+     * stored with the importing process and later used as the linked functions' isolated globals.
+     */
+    private Map<String, Object> initializeSourceModule(
+            com.follarce.domain.port.TransactionContext transaction, CilProcess process,
+            Program program, FclProgram imported, Instant now
+    ) {
+        FclContinuation module = new FclContinuation();
+        FclRuntime moduleRuntime = fixedRuntime != null ? fixedRuntime
+                : new FclRuntime(FclRuntimeFunctions.create(transaction, process, program,
+                module, now, extensions));
+        int steps = 0;
+        while (!module.halted() && steps++ < MAX_TERMINAL_STEPS_PER_SLICE) {
+            FclStepResult step = moduleRuntime.executeOne(imported, module);
+            if (step.status() == FclStepResult.Status.DIRECTIVE
+                    || step.status() == FclStepResult.Status.WAITING) {
+                throw new FclRuntimeException("Imported source module cannot suspend during "
+                        + "initialization");
+            }
+            if (step.status() == FclStepResult.Status.FAILED) {
+                throw new FclRuntimeException("Source module initialization failed: " + step.value());
+            }
+        }
+        if (!module.halted()) {
+            throw new FclRuntimeException("Source module initialization exceeds "
+                    + MAX_TERMINAL_STEPS_PER_SLICE + " steps");
+        }
+        return module.scope().values();
+    }
+
+    private static Map<String, Object> persistedSourceBindings(Map<?, ?> sourceImport) {
+        Object value = sourceImport.get("bindings");
+        if (value == null) return null;
+        if (!(value instanceof Map<?, ?> bindings)) {
+            throw new FclRuntimeException("Persisted source import bindings are invalid");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        bindings.forEach((name, binding) -> {
+            if (!(name instanceof String text)) throw new FclRuntimeException(
+                    "Persisted source import binding name is invalid");
+            result.put(text, binding);
+        });
+        return result;
     }
 
     private static List<FclProgramLinker.Export> sourceExports(FclProgram imported,
@@ -773,37 +838,6 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 .map(name -> new FclProgramLinker.Export(name,
                         List.of(alias instanceof String prefix ? prefix + "." + name : name)))
                 .toList();
-    }
-
-    private static Map<String, Object> sourceBindings(FclProgram imported) {
-        FclRuntime runtime = new FclRuntime(FclBuiltins.pureRegistry());
-        FclContinuation initialization = new FclContinuation();
-        int steps = 0;
-        FclProgram program = imported.initializationProgram();
-        while (!initialization.halted() && steps++ < 4_096) {
-            FclStepResult step = runtime.executeOne(program, initialization);
-            if (step.status() == FclStepResult.Status.FAILED) {
-                throw new FclRuntimeException("Source import initializer failed: " + step.value());
-            }
-        }
-        if (!initialization.halted()) {
-            throw new FclRuntimeException("Source import initializer exceeds 4096 steps");
-        }
-        return initialization.scope().values();
-    }
-
-    private static Map<String, Object> persistedSourceBindings(Map<?, ?> sourceImport) {
-        Object value = sourceImport.get("bindings");
-        if (!(value instanceof Map<?, ?> bindings)) {
-            throw new FclRuntimeException("Persisted source import bindings are invalid");
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        bindings.forEach((name, binding) -> {
-            if (!(name instanceof String text)) throw new FclRuntimeException(
-                    "Persisted source import binding name is invalid");
-            result.put(text, binding);
-        });
-        return result;
     }
 
     @SuppressWarnings("unchecked")

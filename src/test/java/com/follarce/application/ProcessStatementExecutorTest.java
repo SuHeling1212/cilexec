@@ -278,6 +278,35 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void createFileRejectsAnExistingFile() {
+        Fixture fixture = new Fixture("""
+                first = file.createFile("/note.txt", "first")
+                second = file.createFile("/note.txt", "second")
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
+                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        fixture.persistence.vfs.insertNode(root);
+
+        fixture.executor.executeSlice(fixture.claim);
+        CilProcess ready = fixture.persistence.processes.current;
+        assertEquals(CilProcess.Status.READY, ready.status());
+        fixture.persistence.processes.current = ready.claim(ready.executionEpoch() + 1, NOW);
+        fixture.claim = claim(fixture.processUid, fixture.ownerId,
+                fixture.persistence.processes.current.executionEpoch());
+        fixture.persistence.scheduler.lease = fixture.claim;
+        fixture.executor.executeSlice(fixture.claim);
+
+        assertEquals(CilProcess.Status.FAILED, fixture.persistence.processes.current.status());
+        com.follarce.domain.vfs.VfsNode created = fixture.persistence.vfs.findChild(
+                fixture.ownerId, Optional.of(root.nodeId()), "note.txt").orElseThrow();
+        assertEquals("first", new String(fixture.persistence.vfs.findObject(
+                created.currentObjectHash().orElseThrow()).orElseThrow().content().bytes(),
+                java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
     void failsAnUnknownHashImportWithoutPermanentWaits() {
         Fixture unresolved = new Fixture("import \"" + "f".repeat(64)
                 + "\"\nvalue = 1\n");

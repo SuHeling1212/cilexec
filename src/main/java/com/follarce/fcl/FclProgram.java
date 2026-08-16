@@ -4,8 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
-import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,9 +12,10 @@ import java.util.Objects;
 /** Immutable compiled FCL program. */
 public final class FclProgram {
     /**
-     * Linked package functions carry the 64-character logical package hash in
-     * {@code packageIdentity}; user-defined and validation-only functions carry
-     * {@code null}.
+     * Functions linked from an imported module carry that module's origin in
+     * {@code packageIdentity}; functions compiled from the base program carry {@code null}.
+     * {@code publicBinding} preserves whether a source function is callable outside its module.
+     * A non-null {@code moduleBindings} map is the imported module's isolated global namespace.
      */
     public record Function(String name, List<String> parameters, int entryPoint,
                             int endPoint, String packageIdentity, boolean publicBinding,
@@ -24,14 +23,15 @@ public final class FclProgram {
         public Function {
             Objects.requireNonNull(name, "name");
             parameters = List.copyOf(parameters);
-            Map<String, Object> bindings = new LinkedHashMap<>();
-            if (moduleBindings != null) moduleBindings.forEach((key, value) ->
-                    bindings.put(key, FclValues.deepCopy(value)));
-            moduleBindings = Collections.unmodifiableMap(bindings);
+            if (moduleBindings != null) {
+                Map<String, Object> copied = new LinkedHashMap<>();
+                moduleBindings.forEach((key, value) -> copied.put(key, FclValues.deepCopy(value)));
+                moduleBindings = Collections.unmodifiableMap(copied);
+            }
         }
 
         public Function(String name, List<String> parameters, int entryPoint, int endPoint) {
-            this(name, parameters, entryPoint, endPoint, null, true, Map.of());
+            this(name, parameters, entryPoint, endPoint, null, true, null);
         }
     }
 
@@ -60,7 +60,7 @@ public final class FclProgram {
         return functions.get(name);
     }
 
-    /** Returns a resolver view without process-locally removed mutable function bindings. */
+    /** Returns a resolver view with explicitly disabled function names omitted. */
     public FclProgram withoutFunctions(java.util.Set<String> disabled) {
         if (disabled == null || disabled.isEmpty()) return this;
         Map<String, Function> remaining = new LinkedHashMap<>(functions);
@@ -68,28 +68,11 @@ public final class FclProgram {
         return new FclProgram(instructions, remaining, source);
     }
 
-    /** Executes only top-level assignments as private module initialization. */
-    public FclProgram initializationProgram() {
-        BitSet functionBodies = new BitSet(instructions.size());
-        functions.values().forEach(function ->
-                functionBodies.set(function.entryPoint(), function.endPoint()));
-        List<FclInstruction> filtered = new ArrayList<>(instructions);
-        for (int index = 0; index < filtered.size(); index++) {
-            if (functionBodies.get(index)) continue;
-            FclInstruction instruction = filtered.get(index);
-            if (instruction instanceof FclInstruction.Assignment
-                    || instruction instanceof FclInstruction.FunctionDeclaration
-                    || instruction instanceof FclInstruction.Jump) continue;
-            filtered.set(index, new FclInstruction.Jump(instruction.line(), index + 1));
-        }
-        return new FclProgram(filtered, functions, source);
-    }
-
     public String sourceHash() {
         return sourceHash;
     }
 
-    /** Canonical persistence input. Restore by recompiling and checking {@link #sourceHash()}. */
+    /** Source text used to compute {@link #sourceHash()} for persisted base programs. */
     public String source() {
         return source;
     }

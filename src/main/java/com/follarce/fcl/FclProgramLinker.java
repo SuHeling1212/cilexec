@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Deterministically links immutable package library modules behind public import names. */
+/** Deterministically links imported modules, exposing selected functions under import names. */
 public final class FclProgramLinker {
     public record Export(String symbol, List<String> publicNames) {
         public Export {
@@ -123,7 +123,7 @@ public final class FclProgramLinker {
         return new FclProgram(instructions, functions, linkedSource.toString());
     }
 
-    /** Validates a source import before its durable binding is committed. */
+    /** Validates that an importable module contains no import or include directives. */
     public void validateLibraryModule(Module module) {
         Objects.requireNonNull(module, "module");
         requireLibraryModule(module, compiler.compile(module.source()));

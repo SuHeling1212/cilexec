@@ -208,7 +208,8 @@ class TerminalReplServiceTest {
                 TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
         var source = com.follarce.domain.vfs.StoredObject.create(
                 new com.follarce.domain.vfs.BinaryContent(
-                        "value = 1\nprintln(\"loaded\")\nprivate func helper() { return value + 1 }\n"
+                        "value = 1\nif true { value = value + 1 }\n"
+                                .concat("private func helper() { return value }\n")
                                 .concat("public func hi() { return helper() }\n").getBytes(
                                 java.nio.charset.StandardCharsets.UTF_8)),
                 ProgramService.SOURCE_MEDIA_TYPE, NOW);
@@ -230,12 +231,15 @@ class TerminalReplServiceTest {
 
         repl.submit(owner, sessionId, "import \"library.fcl\" as \"lib\"");
         run(persistence, executor, owner);
+        assertFalse(repl.variables(owner, sessionId).containsKey("value"),
+                "module globals must not leak into the importing process");
 
+        repl.submit(owner, sessionId, "value = 99");
+        run(persistence, executor, owner);
         repl.submit(owner, sessionId, "lib.hi()");
         run(persistence, executor, owner);
         assertEquals(2L, repl.active(owner, sessionId).orElseThrow().result());
-        assertFalse(repl.variables(owner, sessionId).containsKey("value"),
-                "source import must not run ordinary top-level statements");
+        assertEquals(99L, repl.variables(owner, sessionId).get("value"));
     }
 
     @Test

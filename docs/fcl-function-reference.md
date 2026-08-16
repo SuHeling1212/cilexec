@@ -56,10 +56,11 @@ slice, which may then replay from the preceding checkpoint.
   built-in functions of the same name (dot-call resolution).
 - **Boolean operators.** `not value` is the textual spelling of `!value`; `and` and
   `or` short-circuit and use FCL truthiness (`0`, `null`, `false`, and `""` are false).
-- **Function scopes.** Every invocation has fresh parameters and locals. Reads resolve
-  local bindings first and then the lexical program/root scope; assignments always write
-  the current invocation. A callee cannot see a caller's locals, so FCL is not dynamically
-  scoped. Root bindings and call frames are persisted across suspension and recovery.
+- **Function scopes.** Every invocation has fresh parameters and locals. Base-program functions
+  then resolve names from their own program's top-level scope, while imported-module functions
+  resolve names only from their module's persisted globals. No function can read a caller's
+  locals. Assignments always write the current invocation. Root bindings and call frames are
+  persisted across suspension and recovery.
 - **Module visibility.** `public func` exports a module function (and is the default for
   an unqualified `func`); `private func` is an implementation function. Private functions
   remain callable by module functions but are not callable from imported module clients.
@@ -150,12 +151,13 @@ editor.open("notes.txt")
 ```
 
 Its package coordinate is `cilexec/editor/0.0.1`, and its public function is
-`editor.open(path)`. A package is identified only by the SHA-256 of its `.db` file;
- two different hashes are two independent packages. `import` accepts either the
- 64-character SHA-256 of an installed `.db` file or a VFS `.fcl` source path. Package
- imports are immutable installed releases; source imports are private mutable process
- bindings and never install a package. Neither form accepts a human-readable package
- coordinate.
+`editor.open(path)`. A package is identified by the SHA-256 of its `.db` file; two
+different hashes are two independent packages. `import` accepts either the 64-character
+SHA-256 of an installed `.db` file or a VFS `.fcl` source path. Package imports are
+immutable installed releases. A source import captures the source and its private
+initialized bindings in the current process; the source file may later change, but the
+captured binding changes only when that process imports it again. Neither form accepts a
+human-readable package coordinate.
 
 ## General Data & Permission Rules
 
@@ -411,12 +413,13 @@ connection handles that could be reused across a crash.
 Packages are immutable SQLite `package.db` files. The recommended flow is
 `package.build` → `package.install` → `import` or `package.run`. A hash import accepts
 the SHA-256 of an installed package database file; a private process alias is optional.
-`import "path.fcl" [as "alias"]` creates a mutable source-library binding in the current
-process. It compiles and links the module functions without executing ordinary top-level
-expressions, effects, or control flow. Top-level assignments initialize private module
-bindings for the imported module's functions and never create caller variables. Only `public func` declarations are exported; `private func`
+`import "path.fcl" [as "alias"]` initializes a source module once for that import binding. It
+executes the module's top-level code, saves its resulting globals with the process continuation,
+and links its functions. Imported functions resolve globals from that saved module namespace,
+never from the importing program. Only `public func` declarations are exported; `private func`
 declarations remain available to their module's public functions as internal implementation.
-Without an alias public functions are bare names; with one they are `alias.function`.
+Without an alias public functions are bare names; with one they are `alias.function`. Imported
+source may not contain `import` or `include` directives and may not suspend during initialization.
 `include "path.fcl"` remains source splice: its top-level statements execute and its public
 function declarations persist in a terminal context. `package.json` must
 declare `kind`. An `application` must provide a zero-argument generic `run`
@@ -435,15 +438,15 @@ The host market's default index is
 
 | Call | Effect |
 | --- | --- |
-| `package.info(coordinateOrPackageHash)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or the internal logical-content `hash` returned by `package.install`; `(namespace, name, version)` as three arguments also works. It does not accept the `.db` file `sha256`. |
+| `package.info(coordinateOrDatabaseFileSha256)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or the complete SHA-256 of the installed `.db` file; `(namespace, name, version)` as three arguments also works. |
 | `package.list()` | Return the releases effectively installed for the current user. |
 | `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. Creates the current user's installation root, the exact dependency closure, and a private data space. |
 | `package.uninstall(databaseFileSha256 [, options])` | Atomically remove the package for the current user. By default active process bindings and dependent installations block the uninstall; `{"force": true}` removes dependent current-user roots and purges affected processes. Deletes private data, orphan dependencies, and globally unreferenced release payloads. Returns a summary map. |
 | `package.build(manifestPath, outputPath)` | Read the `package.json` and declared files in the VFS and build a `.db` in the VFS. |
 | `package.run(databaseFileSha256 [, entrypoint])` | Create a child process running a package entrypoint. This call uses the installed `.db` file `sha256`; the default entrypoint is `run`, and PID and other information are returned. |
-| `package.verify(coordinateOrPackageHash)` | Verify that the package database object still matches the file hash recorded at install time. The three-part coordinate also works as arguments. It uses the internal logical-content hash, not the `.db` file `sha256`. |
-| `package.resource(coordinateOrPackageHash, resourcePath)` | Read a declared text resource from the package; hash lookup uses the internal logical-content hash. |
-| `package.pin(coordinateOrPackageHash)` | Validate that a release is installed and return its metadata. Despite the legacy name, this call does not create or change a process binding. |
+| `package.verify(coordinateOrDatabaseFileSha256)` | Verify that the package database object still matches the file hash recorded at install time. The three-part coordinate also works as arguments. |
+| `package.resource(coordinateOrDatabaseFileSha256, resourcePath)` | Read a declared text resource from the package. |
+| `package.pin(coordinateOrDatabaseFileSha256)` | Validate that a release is installed and return its metadata. Despite the legacy name, this call does not create or change a process binding. |
 
 Package `import` accepts the full SHA-256 of an installed package database, optionally
 with a private per-process alias; the qualifier is the hash itself when no alias is
@@ -458,7 +461,9 @@ import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff"
 value = "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff".open("x.txt")
 ```
 
-Process aliases are private to one process continuation. Reinstalling the same release is
+Process aliases and captured source imports are private to one process continuation.
+Source imports resolve relative to the process PWD; re-importing the same source binding
+captures its current source and initialization again. Reinstalling the same release is
 idempotent and preserves the package's private data.
 
 | Call | Effect |
@@ -527,12 +532,12 @@ standalone server are described in `docs/package-market.md`.
 | `market.configure(origin)` | Set the current user's single HTTP/HTTPS mirror origin. |
 | `market.origin()` | Return the active mirror origin; `null` when not configured. |
 | `market.update()` | Download, verify, and persist the full market index. |
-| `market.search(text)` | Search the local index by prefix over names, tags, and description words; version numbers are not searched. If no index exists, update first. |
+| `market.search(text)` | Search the local index with whitespace-separated AND terms. Each term prefix-matches a package name, namespace, kind, `namespace/name`, tag, or summary/description word. A term of at least eight characters may also prefix-match the package SHA-256; version numbers are not searched. If no index exists, update first. |
 | `market.info(sha256)` | Look up a package record by the full SHA-256 of its distribution file. |
 | `market.download(sha256)` | Download in 4 MiB chunks and recompute the full file hash. |
 | `market.install(sha256)` | Recursively download and register exact-hash dependencies, then save a market receipt. It does not create an import alias. |
 | `market.list()` | List the current user's MARKET installations from the installation ledger. |
-| `market.uninstall(sha256)` | Delegate to the core `package.uninstall` and additionally remove the market download cache and receipt. It does not remove ordinary user documents or other users' installations. |
+| `market.uninstall(sha256)` | Delegate to the core `package.uninstall`, then remove the market download cache and receipt. It has no force option, so active process bindings or dependent current-user roots block it. On success it removes package private data, installation records, process bindings, orphan dependencies, and globally unreferenced release payloads; ordinary user documents and other users' installations remain. |
 | `market.help()` | Return help text for the market functions. |
 | `market.run()` | Return the built-in client version and help without requiring a configured mirror. |
 
@@ -601,7 +606,7 @@ unconsumed reservation and the message can be delivered again.
 | `system.extensions()` | Return the `id`, `version`, and `description` of the Java extensions sealed in at source-build time. Extensions cannot be added, removed, or replaced at runtime. |
 | `system.kill(pid)` | Alias of `process.kill(pid)`. |
 | `system.exec(command)` | Administrator: execute a command from the host allow-list. `command` can be a string or an array of strings; it does not go through a shell, and `CILEXEC_FCL_EXEC_ALLOWLIST` must be set — no program is allowed by default. |
-| `system.invoke(qualifiedFunction [, argumentArray])` | Administrator: call another FCL function by string, for example `system.invoke("file.read", ["/x.txt", "alice"])`. It cannot call itself. |
+| `system.invoke(qualifiedFunction [, argumentArray])` | Administrator: call a function registered in the Runtime registry by string, for example `system.invoke("file.read", ["/x.txt", "alice"])`. It cannot call itself or user-defined, package-exported, or source-imported functions. |
 | `system.forceRemove(path)` | Administrator: constrained deletion by path. It still refuses roots, mounts, versioned files, and non-empty directories. |
 | `system.forceRemove(targetUserUuid, nodeUuid)` | Administrator: the same constrained deletion by target user and node UUID. |
 | `system.resolveEffect(...)` | **Currently unavailable.** External effects are handled by the Runtime control plane. |

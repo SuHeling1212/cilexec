@@ -1,6 +1,16 @@
-# CilExec Package Management Redesign Plan
+# CilExec Package Management: Historical Redesign Plan and Current State
 
-## 1. Confirmed Decisions
+**Current status.** The core per-user installation ledger, exact dependency closures, private
+data spaces, quotas, provenance-gated `packageData.*`, atomic uninstall, and controlled global
+release cleanup described here shipped in the frozen V001 modular baseline. The active V002 is
+`V002__EffectActiveQuotaIndex`; it is unrelated to package lifecycle. Market receipt authority
+and all-or-nothing Market bundle publication remain follow-up work. This document preserves the
+design rationale and implementation sequence. Sections labelled historical describe completed
+design, not pending changes. To preserve useful detail, unqualified imperative or future wording
+in sections 5-34 is also historical unless a section explicitly says future; a future package
+schema change must start at V003.
+
+## 1. Implemented Decisions
 
 This redesign follows these confirmed requirements:
 
@@ -17,30 +27,26 @@ This redesign follows these confirmed requirements:
 - Different package versions use separate data spaces.
 - The default quota is 256 MiB per user and package, with administrator overrides.
 - Audit records and permanent package identity tombstones are retained.
-- V001 remains frozen; all schema changes ship in V002.
+- V001 is frozen; V002 is already active for the effect quota index. Future package schema
+  changes must use V003 or later immutable forward migrations.
 
-## 2. Current Problems
+## 2. Historical Problems and Remaining Market Gaps
 
-The current system has the following limitations:
+Most pre-lifecycle limitations below are resolved by the shipped core lifecycle. The remaining
+Market receipt and bundle-publication items are explicitly future work:
 
-- `package.release` is global and immutable.
-- There is no authoritative per-user installation table.
-- `package.list()` exposes registered releases rather than user installations.
-- Local packages have no `package.uninstall()` function.
-- `market.uninstall()` only removes `/market/packages/{sha256}.db` and a receipt.
-- Market uninstallation does not remove runtime releases or process bindings.
-- A supposedly uninstalled package can still be imported or run by SHA-256.
-- Market receipts in `/market/installed.json` can diverge from runtime state.
-- Market installation trusts an existing receipt without rechecking the cache or release.
-- Dependencies do not have reliable per-root reference tracking.
-- Packages do not have private runtime data storage.
-- Package-created files cannot be distinguished from user files.
-- Built-in calls do not know which linked package function invoked them.
-- Release payload objects cannot be reclaimed until package references are removed.
+- Resolved: the global immutable release is paired with per-user installation roots and members;
+  local `package.uninstall()` removes the caller's installation transactionally.
+- Resolved: package listing, import/run access, bindings, private data, managed artifacts, and
+  release cleanup are scoped through the current user's installation ledger.
+- Future: `/market/installed.json` remains a receipt cache and a pre-existing receipt can still
+  short-circuit `market.install()` before the cache and runtime installation are revalidated.
+- Future: Market installation recursively stages and installs packages one at a time; it is not
+  yet one all-or-nothing publication of the complete dependency bundle.
 
-## 3. Target Architecture
+## 3. Shipped Architecture
 
-The package system will have five distinct layers:
+The package system has five distinct layers:
 
 | Layer | Authority |
 | --- | --- |
@@ -50,24 +56,28 @@ The package system will have five distinct layers:
 | Process binding | Which exact package a process currently uses |
 | Private data space | Mutable per-user, per-package runtime data |
 
-The central services will be:
+The implementation exposes this lifecycle through `PackageManager`, package repository
+operations and bounded PostgreSQL functions rather than separate Java classes named
+`PackageInstallationService`, `PackageUninstallService`, or `PackageGarbageCollector`:
 
 ```text
-PackageInstallationService
-PackageUninstallService
-PackageDataService
-PackageGarbageCollector
+`package.install` / `package.uninstall`
+`PackageManager` and `JdbcPackageRepository`
+`PackageDataService`
+controlled package SQL functions
 ```
 
-Both local and Market operations must use these services.
+Local operations use this contract. Market installation ultimately invokes the local installation
+contract for each downloaded artifact, while the receipt shortcut and bundle atomicity remain
+future work; Market uninstall invokes the core uninstall contract before updating its receipt.
 
-## 4. Database Migration
+## 4. Historical Baseline Integration
 
-The original design shipped as a separate `V002__AtomicPackageLifecycleAndPrivateData`
-migration. Before the repository became public, the schema was merged into the
-`V001__CilexecBaseline` as its final module `db/baseline/package_lifecycle.sql`; no
-separate V002 exists. The next schema change after a public release still becomes an
-immutable `V002`, `V003`, ... forward migration.
+The original design proposed a separate `V002__AtomicPackageLifecycleAndPrivateData`
+migration. Before the baseline was frozen, the lifecycle schema was merged into the final V001
+module, `db/baseline/package_lifecycle.sql`. The repository now has an active, unrelated
+`V002__EffectActiveQuotaIndex`; the next schema change is an immutable V003 or later forward
+migration.
 
 Do not modify `V001__CilexecBaseline` or its baseline SQL files after a public release.
 
@@ -80,9 +90,9 @@ src/main/resources/db/baseline/package_lifecycle.sql
 
 The Java migration executes the ordered baseline modules in one Flyway transaction.
 
-## 5. Permanent Release Identity
+## 5. Historical Design, Implemented in V001: Permanent Release Identity
 
-Add `package.release_identity` with:
+`package.release_identity` contains:
 
 - `package_hash`, `namespace`, `package_name`, `package_version`,
   `database_file_hash`, `first_registered_at`
@@ -94,15 +104,15 @@ garbage-collected, its coordinate remains permanently associated with the
 original package and file hashes. A different payload can never reuse the same
 coordinate. Direct update and delete must be forbidden.
 
-## 6. Per-User Installation Roots
+## 6. Implemented Per-User Installation Roots
 
-Add `package.installation_root` with `installation_id`, `owner_id`,
+`package.installation_root` contains `installation_id`, `owner_id`,
 `root_package_hash`, `source` (`LOCAL`/`MARKET`/`LEGACY`), `installed_at`,
 and `UNIQUE(owner_id, root_package_hash, source)`.
 
-## 7. Installation Dependency Closure
+## 7. Implemented Installation Dependency Closure
 
-Add `package.installation_member` with `installation_id`, `owner_id`,
+`package.installation_member` contains `installation_id`, `owner_id`,
 `package_hash`, `dependency_depth`, `optional`, `created_at`, and
 `PRIMARY KEY(installation_id, package_hash)`.
 
@@ -110,9 +120,9 @@ Every installation root records its complete exact-hash dependency closure,
 including itself at depth zero. A package is effectively installed when at
 least one installation member references it.
 
-## 8. Per-Package Private Data Storage
+## 8. Implemented Per-Package Private Data Storage
 
-Add `package.data_space` and `package.data_entry`. Package data is NOT an
+`package.data_space` and `package.data_entry` provide package data. Package data is NOT an
 ordinary VFS directory, because ordinary VFS isolation is user-based and other
 packages with VFS capabilities could access it.
 
@@ -132,12 +142,11 @@ All package-internal paths are relative and traversal-free. Identity is
 `(owner_id, package_hash)`, so user path changes cannot make package data
 disappear.
 
-## 10. Package Execution Provenance
+## 10. Implemented Package Execution Provenance
 
-Package functions are linked into the caller's program, but built-in function
-calls currently do not carry package identity. Extend transient runtime
-metadata (`FclProgram.Function.packageIdentity`,
-`FclFunctionRegistry.Invocation.packageIdentity`) through `FclProgram`,
+Package functions are linked into the caller's program and built-in calls carry package identity
+through transient runtime metadata (`FclProgram.Function.packageIdentity`,
+`FclFunctionRegistry.Invocation.packageIdentity`) in `FclProgram`,
 `FclProgramLinker`, `FclRuntime`, and `FclExpressionEvaluator`. Nested
 dependency calls switch identity; returning restores the caller. Top-level
 user code has no package identity. The persisted continuation and program
@@ -152,9 +161,10 @@ accepts a package hash; identity comes from invocation provenance. Top-level
 user FCL calls are rejected. Writes use immutable content objects and CAS entry
 updates, committed with the current execution slice.
 
-## 12. Package Data Capability
+## 12. Implemented Package Data Capability
 
-Add package manifest capability key `package.data`. `PackageCapabilityPolicy`
+The package manifest capability key `package.data` is enforced by `PackageCapabilityPolicy`,
+which
 maps every `packageData.*` call to it. A package does not need `VFS_READ` or
 `VFS_WRITE` for private data, but still needs `vfs.read`/`vfs.write` for
 ordinary user files. No SQLite package format bump is required.
@@ -173,21 +183,21 @@ Private data is keyed by immutable logical `packageHash`. Different versions
 never share storage automatically. Migration is explicit via
 `package.dataExport` + `package.dataImport`. No lifecycle hooks.
 
-## 15. Package Data Quotas
+## 15. Implemented Package Data Quotas
 
-`package.data_policy` (default 256 MiB) and `package.data_quota_override`.
+`package.data_policy` (default 256 MiB) and `package.data_quota_override` enforce quotas.
 Writes lock the data-space row, compute old/new usage, resolve the effective
 quota, and reject writes exceeding it. Administrators cannot reduce a quota
 below current usage. Management functions: `package.dataQuota`,
 `package.setDataQuota`, `package.clearDataQuota`.
 
-## 16. Central Installation Service
+## 16. Implemented Installation Contract
 
-`PackageInstallationService` owns release registration, dependency closure,
-installation roots/members, private data space creation, managed Market cache
-registration, and audit. Both `PackageManager.importDatabase()` and
-`package.install()` delegate to it. Reinstallation is idempotent and preserves
-private data.
+Release registration, dependency closure, installation roots/members, private data space
+creation, managed Market cache registration, and audit are one persisted installation contract.
+`package.install()` publishes this contract atomically; reinstallation is idempotent and
+preserves private data. The earlier service names were design placeholders, not current class
+names.
 
 ## 17. Local Installation Flow
 
@@ -197,35 +207,33 @@ or reuses the immutable release, requires mandatory dependencies, creates a
 transaction. It never executes package code, creates aliases, deletes the
 source `.db`, or runs lifecycle hooks.
 
-## 18. Market Installation Flow
+## 18. Future: Atomic Market Installation Flow
 
-Market installation becomes download staging plus atomic publication: load and
+Market installation should become download staging plus atomic publication: load and
 validate the index, resolve the mandatory dependency graph, download and verify
 every `.db` into managed staging cache, inspect every package, then invoke
-`PackageInstallationService` once for the complete bundle. Downloads are
+the shared persisted installation contract once for the complete bundle. Downloads are
 staging artifacts; only the transactional publication makes a package
 installed.
 
-## 19. Remove VFS Receipt Authority
+## 19. Future: Remove VFS Receipt Authority
 
-`/market/installed.json` is no longer authoritative. `market.list()` queries
-the installation ledger. The index stays at `/market/index.json`; downloaded
-files stay at `/market/packages/{sha256}.db` as database-tracked managed
-artifacts.
+`/market/installed.json` should no longer be authoritative. `market.list()` should query the
+installation ledger; the index can remain at `/market/index.json` and downloaded files at
+`/market/packages/{sha256}.db` as database-tracked managed artifacts.
 
-## 20. Access Enforcement
+## 20. Implemented Access Enforcement
 
-After V002, `package.list()`, `market.list()`, `package.info()`,
+`package.list()`, `market.list()`, `package.info()`,
 `package.verify()`, `package.resource()`, `package.run()`, `import`, and
 binding creation all require an effective current-user installation. Knowing a
 global SHA-256 is no longer enough. Administrators receive separate global
 release diagnostics. `package.pin()` remains as a deprecated validation alias.
 
-## 21. Central Uninstall Service
+## 21. Implemented Uninstall Contract
 
-`PackageUninstallService` provides `package.uninstall(sha256)` and
-`package.uninstall(sha256, {"force": true})`. `market.uninstall()` delegates
-directly to it.
+`package.uninstall(sha256)` and `package.uninstall(sha256, {"force": true})` use the shared
+persisted uninstall contract. `market.uninstall()` delegates to that contract.
 
 ## 22. Uninstall Preflight
 
@@ -310,7 +318,7 @@ managed artifacts, referenced data objects, and bindings. Restore validation
 checks objects, references, usage totals, quotas, closures, and user
 isolation.
 
-## 33. Recovery Validation
+## 33. Future: Recovery Repair Validation
 
 Extend recovery checks for missing releases/members, invalid closures,
 bindings for uninstalled packages, missing data objects, usage mismatches,
@@ -319,24 +327,21 @@ incomplete forced uninstalls, and GC-eligible releases. Make
 `package.recover()` a real administrator consistency report with explicit,
 audited repairs.
 
-## 34. Migration Backfill
+## 34. Historical Baseline Backfill
 
-V002 copies existing releases into `package.release_identity`, creates
-`LEGACY` roots from `imported_by` and process bindings, parses existing Market
-receipts into `MARKET` roots, builds dependency closures, creates empty data
-spaces, registers existing Market cache files, and de-authorizes
-`/market/installed.json`. The migration is idempotent inside Flyway's single
-application and rolls back on inconsistency.
+The V001 `package_lifecycle.sql` module copied existing releases into `package.release_identity`,
+created `LEGACY` roots from `imported_by` and process bindings, built their dependency closures,
+and created empty data spaces. It did not parse historical Market receipts into `MARKET` roots;
+receipts are not installation authority. This historical baseline work is not V002; V002 is the
+active effect-quota index migration.
 
-## 35-43. Implementation Order, Testing, and Completion Criteria
+## 35-43. Historical Implementation Order, Testing, and Completion Criteria
 
-See the project task list; the canonical order is: V002 schema and migration
-tests, domain/repository plumbing, central installation service, access
-enforcement, provenance, `packageData.*`, user data management, quotas,
-uninstall service, forced cleanup, autoremove, GC, Market delegation,
-export/recovery updates, full test suites (installation, isolation, paths,
-quotas, uninstall, failure injection, GC, migration, export/recovery), and
-documentation.
+The completed implementation order was: V001 baseline lifecycle schema and tests,
+domain/repository plumbing, installation publication, access enforcement, provenance,
+`packageData.*`, user-data management, quotas, uninstall, forced cleanup, autoremove, global
+cleanup, Market delegation, export/recovery updates, full tests, and documentation. This is not
+an instruction to create a package-lifecycle V002 migration.
 
 Completion criteria after successful per-user uninstall: no listing, import,
 run, binding, process (with force), Market cache, receipt, data space, or

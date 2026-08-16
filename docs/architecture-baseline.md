@@ -1,7 +1,7 @@
 # CilExec Database-Driven and Dockerized Rebuild Master Plan (Java Edition)
 
-Status: **decision-frozen revision v1.1**  
-Date: 2026-07-22 (rewritten in English and synced with current behavior: 2026-08-03)  
+Status: **current architecture reference with preserved historical decision record**
+Core Runtime: **Java 26**; standalone market server: **Java 21**
 Implementation language: **Java (existing language and FCL runtime semantics retained)**  
 Runtime database: **PostgreSQL**  
 Package artifact: **immutable SQLite `.db`**  
@@ -11,9 +11,13 @@ Distribution: **Docker Compose, Linux AMD64 and ARM64**
 
 ## 0. Document Purpose and Constraints
 
-This document is the formal specification for the next CilExec release. It is no longer a discussion draft; it is the implementation boundary frozen after the 86-question architecture questionnaire was completed.
+This document records the architecture that resulted from the 86-question questionnaire and
+the current implementation. Sections that describe the shipped Runtime use present tense.
+The decision register and implementation phases are retained as historical design history;
+they are not an assertion that their work remains open. Explicit future work is identified as
+such and must be reconciled with the current schema before implementation.
 
-This rebuild accomplishes three things at once:
+The completed rebuild accomplished three things at once:
 
 1. It moves CilExec from file-driven persistence to a transaction-oriented runtime backed by PostgreSQL;
 2. It keeps the Java implementation and the existing FCL semantics while restructuring the runtime layers, database access, and recovery boundaries;
@@ -262,10 +266,11 @@ src/main/java/com/follarce/
 
 src/main/resources/
 ├── db/baseline/                   Flyway SQL baseline modules (foundation.sql,
-│                                  password_vfs_runtime.sql, atomic_administration.sql,
-│                                  execution.sql, contracts.sql, administrator_storage.sql,
-│                                  environment_permissions.sql, effect_terminal_audit.sql,
-│                                  terminal_runtime.sql, vfs_package.sql)
+│                                  execution.sql, vfs_package.sql, effect_terminal_audit.sql,
+│                                  contracts.sql, administrator_storage.sql,
+│                                  atomic_administration.sql, environment_permissions.sql,
+│                                  password_vfs_runtime.sql, terminal_runtime.sql,
+│                                  production_hardening.sql, package_lifecycle.sql)
 ├── logback.xml
 └── cilexec-defaults.properties
 ```
@@ -454,17 +459,22 @@ The first release may use an executable fat JAR to simplify container assembly. 
 
 ```text
 build stage
-- Linux JDK image pinned by digest
+- Linux Java 26 JDK image pinned by digest
 - Maven Wrapper or pinned Maven version
-- mvn --batch-mode verify
+- mvn --batch-mode verify -DskipITs
 - produces the final JAR
 
 runtime stage
-- Linux JRE pinned by digest or a verified jlink runtime
+- Linux Java 26 JRE pinned by digest or a verified jlink runtime
 - non-root user
-- copies only the runtime JAR, required config, and healthcheck scripts
+- copies the runtime JAR, healthcheck script, and native terminal client
 - no Maven cache, sources, or test reports
 ```
+
+The Dockerfile deliberately skips `*IT` suites while assembling an image; CI runs those
+PostgreSQL/Testcontainers suites independently with `mvn clean verify` before accepting image
+or release artifacts. The formal `release` target replaces the self-built JAR with the exact
+verified `dist/cilexec-app.jar` recorded in the release manifest.
 
 Entry point form:
 
@@ -662,7 +672,7 @@ database business tables
 ### 5.6 Capability Enforcement Details
 
 - **Process control ownership rule.** Controlling a process requires `SYSTEM_ADMIN`, or — for same-owner control — `PROCESS_CONTROL_OWN`, or — for cross-owner control — `PROCESS_CONTROL_ANY`. Both `ProcessService` and the FCL runtime apply the same rule.
-- **Package capability policy.** A package manifest may declare a fixed set of required capability keys (`vfs.read`, `vfs.write`, `terminal.raw_input`, `network.http`, `network.socket`, `process.create`, `process.control`, `package.manage`, `system.admin`). At import time the package source is compiled and checked so it cannot silently use more authority than the manifest declares; the call mapping covers `io.*` functions (`io.readFile` → `vfs.read`, `io.writeFile` → `vfs.write`), `market.*` → `package.manage`, `process.*` → `process.create`/`process.control`, `network.*` → `network.http`, `socket.*` → `network.socket`, and `system.*` → `system.admin`. A user must hold the mapped capabilities before the package can run.
+- **Package capability policy.** A package manifest may declare a fixed set of required capability keys (`vfs.read`, `vfs.write`, `terminal.raw_input`, `network.http`, `network.socket`, `process.create`, `process.control`, `package.manage`, `package.data`, `system.admin`). At import time the package source is compiled and checked so it cannot silently use more authority than the manifest declares. `packageData.*` maps to `package.data`; its package provenance and per-user installation are checked before access. A user must hold the mapped capabilities before the package can run.
 - **Extension state keys.** Durable extension state is namespaced as `cilexec.extension.<id.length>.<id>.<key>`; the length prefix keeps dotted extension IDs prefix-independent.
 
 ---
@@ -673,8 +683,8 @@ Flyway is the schema versioning tool.
 
 ```text
 V001__CilexecBaseline.java       # frozen CilExec 1.0 modular baseline
-V002__next_forward_change.java   # first post-1.0 change
-V003__later_forward_change.java
+V002__EffectActiveQuotaIndex.java # active per-owner active-effect quota index
+V003__later_forward_change.java   # next schema or persisted-format change
 ...
 ```
 
@@ -689,14 +699,17 @@ Rules:
 7. downgrades are performed by restoring a backup;
 8. development environments may explicitly allow the Runtime to run migrations, but this must never become the production default.
 
-The V001 SQL modules live in `src/main/resources/db/baseline/` and are applied by Flyway. They
-define roles, RLS policies, quotas, retention, and SECURITY DEFINER functions. V001 and all of
-its modules are frozen together at 1.0; post-1.0 changes must not edit them and must ship in a
-new versioned Java migration.
+The V001 SQL modules live in `src/main/resources/db/baseline/` and are applied in this order:
+`foundation`, `execution`, `vfs_package`, `effect_terminal_audit`, `contracts`,
+`administrator_storage`, `atomic_administration`, `environment_permissions`,
+`password_vfs_runtime`, `terminal_runtime`, `production_hardening`, and `package_lifecycle`.
+They define roles, RLS policies, package lifecycle storage, quotas, retention, and SECURITY
+DEFINER functions. V001 and all of its modules are frozen together. V002 is already applied;
+the next change must be a new versioned Java migration and must not edit V001 or V002.
 
 **Migration on start.** `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) takes effect: when enabled, the Runtime applies pending migrations at startup through the migrator role and validates them before continuing, instead of requiring the one-shot `migrate` command.
 
-**Schema verification.** At startup `SchemaVerifier` checks the actual schema version against the build's supported `[minimumSchema, maximumSchema]` range. A failed or out-of-range migration — a version below the minimum or above the maximum — prevents the Runtime from entering the ready state.
+**Schema verification.** At startup `SchemaVerifier` checks the actual schema version against the build's supported `[minimumSchema, maximumSchema]` range, currently `[1, 2]`. A failed or out-of-range migration — a version below the minimum or above the maximum — prevents the Runtime from entering the ready state.
 
 ---
 
@@ -949,7 +962,9 @@ FIFO
 
 A process entering READY is added to `scheduler.queue`.
 
-The current claim path first selects the oldest eligible candidate without a row lock:
+The current claim path selects the oldest eligible FIFO candidate while locking only its process
+row, allowing competing workers to skip an already-claimed head without reversing the
+process-then-queue lock order:
 
 ```sql
 SELECT process_uid
@@ -957,12 +972,13 @@ FROM scheduler.queue
 WHERE queue_state = 'READY'
   AND ready_at <= now()
 ORDER BY enqueued_at, process_uid
-LIMIT 1;
+LIMIT 1
+FOR UPDATE OF process SKIP LOCKED;
 ```
 
 It then wins ownership through a process `READY → RUNNING` compare-and-set and commits the
-queue claim and durable lease in the same transaction. Competing workers retry after a lost
-CAS; the production algorithm does not use `FOR UPDATE SKIP LOCKED` for candidate selection.
+queue claim and durable lease in the same transaction. Competing workers skip the locked head
+and continue with the next eligible FIFO candidate.
 
 ### 10.1 Workers
 
@@ -1217,8 +1233,9 @@ a vfs.mount database record
 
 The supported host-to-VFS feature is the `host move` tool: it mounts one explicitly named
 regular file read-only into a disposable tool container, streams it into PostgreSQL under a
-user holding `VFS_MOUNT_HOST`, and retains the host source. It never mounts the Docker Socket
-or a broad host directory.
+named active user holding `VFS_MOUNT_HOST` and `VFS_WRITE`, and retains the host source. The
+`local` superuser is unconditionally rejected as an import target. It never mounts the Docker
+Socket or a broad host directory.
 
 ---
 
@@ -1316,11 +1333,14 @@ package.release_dependency.dependency_file_hash
 
 Coordinates are display-only. Installing a required dependency must find the exact file hash; optional dependencies may be missing.
 
-### 14.5 Installation Records
+### 14.5 Per-User Installation Records
 
-The current schema has no `package.environment` table or shared default binding. Installation
-registers the immutable release and its derived indexes. The market client separately stores
-per-user receipts and downloaded files in VFS; those receipts do not create import aliases.
+There is no `package.environment` table or shared default binding. The current schema records
+each user's explicit package roots in `package.installation_root` and exact dependency closure
+in `package.installation_member`; package release registration, installation publication, and
+uninstallation are atomic PostgreSQL operations. `package.list()` resolves the current user's
+installed releases, not the global release catalog. Market receipts and managed VFS cache files
+are supporting artifacts, not import authority.
 
 ### 14.6 Process Bindings
 
@@ -1350,16 +1370,18 @@ pre-uninstall
 post-uninstall
 ```
 
-Install and uninstall only change package releases and process pins inside PostgreSQL; they never automatically execute arbitrary FCL or host operations. There is no package upgrade: a different content hash is a different package.
+Install and uninstall update the user's installation ledger, process pins, and managed artifacts
+inside PostgreSQL; they never automatically execute arbitrary FCL or host operations. There is
+no package upgrade: a different content hash is a different package.
 
 ### 14.8 Mutable Data
 
-Package runtime data goes into a separate `data_scope`; it is never written back into the package `.db`:
-
-```text
-package.data_scope
-→ VFS or controlled relational data
-```
+Package runtime data is never written back into the package `.db`. It lives in the per-user,
+per-package `package.data_space` and `package.data_entry` tables, references immutable object
+store content, and is subject to the configured quota (256 MiB by default). `packageData.*`
+can access only the invoking installed package's provenance-derived data space; ordinary VFS
+paths and other packages cannot address it directly. User export archives are ordinary VFS files
+and are not removed by package uninstallation.
 
 ### 14.9 Integrity
 
@@ -1721,7 +1743,10 @@ ARM64 vs AMD64 differences
 
 ---
 
-## 21. Implementation Phases
+## 21. Historical Implementation Phases
+
+The following phases document the completed rebuild sequence. They are retained for design
+provenance; their imperative language is historical, not a current backlog.
 
 ## Phase 0: Freeze Legacy Semantics and the Java Database Rebuild Baseline
 
@@ -1797,7 +1822,7 @@ a force kill after any committed FCL statement recovers correctly
 
 ```text
 queue
-SKIP LOCKED
+FIFO process-row locking with SKIP LOCKED
 runner
 heartbeat
 expires_at
@@ -1830,7 +1855,7 @@ host mounts
 ## Phase 7: SQLite Packages and Environments
 
 ```text
-package.db schema
+SQLite package `.db` schema
 canonicalized package_hash
 unique coordinates
 full db in object_store
@@ -1893,7 +1918,7 @@ no bypassing RLS
 no holding transactions during long external operations
 no HTTP/socket/host commands inside database transactions
 no last-writer-wins overwriting of process state
-no modifying a published package.db
+no modifying a published package `.db` artifact
 no writing back into the package database
 no same-coordinate/different-package_hash mappings
 no silently upgrading a running process's package binding
@@ -1924,7 +1949,7 @@ FIFO scheduling and leases are recoverable
 IPC direct/channel/topic/broadcast recover durably
 timers do not depend on in-memory sleep
 VFS content lives in a content-addressed object store
-package.db is an immutable SQLite file
+the package `.db` artifact is immutable SQLite
 the same coordinates never map to different hashes
 exact per-process package bindings work
 FCL-requested HTTP/socket/command effects pass through the effect journal
@@ -1932,7 +1957,7 @@ audit is separated from ordinary logs
 SIGTERM and force kill are both tested
 logical pg_dump/restore has automated restore tests
 application-level .db export is verifiable
-AMD64 and ARM64 CI both pass
+CI builds AMD64 and ARM64 images; Runtime verification runs on the GitHub-hosted AMD64 matrix
 legacy .proc and legacy file persistence code are deleted
 ```
 
@@ -1992,8 +2017,8 @@ legacy .proc and legacy file persistence code are deleted
 | 48 | P0 | May one coordinate map to multiple hashes | B. Absolutely forbidden | immutable releases and version uniqueness |
 | 49 | P0 | Does PostgreSQL store the full package .db | A. Store the full bytes |  |
 | 50 | P0 | Content authority after import | A. The original .db is authoritative; indexes are derived data |  |
-| 51 | P0 | What "install" means | Register immutable release and derived indexes | Market additionally stores a VFS receipt; aliases are created by import/run |
-| 52 | P0 | Package environments needed | No package.environment table in the current schema | Process bindings are private per process |
+| 51 | P0 | What "install" means | Register an immutable release plus a per-user installation closure | Receipts and managed VFS cache files are not import authority; process bindings are created by import/run |
+| 52 | P0 | Package environments needed | No `package.environment` table in the current schema | Per-user installation ledgers and process bindings provide the required isolation |
 | 53 | P0 | Does a process pin the hash when importing | B. Exact hash written after first resolution |  |
 | 54 | P0 | Package lifecycle hooks | A. Completely forbidden in the first release |  |
 | 55 | P1 | Package integrity policy | B. Only file hash and logical-content hash; no trust state |  |
@@ -2021,7 +2046,7 @@ legacy .proc and legacy file persistence code are deleted
 | 77 | P0 | What is used for database tests | C. Real PostgreSQL test containers |  |
 | 78 | P0 | Real forced-crash tests | B. Verify recovery after force-killing the JVM and container |  |
 | 79 | P1 | Package determinism tests | C. Test both hashes separately |  |
-| 80 | P1 | Docker test platforms | C. CI tests Linux amd64 and arm64 |  |
+| 80 | P1 | Docker test platforms | C. CI builds Linux amd64 and arm64 images | Runtime verification currently runs on the GitHub-hosted AMD64 matrix |
 | 81 | P1 | Performance benchmark targets | A. Finish a runnable version, measure the baseline, then set targets |  |
 | 82 | P0 | Keep a legacy data migrator | A. No |  |
 | 83 | P0 | Rewrite directly on the same branch | A. Modify main directly | pre-refactor tag established; continue on main |
@@ -2050,7 +2075,7 @@ Host Linux / Docker
     ├── Timer
     ├── VFS/Object Store
     ├── SQLite package manager
-    ├── Package environment
+    ├── Per-user package installation ledger and private data
     ├── Effect worker
     ├── Terminal
     ├── Auth/RLS
@@ -2064,7 +2089,7 @@ Java/JVM in-memory objects
 =
 disposable execution projections, rebuildable from the database
 
-package.db
+package `.db` artifact
 =
 immutable SQLite package artifacts
 ```

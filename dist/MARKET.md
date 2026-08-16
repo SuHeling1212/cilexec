@@ -7,7 +7,7 @@ CilExec Runtime（内置 market.*）        cilexec-market-server.jar
 ──────────────────────────────          ─────────────────────────
 用户 VFS 缓存完整索引                    读取明确发布的 catalog.json
 自然语言本地搜索                         校验只读 SQLite package.db
-按 SHA-256 下载、安装和升级      ◄────►  提供索引、HEAD 和 Range 下载
+按 SHA-256 下载、安装和卸载      ◄────►  提供索引、HEAD 和 Range 下载
 ```
 
 客户端随 `cilexec-app.jar` 一起发布。服务端是独立胖 JAR，macOS、Linux 和 Windows
@@ -80,6 +80,7 @@ java --enable-native-access=ALL-UNNAMED \
 | --- | --- |
 | `GET/HEAD /market/v1/index.json` | 返回全部已发布包的索引。 |
 | `GET/HEAD /market/v1/{sha256}` | 下载完整 SHA-256 指定的不可变 `.db`。 |
+| `POST /market/v1/publish` | 使用有效 Bearer 发布令牌上传并上架一个 `.db`。 |
 
 包下载支持单个显式 `Range: bytes=start-end`、`ETag`、`If-Range`、`Content-Length` 和
 `416` 结束探测，正好对应 Runtime 的 4 MiB 持久化分块下载。`v1` 是市场 HTTP 协议
@@ -95,7 +96,10 @@ java --enable-native-access=ALL-UNNAMED \
 有效快照不会被半成品替换，正在进行的 SHA-256 下载也不会切换文件。
 
 索引中的 `sha256` 是完整 `.db` 文件的 64 位小写 SHA-256，同时也是包 ID、下载路径和
-依赖 ID。它是内容标识，不是签名或发布者身份。
+依赖 ID。它是内容标识，不是签名或发布者身份。`POST /market/v1/publish` 接受不超过
+64 MiB 的原始 `.db` 请求体，要求 `Content-Length` 和 `Authorization: Bearer <令牌>`；
+成功时返回 `201` 以及坐标、SHA-256、字节数和存储路径。可用 `summary`、`description`
+和 `tags` 查询参数覆盖包元数据。
 
 ## 内置客户端
 
@@ -116,12 +120,12 @@ market.update()
 | `market.configure(origin)` | 设置当前用户的 HTTP/HTTPS 镜像 origin。 |
 | `market.origin()` | 查看当前生效的镜像源。 |
 | `market.update()` | 下载、验证并持久化完整索引。 |
-| `market.search(text)` | 按包名、命名空间、类型、标签和说明词前缀搜索；版本号不参与搜索。 |
+| `market.search(text)` | 以空白分隔的多个 AND 条件搜索。每个条件按包名、命名空间、kind、`命名空间/包名`、标签及摘要/说明词前缀匹配；至少 8 个字符的条件也可匹配包 SHA-256 前缀。版本号不参与搜索。 |
 | `market.info(sha256)` | 查询一个完整包记录，不存在时返回 `null`。 |
 | `market.download(sha256)` | 分块下载并重新计算完整文件 SHA-256。 |
 | `market.install(sha256)` | 递归安装精确哈希依赖；身份就是 SHA-256，不同哈希即不同包。 |
 | `market.list()` | 查看已安装包的 SHA-256 与坐标。 |
-| `market.uninstall(sha256)` | 移除下载的 VFS 文件与市场安装记录；不可变 Runtime 发布记录和现有进程绑定不受影响。 |
+| `market.uninstall(sha256)` | 委托核心 `package.uninstall`，随后移除市场下载缓存和回执。它没有 `force` 选项，活动进程绑定或当前用户的依赖安装根会阻止卸载。成功时会移除私有数据、安装记录、进程绑定、孤立依赖和全局无引用发布载荷；普通用户文档和其他用户的安装不受影响。 |
 | `market.help()` | 返回函数帮助。 |
 | `market.run()` | 返回客户端版本和帮助，不要求配置镜像。 |
 
@@ -137,7 +141,7 @@ editor.open("notes.txt")
 ```
 
 索引缓存位于当前用户 VFS 的 `/market/index.json`，下载包位于
-`/market/packages/{sha256}.db`，市场安装凭据位于 `/market/installed.json`。普通用户
+`/market/packages/{sha256}.db`，市场安装回执位于 `/market/installed.json`。普通用户
 看不到其他用户的这三类数据。
 
 下载分块先作为不可变对象写入对象存储，只有最后一块完成后才把目标 VFS 节点发布。
@@ -237,6 +241,7 @@ python3 tools/MarketPublish.py --url http://服务器:8787 \
 - 不要把 `--allow-cidr 0.0.0.0/0` 当作开发捷径。
 - Runtime 的私网 HTTP 策略仍必须允许配置的私有 origin；市场配置不会绕过网络策略。
 - 服务端并发数默认 16，可用 `--workers 1..256` 调整；超过上限立即返回 `503`。
-- 服务端只读仓库，不提供上传、删除、登录或动态上架接口。
+- 服务端不提供未认证的上传、删除或登录接口。唯一远程修改接口是经认证的
+  `POST /market/v1/publish`；上架和下架也可由本地交互式控制台管理。
 - 包签名系统已完全移除；安全边界是受控发布清单、HTTPS、精确 SHA-256 和 Runtime
   的包结构/能力校验。

@@ -30,7 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Runs every submission from one terminal in the same durable, suspended process. */
+/** Runs terminal-session submissions through a durable attached process and preserves its REPL context. */
 public final class TerminalReplService {
     static final String LIBRARY_SCOPE_KEY = "cilexec.repl.library";
     static final String TERMINAL_PROCESS_SCOPE_KEY = "cilexec.repl.terminalProcess";
@@ -301,7 +301,7 @@ public final class TerminalReplService {
         return declaration;
     }
 
-    /** Retains top-level imports even when package installation and import share one submission. */
+    /** Retains top-level imports when package installation and import share one submission. */
     private static String importsFrom(FclProgram program) {
         java.util.BitSet functionBodies = new java.util.BitSet(program.instructions().size());
         program.functions().values().forEach(function ->
@@ -372,10 +372,10 @@ public final class TerminalReplService {
     }
 
     /**
-     * Rejects a submission whose top-level imports cannot be resolved, mirroring the
-     * runtime directive resolution in ProcessStatementExecutor. Running this inside the
-     * submit transaction guarantees a broken import can never reach the persisted REPL
-     * library, which would otherwise wedge every later command in the same session.
+     * Rejects top-level package-hash imports that cannot be resolved. Source-path imports
+     * remain runtime directives. Running this inside the submit transaction guarantees a
+     * broken package import can never reach the persisted REPL library, which would otherwise
+     * wedge every later command in the same session.
      */
     private static void validateImports(com.follarce.domain.port.TransactionContext transaction,
                                         UUID processUid, UUID ownerId, FclProgram compiled,

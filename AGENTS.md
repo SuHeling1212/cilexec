@@ -5,26 +5,37 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 ## Build & Run Commands
 
 ```bash
-# Compile
+# Core Runtime: requires Java 26 and Maven 3.9+
 mvn compile
 
-# Package
-mac/linux bash ./build/package.sh
-windows ./build/package.bat
+# Unit tests (`*Test`; no Testcontainers integration suites)
+mvn test
 
-# Clean compile
-mvn clean compile
+# Full verification (`*Test` plus `*IT`; Docker and PostgreSQL/Testcontainers required)
+mvn clean verify
 
-# clean Cilexec dirt
+# Create the shaded Runtime JAR
+mvn package
+
+# Build a Linux Docker-image installer
+bash ./build/package.sh <version>
+
+# Clean Maven outputs
 bash ./build/clean.sh
 
-# Dev rebuild+run
-mac/linux bash ./build/run.sh
-windows ./build/run.bat
+# Build the verified distribution
+bash ./tools/release.sh
 
 ```
 
-**Note:** JUnit 5 unit, lifecycle, and crash-recovery tests are available under `src/test/`. Run them with `mvn test`. Integration tests require a running PostgreSQL.
+The standalone market server remains a separate Java 21 Maven project:
+`mvn -f market-server/pom.xml clean verify`.
+
+## Change Discipline
+
+After every file change, inspect the relevant user and developer documentation and update it
+when the behavior, configuration, interface, or workflow has changed. Include documentation
+updates in the same change and state the documentation check in the final report.
 
 ## High-Level Architecture
 
@@ -48,7 +59,7 @@ The system has **no in-memory semantic state required for crash recovery**. Ever
 | `com.follarce.timer` | Durable timers (`TimerService`, `TimerWorkerService`) |
 | `com.follarce.ipc` | Durable direct/channel/topic/broadcast messaging |
 | `com.follarce.vfs` | Content-addressed VFS use cases (`VfsService`, `AdminVfsService`) |
-| `com.follarce.package_manager` | Immutable SQLite `package.db` builds, exact-SHA-256 environments (`PackageManager`, `PackageBuilder`) |
+| `com.follarce.package_manager` | Immutable SQLite `.db` artifacts, per-user installation lifecycle, private package data, and exact-hash bindings (`PackageManager`, `PackageBuilder`) |
 | `com.follarce.market.client` | Built-in market client (`MarketRuntimeFunctions`) for the standalone `cilexec-market-server.jar` |
 | `com.follarce.exporter` | Verified logical PostgreSQL → SQLite export (`LogicalExportService`) |
 | `com.follarce.persistence.postgres` | HikariCP data sources, Flyway migrations, JDBC repositories and transaction executor |
@@ -77,7 +88,7 @@ counter) is serialized to PostgreSQL rows after every committed slice.
 
 ### Threading Model
 
-Java 21+ virtual threads are used throughout. The scheduler runs bounded worker pools
+Java 26 virtual threads are used throughout the core Runtime. The scheduler runs bounded worker pools
 (defaults: 10 scheduler workers, 6 effect workers, for the whole server, not per user) that
 claim durable leases in PostgreSQL; idle workers block in memory instead of polling the
 database, and transaction-commit notifications (`PostgresWorkListener`) wake them on queue,
@@ -94,9 +105,12 @@ in the durable FIFO queue.
 - `SYSTEM_ADMIN` is the CilExec application superuser: it satisfies every capability and has an
   explicit forced-RLS policy over all user runtime data, but never receives PostgreSQL
   `BYPASSRLS`, cluster-superuser, or host OS privileges.
-- SQL baselines under `src/main/resources/db/baseline/` define roles, RLS policies, and
-  SECURITY DEFINER functions (`foundation.sql`, `password_vfs_runtime.sql`,
-  `atomic_administration.sql`, `execution.sql`, `contracts.sql`, etc.), applied by Flyway.
+- Ordinary terminal registrations receive only `PROCESS_CREATE`, `PROCESS_CONTROL_OWN`,
+  `VFS_READ`, `VFS_WRITE`, `TERMINAL_ATTACH`, and `AUDIT_READ`. Package, effect, host-mount,
+  cross-owner, and administrator capabilities require an explicit grant.
+- The frozen V001 baseline modules under `src/main/resources/db/baseline/` define roles, RLS
+  policies, and SECURITY DEFINER functions. The active V002 migration adds the active-effect
+  quota index; do not modify either applied migration.
 
 ### Adding New Functionality
 
@@ -111,28 +125,31 @@ To add a source-only Java extension:
 Host-to-VFS transfer is deliberately a host tool rather than an FCL function. `tools/HostMove.sh`
 mounts one explicitly named regular file read-only into a disposable tool container; the
 `host move` application command streams it into PostgreSQL and creates the VFS node while
-retaining the host source. `host move` requires a target user holding the `VFS_MOUNT_HOST`
-capability and is refused for the `local` superuser by default. Never mount the Docker Socket
+retaining the host source. `host move` requires a target user holding `VFS_MOUNT_HOST` and
+`VFS_WRITE` and unconditionally refuses the `local` superuser. Never mount the Docker Socket
 or a broad host directory for this feature.
 
 ## Important Design Details
 
-- **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen CilExec 1.0 schema.
-  Never modify an applied migration after release. Every subsequent schema or persisted-format
-  change must be an immutable `V002`, `V003`, ... forward migration with upgrade, backup, and
-  rollback-by-restore tests. Automatic downgrades remain forbidden.
+- **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen modular baseline and
+  `V002__EffectActiveQuotaIndex` is active. Never modify an applied migration; the next schema
+  or persisted-format change must be an immutable `V003` forward migration with upgrade,
+  backup, and rollback-by-restore tests. Automatic downgrades remain forbidden.
 - **Database migrations:** Flyway baselines live in `src/main/resources/db/baseline/`;
   `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) now takes
   effect — when enabled, the Runtime applies pending migrations at startup instead of
   requiring the one-shot `migrate` command.
 - **Connection pools:** HikariCP. `runtime.pool.max` defaults to 20 and must be at least
   `scheduler.workers + effect.workers + 2`; the invariant is enforced at config load.
-- **SQLite packages:** package databases are immutable, read-only SQLite files (format v2)
-  identified and rechecked by SHA-256; runtime linking follows the exact-hash graph.
+- **SQLite packages:** package artifacts are immutable, read-only SQLite `.db` files (format
+  v2). Releases have logical and file-SHA-256 identities; installations, dependency closures,
+  private data spaces, and exact process bindings are persisted per user.
 - **Zero memory state:** all authoritative runtime state is persisted to PostgreSQL after each committed slice;
   recovery validates continuations, leases, IPC, timers, effects, and security invariants.
-- **Configuration files:** `src/main/resources/cilexec-defaults.properties` (defaults),
-  environment overrides (`CILEXEC_*`), Docker secrets under `docker/secrets/`.
+- **Configuration and secrets:** `src/main/resources/cilexec-defaults.properties` provides
+  non-secret defaults and `CILEXEC_*` overrides. Local Compose secrets and TLS material are
+  generated with `bash docker/create-secrets.sh` under `docker/secrets/`; production may use an
+  external secret manager. Never commit secret material.
 - **Health endpoints:** `GET /health/live` and `GET /health/ready` on an HTTP server bound to
   `127.0.0.1` only (internal to the container).
 - **Import/include:** `import` resolves an exact installed `.db` SHA-256;

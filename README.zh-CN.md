@@ -48,7 +48,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Cilexec.ps1 install
 
 ### 从源码运行
 
-前置条件：Docker 与 Docker Compose。构建源码还需要 JDK 26 和 Maven 3.9+。
+使用 `Install.sh` 从源码安装或运行只需要 Docker 与 Docker Compose 插件；镜像构建会在
+Docker 内提供 JDK 26 和 Maven 3.9+。若直接在宿主机运行 Maven，则需要自行安装 JDK 26
+和 Maven 3.9+。
 
 ```bash
 ./tools/Install.sh            # 一条命令：密钥 + PostgreSQL + 迁移 + 终端

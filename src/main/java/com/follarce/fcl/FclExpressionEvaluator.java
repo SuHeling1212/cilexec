@@ -5,7 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Evaluates one pure expression, suspending when a user function must run. */
+/** Evaluates one expression, signaling when execution must enter a base-program or linked-module function. */
 final class FclExpressionEvaluator {
     record UserCall(long expressionId, String name, List<Object> arguments) {}
 
@@ -38,6 +38,15 @@ final class FclExpressionEvaluator {
             return FclValues.deepCopy(literal.value());
         }
         if (expression instanceof FclExpression.Variable variable) {
+            if (continuation.scope().contains(variable.name())) {
+                return FclValues.deepCopy(continuation.scope().get(variable.name()));
+            }
+            FclProgram.Function function = currentFunction();
+            if (function != null && function.moduleBindings() != null) {
+                // Imported modules have their own globals and must not fall through to the
+                // importing program's root scope.
+                return FclValues.deepCopy(continuation.scope().get(variable.name()));
+            }
             return FclValues.deepCopy(continuation.variable(variable.name()));
         }
         if (expression instanceof FclExpression.ArrayLiteral array) {
@@ -99,13 +108,16 @@ final class FclExpressionEvaluator {
     }
 
     /**
-     * Resolves the package identity of the function currently being executed from
-     * the innermost call frame. Top-level program code has no package identity.
+     * Resolves the imported-module origin of the function in the innermost call frame.
+     * Base-program code and functions have no module origin.
      */
     private String currentPackageIdentity() {
-        List<FclContinuation.CallFrame> frames = continuation.callStack();
-        if (frames.isEmpty()) return null;
-        FclProgram.Function function = program.function(frames.getLast().functionName());
+        FclProgram.Function function = currentFunction();
         return function == null ? null : function.packageIdentity();
+    }
+
+    private FclProgram.Function currentFunction() {
+        List<FclContinuation.CallFrame> frames = continuation.callStack();
+        return frames.isEmpty() ? null : program.function(frames.getLast().functionName());
     }
 }
