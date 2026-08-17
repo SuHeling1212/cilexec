@@ -116,7 +116,19 @@ PowerShell without WSL. The signed outer checksum file covers every GitHub Relea
 including `cilexec-image.oci.tar`. A manual run names its artifacts after the project
 version (for example `cilexec-0.0.1-linux-amd64.sh`) instead of a candidate prefix, remains
 non-formal and changeable, retains the unsigned installers as temporary artifacts, and does not
-publish an OCI image or deployment archive. The formal archive contains
+publish an OCI image or deployment archive.
+
+### Changeable tag release (first release)
+
+A manual dispatch with the `tag` input (for example `v0.0.1-snapshot`) publishes a changeable
+release with a real Git tag and a downloadable GitHub Release page. The tag base must start
+with the project version (`0.0.1-snapshot` is accepted, `0.0.2-snapshot` is not). The workflow
+creates the tag, uploads the two installers, the Windows package, and the checksum file, and
+auto-generates the release notes. Nothing is signed and no OCI image is published, so the
+release remains replaceable: delete the tag and Release to republish. A later push of the exact
+`v<pom-version>` tag still produces the formal immutable release; validate-runtime refuses a
+formal tag whose version does not equal the pom version, so a snapshot tag never triggers the
+formal path. The formal archive contains
 the JARs, market repository/catalog, validated release metadata, SBOM, Compose/host tools,
 credential rotation tool, systemd templates, and production recovery runbook. Each installer
 contains its architecture-specific CilExec image; none currently contains PostgreSQL.

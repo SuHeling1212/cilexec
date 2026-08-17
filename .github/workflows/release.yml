@@ -2,6 +2,10 @@ name: release-artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to publish as a changeable release (e.g. v0.0.1-snapshot; formal v* tag pushes stay immutable)'
+        required: false
   push:
     tags:
       - 'v*'
@@ -27,6 +31,20 @@ jobs:
           - postgres:18.0-alpine3.22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Refuse untagged or already-released tags before formal runs
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          pom_version="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' pom.xml | head -n1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$pom_version" ]]; then
+            echo "Formal releases require tag v${pom_version}; ${GITHUB_REF_NAME} is a changeable/snapshot release." >&2
+            exit 1
+          fi
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release ${GITHUB_REF_NAME} already exists; delete it before formal publishing." >&2
+            exit 1
+          fi
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
@@ -53,6 +71,7 @@ jobs:
     env:
       CILEXEC_BUILD_REVISION: ${{ github.sha }}
       CILEXEC_BUILD_VERSION: ${{ github.ref_name }}
+      CILEXEC_TAG_INPUT: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -68,10 +87,17 @@ jobs:
         id: identity
         shell: bash
         run: |
+          pom_version="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' pom.xml | head -n1)"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${CILEXEC_TAG_INPUT}" ]]; then
+            version="${CILEXEC_TAG_INPUT#v}"
+            case "$version" in
+              "${pom_version}"|"${pom_version}-"*) ;;
+              *) echo "Tag base must start with ${pom_version}: ${CILEXEC_TAG_INPUT}" >&2; exit 1 ;;
+            esac
           else
-            version="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' pom.xml | head -n1)"
+            version="${pom_version}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
@@ -354,3 +380,42 @@ jobs:
             cilexec-${{ needs.build.outputs.version }}-linux-amd64.sh
             cilexec-${{ needs.build.outputs.version }}-linux-arm64.sh
             cilexec-${{ needs.build.outputs.version }}-windows.zip
+  publish-manual:
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cilexec-${{ needs.build.outputs.version }}
+          path: release-assets
+      - name: Create tag and publish changeable release
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+            echo "Tag ${tag} already exists remotely; delete it before republishing" >&2
+            exit 1
+          fi
+          git tag "${tag}"
+          git push origin "refs/tags/${tag}"
+          gh release create "${tag}" release-assets/* --repo "${GITHUB_REPOSITORY}" \
+            --title "CilExec ${VERSION}" --generate-notes
+      - name: Verify release page and downloadability
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release view "v${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+          for asset in release-assets/*; do
+            gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern "$(basename "$asset")" --dir /tmp/verify-asset
+          done
+          test "$(ls -1 /tmp/verify-asset | wc -l)" -eq "$(ls -1 release-assets | wc -l)"
+          echo "Release v${VERSION} published and verified"
