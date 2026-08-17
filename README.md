@@ -4,6 +4,8 @@
 CilExec Language) programs on a PostgreSQL-backed runtime where **PostgreSQL is the only
 authoritative state**. After a crash, the Runtime reconstructs work from committed database
 rows. An in-flight transaction is rolled back and its execution slice may run again.
+> **Development note:** CilExec was developed with the use of AI, while the project's architecture, design, review, and decision-making have always been human-led.
+
 
 > Why it exists: ordinary scripting runtimes keep process state in memory and lose it on
 > crash. CilExec commits each execution slice in one explicit database transaction, so
