@@ -71,7 +71,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
           else
-            version="candidate-${GITHUB_RUN_ID}"
+            version="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' pom.xml | head -n1)"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
@@ -191,7 +191,7 @@ jobs:
             cilexec-"$version"-linux-arm64.sh \
             cilexec-"$version"-windows.zip \
             > "cilexec-$version-SHA256SUMS"
-      - name: Checksum candidate installers
+      - name: Checksum manual-run installers
         if: github.ref_type != 'tag'
         run: |
           version="${{ steps.identity.outputs.version }}"
@@ -212,7 +212,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-      - name: Upload candidate artifacts
+      - name: Upload manual-run artifacts
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

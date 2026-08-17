@@ -113,7 +113,9 @@ digest. It does not publish a mutable `latest`
 tag. The release also includes `cilexec-<version>-windows.zip`, whose `Cilexec.ps1` entry point
 supports `install`, `terminal`, `headless`, `host-move`, `shell`, and `uninstall` directly from
 PowerShell without WSL. The signed outer checksum file covers every GitHub Release asset,
-including `cilexec-image.oci.tar`. A manual run retains unsigned candidate installers as temporary artifacts and does not
+including `cilexec-image.oci.tar`. A manual run names its artifacts after the project
+version (for example `cilexec-0.0.1-linux-amd64.sh`) instead of a candidate prefix, remains
+non-formal and changeable, retains the unsigned installers as temporary artifacts, and does not
 publish an OCI image or deployment archive. The formal archive contains
 the JARs, market repository/catalog, validated release metadata, SBOM, Compose/host tools,
 credential rotation tool, systemd templates, and production recovery runbook. Each installer
