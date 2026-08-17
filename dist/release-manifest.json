@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "version": "0.0.1",
-  "revision": "649144415d9cff3e98fcdd67c3de04d009fb0bd7-dirty",
+  "revision": "5d1067c25627f84ea575cfd5ffa40992992eedf4",
   "formal": false,
   "tag": null,
   "artifacts": {
@@ -10,12 +10,12 @@
       "size": 1065
     },
     "MARKET.md": {
-      "sha256": "6ef7d795fa38bd4b1daa9197d6ba6b17d5fbaa13cad95da96ad9da626ddeb9dd",
-      "size": 11178
+      "sha256": "53e849de31eee14857df5ddd0fadaf1cb7e719cbf54f249b6e5c564c84c22ddc",
+      "size": 12041
     },
     "RELEASE.txt": {
-      "sha256": "63f0da7742a4c6d6f768c45841ccee73c8e5becb97e39604c2e22cbb1185e9ca",
-      "size": 706
+      "sha256": "564e9f4237ce833419a0ed55b987a5fb0d1077b34564ef6e28ee6e1a12d50063",
+      "size": 700
     },
     "SBOM.cdx.json": {
       "sha256": "d3a336b206ccc1d6fa0fa5b8acfa5e7a6349a1cfd0282845d4edb402c172f386",
@@ -30,19 +30,19 @@
       "size": 296
     },
     "cilexec-app.jar": {
-      "sha256": "e333a995c45c2f7de9d0e0eea3b2255efd6746a48b4425e5c975498568b61519",
-      "size": 21282058
+      "sha256": "619e6c1a87339b8297cecbcc34437a2872cecb1a040f84dc182f4796fc629544",
+      "size": 21304267
     },
     "cilexec-market-server.jar": {
-      "sha256": "8bb8b04d5a79c4727ab2661a8727525ea9e64256002c99e963ac4635f18e71c8",
-      "size": 14793316
+      "sha256": "543ac97ad484b47adc09a903074eb6f784bfa3d336aad084af0459129500526c",
+      "size": 14793311
     },
     "market-dependencies.txt": {
       "sha256": "8c5d85a6e1f18d5b4af5252ea12cb3c7ed79351979962ebf5e425ee24969ffcd",
       "size": 172
     },
     "repository/packages/cilexec/editor/0.0.1/editor.db": {
-      "sha256": "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff",
+      "sha256": "9ddc9ffc36751d775029f626f0b3ae916c133ec05099f6e67058c17718e2de00",
       "size": 53248
     },
     "runtime-dependencies.txt": {
