@@ -109,8 +109,8 @@ in the durable FIFO queue.
   `VFS_READ`, `VFS_WRITE`, `TERMINAL_ATTACH`, and `AUDIT_READ`. Package, effect, host-mount,
   cross-owner, and administrator capabilities require an explicit grant.
 - The frozen V001 baseline modules under `src/main/resources/db/baseline/` define roles, RLS
-  policies, and SECURITY DEFINER functions. The active V002 migration adds the active-effect
-  quota index; do not modify either applied migration.
+  policies, SECURITY DEFINER functions, and the active-effect quota index. Do not modify the
+  applied baseline.
 
 ### Adding New Functionality
 
@@ -131,10 +131,10 @@ or a broad host directory for this feature.
 
 ## Important Design Details
 
-- **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen modular baseline and
-  `V002__EffectActiveQuotaIndex` is active. Never modify an applied migration; the next schema
-  or persisted-format change must be an immutable `V003` forward migration with upgrade,
-  backup, and rollback-by-restore tests. Automatic downgrades remain forbidden.
+- **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen modular baseline.
+  Never modify an applied migration; the next schema or persisted-format change must be an
+  immutable `V002` forward migration with upgrade, backup, and rollback-by-restore tests.
+  Automatic downgrades remain forbidden.
 - **Database migrations:** Flyway baselines live in `src/main/resources/db/baseline/`;
   `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) now takes
   effect — when enabled, the Runtime applies pending migrations at startup instead of

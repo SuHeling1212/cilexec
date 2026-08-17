@@ -311,8 +311,8 @@ RESET ROLE;
 
 The terminal uses the `terminal.*` session/input tables and the existing process/scheduler
 machinery. Its durable storage, the `system_admin` capability, and administrator RLS policies
-are part of the frozen modular V001 baseline. V002 is active and is limited to the effect active-
-quota index; it is not a terminal migration.
+are part of the frozen modular V001 baseline. The effect active-quota index is also part of that
+baseline; it is not a terminal migration.
 
 ---
 

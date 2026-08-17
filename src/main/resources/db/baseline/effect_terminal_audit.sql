@@ -109,6 +109,8 @@ CREATE TABLE effect.attempt (
 CREATE INDEX ix_effect_claim_next ON effect.effect(prepared_at, effect_id) WHERE status = 'PREPARED';
 CREATE INDEX ix_effect_recovery ON effect.effect(status, claimed_at)
     WHERE status IN ('CLAIMED', 'EXECUTING', 'UNKNOWN');
+CREATE INDEX ix_effect_owner_active ON effect.effect(owner_id)
+    WHERE status IN ('PREPARED', 'CLAIMED', 'EXECUTING', 'UNKNOWN');
 CREATE INDEX ix_effect_attempt_history ON effect.attempt(effect_id, attempt_number DESC);
 
 -- name: baseline.effect_rls

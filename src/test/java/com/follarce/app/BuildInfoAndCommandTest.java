@@ -14,7 +14,7 @@ class BuildInfoAndCommandTest {
         BuildInfo info = BuildInfo.load();
 
         assertEquals(1, info.minimumSchema());
-        assertEquals(2, info.maximumSchema());
+        assertEquals(1, info.maximumSchema());
     }
 
     @Test

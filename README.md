@@ -39,8 +39,8 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
 - **Human-friendly terminal** — an interactive REPL whose process (variables, imports,
   functions, working directory) persists across logout/login and Runtime restarts, plus a
   headless protocol for host scripting.
-- **Forward-only schema upgrades** — the 1.0 V001 baseline is frozen; every later persisted
-  format change ships as an immutable Flyway V002+ migration and downgrades restore a backup.
+- **Forward-only schema upgrades** — the 1.0 V001 baseline is the release baseline; every later
+  persisted format change ships as an immutable Flyway V002+ migration and downgrades restore a backup.
 
 ## Quick start
 

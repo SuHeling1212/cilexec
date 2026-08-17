@@ -92,7 +92,7 @@ class PostgresLogicalExportIT {
 
         assertTrue(report.tableCount() > 30);
         assertTrue(report.rowCount() > 1);
-        assertEquals("2", scalar(database, "SELECT metadata_value FROM export_metadata "
+        assertEquals("1", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='database.schema.version'"));
         assertEquals("0", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='source.statement.timeout'"));

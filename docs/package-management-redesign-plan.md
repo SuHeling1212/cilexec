@@ -2,13 +2,12 @@
 
 **Current status.** The core per-user installation ledger, exact dependency closures, private
 data spaces, quotas, provenance-gated `packageData.*`, atomic uninstall, and controlled global
-release cleanup described here shipped in the frozen V001 modular baseline. The active V002 is
-`V002__EffectActiveQuotaIndex`; it is unrelated to package lifecycle. Market receipt authority
-and all-or-nothing Market bundle publication remain follow-up work. This document preserves the
-design rationale and implementation sequence. Sections labelled historical describe completed
-design, not pending changes. To preserve useful detail, unqualified imperative or future wording
-in sections 5-34 is also historical unless a section explicitly says future; a future package
-schema change must start at V003.
+release cleanup described here shipped in the frozen V001 modular baseline, including the effect
+active-quota index. Market receipt authority and all-or-nothing Market bundle publication remain
+follow-up work. This document preserves the design rationale and implementation sequence.
+Sections labelled historical describe completed design, not pending changes. To preserve useful
+detail, unqualified imperative or future wording in sections 5-34 is also historical unless a
+section explicitly says future; a future package schema change must start at V002.
 
 ## 1. Implemented Decisions
 
@@ -27,8 +26,8 @@ This redesign follows these confirmed requirements:
 - Different package versions use separate data spaces.
 - The default quota is 256 MiB per user and package, with administrator overrides.
 - Audit records and permanent package identity tombstones are retained.
-- V001 is frozen; V002 is already active for the effect quota index. Future package schema
-  changes must use V003 or later immutable forward migrations.
+- V001 is frozen, including the effect quota index. Future package schema changes must use V002
+  or later immutable forward migrations.
 
 ## 2. Historical Problems and Remaining Market Gaps
 
@@ -73,11 +72,11 @@ future work; Market uninstall invokes the core uninstall contract before updatin
 
 ## 4. Historical Baseline Integration
 
-The original design proposed a separate `V002__AtomicPackageLifecycleAndPrivateData`
-migration. Before the baseline was frozen, the lifecycle schema was merged into the final V001
-module, `db/baseline/package_lifecycle.sql`. The repository now has an active, unrelated
-`V002__EffectActiveQuotaIndex`; the next schema change is an immutable V003 or later forward
-migration.
+The original design proposed a separate `V002__AtomicPackageLifecycleAndPrivateData` migration.
+Before the baseline was frozen, the lifecycle schema was merged into the final V001 module,
+`db/baseline/package_lifecycle.sql`. The active-effect quota index was likewise merged into
+V001's `db/baseline/effect_terminal_audit.sql`; the next schema change is an immutable V002 or
+later forward migration.
 
 Do not modify `V001__CilexecBaseline` or its baseline SQL files after a public release.
 
@@ -332,8 +331,8 @@ audited repairs.
 The V001 `package_lifecycle.sql` module copied existing releases into `package.release_identity`,
 created `LEGACY` roots from `imported_by` and process bindings, built their dependency closures,
 and created empty data spaces. It did not parse historical Market receipts into `MARKET` roots;
-receipts are not installation authority. This historical baseline work is not V002; V002 is the
-active effect-quota index migration.
+receipts are not installation authority. This historical baseline work and the active effect-
+quota index are both part of V001.
 
 ## 35-43. Historical Implementation Order, Testing, and Completion Criteria
 
@@ -341,7 +340,7 @@ The completed implementation order was: V001 baseline lifecycle schema and tests
 domain/repository plumbing, installation publication, access enforcement, provenance,
 `packageData.*`, user-data management, quotas, uninstall, forced cleanup, autoremove, global
 cleanup, Market delegation, export/recovery updates, full tests, and documentation. This is not
-an instruction to create a package-lifecycle V002 migration.
+an instruction to create a package-lifecycle migration after V001.
 
 Completion criteria after successful per-user uninstall: no listing, import,
 run, binding, process (with force), Market cache, receipt, data space, or

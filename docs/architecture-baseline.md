@@ -683,8 +683,7 @@ Flyway is the schema versioning tool.
 
 ```text
 V001__CilexecBaseline.java       # frozen CilExec 1.0 modular baseline
-V002__EffectActiveQuotaIndex.java # active per-owner active-effect quota index
-V003__later_forward_change.java   # next schema or persisted-format change
+V002__later_forward_change.java   # next schema or persisted-format change
 ...
 ```
 
@@ -704,12 +703,13 @@ The V001 SQL modules live in `src/main/resources/db/baseline/` and are applied i
 `administrator_storage`, `atomic_administration`, `environment_permissions`,
 `password_vfs_runtime`, `terminal_runtime`, `production_hardening`, and `package_lifecycle`.
 They define roles, RLS policies, package lifecycle storage, quotas, retention, and SECURITY
-DEFINER functions. V001 and all of its modules are frozen together. V002 is already applied;
-the next change must be a new versioned Java migration and must not edit V001 or V002.
+DEFINER functions. V001 and all of its modules are frozen together; the active-effect quota
+index is part of its `effect_terminal_audit` module. The next change must be a new versioned
+Java migration and must not edit V001.
 
 **Migration on start.** `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) takes effect: when enabled, the Runtime applies pending migrations at startup through the migrator role and validates them before continuing, instead of requiring the one-shot `migrate` command.
 
-**Schema verification.** At startup `SchemaVerifier` checks the actual schema version against the build's supported `[minimumSchema, maximumSchema]` range, currently `[1, 2]`. A failed or out-of-range migration — a version below the minimum or above the maximum — prevents the Runtime from entering the ready state.
+**Schema verification.** At startup `SchemaVerifier` checks the actual schema version against the build's supported `[minimumSchema, maximumSchema]` range, currently `[1, 1]`. A failed or out-of-range migration — a version below the minimum or above the maximum — prevents the Runtime from entering the ready state.
 
 ---
 
