@@ -120,9 +120,9 @@ publish an OCI image or deployment archive.
 
 ### Changeable tag release (first release)
 
-A manual dispatch with the `tag` input (for example `v0.0.1-snapshot`) publishes a changeable
+A manual dispatch with the `tag` input (for example `v0.0.1-SNAPSHOT`) publishes a changeable
 release with a real Git tag and a downloadable GitHub Release page. The tag base must start
-with the project version (`0.0.1-snapshot` is accepted, `0.0.2-snapshot` is not). The workflow
+with the project version (`0.0.1-SNAPSHOT` is accepted, `0.0.2-SNAPSHOT` is not). The workflow
 creates the tag, uploads the two installers, the Windows package, and the checksum file, and
 auto-generates the release notes. Nothing is signed and no OCI image is published, so the
 release remains replaceable: delete the tag and Release to republish. A later push of the exact
