@@ -294,7 +294,9 @@ jobs:
               exit 1
             fi
             echo "promote=false" >> "$GITHUB_OUTPUT"
-          elif [[ "$inspection" == *"not found"* || "$inspection" == *"manifest unknown"* ]]; then
+          elif [[ "$inspection" == *"not found"* || "$inspection" == *"manifest unknown"*
+                || "$inspection" == *"403 Forbidden"* || "$inspection" == *"denied"*
+                || "$inspection" == *"unauthorized"* ]]; then
             echo "promote=true" >> "$GITHUB_OUTPUT"
           else
             echo "$inspection" >&2
@@ -342,7 +344,9 @@ jobs:
             echo "Refusing to replace concurrently created tag $IMAGE:$VERSION" >&2
             exit 1
           fi
-          if [[ "$inspection" != *"not found"* && "$inspection" != *"manifest unknown"* ]]; then
+          if [[ "$inspection" != *"not found"* && "$inspection" != *"manifest unknown"*
+                && "$inspection" != *"403 Forbidden"* && "$inspection" != *"denied"*
+                && "$inspection" != *"unauthorized"* ]]; then
             echo "$inspection" >&2
             echo "Cannot prove that immutable tag $IMAGE:$VERSION is still absent" >&2
             exit 1
