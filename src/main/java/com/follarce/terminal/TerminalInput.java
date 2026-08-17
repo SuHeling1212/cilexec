@@ -340,9 +340,13 @@ public interface TerminalInput {
 
         private boolean awaitTextBatchInput(long deadline) throws IOException {
             while (true) {
+                // Buffered bytes end the batch immediately; the deadline only bounds
+                // blocking waits. Checking availability first keeps a slow decode
+                // (for example under emulation) from truncating a paste whose bytes
+                // are already buffered.
+                if (stream.available() > 0) return true;
                 long remaining = deadline - System.nanoTime();
                 if (remaining <= 0) return false;
-                if (stream.available() > 0) return true;
                 LockSupport.parkNanos(Math.min(remaining, TEXT_BATCH_POLL_NANOS));
                 if (Thread.currentThread().isInterrupted()) {
                     throw new IOException("Terminal input interrupted");
