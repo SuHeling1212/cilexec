@@ -176,11 +176,17 @@ class ProcessStatementExecutorTest {
         assertFalse(replacementState.scope().contains(ProcessInbox.EFFECT_RESULT));
         assertFalse(replacementState.scope().contains("oldTail"));
 
-        CilProcess claimed = replaced.claim(replaced.executionEpoch() + 1, NOW);
-        fixture.persistence.processes.current = claimed;
-        fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
-        fixture.persistence.scheduler.lease = fixture.claim;
-        fixture.executor.executeSlice(fixture.claim);
+        int sliceBudget = 1_000;
+        CilProcess claimed = fixture.persistence.processes.current;
+        while (claimed.status() == CilProcess.Status.READY && sliceBudget-- > 0) {
+            claimed = claimed.claim(claimed.executionEpoch() + 1, NOW);
+            fixture.persistence.processes.current = claimed;
+            fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+            fixture.persistence.scheduler.lease = fixture.claim;
+            fixture.executor.executeSlice(fixture.claim);
+            claimed = fixture.persistence.processes.current;
+        }
+        assertTrue(sliceBudget > 0, "executed program did not finish within the slice budget");
 
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(fixture.persistence.processes.current.continuation());
