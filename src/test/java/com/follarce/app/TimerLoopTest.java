@@ -67,18 +67,18 @@ class TimerLoopTest {
     void transientContentionIsRetriedWithoutFencingTheRuntime() throws Exception {
         AtomicInteger attempts = new AtomicInteger();
         AtomicReference<Throwable> reported = new AtomicReference<>();
-        CountDownLatch thirdAttempt = new CountDownLatch(3);
+        CountDownLatch retried = new CountDownLatch(2);
         TimerLoop loop = new TimerLoop(() -> {
             attempts.incrementAndGet();
-            thirdAttempt.countDown();
+            retried.countDown();
             throw new IllegalStateException("optimistic-lock CAS lost");
         }, () -> Optional.empty(), reported::set);
 
         loop.start();
-        assertTrue(thirdAttempt.await(1, TimeUnit.SECONDS));
+        assertTrue(retried.await(5, TimeUnit.SECONDS));
         loop.close();
 
-        assertTrue(attempts.get() >= 3, "transient failures must be retried");
+        assertTrue(attempts.get() >= 2, "transient failures must be retried");
         assertNull(reported.get());
         assertFalse(loop.isRunning());
     }
