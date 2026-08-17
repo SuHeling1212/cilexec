@@ -130,9 +130,12 @@ Authorization.requireAdministrator(transaction, userId);  // SYSTEM_ADMIN gate
 ### 3.1 Transport
 
 `TerminalServer` is a TCP server (default port 8022, configurable via
-`CILEXEC_TERMINAL_PORT`). Each connection is one terminal session bound to one
-authenticated user. A headless variant (`DatabaseTerminalControl.headless`) binds a
-named durable context for host tooling.
+`CILEXEC_TERMINAL_PORT`). Each interactive client supplies a stable terminal context ID;
+after authentication that ID selects one durable host session and its attached REPL PID. The
+distributed `tools/Install.sh` derives the ID from the project path and host TTY, so reconnecting
+after a Runtime/Docker restart resumes the same terminal while other host terminals remain
+separate. Older clients without an ID use the legacy most-recent-session fallback. A headless
+variant (`DatabaseTerminalControl.headless`) binds a named durable context for host tooling.
 
 ### 3.2 Session Lifecycle
 

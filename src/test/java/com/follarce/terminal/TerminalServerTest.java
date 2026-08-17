@@ -14,6 +14,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -101,10 +102,39 @@ class TerminalServerTest {
         }
     }
 
+    @Test
+    void passesInteractiveContextToTheAuthenticatedTerminalControl() throws Exception {
+        int port;
+        try (ServerSocket reservation = new ServerSocket(0)) {
+            port = reservation.getLocalPort();
+        }
+        UserAccount local = UserAccount.active(UUID.randomUUID(), "local", Instant.now());
+        AtomicReference<String> context = new AtomicReference<>();
+
+        try (TerminalServer server = new TerminalServer(port, access(local),
+                (account, interactiveContext) -> {
+                    context.set(interactiveContext);
+                    return command -> "";
+                }, (account, ignored) -> command -> "", "local")) {
+            server.start();
+
+            String transcript = session(port, "local", 24, 80, "host-project-tty");
+
+            assertTrue(transcript.contains("authenticated as local"), transcript);
+            assertEquals("host-project-tty", context.get());
+        }
+    }
+
     private static String session(int port, String username, int height, int width) {
+        return session(port, username, height, width, "");
+    }
+
+    private static String session(int port, String username, int height, int width, String context) {
         try (Socket socket = new Socket("127.0.0.1", port)) {
             socket.setSoTimeout(3_000);
-            socket.getOutputStream().write((("\0M INTERACTIVE\n\0S " + height + " " + width + "\n")
+            String marker = context.isEmpty() ? "\0M INTERACTIVE\n"
+                    : "\0M INTERACTIVE " + context + "\n";
+            socket.getOutputStream().write(((marker + "\0S " + height + " " + width + "\n")
                     + "login\n" + username + "\npassword123\n:exit\n")
                     .getBytes(StandardCharsets.UTF_8));
             socket.shutdownOutput();

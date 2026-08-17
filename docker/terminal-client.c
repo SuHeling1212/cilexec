@@ -26,6 +26,21 @@ static const char TERMINAL_RESET[] =
 
 static int write_all(int descriptor, const void *buffer, size_t length);
 
+static int valid_context(const char *value) {
+    size_t length = value == NULL ? 0 : strlen(value);
+    if (length == 0 || length > 128) return 0;
+    for (size_t index = 0; index < length; index++) {
+        unsigned char character = (unsigned char) value[index];
+        if (!(character >= 'A' && character <= 'Z')
+                && !(character >= 'a' && character <= 'z')
+                && !(character >= '0' && character <= '9')
+                && character != '.' && character != '_' && character != ':' && character != '-') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void restore_terminal(void) {
     if (terminal_saved) {
         (void) write_all(STDOUT_FILENO, TERMINAL_RESET, sizeof(TERMINAL_RESET) - 1);
@@ -264,6 +279,7 @@ int main(int argument_count, char **arguments) {
     int probe = argument_count > 1 && strcmp(arguments[1], "--probe") == 0;
     int headless = argument_count > 1 && strcmp(arguments[1], "--headless") == 0;
     int health = argument_count > 1 && strcmp(arguments[1], "--health") == 0;
+    int interactive_context = argument_count > 1 && strcmp(arguments[1], "--session") == 0;
     if (headless && argument_count != 5) {
         fprintf(stderr, "usage: cilexec-terminal-client --headless <port> <context> <username>\n");
         return 64;
@@ -273,7 +289,17 @@ int main(int argument_count, char **arguments) {
         fprintf(stderr, "usage: cilexec-terminal-client --health <live|ready> <port>\n");
         return 64;
     }
-    const char *port_argument = headless ? arguments[2] : health ? arguments[3] : probe
+    if (interactive_context && argument_count != 4) {
+        fprintf(stderr, "usage: cilexec-terminal-client --session <context> <port>\n");
+        return 64;
+    }
+    const char *context = interactive_context ? arguments[2] : NULL;
+    if (context != NULL && !valid_context(context)) {
+        fprintf(stderr, "invalid terminal session context\n");
+        return 64;
+    }
+    const char *port_argument = headless ? arguments[2] : health ? arguments[3]
+            : interactive_context ? arguments[3] : probe
             ? (argument_count > 2 ? arguments[2] : "8022")
             : (argument_count > 1 ? arguments[1] : "8022");
     char *end = NULL;
@@ -326,7 +352,12 @@ int main(int argument_count, char **arguments) {
         close(runtime);
         return 70;
     }
-    if (write_all(runtime, "\0M INTERACTIVE\n", 15) != 0) {
+    char mode_frame[160];
+    mode_frame[0] = '\0';
+    int mode_length = snprintf(mode_frame + 1, sizeof(mode_frame) - 1,
+            context == NULL ? "M INTERACTIVE\n" : "M INTERACTIVE %s\n", context);
+    if (mode_length < 1 || (size_t) mode_length + 1 >= sizeof(mode_frame)
+            || write_all(runtime, mode_frame, (size_t) mode_length + 1) != 0) {
         close(runtime);
         return 74;
     }

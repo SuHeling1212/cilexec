@@ -68,14 +68,24 @@ public final class TerminalService {
         });
     }
 
+    /** Reuses one durable host-terminal session identified by its client-supplied context. */
+    public TerminalSession openOrResumeInteractive(UUID ownerId, String contextId) {
+        return openOrResume(ownerId, contextId, "cilexec-host-v1\0", "terminal.open");
+    }
+
     /**
      * Opens one durable, non-interactive REPL namespace. The opaque context identifier is
      * deliberately hashed into the session UUID: it is never stored as user-visible metadata.
      */
     public TerminalSession openOrResume(UUID ownerId, String contextId) {
+        return openOrResume(ownerId, contextId, "cilexec-headless-v1\0", "terminal.headless.open");
+    }
+
+    private TerminalSession openOrResume(UUID ownerId, String contextId, String contextPrefix,
+                                         String auditAction) {
         java.util.Objects.requireNonNull(ownerId, "ownerId");
         String normalized = requireContextId(contextId);
-        UUID sessionId = UUID.nameUUIDFromBytes(("cilexec-headless-v1\0" + ownerId + "\0"
+        UUID sessionId = UUID.nameUUIDFromBytes((contextPrefix + ownerId + "\0"
                 + normalized).getBytes(StandardCharsets.UTF_8));
         return transactions.inUserTransaction(ownerId, Isolation.SERIALIZABLE, transaction -> {
             Authorization.require(transaction, ownerId, Capability.TERMINAL_ATTACH);
@@ -83,18 +93,22 @@ public final class TerminalService {
             if (existing.isPresent()) {
                 TerminalSession session = existing.orElseThrow();
                 if (!session.ownerId().equals(ownerId)) {
-                    throw new IllegalStateException("Headless terminal context owner mismatch");
+                    throw new IllegalStateException("Terminal context owner mismatch");
                 }
                 if (session.status() != TerminalSession.Status.OPEN) {
-                    throw new IllegalStateException("Headless terminal context is closed");
+                    throw new IllegalStateException("Terminal context is closed");
                 }
                 return session;
             }
             Instant now = clock.instant();
             TerminalSession session = new TerminalSession(sessionId, ownerId,
                     TerminalSession.Status.OPEN, 1, now, now, Optional.empty());
-            transaction.terminal().saveApiSession(session);
-            transaction.audit().append(audit(ownerId, "terminal.headless.open", sessionId, now));
+            if (contextPrefix.startsWith("cilexec-host")) {
+                transaction.terminal().saveSession(session);
+            } else {
+                transaction.terminal().saveApiSession(session);
+            }
+            transaction.audit().append(audit(ownerId, auditAction, sessionId, now));
             return session;
         });
     }
@@ -102,7 +116,7 @@ public final class TerminalService {
     private static String requireContextId(String contextId) {
         if (contextId == null || contextId.isBlank() || contextId.length() > 128
                 || !contextId.matches("[A-Za-z0-9._:-]+")) {
-            throw new IllegalArgumentException("Invalid headless terminal context identifier");
+            throw new IllegalArgumentException("Invalid terminal context identifier");
         }
         return contextId;
     }

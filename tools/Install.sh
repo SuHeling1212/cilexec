@@ -212,7 +212,21 @@ if [[ "$terminal_ready" != true ]]; then
 fi
 
 echo "Connecting to the shared CilExec Runtime."
-"${compose[@]}" exec cilexec /usr/local/bin/cilexec-terminal-client "$terminal_port"
+terminal_context="${CILEXEC_TERMINAL_CONTEXT:-}"
+if [[ -z "$terminal_context" ]]; then
+    terminal_tty="$(tty 2>/dev/null || true)"
+    if [[ -z "$terminal_tty" || "$terminal_tty" == "not a tty" ]]; then
+        echo "Error: an interactive terminal is required to establish a durable terminal session." >&2
+        exit 2
+    fi
+    terminal_context="host-${project_hash}-$(printf '%s\0%s\n' "$project_dir" "$terminal_tty" | hash_text)"
+fi
+if [[ ! "$terminal_context" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+    echo "Error: CILEXEC_TERMINAL_CONTEXT must contain 1-128 letters, digits, ., _, :, or -." >&2
+    exit 2
+fi
+"${compose[@]}" exec cilexec /usr/local/bin/cilexec-terminal-client \
+    --session "$terminal_context" "$terminal_port"
 
 runtime_stopped=false
 for _ in {1..12}; do

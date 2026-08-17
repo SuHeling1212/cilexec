@@ -300,9 +300,15 @@ public final class RuntimeBootstrap {
             var access = new TerminalAccessService(runtimeTransactions,
                     config.runtimeDatabase().jdbcUrl(), clock, terminalSettings.username());
             terminalServer = new TerminalServer(terminalSettings.port(), access,
-                    account -> new DatabaseTerminalControl(runtimeTransactions, account,
-                            runtimeShutdown,
-                            password -> access.login(account.username(), password).isPresent(),
+                    (account, contextId) -> contextId.isEmpty()
+                            ? new DatabaseTerminalControl(runtimeTransactions, account,
+                            runtimeShutdown, password -> access.login(account.username(), password).isPresent(),
+                            this::wakeScheduler, () -> {
+                                SchedulerService current = scheduler;
+                                if (current != null) current.wakeInterrupt();
+                            })
+                            : DatabaseTerminalControl.interactive(runtimeTransactions, account, contextId,
+                            runtimeShutdown, password -> access.login(account.username(), password).isPresent(),
                             this::wakeScheduler, () -> {
                                 SchedulerService current = scheduler;
                                 if (current != null) current.wakeInterrupt();

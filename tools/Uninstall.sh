@@ -280,7 +280,7 @@ if [[ -d "$SECRET_DIR" ]]; then
         # postgres-ca.crt directory) previously survived `rm -f` and blocked a
         # reinstall. Remove regular files, symlinks, and directories alike;
         # the paths are hardcoded and never contain patterns.
-        rm -rf -- "$SECRET_DIR/$secret_file"
+        rm -rf -- "${SECRET_DIR:?}/$secret_file"
     done
     # Keep the directory inode stable. Docker Desktop for macOS may retain a
     # stale bind-mount view when a shared directory is removed and recreated,

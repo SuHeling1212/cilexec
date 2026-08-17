@@ -2,6 +2,7 @@ package com.follarce.terminal;
 
 import com.follarce.application.TerminalReplService;
 import com.follarce.domain.auth.UserAccount;
+import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
@@ -37,10 +38,10 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
-                                   Runnable shutdown, Predicate<char[]> passwordVerifier,
-                                   Runnable schedulerWake, Runnable interruptWake) {
+                                    Runnable shutdown, Predicate<char[]> passwordVerifier,
+                                    Runnable schedulerWake, Runnable interruptWake) {
         this(transactions, user, shutdown, passwordVerifier, schedulerWake, interruptWake,
-                Optional.empty());
+                Optional.empty(), Optional.empty());
     }
 
     /** Creates a control surface backed by the durable context for one host terminal. */
@@ -49,13 +50,23 @@ public final class DatabaseTerminalControl implements TerminalControl {
             Runnable shutdown, Predicate<char[]> passwordVerifier,
             Runnable schedulerWake, Runnable interruptWake) {
         return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
-                schedulerWake, interruptWake, Optional.of(contextId));
+                schedulerWake, interruptWake, Optional.empty(), Optional.of(contextId));
+    }
+
+    /** Creates a control surface for one durable interactive terminal context. */
+    public static DatabaseTerminalControl interactive(
+            JdbcTransactionExecutor transactions, UserAccount user, String contextId,
+            Runnable shutdown, Predicate<char[]> passwordVerifier,
+            Runnable schedulerWake, Runnable interruptWake) {
+        return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
+                schedulerWake, interruptWake, Optional.of(contextId), Optional.empty());
     }
 
     private DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
-                                    Runnable shutdown, Predicate<char[]> passwordVerifier,
-                                    Runnable schedulerWake, Runnable interruptWake,
-                                    Optional<String> headlessContext) {
+                                     Runnable shutdown, Predicate<char[]> passwordVerifier,
+                                     Runnable schedulerWake, Runnable interruptWake,
+                                     Optional<String> interactiveContext,
+                                     Optional<String> headlessContext) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.user = java.util.Objects.requireNonNull(user, "user");
         this.shutdown = java.util.Objects.requireNonNull(shutdown, "shutdown");
@@ -64,9 +75,11 @@ public final class DatabaseTerminalControl implements TerminalControl {
         this.terminals = new TerminalService(transactions, Clock.systemUTC(), schedulerWake,
                 interruptWake);
         this.repl = new TerminalReplService(transactions, schedulerWake);
-        this.sessionId = headlessContext
-                .map(context -> terminals.openOrResume(user.userId(), context))
-                .orElseGet(() -> terminals.openOrResume(user.userId())).sessionId();
+        TerminalSession session = interactiveContext
+                .map(context -> terminals.openOrResumeInteractive(user.userId(), context))
+                .or(() -> headlessContext.map(context -> terminals.openOrResume(user.userId(), context)))
+                .orElseGet(() -> terminals.openOrResume(user.userId()));
+        this.sessionId = session.sessionId();
     }
 
     @Override

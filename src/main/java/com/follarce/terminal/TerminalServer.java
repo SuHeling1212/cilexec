@@ -46,7 +46,7 @@ public final class TerminalServer implements AutoCloseable {
             java.util.concurrent.TimeUnit.MINUTES.toNanos(1);
     private final int port;
     private final TerminalAccess access;
-    private final Function<UserAccount, TerminalControl> controls;
+    private final BiFunction<UserAccount, String, TerminalControl> interactiveControls;
     private final BiFunction<UserAccount, String, TerminalControl> headlessControls;
     private final String administratorUsername;
     private final long idleDisconnectNanos;
@@ -58,23 +58,33 @@ public final class TerminalServer implements AutoCloseable {
     private volatile Thread acceptor;
 
     public TerminalServer(int port, TerminalAccess access,
-                          Function<UserAccount, TerminalControl> controls,
-                          String administratorUsername) {
-        this(port, access, controls, (account, ignored) -> controls.apply(account),
+                           Function<UserAccount, TerminalControl> controls,
+                           String administratorUsername) {
+        this(port, access, (account, ignored) -> controls.apply(account),
+                (account, ignored) -> controls.apply(account),
                 administratorUsername, TerminalSettings.DEFAULT_IDLE_DISCONNECT);
     }
 
     public TerminalServer(int port, TerminalAccess access,
-                          Function<UserAccount, TerminalControl> controls,
-                          BiFunction<UserAccount, String, TerminalControl> headlessControls,
-                          String administratorUsername) {
-        this(port, access, controls, headlessControls, administratorUsername,
+                           Function<UserAccount, TerminalControl> controls,
+                           BiFunction<UserAccount, String, TerminalControl> headlessControls,
+                           String administratorUsername) {
+        this(port, access, (account, ignored) -> controls.apply(account), headlessControls,
+                administratorUsername,
                 TerminalSettings.DEFAULT_IDLE_DISCONNECT);
     }
 
     public TerminalServer(int port, TerminalAccess access,
-                          Function<UserAccount, TerminalControl> controls,
-                          BiFunction<UserAccount, String, TerminalControl> headlessControls,
+                           BiFunction<UserAccount, String, TerminalControl> interactiveControls,
+                           BiFunction<UserAccount, String, TerminalControl> headlessControls,
+                           String administratorUsername) {
+        this(port, access, interactiveControls, headlessControls, administratorUsername,
+                TerminalSettings.DEFAULT_IDLE_DISCONNECT);
+    }
+
+    public TerminalServer(int port, TerminalAccess access,
+                           BiFunction<UserAccount, String, TerminalControl> interactiveControls,
+                           BiFunction<UserAccount, String, TerminalControl> headlessControls,
                           String administratorUsername,
                           java.time.Duration idleDisconnect) {
         if (port < 1 || port > 65_535) {
@@ -85,7 +95,8 @@ public final class TerminalServer implements AutoCloseable {
         }
         this.port = port;
         this.access = java.util.Objects.requireNonNull(access, "access");
-        this.controls = java.util.Objects.requireNonNull(controls, "controls");
+        this.interactiveControls = java.util.Objects.requireNonNull(interactiveControls,
+                "interactiveControls");
         this.headlessControls = java.util.Objects.requireNonNull(headlessControls,
                 "headlessControls");
         this.administratorUsername = java.util.Objects.requireNonNull(
@@ -171,9 +182,9 @@ public final class TerminalServer implements AutoCloseable {
             output = new LockedPrintWriter(new OutputStreamWriter(client.getOutputStream(),
                     StandardCharsets.UTF_8));
             PushbackInputStream connection = new PushbackInputStream(client.getInputStream(), 128);
-            ConnectionMode mode = readConnectionMode(connection);
-            if (mode == ConnectionMode.CLOSED) return;
-            if (mode == ConnectionMode.HEADLESS) {
+            ConnectionHandshake handshake = readConnectionMode(connection);
+            if (handshake.mode() == ConnectionMode.CLOSED) return;
+            if (handshake.mode() == ConnectionMode.HEADLESS) {
                 int status;
                 try {
                     status = serveHeadless(connection, output);
@@ -204,7 +215,8 @@ public final class TerminalServer implements AutoCloseable {
             transported.onDisconnect(transported::interruptForeground);
             TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
             new TerminalAccessConsole(input, output, access, account -> {
-                        TerminalControl control = controls.apply(account);
+                        TerminalControl control = interactiveControls.apply(account,
+                                handshake.interactiveContext());
                         attached.set(control);
                         transported.bind(account.userId(), control::interruptForeground);
                         control.outputRouteId().ifPresent(
@@ -282,30 +294,40 @@ public final class TerminalServer implements AutoCloseable {
         }
     }
 
-    private static ConnectionMode readConnectionMode(PushbackInputStream input)
+    private static ConnectionHandshake readConnectionMode(PushbackInputStream input)
             throws IOException {
         int first = input.read();
-        if (first < 0) return ConnectionMode.CLOSED;
+        if (first < 0) return new ConnectionHandshake(ConnectionMode.CLOSED, "");
         if (first != 0) {
             input.unread(first);
-            return ConnectionMode.INTERACTIVE;
+            return new ConnectionHandshake(ConnectionMode.INTERACTIVE, "");
         }
         byte[] frame = new byte[96];
         frame[0] = 0;
         int length = 1;
         while (length < frame.length) {
             int value = input.read();
-            if (value < 0) return ConnectionMode.CLOSED;
+            if (value < 0) return new ConnectionHandshake(ConnectionMode.CLOSED, "");
             frame[length++] = (byte) value;
             if (value == '\n') break;
         }
         String payload = new String(frame, 1, length - 1, StandardCharsets.US_ASCII).trim();
-        if (payload.equals("M HEADLESS")) return ConnectionMode.HEADLESS;
+        if (payload.equals("M HEADLESS")) return new ConnectionHandshake(ConnectionMode.HEADLESS, "");
         // New terminal clients identify the transport explicitly. Consume that marker so its
         // NUL-prefixed bytes can never leak into the access prompt as user input.
-        if (payload.equals("M INTERACTIVE")) return ConnectionMode.INTERACTIVE;
+        if (payload.equals("M INTERACTIVE")) {
+            return new ConnectionHandshake(ConnectionMode.INTERACTIVE, "");
+        }
+        String prefix = "M INTERACTIVE ";
+        if (payload.startsWith(prefix)) {
+            String context = payload.substring(prefix.length());
+            if (!context.matches("[A-Za-z0-9._:-]{1,128}")) {
+                throw new IOException("Invalid interactive terminal context");
+            }
+            return new ConnectionHandshake(ConnectionMode.INTERACTIVE, context);
+        }
         input.unread(frame, 0, length);
-        return ConnectionMode.INTERACTIVE;
+        return new ConnectionHandshake(ConnectionMode.INTERACTIVE, "");
     }
 
     private static byte[] readField(InputStream input, int maximum, String name)
@@ -350,6 +372,8 @@ public final class TerminalServer implements AutoCloseable {
     }
 
     private enum ConnectionMode { INTERACTIVE, HEADLESS, CLOSED }
+
+    private record ConnectionHandshake(ConnectionMode mode, String interactiveContext) { }
 
     /** Keeps asynchronous FCL output atomic with prompts written by the terminal session. */
     private static final class LockedPrintWriter extends PrintWriter {
