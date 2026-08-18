@@ -400,13 +400,39 @@ connection handles that could be reused across a crash.
 | --- | --- |
 | `network.httpGet(url)` | Perform an HTTP/HTTPS GET and return `{status, body, headers}`. Alias: `network.webget(url)`. |
 | `network.httpPost(url, body)` | Perform an HTTP/HTTPS POST and return `{status, body, headers}`. Alias: `network.webpost(url, body)`. |
-| `network.download(url, vfsPath)` | Download binary content in persisted 4 MiB chunks and write it unchanged to the current user's VFS; returns the path, status code, size, and media type. A single file is capped at 1 GiB; the server must support HTTP Range to download files larger than 4 MiB. |
+| `network.download(url, vfsPath)` | Download binary content in persisted 4 MiB chunks and write it unchanged to the current user's VFS; returns `{nodeId, path, url, status, bytes, mediaType}`. A single file is capped at 1 GiB; the server must support HTTP Range to download files larger than 4 MiB. An empty remote file (HTTP 416 with `Content-Range: bytes */0`) is a successful zero-byte download, not an error. Multi-chunk downloads resume with `If-Range`, so the server must return an ETag or Last-Modified validator or the download fails rather than silently mixing old and new content. |
 | `socket.connect(host, port)` | Verify connectivity, return endpoint information, then close the connection. |
 | `socket.send(host, port, data)` | Connect, send UTF-8 data, close, and return the number of bytes written. Also accepts `socket.send({"host":"…","port":123}, data)`. |
 | `socket.receive(host, port [, maximumBytes])` | Connect, read text, and close. |
 | `socket.close(...)` | Returns `true`; sockets are already closed automatically on every call. |
 | `socket.bind([port])` | Bind a port briefly and return `{host, port, oneShot}`; no persistent listening. |
 | `socket.accept(port [, maximumBytes])` | Listen briefly and accept one connection, waiting at most 30 seconds; returns the remote endpoint and the data read. |
+
+### Network target policy
+
+Every `network.*` request is resolved and pinned before any bytes are sent:
+
+- **Default-deny SSRF policy.** Loopback, link-local, site-local, multicast, NAT64, 6to4,
+  documentation, and other special-use ranges are blocked; `localhost` and
+  `host.docker.internal` hostnames are blocked unless explicitly allowed. DNS is resolved
+  once, every returned address is validated, and the connection is pinned to a validated
+  address while the original host name is preserved as the `Host` header (and TLS peer
+  name). Multi-address hostnames may fail over across address families.
+- **Explicit allowlists.** `CILEXEC_NETWORK_ALLOW_PRIVATE_HOSTS` (comma-separated host
+  names) and `CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS` (comma-separated `scheme://host:port`
+  origins without paths) permit deliberately private targets. Host-name allowlist entries
+  are matched against the resolved address set, not just the literal name.
+- **Trusted-proxy mode.** When `CILEXEC_NETWORK_TRUST_PROXY=true`, all requests are routed
+  through `CILEXEC_NETWORK_PROXY` (`host:port`), which becomes the network boundary and owns
+  name resolution. Name-based targets are delegated without classification; literal IP
+  targets are still blocked unless private (fake-IP ranges such as `198.18.0.0/15` are
+  accepted for fake-IP DNS modes). HTTPS through the proxy uses CONNECT tunneling and the
+  TLS peer name remains the original host name.
+- **TLS pinning.** HTTPS connections validate the certificate against the originally
+  requested host name, never the resolved IP literal.
+- **Bounded exchanges.** HTTP exchanges are capped at 4 MiB for `httpGet`/`httpPost`;
+  `network.download` reads bounded 4 MiB ranges and each whole exchange is bounded by a
+  total deadline.
 
 ## Packages: `package`
 

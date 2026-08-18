@@ -65,6 +65,15 @@ class FclSystemFunctionsIT {
     }
 
     @Test
+    void downloadsFilesThroughTheDurableEffectPipeline() throws Exception {
+        PGSimpleDataSource source = new PGSimpleDataSource();
+        source.setURL(POSTGRES.getJdbcUrl());
+        source.setUser(POSTGRES.getUsername());
+        source.setPassword(POSTGRES.getPassword());
+        FclSystemFunctionsExternalIT.executeNetworkDownloads(new JdbcTransactionExecutor(source));
+    }
+
+    @Test
     void createsAndRotatesSixCharacterApplicationCredential() throws Exception {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(POSTGRES.getJdbcUrl());

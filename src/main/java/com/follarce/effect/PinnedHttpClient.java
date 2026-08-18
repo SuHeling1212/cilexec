@@ -1,7 +1,6 @@
 package com.follarce.effect;
 
 import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.ByteArrayInputStream;
@@ -14,6 +13,7 @@ import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
 import java.net.URI;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,7 +31,7 @@ final class PinnedHttpClient {
     static {
         // This switch is required for DNS pinning: the request URL carries the validated IP
         // while the original authority must still reach the server as the Host header (and
-        // name-based virtual hosts). The property is JVM-global, so every URLConnection on
+        // name-based virtual hosts). The switch is JVM-global, so every URLConnection on
         // this JVM may set "restricted" headers (Host, Connection, etc.); that is the accepted
         // price of pinning without a custom protocol handler.
         System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
@@ -44,64 +44,85 @@ final class PinnedHttpClient {
         long startedAtNanos = System.nanoTime();
         NetworkTargetPolicy.ResolvedHttpTarget target =
                 NetworkTargetPolicy.resolveHttpTarget(uri);
-        HttpURLConnection connection = (HttpURLConnection) target.pinnedUri().toURL()
-                .openConnection(Proxy.NO_PROXY);
-        connection.setInstanceFollowRedirects(false);
-        connection.setConnectTimeout(CONNECT_TIMEOUT_MILLIS);
-        connection.setReadTimeout(REQUEST_TIMEOUT_MILLIS);
-        connection.setRequestMethod(method);
-        connection.setRequestProperty("Host", target.hostHeader());
-        headers.forEach(connection::setRequestProperty);
-        if (connection instanceof HttpsURLConnection https) {
-            var defaultVerifier = HttpsURLConnection.getDefaultHostnameVerifier();
-            https.setHostnameVerifier((ignoredPinnedAddress, session) ->
-                    defaultVerifier.verify(uri.getHost(), session));
-            https.setSSLSocketFactory(new PinnedSslSocketFactory(
-                    (SSLSocketFactory) SSLSocketFactory.getDefault(), target.address(),
-                    uri.getHost()));
-        }
-        if ("POST".equals(method)) {
-            byte[] content = body.orElse("").getBytes(StandardCharsets.UTF_8);
-            connection.setDoOutput(true);
-            connection.setFixedLengthStreamingMode(content.length);
-            try (var output = connection.getOutputStream()) {
-                output.write(content);
-            }
-        } else if (!"GET".equals(method)) {
-            connection.disconnect();
-            throw new IllegalArgumentException("Unsupported pinned HTTP method: " + method);
-        }
-        enforceDeadline(startedAtNanos);
-        int status = connection.getResponseCode();
-        enforceDeadline(startedAtNanos);
-        Map<String, List<String>> responseHeaders = new LinkedHashMap<>();
-        connection.getHeaderFields().forEach((name, values) -> {
-            if (name != null && values != null) {
-                responseHeaders.put(name, List.copyOf(values));
-            }
-        });
-        InputStream stream;
+        boolean proxied = target.throughTrustedProxy();
+        URL requestUrl = proxied ? uri.toURL() : target.pinnedUri().toURL();
+        Proxy proxy = proxied
+                ? NetworkTargetPolicy.trustedProxy().orElseThrow()
+                : Proxy.NO_PROXY;
+        HttpURLConnection connection = (HttpURLConnection) requestUrl.openConnection(proxy);
         try {
-            stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-        } catch (IOException failedBody) {
-            stream = connection.getErrorStream();
-            if (stream == null) {
-                connection.disconnect();
-                throw failedBody;
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MILLIS);
+            connection.setReadTimeout(REQUEST_TIMEOUT_MILLIS);
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("Host", target.hostHeader());
+            headers.forEach(connection::setRequestProperty);
+            if (!proxied && connection instanceof HttpsURLConnection https) {
+                // No custom HostnameVerifier: with the default verifier, HttpsClient
+                // enables standard TLS endpoint identification, which checks the
+                // ORIGINAL host name against the certificate. The socket factory layers
+                // TLS over the validated address while setting the TLS peer host (and
+                // SNI) to that original name.
+                https.setSSLSocketFactory(new PinnedSslSocketFactory(
+                        (SSLSocketFactory) SSLSocketFactory.getDefault(),
+                        target.addresses(), uri.getHost()));
             }
+            if ("POST".equals(method)) {
+                byte[] content = body.orElse("").getBytes(StandardCharsets.UTF_8);
+                connection.setDoOutput(true);
+                connection.setFixedLengthStreamingMode(content.length);
+                try (var output = connection.getOutputStream()) {
+                    output.write(content);
+                }
+            } else if (!"GET".equals(method)) {
+                throw new IllegalArgumentException("Unsupported pinned HTTP method: " + method);
+            }
+            enforceDeadline(startedAtNanos);
+            int status = connection.getResponseCode();
+            enforceDeadline(startedAtNanos);
+            Map<String, List<String>> responseHeaders = new LinkedHashMap<>();
+            connection.getHeaderFields().forEach((name, values) -> {
+                if (name != null && values != null) {
+                    responseHeaders.put(name, List.copyOf(values));
+                }
+            });
+            InputStream stream;
+            try {
+                stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            } catch (IOException failedBody) {
+                stream = connection.getErrorStream();
+                if (stream == null) {
+                    throw failedBody;
+                }
+            }
+            if (stream == null) stream = new ByteArrayInputStream(new byte[0]);
+            return new Response(status, Map.copyOf(responseHeaders),
+                    new DeadlineInputStream(new DisconnectingInputStream(stream, connection),
+                            startedAtNanos));
+        } catch (IOException | RuntimeException failure) {
+            // A response was never produced: release the connection so the effect
+            // worker does not hold it until GC.
+            connection.disconnect();
+            throw failure;
         }
-        if (stream == null) stream = new ByteArrayInputStream(new byte[0]);
-        return new Response(status, Map.copyOf(responseHeaders),
-                new DeadlineInputStream(new DisconnectingInputStream(stream, connection),
-                        startedAtNanos));
     }
 
-    record Response(int statusCode, Map<String, List<String>> headers, InputStream body) {
+    /**
+     * Response whose body stream owns the connection: closing it releases the connection,
+     * and the whole response can be used in try-with-resources so error paths cannot leak.
+     */
+    record Response(int statusCode, Map<String, List<String>> headers, InputStream body)
+            implements AutoCloseable {
         Optional<String> firstHeader(String name) {
             return headers.entrySet().stream()
                     .filter(entry -> entry.getKey().equalsIgnoreCase(name))
                     .flatMap(entry -> entry.getValue().stream())
                     .findFirst();
+        }
+
+        @Override
+        public void close() throws IOException {
+            body.close();
         }
     }
 
@@ -158,16 +179,24 @@ final class PinnedHttpClient {
         }
     }
 
-    /** Creates TLS over a socket connected to the already checked IP, with original-name SNI. */
+    /**
+     * Creates TLS over a socket connected to an already checked address, with the original
+     * host name as the TLS peer host. sun.net's HttpsClient first connects its own socket
+     * (to the pinned IP carried by the URL) and then wraps it through
+     * {@link #createSocket(Socket, String, int, boolean)}; that wrapper layers TLS over the
+     * already-connected socket, so the standard endpoint-identification check runs against
+     * the original host name and SNI uses it too. {@link #createSocket()} therefore returns
+     * a plain socket on purpose, forcing the wrapping path.
+     */
     private static final class PinnedSslSocketFactory extends SSLSocketFactory {
         private final SSLSocketFactory delegate;
-        private final InetAddress address;
+        private final List<InetAddress> addresses;
         private final String tlsHost;
 
-        private PinnedSslSocketFactory(SSLSocketFactory delegate, InetAddress address,
+        private PinnedSslSocketFactory(SSLSocketFactory delegate, List<InetAddress> addresses,
                                        String tlsHost) {
             this.delegate = delegate;
-            this.address = address;
+            this.addresses = addresses;
             this.tlsHost = tlsHost;
         }
 
@@ -180,61 +209,73 @@ final class PinnedHttpClient {
         }
 
         @Override public Socket createSocket() throws IOException {
-            Socket socket = delegate.createSocket();
-            if (socket instanceof SSLSocket ssl) {
-                var parameters = ssl.getSSLParameters();
-                try {
-                    parameters.setServerNames(List.of(new SNIHostName(tlsHost)));
-                } catch (IllegalArgumentException numericAddress) {
-                    // Literal IP HTTPS origins do not use SNI; certificate IP matching still runs.
-                }
-                ssl.setSSLParameters(parameters);
-            }
-            return socket;
+            return new Socket();
         }
 
         @Override public Socket createSocket(String ignoredHost, int port) throws IOException {
-            return tlsSocket(new Socket(), port);
+            return tlsSocket(port, null, -1);
         }
 
         @Override public Socket createSocket(String ignoredHost, int port,
                                              InetAddress localAddress, int localPort)
                 throws IOException {
-            Socket socket = new Socket();
-            socket.bind(new InetSocketAddress(localAddress, localPort));
-            return tlsSocket(socket, port);
+            return tlsSocket(port, localAddress, localPort);
         }
 
         @Override public Socket createSocket(InetAddress ignoredAddress, int port)
                 throws IOException {
-            return tlsSocket(new Socket(), port);
+            return tlsSocket(port, null, -1);
         }
 
         @Override public Socket createSocket(InetAddress ignoredAddress, int port,
                                              InetAddress localAddress, int localPort)
                 throws IOException {
-            Socket socket = new Socket();
-            socket.bind(new InetSocketAddress(localAddress, localPort));
-            return tlsSocket(socket, port);
+            return tlsSocket(port, localAddress, localPort);
         }
 
         @Override public Socket createSocket(Socket supplied, String ignoredHost, int port,
                                              boolean autoClose) throws IOException {
-            if (autoClose) supplied.close();
-            return tlsSocket(new Socket(), port);
+            if (supplied != null && supplied.isConnected() && !supplied.isClosed()
+                    && validated(supplied.getInetAddress())) {
+                // The caller already connected to one of the policy-validated addresses;
+                // layer TLS over it with the original host name as the peer host.
+                return delegate.createSocket(supplied, tlsHost, port, true);
+            }
+            if (supplied != null && autoClose) closeQuietly(supplied);
+            return tlsSocket(port, null, -1);
         }
 
-        private Socket tlsSocket(Socket plain, int port) throws IOException {
-            try {
-                plain.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MILLIS);
-                return delegate.createSocket(plain, tlsHost, port, true);
-            } catch (IOException failure) {
+        private boolean validated(InetAddress candidate) {
+            return candidate != null && addresses.stream().anyMatch(candidate::equals);
+        }
+
+        private Socket tlsSocket(int port, InetAddress localAddress, int localPort)
+                throws IOException {
+            IOException lastFailure = null;
+            for (InetAddress address : addresses) {
+                Socket plain = new Socket();
                 try {
-                    plain.close();
-                } catch (IOException closeFailure) {
-                    failure.addSuppressed(closeFailure);
+                    if (localAddress != null) {
+                        plain.bind(new InetSocketAddress(localAddress, localPort));
+                    }
+                    plain.connect(new InetSocketAddress(address, port), CONNECT_TIMEOUT_MILLIS);
+                    return delegate.createSocket(plain, tlsHost, port, true);
+                } catch (IOException failure) {
+                    lastFailure = failure;
+                    closeQuietly(plain);
                 }
-                throw failure;
+            }
+            if (lastFailure == null) {
+                throw new IOException("No validated address for " + tlsHost);
+            }
+            throw lastFailure;
+        }
+
+        private static void closeQuietly(Socket socket) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // The original failure remains the useful signal.
             }
         }
     }

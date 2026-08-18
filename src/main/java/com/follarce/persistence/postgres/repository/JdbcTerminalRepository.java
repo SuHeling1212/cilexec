@@ -83,6 +83,11 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
 
     @Override
     public Optional<TerminalSession> findOpenSession(UUID ownerId) {
+        try {
+            lockOwnerOpenHostSession(ownerId);
+        } catch (SQLException exception) {
+            throw failure("terminal.findOpenSession", exception);
+        }
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT * FROM terminal.session WHERE owner_id=? AND status='OPEN' "
                         + "AND terminal_type='HOST' "
@@ -101,6 +106,21 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
             }
         } catch (SQLException exception) {
             throw failure("terminal.findOpenSession", exception);
+        }
+    }
+
+    /**
+     * Serializes the openOrResume find-then-create sequence per owner. The caller runs
+     * inside one user transaction, so two concurrent logins by the same user cannot both
+     * observe "no open session" and insert two HOST sessions (there is no unique partial
+     * index for them in the frozen baseline). The transaction-scoped advisory lock is
+     * released automatically when the transaction commits or rolls back.
+     */
+    private void lockOwnerOpenHostSession(UUID ownerId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 42))")) {
+            statement.setString(1, ownerId.toString());
+            statement.execute();
         }
     }
 

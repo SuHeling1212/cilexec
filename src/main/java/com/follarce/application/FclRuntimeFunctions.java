@@ -2331,10 +2331,25 @@ public final class FclRuntimeFunctions {
             clearDownloadState(scope, state);
             throw new FclRuntimeException("Downloaded file exceeds the 1 GiB limit");
         }
-        if (status == 416 && complete && total == offset && currentHash.isPresent()) {
+        if (status == 416 && complete && total == offset) {
             if (mediaType == null) mediaType = "application/octet-stream";
             clearDownloadState(scope, state);
-            String nodeId = attachDownloadedObject(path, currentHash.orElseThrow(), mediaType,
+            ObjectHash finalHash;
+            if (currentHash.isPresent()) {
+                finalHash = currentHash.orElseThrow();
+            } else {
+                // A zero-byte object: the first range probe was answered 416 bytes */0,
+                // so there is nothing to download yet the file legitimately exists.
+                if (offset != 0) {
+                    throw new FclRuntimeException(
+                            "network.download cannot resume an object with no stored hash");
+                }
+                StoredObject empty = StoredObject.create(
+                        new BinaryContent(new byte[0]), mediaType, now);
+                transaction.vfs().saveObject(empty);
+                finalHash = empty.objectHash();
+            }
+            String nodeId = attachDownloadedObject(path, finalHash, mediaType,
                     offset, "network.download");
             return completedDownload(nodeId, path, url, 206L, offset, mediaType);
         }
@@ -2391,6 +2406,17 @@ public final class FclRuntimeFunctions {
             String nodeId = attachDownloadedObject(path, nextHash, mediaType, downloaded,
                     "network.download");
             return completedDownload(nodeId, path, url, status, downloaded, mediaType);
+        }
+
+        // The next chunk needs an If-Range validator; without one a changed remote file
+        // would silently interleave new and old content across chunks.
+        if (!scope.contains(state + "validator")
+                && !(response.get("validator") instanceof String validator
+                && !validator.isBlank())) {
+            clearDownloadState(scope, state);
+            throw new FclRuntimeException("network.download cannot resume without a validator "
+                    + "from the server (ETag or Last-Modified required for multi-chunk "
+                    + "downloads)");
         }
 
         scope.put(state + "offset", downloaded);

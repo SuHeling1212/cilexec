@@ -7,11 +7,12 @@ import com.follarce.terminal.TerminalOutputRouter;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.net.InetAddress;
-import java.net.Socket;
-import java.net.ServerSocket;
 import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.net.ServerSocket;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -27,6 +28,10 @@ public final class BuiltinEffectHandlers {
     private static final int MAX_HTTP_BODY_BYTES = 4 * 1024 * 1024;
     private static final int MAX_DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
     private static final int MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
+    private static final int SOCKET_CONNECT_TIMEOUT_MILLIS = 10_000;
+    private static final int SOCKET_READ_TIMEOUT_MILLIS = 30_000;
+    /** Total cap on one socket effect; per-read timeouts alone allow slowloris trickles. */
+    private static final long SOCKET_OPERATION_DEADLINE_NANOS = TimeUnit.SECONDS.toNanos(120);
 
     private BuiltinEffectHandlers() {}
 
@@ -179,21 +184,22 @@ public final class BuiltinEffectHandlers {
             headers.put("User-Agent", "CilExec-FCL/1");
             idempotencyKey.filter(key -> !key.isBlank())
                     .ifPresent(key -> headers.put("Idempotency-Key", key));
-            PinnedHttpClient.Response response = PinnedHttpClient.send(uri, method, body,
-                    headers);
-            requireNoRedirect(response.statusCode());
-            byte[] responseBody;
-            try (InputStream input = response.body()) {
-                responseBody = input.readNBytes(MAX_HTTP_BODY_BYTES + 1);
-                if (responseBody.length > MAX_HTTP_BODY_BYTES) {
-                    throw new IOException("HTTP response exceeds 4 MiB");
+            try (PinnedHttpClient.Response response = PinnedHttpClient.send(uri, method, body,
+                    headers)) {
+                requireNoRedirect(response.statusCode());
+                byte[] responseBody;
+                try (InputStream input = response.body()) {
+                    responseBody = input.readNBytes(MAX_HTTP_BODY_BYTES + 1);
+                    if (responseBody.length > MAX_HTTP_BODY_BYTES) {
+                        throw new IOException("HTTP response exceeds 4 MiB");
+                    }
                 }
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("status", (long) response.statusCode());
+                result.put("body", new String(responseBody, StandardCharsets.UTF_8));
+                result.put("headers", response.headers());
+                return Map.copyOf(result);
             }
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("status", (long) response.statusCode());
-            result.put("body", new String(responseBody, StandardCharsets.UTF_8));
-            result.put("headers", response.headers());
-            return Map.copyOf(result);
         }
     }
 
@@ -229,31 +235,33 @@ public final class BuiltinEffectHandlers {
             }
             PinnedHttpClient.Response response = PinnedHttpClient.send(uri, "GET",
                     Optional.empty(), headers);
-            requireNoRedirect(response.statusCode());
-            requireDownloadStatus(response.statusCode());
-            byte[] body;
-            try (InputStream input = response.body()) {
-                body = readBounded(input, maximum, response.statusCode());
+            try (PinnedHttpClient.Response ignored = response) {
+                requireNoRedirect(response.statusCode());
+                requireDownloadStatus(response.statusCode());
+                byte[] body;
+                try (InputStream input = response.body()) {
+                    body = readBounded(input, maximum, response.statusCode());
+                }
+                Range range = range(response, offset, body.length);
+                // A 416 at the exact end of the object is a successful EOF probe, not file data.
+                if (response.statusCode() == 416) body = new byte[0];
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("status", (long) response.statusCode());
+                result.put("bodyBase64", Base64.getEncoder().encodeToString(body));
+                result.put("bytes", (long) body.length);
+                result.put("offset", range.offset());
+                result.put("complete", range.complete());
+                if (range.totalBytes() >= 0) result.put("totalBytes", range.totalBytes());
+                result.put("mediaType", response.firstHeader("Content-Type")
+                        .map(value -> value.split(";", 2)[0].trim())
+                        .filter(value -> !value.isBlank())
+                        .orElse("application/octet-stream"));
+                response.firstHeader("ETag")
+                        .filter(value -> !value.startsWith("W/"))
+                        .or(() -> response.firstHeader("Last-Modified"))
+                        .ifPresent(value -> result.put("validator", value));
+                return Map.copyOf(result);
             }
-            Range range = range(response, offset, body.length);
-            // A 416 at the exact end of the object is a successful EOF probe, not file data.
-            if (response.statusCode() == 416) body = new byte[0];
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("status", (long) response.statusCode());
-            result.put("bodyBase64", Base64.getEncoder().encodeToString(body));
-            result.put("bytes", (long) body.length);
-            result.put("offset", range.offset());
-            result.put("complete", range.complete());
-            if (range.totalBytes() >= 0) result.put("totalBytes", range.totalBytes());
-            result.put("mediaType", response.firstHeader("Content-Type")
-                    .map(value -> value.split(";", 2)[0].trim())
-                    .filter(value -> !value.isBlank())
-                    .orElse("application/octet-stream"));
-            response.firstHeader("ETag")
-                    .filter(value -> !value.startsWith("W/"))
-                    .or(() -> response.firstHeader("Last-Modified"))
-                    .ifPresent(value -> result.put("validator", value));
-            return Map.copyOf(result);
         }
 
         private static byte[] readBounded(InputStream input, int maximum, int status)
@@ -500,10 +508,7 @@ public final class BuiltinEffectHandlers {
 
         private static Object connect(List<?> arguments) throws IOException {
             Endpoint endpoint = endpoint(arguments, 0);
-            InetAddress address = NetworkTargetPolicy.requirePublicAddress(endpoint.host());
-            try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(address, endpoint.port()), 10_000);
-            }
+            connectAny(endpoint);
             return endpointMap(endpoint);
         }
 
@@ -527,14 +532,21 @@ public final class BuiltinEffectHandlers {
             if (data.length > MAX_COMMAND_OUTPUT_BYTES) {
                 throw new IllegalArgumentException("Socket payload cannot exceed 1 MiB");
             }
-            InetAddress address = NetworkTargetPolicy.requirePublicAddress(endpoint.host());
-            try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(address, endpoint.port()), 10_000);
-                socket.setSoTimeout(30_000);
-                socket.getOutputStream().write(data);
-                socket.getOutputStream().flush();
+            long deadline = System.nanoTime() + SOCKET_OPERATION_DEADLINE_NANOS;
+            IOException lastFailure = null;
+            for (InetAddress address : NetworkTargetPolicy.requirePublicAddresses(
+                    endpoint.host())) {
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(address, endpoint.port()),
+                            SOCKET_CONNECT_TIMEOUT_MILLIS);
+                    writeWithDeadline(socket, data, deadline);
+                    return (long) data.length;
+                } catch (IOException failure) {
+                    lastFailure = failure;
+                }
             }
-            return (long) data.length;
+            throw lastFailure != null ? lastFailure
+                    : new IOException("No reachable address for " + endpoint.host());
         }
 
         private static Object receive(List<?> arguments) throws IOException {
@@ -542,12 +554,20 @@ public final class BuiltinEffectHandlers {
             int maximum = arguments.size() > 2 ? positiveInt(arguments.get(2), "maximum bytes")
                     : MAX_COMMAND_OUTPUT_BYTES;
             requireBoundedPayload(maximum);
-            InetAddress address = NetworkTargetPolicy.requirePublicAddress(endpoint.host());
-            try (Socket socket = new Socket()) {
-                socket.connect(new InetSocketAddress(address, endpoint.port()), 10_000);
-                socket.setSoTimeout(30_000);
-                return read(socket.getInputStream(), maximum);
+            long deadline = System.nanoTime() + SOCKET_OPERATION_DEADLINE_NANOS;
+            IOException lastFailure = null;
+            for (InetAddress address : NetworkTargetPolicy.requirePublicAddresses(
+                    endpoint.host())) {
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(address, endpoint.port()),
+                            SOCKET_CONNECT_TIMEOUT_MILLIS);
+                    return read(socket, maximum, deadline);
+                } catch (IOException failure) {
+                    lastFailure = failure;
+                }
             }
+            throw lastFailure != null ? lastFailure
+                    : new IOException("No reachable address for " + endpoint.host());
         }
 
         private static Object bind(List<?> arguments) throws IOException {
@@ -566,34 +586,102 @@ public final class BuiltinEffectHandlers {
             int maximum = arguments.size() > 1
                     ? positiveInt(arguments.get(1), "maximum bytes") : MAX_COMMAND_OUTPUT_BYTES;
             requireBoundedPayload(maximum);
+            long deadline = System.nanoTime() + SOCKET_OPERATION_DEADLINE_NANOS;
             try (ServerSocket server = new ServerSocket()) {
-                server.setSoTimeout(30_000);
                 server.bind(new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port));
+                int acceptTimeoutMillis = readTimeoutMillis(deadline);
+                if (acceptTimeoutMillis <= 0) {
+                    throw new IOException(
+                            "socket.accept exceeded the 120-second total deadline");
+                }
+                server.setSoTimeout(acceptTimeoutMillis);
                 try (Socket socket = server.accept()) {
-                    socket.setSoTimeout(30_000);
                     return Map.of("remote", socket.getRemoteSocketAddress().toString(),
-                            "data", read(socket.getInputStream(), maximum));
+                            "data", read(socket, maximum, deadline));
+                } catch (SocketTimeoutException timeout) {
+                    throw new IOException("socket.accept exceeded the 120-second total deadline",
+                            timeout);
                 }
             }
         }
 
-        private static String read(java.io.InputStream input, int maximum) throws IOException {
-            ByteArrayOutputStream output = new ByteArrayOutputStream(Math.min(maximum, 64 * 1024));
+        private static void connectAny(Endpoint endpoint) throws IOException {
+            IOException lastFailure = null;
+            for (InetAddress address : NetworkTargetPolicy.requirePublicAddresses(
+                    endpoint.host())) {
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(address, endpoint.port()),
+                            SOCKET_CONNECT_TIMEOUT_MILLIS);
+                    return;
+                } catch (IOException failure) {
+                    lastFailure = failure;
+                }
+            }
+            throw lastFailure != null ? lastFailure
+                    : new IOException("No reachable address for " + endpoint.host());
+        }
+
+        private static void writeWithDeadline(Socket socket, byte[] data, long deadlineNanos)
+                throws IOException {
+            var output = socket.getOutputStream();
+            int written = 0;
+            while (written < data.length) {
+                enforceSocketDeadline("socket.send", deadlineNanos);
+                int count = Math.min(8192, data.length - written);
+                output.write(data, written, count);
+                written += count;
+            }
+            enforceSocketDeadline("socket.send", deadlineNanos);
+            output.flush();
+        }
+
+        /**
+         * Reads up to {@code maximum} bytes with the per-read timeout shrinking towards the
+         * overall deadline, so a peer that trickles one byte per read cannot outlive it.
+         */
+        private static String read(Socket socket, int maximum, long deadlineNanos)
+                throws IOException {
+            InputStream input = socket.getInputStream();
+            ByteArrayOutputStream output = new ByteArrayOutputStream(
+                    Math.min(maximum, 64 * 1024));
             byte[] buffer = new byte[8192];
             while (output.size() <= maximum) {
-                int count = input.read(buffer, 0,
-                        Math.min(buffer.length, maximum + 1 - output.size()));
-                if (count < 0) break;
-                if (count == 0) {
-                    int single = input.read();
-                    if (single < 0) break;
-                    output.write(single);
-                    continue;
+                int timeoutMillis = readTimeoutMillis(deadlineNanos);
+                if (timeoutMillis <= 0) {
+                    throw new IOException("socket.receive exceeded the 120-second total deadline");
                 }
-                output.write(buffer, 0, count);
+                socket.setSoTimeout(timeoutMillis);
+                try {
+                    int count = input.read(buffer, 0,
+                            Math.min(buffer.length, maximum + 1 - output.size()));
+                    if (count < 0) break;
+                    if (count == 0) {
+                        int single = input.read();
+                        if (single < 0) break;
+                        output.write(single);
+                    } else {
+                        output.write(buffer, 0, count);
+                    }
+                } catch (SocketTimeoutException timeout) {
+                    throw new IOException(
+                            "socket.receive exceeded the 120-second total deadline", timeout);
+                }
             }
             if (output.size() > maximum) throw new IOException("Socket payload exceeds limit");
             return output.toString(StandardCharsets.UTF_8);
+        }
+
+        private static int readTimeoutMillis(long deadlineNanos) {
+            long remainingMillis = (deadlineNanos - System.nanoTime() + 999_999L) / 1_000_000L;
+            if (remainingMillis <= 0) return 0;
+            return (int) Math.min(SOCKET_READ_TIMEOUT_MILLIS, remainingMillis);
+        }
+
+        private static void enforceSocketDeadline(String operation, long deadlineNanos)
+                throws IOException {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new IOException(operation + " exceeded the 120-second total deadline");
+            }
         }
 
         private static Endpoint endpoint(List<?> arguments, int offset) {
@@ -640,6 +728,15 @@ public final class BuiltinEffectHandlers {
         }
 
         private record Endpoint(String host, int port) {}
+    }
+
+    /**
+     * Bounded receive used by {@code socket.receive} and {@code socket.accept}; exposed
+     * so tests can exercise the total-operation deadline without waiting 120 seconds.
+     */
+    static String boundedSocketReceive(Socket socket, int maximum, long deadlineNanos)
+            throws IOException {
+        return SocketHandler.read(socket, maximum, deadlineNanos);
     }
 
     private static Set<String> commandAllowlist() {

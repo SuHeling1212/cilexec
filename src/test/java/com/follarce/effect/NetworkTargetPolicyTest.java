@@ -8,6 +8,7 @@ import java.net.URI;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NetworkTargetPolicyTest {
     @BeforeAll
@@ -56,5 +57,40 @@ class NetworkTargetPolicyTest {
     void blocksDeprecatedSixBoneRange() {
         assertThrows(SecurityException.class,
                 () -> NetworkTargetPolicy.requirePublicAddress("3ffe::1"));
+    }
+
+    @Test
+    void allowsLoopbackHostnameAndReturnsEveryValidatedAddress() throws Exception {
+        InetAddress[] addresses = NetworkTargetPolicy.requirePublicAddresses("localhost");
+        assertTrue(addresses.length >= 1);
+        for (InetAddress address : addresses) {
+            assertTrue(address.isLoopbackAddress(),
+                    () -> "every validated address must be loopback: " + address);
+        }
+    }
+
+    @Test
+    void trustedProxyBlocksOnlyLiteralPrivateTargets() throws Exception {
+        System.setProperty("cilexec.networkTrustProxy", "true");
+        System.setProperty("cilexec.networkProxy", "127.0.0.1:3128");
+        try {
+            // The proxy owns name resolution in trusted mode, so a name-based target is
+            // delegated without classification.
+            NetworkTargetPolicy.ResolvedHttpTarget delegated =
+                    NetworkTargetPolicy.resolveHttpTarget(
+                            URI.create("http://localhost:8080/path"));
+            assertTrue(delegated.throughTrustedProxy());
+            assertTrue(delegated.addresses().isEmpty());
+
+            // Fake-IP benchmark ranges are expected from fake-IP DNS modes.
+            NetworkTargetPolicy.resolveHttpTarget(URI.create("http://198.18.0.1/path"));
+
+            // Literal private targets remain blocked.
+            assertThrows(SecurityException.class,
+                    () -> NetworkTargetPolicy.resolveHttpTarget(URI.create("http://10.0.0.1/")));
+        } finally {
+            System.clearProperty("cilexec.networkTrustProxy");
+            System.clearProperty("cilexec.networkProxy");
+        }
     }
 }

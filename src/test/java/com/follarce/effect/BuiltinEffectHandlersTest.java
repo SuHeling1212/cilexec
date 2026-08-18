@@ -8,6 +8,9 @@ import org.junit.jupiter.api.BeforeAll;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +18,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -50,7 +54,8 @@ class BuiltinEffectHandlersTest {
             NetworkTargetPolicy.ResolvedHttpTarget target =
                     NetworkTargetPolicy.resolveHttpTarget(java.net.URI.create(
                             "http://localhost:" + port + "/host"));
-            assertEquals(target.address().getHostAddress(), target.pinnedUri().getHost());
+            assertEquals(target.addresses().getFirst().getHostAddress(),
+                    target.pinnedUri().getHost());
         } finally {
             server.stop(0);
         }
@@ -208,6 +213,134 @@ class BuiltinEffectHandlersTest {
                 () -> BuiltinEffectHandlers.exactLong(Double.POSITIVE_INFINITY, "offset"));
         assertThrows(IllegalArgumentException.class,
                 () -> BuiltinEffectHandlers.exactLong(new java.math.BigDecimal("2.5"), "offset"));
+    }
+
+    @Test
+    void emptyRemoteFileIsACompletedProbeInsteadOfAnError() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/empty.db", exchange -> {
+            exchange.getResponseHeaders().set("Content-Range", "bytes */0");
+            exchange.sendResponseHeaders(416, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.download");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of(
+                    "url", "http://127.0.0.1:" + server.getAddress().getPort() + "/empty.db",
+                    "offset", 0L, "maximumBytes", 4 * 1024 * 1024L)), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(result.canonicalPayload());
+            Map<?, ?> response = (Map<?, ?>) envelope.get("value");
+            assertEquals(416L, response.get("status"));
+            assertEquals(0L, response.get("totalBytes"));
+            assertEquals(true, response.get("complete"));
+            assertEquals("", response.get("bodyBase64"));
+            assertEquals(0L, response.get("bytes"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void partialResponseWithoutValidatorAdaptsToTheAvailableMetadata() throws Exception {
+        byte[] part = "cde".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/large.bin", exchange -> {
+            exchange.getResponseHeaders().set("Content-Range", "bytes 2-4/8");
+            exchange.sendResponseHeaders(206, part.length);
+            exchange.getResponseBody().write(part);
+            exchange.close();
+        });
+        server.start();
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.download");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of(
+                    "url", "http://127.0.0.1:" + server.getAddress().getPort() + "/large.bin",
+                    "offset", 2L, "maximumBytes", 3L)), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(result.canonicalPayload());
+            Map<?, ?> response = (Map<?, ?>) envelope.get("value");
+            assertEquals(206L, response.get("status"));
+            assertEquals(2L, response.get("offset"));
+            assertEquals(8L, response.get("totalBytes"));
+            assertEquals(false, response.get("complete"));
+            assertFalse(response.containsKey("validator"));
+            assertEquals(Base64.getEncoder().encodeToString(
+                    "cde".getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
+                    response.get("bodyBase64"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void trustedProxyModeRoutesAbsoluteRequestsAndPreservesTheVirtualHost() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> requestLine =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> host =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        HttpServer proxy = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        proxy.createContext("/", exchange -> {
+            requestLine.set(exchange.getRequestMethod() + " " + exchange.getRequestURI());
+            host.set(exchange.getRequestHeaders().getFirst("Host"));
+            byte[] body = "proxied".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        proxy.start();
+        System.setProperty("cilexec.networkTrustProxy", "true");
+        System.setProperty("cilexec.networkProxy",
+                "127.0.0.1:" + proxy.getAddress().getPort());
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.http-get");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of("url",
+                    "http://example.com/market/items")), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(result.canonicalPayload());
+            assertEquals(200L, ((Map<?, ?>) envelope.get("value")).get("status"));
+            assertEquals("GET http://example.com/market/items", requestLine.get());
+            assertEquals("example.com", host.get());
+            assertTrue(NetworkTargetPolicy.trustProxyEnabled());
+        } finally {
+            System.clearProperty("cilexec.networkTrustProxy");
+            System.clearProperty("cilexec.networkProxy");
+            proxy.stop(0);
+        }
+    }
+
+    @Test
+    void boundedSocketReceiveCannotOutliveTheOperationDeadline() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            Thread.ofVirtual().start(() -> {
+                try (Socket peer = server.accept()) {
+                    while (true) {
+                        peer.getOutputStream().write(0x61);
+                        peer.getOutputStream().flush();
+                        Thread.sleep(40);
+                    }
+                } catch (IOException cancelled) {
+                    // The client stops reading after the deadline; the peer write fails.
+                    cancelled.getMessage();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
+                long deadline = System.nanoTime() + 250_000_000L;
+                long started = System.nanoTime();
+                assertThrows(IOException.class, () -> BuiltinEffectHandlers.boundedSocketReceive(
+                        socket, 100, deadline));
+                long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+                assertTrue(elapsedMillis < 5_000L,
+                        "the total deadline must bound trickling peers, elapsed="
+                                + elapsedMillis + "ms");
+            }
+        }
     }
 
     private Continuation.PersistedValue typed(Object value) {

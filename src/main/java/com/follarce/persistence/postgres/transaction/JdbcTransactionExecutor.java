@@ -32,6 +32,10 @@ public final class JdbcTransactionExecutor implements TransactionExecutor, UserT
         this.dataSource = dataSource;
     }
 
+    public DataSource dataSource() {
+        return dataSource;
+    }
+
     @Override
     public <T> T inTransaction(Isolation isolation, TransactionWork<T> work) {
         return execute(isolation, null, work);

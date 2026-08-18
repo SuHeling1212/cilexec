@@ -6,12 +6,16 @@ import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.vfs.VfsNode;
+import com.follarce.effect.BuiltinEffectHandlers;
+import com.follarce.effect.EffectHandlerRegistry;
+import com.follarce.effect.EffectWorkerService;
 import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
+import com.follarce.scheduler.SchedulerService;
 import com.follarce.vfs.AdminVfsService;
 import com.follarce.vfs.VfsService;
 import org.junit.jupiter.api.Test;
@@ -19,7 +23,11 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.postgresql.ds.PGSimpleDataSource;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -31,9 +39,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @EnabledIfSystemProperty(named = "cilexec.external.jdbc", matches = ".+")
@@ -479,6 +491,231 @@ class FclSystemFunctionsExternalIT {
         }
         assertTrue(continuation.halted());
         return continuation;
+    }
+
+    /**
+     * Runs a real download through the durable effect pipeline: the scheduler slices the
+     * FCL process, the effect worker performs the bounded HTTP range exchange, and the
+     * resumed slice assembles the VFS object before the process terminates.
+     */
+    static void executeNetworkDownloads(JdbcTransactionExecutor transactions) throws Exception {
+        System.setProperty("cilexec.networkAllowPrivateHosts", "127.0.0.1,localhost");
+        Clock clock = Clock.systemUTC();
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        UserAccount owner = new AuthService(transactions, clock).create("fcl-net-" + suffix,
+                "owner-password-123".toCharArray(), Set.of(Capability.VFS_READ,
+                        Capability.VFS_WRITE, Capability.PROCESS_CREATE,
+                        Capability.PROCESS_CONTROL_OWN, Capability.EFFECT_REQUEST));
+        byte[] file = "0123456789abcdef".getBytes(StandardCharsets.US_ASCII);
+
+        com.sun.net.httpserver.HttpServer empty = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        empty.createContext("/empty.db", exchange -> {
+            exchange.getResponseHeaders().set("Content-Range", "bytes */0");
+            exchange.sendResponseHeaders(416, -1);
+            exchange.close();
+        });
+        empty.start();
+
+        AtomicInteger rangeRequests = new AtomicInteger();
+        com.sun.net.httpserver.HttpServer large = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        large.createContext("/large.db", exchange -> {
+            exchange.getResponseHeaders().set("ETag", "\"stable-etag\"");
+            String range = exchange.getRequestHeaders().getFirst("Range");
+            int from = Integer.parseInt(range.substring("bytes=".length(), range.indexOf('-')));
+            String ifRange = exchange.getRequestHeaders().getFirst("If-Range");
+            int requestNumber = rangeRequests.getAndIncrement();
+            if (requestNumber == 0) {
+                assertNull(ifRange, "the first range probe has no validator yet");
+            } else {
+                assertEquals("\"stable-etag\"", ifRange,
+                        "the resuming request must carry the If-Range validator");
+            }
+            int to = Math.min(from + 7, file.length - 1);
+            exchange.getResponseHeaders().set("Content-Range",
+                    "bytes " + from + "-" + to + "/" + file.length);
+            exchange.sendResponseHeaders(206, to - from + 1);
+            exchange.getResponseBody().write(file, from, to - from + 1);
+            exchange.close();
+        });
+        large.start();
+
+        com.sun.net.httpserver.HttpServer unprotected = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        unprotected.createContext("/unprotected.db", exchange -> {
+            String range = exchange.getRequestHeaders().getFirst("Range");
+            int from = Integer.parseInt(range.substring("bytes=".length(), range.indexOf('-')));
+            int to = Math.min(from + 2, file.length - 1);
+            exchange.getResponseHeaders().set("Content-Range",
+                    "bytes " + from + "-" + to + "/" + file.length);
+            exchange.sendResponseHeaders(206, to - from + 1);
+            exchange.getResponseBody().write(file, from, to - from + 1);
+            exchange.close();
+        });
+        unprotected.start();
+
+        long controlKey = Math.abs(suffix.hashCode()) + 1L;
+        long proofKey = controlKey ^ 0x9e3779b97f4a7c15L;
+        Connection controlConnection = transactions.dataSource().getConnection();
+        try (PreparedStatement lock = controlConnection.prepareStatement(
+                "SELECT pg_try_advisory_lock(?)")) {
+            lock.setLong(1, controlKey);
+            try (ResultSet result = lock.executeQuery()) {
+                if (!result.next() || !result.getBoolean(1)) {
+                    throw new IllegalStateException("control advisory lock unavailable");
+                }
+            }
+        }
+        try (PreparedStatement proof = controlConnection.prepareStatement(
+                "SELECT pg_try_advisory_lock(?)")) {
+            proof.setLong(1, proofKey);
+            try (ResultSet result = proof.executeQuery()) {
+                if (!result.next() || !result.getBoolean(1)) {
+                    throw new IllegalStateException("control proof lock unavailable");
+                }
+            }
+        }
+        com.follarce.persistence.postgres.connection.ControlLock.ControlIdentity control;
+        try (PreparedStatement identity = controlConnection.prepareStatement(
+                "SELECT pid, backend_start FROM pg_catalog.pg_stat_activity "
+                        + "WHERE pid = pg_backend_pid()");
+             ResultSet identityRow = identity.executeQuery()) {
+            if (!identityRow.next()) {
+                throw new IllegalStateException("control backend identity unavailable");
+            }
+            control = new com.follarce.persistence.postgres.connection.ControlLock.ControlIdentity(
+                    identityRow.getInt("pid"),
+                    identityRow.getTimestamp("backend_start").toInstant(), proofKey);
+        }
+        com.follarce.persistence.postgres.repository.RuntimeMetadataStore metadata =
+                new com.follarce.persistence.postgres.repository.RuntimeMetadataStore(
+                        transactions.dataSource());
+        com.follarce.persistence.postgres.repository.RuntimeMetadataStore.BootIdentity boot =
+                metadata.beginBoot("cilexec-test-" + suffix, controlKey, "test", 1,
+                        com.follarce.fcl.FclContinuation.FORMAT_VERSION, control);
+        metadata.markReady(boot);
+        UUID bootId = boot.bootId();
+        AtomicReference<Throwable> fatal = new AtomicReference<>();
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(transactions);
+        EffectWorkerService effects = new EffectWorkerService(transactions, transactions, bootId,
+                new EffectHandlerRegistry(BuiltinEffectHandlers.defaults()), 1,
+                Duration.ofMillis(50), clock, fatal::set);
+        SchedulerService scheduler = new SchedulerService(transactions, executor, bootId, 2,
+                Duration.ofSeconds(30), Duration.ofMillis(50), fatal::set);
+        scheduler.start();
+        effects.start();
+        try {
+            Map<String, Object> emptyResult = resultOf(awaitDownload(transactions, scheduler,
+                    effects, owner, "http://127.0.0.1:" + empty.getAddress().getPort()
+                            + "/empty.db", "/empty.db", CilProcess.Status.TERMINATED, fatal));
+            assertEquals(0L, ((Number) emptyResult.get("bytes")).longValue());
+            assertEquals(206L, ((Number) emptyResult.get("status")).longValue());
+            UUID emptyNode = UUID.fromString(String.valueOf(emptyResult.get("nodeId")));
+            assertEquals(0L, new VfsService(transactions, clock)
+                    .readFile(owner.userId(), emptyNode).content().size());
+
+            Map<String, Object> largeResult = resultOf(awaitDownload(transactions, scheduler,
+                    effects, owner, "http://127.0.0.1:" + large.getAddress().getPort()
+                            + "/large.db", "/large.db", CilProcess.Status.TERMINATED, fatal));
+            assertEquals(file.length, ((Number) largeResult.get("bytes")).longValue());
+            assertTrue(rangeRequests.get() >= 2, "multi-chunk downloads need more than one range");
+            UUID largeNode = UUID.fromString(String.valueOf(largeResult.get("nodeId")));
+            byte[] storedLarge = readLogicalContent(transactions, owner, largeNode);
+            assertArrayEquals(file, storedLarge);
+
+            CilProcess unprotectedProcess = awaitDownload(transactions, scheduler, effects,
+                    owner, "http://127.0.0.1:" + unprotected.getAddress().getPort()
+                            + "/unprotected.db", "/unprotected.db", CilProcess.Status.FAILED,
+                    fatal);
+            FclContinuation failed = new FclPersistenceBridge(new FclContinuationCodec())
+                    .restore(unprotectedProcess.continuation());
+            assertTrue(failed.failed());
+            assertFalse(failed.exceptionStack().isEmpty());
+            String message = failed.exceptionStack().stream()
+                    .map(FclContinuation.ExceptionFrame::message)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertTrue(message.contains("cannot resume without a validator"), message);
+        } finally {
+            scheduler.close();
+            effects.close();
+            controlConnection.close();
+            empty.stop(0);
+            large.stop(0);
+            unprotected.stop(0);
+        }
+        assertNull(fatal.get());
+    }
+
+    private static CilProcess awaitDownload(JdbcTransactionExecutor transactions,
+                                            SchedulerService scheduler,
+                                            EffectWorkerService effects,
+                                            UserAccount owner, String url, String path,
+                                            CilProcess.Status expected,
+                                            AtomicReference<Throwable> fatal)
+        throws Exception {
+        CilProcess created = process(transactions, owner.userId(),
+                "result = network.download(\"" + url + "\", \"" + path + "\")\n");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        CilProcess.Status previous = null;
+        while (System.nanoTime() < deadline) {
+            scheduler.wake();
+            effects.wake();
+            Thread.sleep(25);
+            CilProcess current = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findByUid(created.identity().processUid()).orElseThrow());
+            if (previous != current.status()) {
+                previous = current.status();
+            }
+            if (current.status() == CilProcess.Status.TERMINATED
+                    || current.status() == CilProcess.Status.FAILED) {
+                FclContinuation inspected = new FclPersistenceBridge(new FclContinuationCodec())
+                        .restore(current.continuation());
+                assertEquals(expected, current.status());
+                return current;
+            }
+        }
+        CilProcess stuck = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.processes().findByUid(created.identity().processUid())
+                        .orElseThrow());
+        throw new AssertionError("process never reached a terminal state: uid="
+                + created.identity().processUid() + " status=" + stuck.status()
+                + " epoch=" + stuck.executionEpoch() + " stateVersion=" + stuck.stateVersion()
+                + " wait=" + stuck.continuation().waitState()
+                + (fatal.get() != null ? " FATAL=" + fatal.get() : ""));
+    }
+
+    private static Map<String, Object> resultOf(CilProcess terminal) {
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(terminal.continuation());
+        if (!restored.scope().contains("result")) return null;
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) restored.scope().get("result");
+        return result;
+    }
+
+    private static byte[] readLogicalContent(JdbcTransactionExecutor transactions,
+                                             UserAccount owner, UUID nodeId) {
+        return transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> {
+                    com.follarce.domain.vfs.ObjectHash hash = transaction.vfs()
+                            .findNode(nodeId).orElseThrow().currentObjectHash().orElseThrow();
+                    long size = transaction.vfs().logicalObjectSize(hash);
+                    java.io.ByteArrayOutputStream content =
+                            new java.io.ByteArrayOutputStream((int) size);
+                    long offset = 0;
+                    while (offset < size) {
+                        byte[] part = transaction.vfs().readObjectRange(hash, offset,
+                                (int) Math.min(4 * 1024 * 1024, size - offset));
+                        if (part.length == 0) {
+                            throw new IllegalStateException("logical content ended early");
+                        }
+                        content.writeBytes(part);
+                        offset += part.length;
+                    }
+                    return content.toByteArray();
+                });
     }
 
     private static JdbcTransactionExecutor transactions() {

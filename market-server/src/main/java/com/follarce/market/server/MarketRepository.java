@@ -90,26 +90,44 @@ final class MarketRepository {
                 .resolve(identity[2]).resolve(identity[1] + ".db");
         rejectSymlinkComponents(target);
         target.getParent().toFile().mkdirs();
-        if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
-                && sha256(target).equals(staged.sha256())) {
-            // Already published with identical content; only the catalog entry may change.
-        } else if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IllegalArgumentException("Different package content already published for "
-                    + staged.coordinate());
-        } else {
-            Files.copy(staged.source(), target);
+        boolean copied = false;
+        boolean catalogCommitted = false;
+        try {
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+                    && sha256(target).equals(staged.sha256())) {
+                // Already published with identical content; only the catalog entry may change.
+            } else if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Different package content already published for "
+                        + staged.coordinate());
+            } else {
+                copied = true;
+                Files.copy(staged.source(), target);
+            }
+            Map<String, Publication> next = new LinkedHashMap<>(readPublications(catalog));
+            Publication previous = next.get(staged.coordinate());
+            next.put(staged.coordinate(), new Publication(
+                    summary != null ? summary
+                            : previous != null ? previous.summary() : "",
+                    description != null ? description
+                            : previous != null ? previous.description() : "",
+                    tags != null ? List.copyOf(tags)
+                            : previous != null ? previous.tags() : List.of()));
+            writeCatalogVerified(next);
+            catalogCommitted = true;
+            refresh();
+        } catch (IOException | SQLException | RuntimeException failure) {
+            // A failed publication must leave the repository untouched: roll the package
+            // file back, but only as long as the catalog was not already committed (once
+            // the catalog references the file, deleting it would corrupt the repository).
+            if (copied && !catalogCommitted) {
+                try {
+                    Files.deleteIfExists(target);
+                } catch (IOException rollbackFailure) {
+                    failure.addSuppressed(rollbackFailure);
+                }
+            }
+            throw failure;
         }
-        Map<String, Publication> next = new LinkedHashMap<>(readPublications(catalog));
-        Publication previous = next.get(staged.coordinate());
-        next.put(staged.coordinate(), new Publication(
-                summary != null ? summary
-                        : previous != null ? previous.summary() : "",
-                description != null ? description
-                        : previous != null ? previous.description() : "",
-                tags != null ? List.copyOf(tags)
-                        : previous != null ? previous.tags() : List.of()));
-        writeCatalogVerified(next);
-        refresh();
     }
 
     /** The on-disk location a package coordinate is stored at (also used by publish). */
