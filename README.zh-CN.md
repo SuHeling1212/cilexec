@@ -16,7 +16,7 @@
 - **持久化 IPC 与定时器** —— 直连/频道/主题/广播消息和定时器可跨重启唤醒暂停的进程。
 - **可验证导出** —— 基于单个只读快照的 PostgreSQL → SQLite 逻辑导出，端到端哈希校验。
 - **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；另有无头协议供宿主脚本调用。
-- **仅前向 Schema 升级** —— 1.0 的 V001 是发布基线；后续持久格式变更使用不可修改的 V002+，降级通过恢复备份完成。
+- **仅前向 Schema 升级** —— 0.0.1 的 V001 是发布基线；后续持久格式变更使用不可修改的 V002+，降级通过恢复备份完成。
 
 ## 快速开始
 
@@ -87,6 +87,11 @@ return sum
 安装包也可直接执行 `./cilexec-<版本>-linux-<架构>.sh --uninstall`；卸载会永久删除该安装
 实例的 PostgreSQL 数据卷，执行前应先备份。
 
+使用 Docker Desktop 时，请在 16 GB 内存的宿主上给其 Linux 虚拟机至少分配
+10 GB 内存（Settings → Resources → Advanced）。Runtime JVM、PostgreSQL 和
+`mvn verify` 集成套件各自需要数 GB；默认 7.8 GB 虚拟机下宿主可能内存耗尽，
+Java 工具或 Runtime 可能被杀掉。
+
 生产环境应使用已签名的正式镜像和制品，并遵循[发行验证](docs/release.md)及
 [备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。
 
@@ -139,7 +144,7 @@ src/main/resources/db/baseline/   已冻结的 V001 模块（角色、RLS、SQL 
 ## 构建与测试
 
 ```bash
-mvn clean test        # 单元与生命周期测试
+mvn clean test        # 370+ 单元与生命周期测试
 mvn clean verify      # 强制 PostgreSQL/崩溃恢复集成测试、质量门禁与 JAR
 ```
 

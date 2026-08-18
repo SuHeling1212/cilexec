@@ -682,7 +682,7 @@ database business tables
 Flyway is the schema versioning tool.
 
 ```text
-V001__CilexecBaseline.java       # frozen CilExec 1.0 modular baseline
+V001__CilexecBaseline.java       # frozen CilExec 0.0.1 modular baseline
 V002__later_forward_change.java   # next schema or persisted-format change
 ...
 ```
