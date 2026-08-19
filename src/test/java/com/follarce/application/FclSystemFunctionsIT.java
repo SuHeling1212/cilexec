@@ -74,6 +74,16 @@ class FclSystemFunctionsIT {
     }
 
     @Test
+    void forksChildrenWithoutInheritingTheTerminalLifecycle() throws Exception {
+        PGSimpleDataSource source = new PGSimpleDataSource();
+        source.setURL(POSTGRES.getJdbcUrl());
+        source.setUser(POSTGRES.getUsername());
+        source.setPassword(POSTGRES.getPassword());
+        FclSystemFunctionsExternalIT.executeForkChildLifecycle(
+                new JdbcTransactionExecutor(source));
+    }
+
+    @Test
     void createsAndRotatesSixCharacterApplicationCredential() throws Exception {
         PGSimpleDataSource source = new PGSimpleDataSource();
         source.setURL(POSTGRES.getJdbcUrl());

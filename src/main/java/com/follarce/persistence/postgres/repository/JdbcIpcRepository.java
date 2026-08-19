@@ -133,9 +133,13 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
 
     @Override
     public Optional<UUID> selectChannelReceiver(UUID channelId) {
-        String sql = "SELECT subscriber_process_uid FROM ipc.subscription "
+        String sql = "UPDATE ipc.subscription AS selected SET last_selected_at = clock_timestamp() "
+                + "WHERE selected.subscription_id = ("
+                + "SELECT subscription_id FROM ipc.subscription "
                 + "WHERE source_kind='CHANNEL' AND channel_id=? AND status='ACTIVE' "
-                + "ORDER BY created_at,subscription_id FOR SHARE SKIP LOCKED LIMIT 1";
+                + "ORDER BY last_selected_at NULLS FIRST, created_at, subscription_id "
+                + "FOR UPDATE SKIP LOCKED LIMIT 1"
+                + ") RETURNING selected.subscriber_process_uid";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, channelId);
             try (ResultSet rows = statement.executeQuery()) {
@@ -444,7 +448,7 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                         rows.getString("value_type"), rows.getString("value_payload"));
                 UUID poolId = rows.getObject("pool_id", UUID.class);
                 int remaining = rows.getInt("remaining_reads");
-                if (mode.equals("TIMES") && remaining <= 1) {
+                if (mode.equals("ALWAYS") || (mode.equals("TIMES") && remaining <= 1)) {
                     deleteSwapRow(poolId, variableName);
                 } else {
                     String update = "UPDATE ipc.swap_value SET changed=false,remaining_reads="

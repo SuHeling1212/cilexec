@@ -859,6 +859,28 @@ meta instance/boot
 
 Within a resource class, rows are locked in stable primary-key order. Process-list reads lock rows ordered by `pid` (never as an unordered table-wide scan), so a list transaction can never deadlock against a statement transaction that locks rows in `process_uid` order.
 
+### 8.6 Fork Children and the Terminal Lifecycle
+
+`process.fork()` copies the caller's full continuation, including any REPL terminal markers
+(`cilexec.repl.terminalProcess`, `cilexec.repl.terminalSession`, and the accumulated library
+source key) on the root scope and every call-frame scope. The child must not keep those
+markers: they exist only to make the interactive terminal root pause between submissions
+and to recompile the accumulated library when the root accepts the next submission.
+
+Before the child is persisted, the fork implementation strips the terminal markers from the
+child's root scope and every call-frame scope. A fork child therefore:
+
+- reaches `TERMINATED` when it runs to the end of its program or calls `util.exit()`
+  (never lingering in `PAUSED` waiting for appended bytecode);
+- returns from `process.waitPID` to the parent with `{pid, status}` once it ends;
+- can be cleaned up with `process.kill`/`process.gc` exactly like a background process;
+- never re-enters the terminal REPL submission loop, because the marker the REPL checks is
+  gone.
+
+Only the terminal root itself keeps the markers and pauses after each submission. The
+stripped keys exist only on the child's copied scopes, so the parent's own continuation is
+unaffected.
+
 ---
 
 ## 9. Programs and Process Continuations
@@ -1115,6 +1137,12 @@ process A → process B
 multiple consumers listen to a channel
 one message is claimed by one consumer
 ```
+
+Channel send picks the least-recently-selected active subscription (round-robin fairness):
+every competing consumer receives a share, and a newly subscribed consumer is eligible
+immediately. The selection is atomic with message persistence (`FOR UPDATE SKIP LOCKED`
+plus a rotation marker on `ipc.subscription`), so concurrent senders cannot both claim the
+same consumer.
 
 #### Topic/subscription
 

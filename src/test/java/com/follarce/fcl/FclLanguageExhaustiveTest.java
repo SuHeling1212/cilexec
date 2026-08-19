@@ -199,6 +199,47 @@ class FclLanguageExhaustiveTest {
                 "text = \"line1\nline2\"\nvalue = @\n"));
     }
 
+    @Test
+    void stringifiesContainersWithFclDisplayNotJavaToString() {
+        FclContinuation state = run("""
+                joined = "x" + {"a":1}
+                list = text.join(["a", null, true, [1,2], {"x":1}], "|")
+                nested = text.join([["a","b"], {"k":"v"}], "/")
+                """);
+        assertEquals("x{\"a\":1}", state.scope().get("joined"));
+        assertEquals("a|null|true|[1,2]|{\"x\":1}", state.scope().get("list"));
+        assertEquals("[\"a\",\"b\"]/{\"k\":\"v\"}", state.scope().get("nested"));
+    }
+
+    @Test
+    void rejectsOrderedComparisonOfBooleans() {
+        FclStepResult failed = executeFailure("""
+                value = true < false
+                """);
+        assertEquals(FclStepResult.Status.FAILED, failed.status());
+        assertTrue(String.valueOf(failed.value()).contains("bool cannot be ordered"),
+                () -> "unexpected message: " + failed.value());
+
+        FclContinuation ok = run("""
+                eq = true == false
+                ne = true != false
+                both = true and false
+                either = true or false
+                negated = not true
+                """);
+        assertEquals(false, ok.scope().get("eq"));
+        assertEquals(true, ok.scope().get("ne"));
+        assertEquals(false, ok.scope().get("both"));
+        assertEquals(true, ok.scope().get("either"));
+        assertEquals(false, ok.scope().get("negated"));
+    }
+
+    private static FclStepResult executeFailure(String source) {
+        FclProgram program = new FclCompiler().compile(source);
+        FclContinuation continuation = new FclContinuation();
+        return execute(program, continuation, 20_000);
+    }
+
     private FclContinuation run(String source) {
         FclProgram program = compiler.compile(source);
         FclContinuation continuation = new FclContinuation();

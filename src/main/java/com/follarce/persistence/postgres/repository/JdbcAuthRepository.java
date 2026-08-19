@@ -124,6 +124,81 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     }
 
     @Override
+    public UserAccount createUserByCredential(String administratorUsername,
+                                              char[] administratorPassword,
+                                              UUID userId, String username,
+                                              char[] password,
+                                              Set<Capability> capabilities,
+                                              UUID auditEventId, Instant at) {
+        PasswordPolicy.require(password);
+        char[] secret = password.clone();
+        char[] secretAdmin = administratorPassword == null
+                ? null : administratorPassword.clone();
+        java.sql.Array capabilityArray = null;
+        UUID administratorId = null;
+        try {
+            if (administratorUsername != null) {
+                // PBKDF2 verifiers carry a per-hash random salt, so the application
+                // must verify the plaintext against the stored verifier; the
+                // SECURITY DEFINER lookup below exposes it to the current transaction.
+                try (PreparedStatement lookup = connection.prepareStatement(
+                        "SELECT * FROM auth.administrator_credential(?)")) {
+                    lookup.setString(1, administratorUsername);
+                    try (ResultSet rows = lookup.executeQuery()) {
+                        if (rows.next()) {
+                            String stored = rows.getString(2);
+                            if (secretAdmin != null
+                                    && PasswordPolicy.matches(secretAdmin, stored)) {
+                                administratorId = rows.getObject(1, java.util.UUID.class);
+                            }
+                        }
+                    }
+                }
+                if (administratorId == null) {
+                    throw new IllegalArgumentException("Invalid administrator credentials");
+                }
+            }
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT * FROM auth.create_user_by_credential(?,?,?,?,?,?,?)")) {
+                String[] keys = capabilities.stream()
+                        .map(capability -> capability.name().toLowerCase(java.util.Locale.ROOT))
+                        .sorted().toArray(String[]::new);
+                capabilityArray = connection.createArrayOf("text", keys);
+                if (administratorId == null) {
+                    statement.setNull(1, java.sql.Types.OTHER);
+                } else {
+                    statement.setObject(1, administratorId);
+                }
+                statement.setObject(2, userId);
+                statement.setString(3, username);
+                statement.setString(4, PasswordPolicy.hash(secret));
+                statement.setArray(5, capabilityArray);
+                statement.setObject(6, auditEventId);
+                statement.setTimestamp(7, java.sql.Timestamp.from(at));
+                try (ResultSet rows = statement.executeQuery()) {
+                    if (!rows.next()) throw new IllegalStateException(
+                            "Credential guarded user creator returned no account");
+                    return map(rows);
+                }
+            } catch (SQLException exception) {
+                throw failure("auth.createUserByCredential", exception);
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.administratorCredential", exception);
+        } finally {
+            Arrays.fill(secret, '\0');
+            if (secretAdmin != null) Arrays.fill(secretAdmin, '\0');
+            if (capabilityArray != null) {
+                try {
+                    capabilityArray.free();
+                } catch (SQLException ignored) {
+                    // The connection owns the array and will release it on close.
+                }
+            }
+        }
+    }
+
+    @Override
     public UserAccount disableUserByAdministrator(UUID administratorId, UUID userId,
                                                    UUID auditEventId, Instant at) {
         String sql = "SELECT * FROM auth.admin_disable_user(?,?,?,?)";

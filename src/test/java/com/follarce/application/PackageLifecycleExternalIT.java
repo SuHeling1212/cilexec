@@ -296,6 +296,83 @@ class PackageLifecycleExternalIT {
     }
 
     @Test
+    void forcedUninstallOfDependencyGarbageCollectsTheWholeRemovedClosure() {
+        JdbcTransactionExecutor transactions = transactions();
+        Clock clock = Clock.systemUTC();
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        UserAccount owner = createOwner(transactions, clock, "pkg-gc-" + suffix);
+        VfsService vfs = new VfsService(transactions, clock);
+        VfsNode root = root(transactions, owner);
+
+        // Dependency library B first.
+        String libSource = "func value() { return 1 }\n"
+                + "func run() { return value() }\n";
+        com.follarce.package_manager.PackageManifest libManifest =
+                new com.follarce.package_manager.PackageManifest("cilexec", "lib", "1.0.0",
+                        "fcl-1", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
+                        List.of(new com.follarce.package_manager.PackageManifest.Module(
+                                "main", "main.fcl")), List.of(), List.of(), List.of(),
+                        List.of(new com.follarce.package_manager.PackageManifest.Export(
+                                "value", "main", "value")), List.of());
+        byte[] libDatabase = new com.follarce.package_manager.PackageBuilder().build(
+                libManifest, path -> libSource.getBytes(StandardCharsets.UTF_8));
+        var libDescriptor = new com.follarce.persistence.sqlite.SqlitePackageReader()
+                .inspect(libDatabase);
+        String libFileSha256 = libDescriptor.databaseFileHash();
+        vfs.createFile(owner.userId(), root.nodeId(), "lib.db",
+                libDatabase, "application/vnd.sqlite3", Set.of(), false);
+        FclContinuation installLib = run(transactions, owner.userId(),
+                "installed = package.install(\"/lib.db\")\n");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> installedLib = (Map<String, Object>) installLib.scope()
+                .get("installed");
+        assertEquals(libFileSha256, installedLib.get("sha256"));
+
+        // Application A declares a required dependency on B.
+        String appSource = "func answer() { return " + libFileSha256 + ".value() }\n"
+                + "func run() { return answer() }\n";
+        com.follarce.package_manager.PackageManifest appManifest =
+                new com.follarce.package_manager.PackageManifest("cilexec", "app", "1.0.0",
+                        "fcl-1", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
+                        List.of(new com.follarce.package_manager.PackageManifest.Module(
+                                "main", "main.fcl")), List.of(),
+                        List.of(new com.follarce.package_manager.PackageManifest.Dependency(
+                                libFileSha256, false)),
+                        List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
+                                "run", "main", "run")),
+                        List.of(new com.follarce.package_manager.PackageManifest.Export(
+                                "answer", "main", "answer")), List.of());
+        byte[] appDatabase = new com.follarce.package_manager.PackageBuilder().build(
+                appManifest, path -> appSource.getBytes(StandardCharsets.UTF_8));
+        var appDescriptor = new com.follarce.persistence.sqlite.SqlitePackageReader()
+                .inspect(appDatabase);
+        String appFileSha256 = appDescriptor.databaseFileHash();
+        vfs.createFile(owner.userId(), root.nodeId(), "app.db",
+                appDatabase, "application/vnd.sqlite3", Set.of(), false);
+        FclContinuation installApp = run(transactions, owner.userId(),
+                "installed = package.install(\"/app.db\")\n");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> installedApp = (Map<String, Object>) installApp.scope()
+                .get("installed");
+        assertEquals(appFileSha256, installedApp.get("sha256"));
+
+        // Uninstalling the dependency with force removes every installation whose
+        // closure contains it; both releases must then be garbage-collected.
+        var result = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.packages().uninstall(owner.userId(),
+                        new ObjectHash(libFileSha256), true, UUID.randomUUID()));
+        assertTrue(result.removed());
+        assertTrue(transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.packages()
+                        .findReleaseByDatabaseFileHash(new ObjectHash(libFileSha256)))
+                .isEmpty(), "dependency release must be purged");
+        assertTrue(transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.packages()
+                        .findReleaseByDatabaseFileHash(new ObjectHash(appFileSha256)))
+                .isEmpty(), "application release removed with the dependency closure must be purged");
+    }
+
+    @Test
     void injectedFailureRollsBackTheWholeUninstallTransaction() {
         JdbcTransactionExecutor transactions = transactions();
         Clock clock = Clock.systemUTC();

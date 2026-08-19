@@ -41,6 +41,15 @@ slice, which may then replay from the preceding checkpoint.
 - **Mixed-type comparisons.** Comparing a string with a number using `<`, `<=`, `>`,
   `>=` throws a runtime error; comparisons between values of the same type work
   normally.
+- **Booleans are not ordered.** `<`, `<=`, `>`, `>=` on `bool` values throw a
+  runtime error (`bool cannot be ordered`), following Java, where `boolean` has no
+  ordering. `==`, `!=`, `and`, `or`, and `not` still work on booleans.
+- **Value display.** All "FCL value → text" paths (string concatenation, `text.join`,
+  `util.toString`) share one display rule: top-level strings are used verbatim (never
+  quoted), numbers and booleans use their plain text, `null` renders as `null`, and
+  arrays and maps render in FCL literal syntax with JSON-style quoting and escaping
+  inside containers, for example `[1,"a"]` and `{"x":1}`. Host Java
+  `toString()` representations never leak into FCL text.
 - **Map numeric keys.** `1` and `1.0` are the same map key; numerically equivalent
   keys are normalized.
 - **util.fromJson.** Integer JSON numbers are parsed as `long` (or `BigInteger` when
@@ -203,7 +212,7 @@ capabilities within their own scope at registration; administrators have all of 
 | `util.typeOf(value)` | Return the FCL type name. |
 | `util.isArray(value)` / `util.isMap(value)` | Check for an array or an object. |
 | `util.isNumber(value)` / `util.isString(value)` / `util.isBool(value)` | Check for a number, string, or boolean. |
-| `util.toString(value)` | Convert to FCL display text. Alias: `util.string(value)`. |
+| `util.toString(value)` | Convert to FCL display text (the shared value display rule). Alias: `util.string(value)`. |
 | `util.length(value)` | Return the length of a string, array, object, and so on; the unary `#` operator is equivalent. |
 | `util.getTime()` | Current Runtime time as a Unix millisecond timestamp. |
 | `util.which(functionName)` | Look up the origin of a function. Runtime built-ins and compile-time Java extensions return `0`; functions from an imported external FCL package return the 64-character SHA-256 of the package `.db` file; unknown names or functions defined by the current source return `null`. |
@@ -308,7 +317,7 @@ intermediate state.
 | --- | --- |
 | `text.slice(value, start [, end])` | Slice a string by UTF-16 code-unit index. |
 | `text.split(value, delimiter)` | Split a string, keeping trailing empty items. |
-| `text.join(values, delimiter)` | Join an array with a delimiter. |
+| `text.join(values, delimiter)` | Join an array with a delimiter; each item uses the FCL value display rule. |
 | `text.indexOf(value, search [, start])` | Search forward from the given position; returns `-1` when not found. |
 | `text.lastIndexOf(value, search [, start])` | Search backward from the given position; returns `-1` when not found. |
 | `text.commonPrefixLength(first, second)` | Return the UTF-16 length of the longest shared prefix without splitting a Unicode code point. |
@@ -372,7 +381,7 @@ control other users' processes.
 | `process.kill(pid)` | Terminate the given process; killing yourself is equivalent to `util.exit()`. Alias: `system.kill(pid)`. |
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
-| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. |
+| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. The child does not inherit the terminal lifecycle: it runs to the end of its program (or a `util.exit()`) and then reaches `TERMINATED`, so `process.waitPID` and `process.kill`/`process.gc` behave exactly like for an ordinary background process. Only the interactive terminal root itself pauses between submissions. |
 | `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. Terminal processes keep global variables, package bindings, working directory, and successfully declared top-level functions when they return to the terminal; ordinary background processes terminate when the target program ends. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
@@ -386,6 +395,7 @@ control other users' processes.
 | `user.isLocal()` | Check whether the current user has `SYSTEM_ADMIN`. |
 | `user.validateUser(usernameOrUuid)` | Verify that a user exists and is visible to the current user; ordinary users only validate themselves. |
 | `user.getListOfUsers()` | Return basic information for all users; requires administrator identity. |
+| `user.create(username, password [, administratorCredentials])` | Create a new user. Without the third argument the account receives the ordinary user capabilities (any user may self-register, matching terminal registration). To create an administrator pass an array `[administratorUsername, administratorPassword]`: the named administrator must be ACTIVE, match the password, and currently hold effective `SYSTEM_ADMIN` (direct or group derived, expiry aware) - the database verifies all of this atomically with the creation, so a revoked or expired capability can never mint a fresh administrator. An audit event records the administrator actor (or the self-registering user). The new user's VFS root is provisioned on first login. |
 | `user.removeUser(userUuid)` | Deactivate a user; requires administrator identity. |
 | `user.switchUser(...)` | **Currently unavailable.** A persisted process cannot change identity in place; use `:logout` and log in again. |
 
@@ -584,7 +594,7 @@ and locking.
 | `swapPool.list()` | List all of the current user's swap pools. |
 | `swapPool.ls(path)` | List the variables in a pool. |
 | `swapPool.add("name:value", pool [, option...])` | Add a variable. Optional `"type:sync"` or `"type:times(n)"` control how it is retained. |
-| `swapPool.get(pool, variable)` | Read and consume a variable value; `null` when not found. |
+| `swapPool.get(pool, variable)` | Read and consume a variable value; `null` when not found. An ordinary (default `ALWAYS`) variable is removed on read; `type:sync` clears its changed flag (a later `add`/`signal` makes it readable again) and `type:times(n)` decrements the remaining reads and is removed on the last one. |
 | `swapPool.update(pool, variable, value [, fencingToken])` | Update a variable; pass the fencing token when locked. |
 | `swapPool.removeVar(pool, variable [, fencingToken])` | Remove a variable. |
 | `swapPool.clear(pool)` | Clear the pool. |

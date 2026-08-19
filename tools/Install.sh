@@ -21,6 +21,28 @@ hash_text() {
         return 1
     fi
 }
+# Read a key from the project .env without overriding an already-exported
+# environment variable. This mirrors docker compose precedence:
+# exported environment > .env file > script default.
+dotenv_value() {
+    local sought="$1"
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "$sought="* ]]; then
+            printf '%s' "${line#*=}"
+            return 0
+        fi
+    done < "$project_dir/.env"
+    return 1
+}
+dotenv_or_env() {
+    local name="$1"
+    local value="${!name:-}"
+    if [[ -z "$value" ]]; then
+        value="$(dotenv_value "$name" 2>/dev/null || true)"
+    fi
+    printf '%s' "$value"
+}
 project_hash="$(printf '%s\n' "$project_dir" | hash_text)"
 project_hash="${project_hash:0:8}"
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-cilexec-${project_hash}}"
@@ -116,7 +138,10 @@ if [[ ! "$market_port" =~ ^[0-9]+$ ]] \
     echo "Error: CILEXEC_MARKET_PORT must be an integer from 1 to 65535." >&2
     exit 2
 fi
-export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="${CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS:-http://host.docker.internal:${market_port}}"
+export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="$(dotenv_or_env CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS)"
+if [[ -z "$CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS" ]]; then
+    export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="http://host.docker.internal:${market_port}"
+fi
 
 echo "Starting CilExec..."
 "${compose[@]}" up -d postgres

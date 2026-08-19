@@ -5,6 +5,7 @@ import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.process.CilProcess;
+import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.effect.BuiltinEffectHandlers;
 import com.follarce.effect.EffectHandlerRegistry;
@@ -16,6 +17,8 @@ import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.follarce.scheduler.SchedulerService;
+import com.follarce.timer.TimerService;
+import com.follarce.timer.TimerWorkerService;
 import com.follarce.vfs.AdminVfsService;
 import com.follarce.vfs.VfsService;
 import org.junit.jupiter.api.Test;
@@ -235,12 +238,16 @@ class FclSystemFunctionsExternalIT {
                 finished = process.waitPID(%s)
                 killedWaiting = process.kill(%s)
                 finishedWaiting = process.waitPID(%s)
+                created = user.create("%s", "created-password-123")
+                createdAdmin = user.create("%s", "created-admin-pass-1", ["%s", "%s"])
                 """.formatted(
                 owner.userId(), owner.userId(), owner.userId(), owner.userId(),
                 owner.userId(), owner.userId(), owner.userId(), removable.userId(),
                 removable.userId(), ownerProcess.identity().pid(), ownerProcess.identity().pid(),
                 ownerProcess.identity().pid(), ownerProcess.identity().pid(),
-                waitingProcess.identity().pid(), waitingProcess.identity().pid());
+                waitingProcess.identity().pid(), waitingProcess.identity().pid(),
+                "fcl-created-" + suffix, "fcl-created-admin-" + suffix,
+                local.username(), "local-password-123");
         var adminProgram = new ProgramService(transactions).create(administrator.userId(),
                 adminSource);
         CilProcess adminProcess = new ProcessService(transactions).create(administrator.userId(),
@@ -268,6 +275,25 @@ class FclSystemFunctionsExternalIT {
         @SuppressWarnings("unchecked")
         Map<String, Object> removed = (Map<String, Object>) adminRuntime.scope().get("removed");
         assertEquals("DISABLED", removed.get("status"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> created = (Map<String, Object>) adminRuntime.scope().get("created");
+        assertEquals("ACTIVE", created.get("status"));
+        assertEquals("fcl-created-" + suffix, created.get("username"));
+        UUID createdId = UUID.fromString((String) created.get("userId"));
+        Set<Capability> createdCapabilities = transactions.inUserTransaction(createdId,
+                Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().capabilities(createdId));
+        assertTrue(createdCapabilities.contains(Capability.PROCESS_CREATE));
+        assertFalse(createdCapabilities.contains(Capability.SYSTEM_ADMIN));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> createdAdmin =
+                (Map<String, Object>) adminRuntime.scope().get("createdAdmin");
+        assertEquals("ACTIVE", createdAdmin.get("status"));
+        UUID createdAdminId = UUID.fromString((String) createdAdmin.get("userId"));
+        assertTrue(transactions.inUserTransaction(createdAdminId,
+                Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().capabilities(createdAdminId))
+                .contains(Capability.SYSTEM_ADMIN));
         AdminVfsService administratorVfs = new AdminVfsService(transactions, clock);
         assertEquals("changed", new String(administratorVfs
                 .readFile(administrator.userId(), owner.userId(), privateFile.nodeId())
@@ -312,6 +338,38 @@ class FclSystemFunctionsExternalIT {
         }
         deep.append("value = file.read(\"/deep-17.txt\")\n");
         assertFailsWithDurableError(transactions, owner.userId(), deep.toString());
+        // An ordinary user may self-register a normal account through FCL, but creating
+        // an administrator requires valid credentials of a current SYSTEM_ADMIN holder.
+        String selfUsername = "fcl-self-" + suffix;
+        String selfSource = "created = user.create(\"%s\", \"self-password-1\")"
+                .formatted(selfUsername);
+        CilProcess selfProcess = process(transactions, owner.userId(), selfSource);
+        var selfProgram = program(transactions, selfProcess);
+        FclContinuation selfRuntime = run(transactions, selfProcess, selfProgram, selfSource);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> selfCreated =
+                (Map<String, Object>) selfRuntime.scope().get("created");
+        assertEquals("ACTIVE", selfCreated.get("status"));
+        assertTrue(transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser(selfUsername)).isPresent());
+        // Wrong administrator password (an ordinary user's own known password).
+        assertFailsWithDurableError(transactions, owner.userId(), """
+                user.create("fcl-denied-%s", "denied-password-1", ["%s", "%s"])
+                """.formatted(suffix, owner.username(), "owner-password-123"));
+        // An administrator whose password is valid but SYSTEM_ADMIN is revoked must
+        // not be able to create another administrator either.
+        transactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
+            transaction.auth().replaceCapabilities(local.userId(),
+                    com.follarce.terminal.TerminalAccessService.USER_CAPABILITIES);
+            return null;
+        });
+        assertFailsWithDurableError(transactions, owner.userId(), """
+                user.create("fcl-denied2-%s", "denied-password-1", ["%s", "%s"])
+                """.formatted(suffix, local.username(), "local-password-123"));
+        assertTrue(transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser("fcl-denied-" + suffix)).isEmpty());
+        assertTrue(transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser("fcl-denied2-" + suffix)).isEmpty());
     }
 
     private static void assertFailsWithDurableError(JdbcTransactionExecutor transactions,
@@ -353,6 +411,10 @@ class FclSystemFunctionsExternalIT {
         String consumerSource = """
                 first = swapPool.get("bus", "message")
                 second = swapPool.get("bus", "message")
+                plainAdded = swapPool.add("plain:hello", "bus")
+                firstPlain = swapPool.get("bus", "plain")
+                secondPlain = swapPool.get("bus", "plain")
+                reAdded = swapPool.add("plain:hello", "bus")
                 """;
         CilProcess consumer = process(transactions, owner.userId(), consumerSource);
         var consumerProgram = program(transactions, consumer);
@@ -360,6 +422,10 @@ class FclSystemFunctionsExternalIT {
                 consumerSource);
         assertEquals("initial", consumerRuntime.scope().get("first"));
         assertEquals(null, consumerRuntime.scope().get("second"));
+        assertEquals(true, consumerRuntime.scope().get("plainAdded"));
+        assertEquals("hello", consumerRuntime.scope().get("firstPlain"));
+        assertEquals(null, consumerRuntime.scope().get("secondPlain"));
+        assertEquals(true, consumerRuntime.scope().get("reAdded"));
 
         String lockerSource = """
                 lock = swapPool.lock("bus", "message", 30000)
@@ -405,6 +471,21 @@ class FclSystemFunctionsExternalIT {
 
         assertExactlyOneConcurrentConsumerGetsTheSyncValue(transactions, owner.userId(),
                 rescheduledLocker, "bus", "message", "approved");
+        assertExactlyOneConcurrentConsumerGetsThePlainValue(transactions, owner.userId(),
+                "bus", "plain-race", "hello");
+    }
+
+    private static void assertExactlyOneConcurrentConsumerGetsThePlainValue(
+            JdbcTransactionExecutor transactions, UUID ownerId, String pool, String variable,
+            String expected) throws Exception {
+        FclContinuationCodec codec = new FclContinuationCodec();
+        Instant now = Instant.now();
+        assertEquals(true, transactions.inUserTransaction(ownerId, Isolation.READ_COMMITTED,
+                transaction -> transaction.ipc().addSwapValue(ownerId, pool, variable,
+                        new com.follarce.domain.process.Continuation.PersistedValue("string",
+                                codec.valueToJson(expected)), "ALWAYS", Optional.empty(), now)));
+        assertExactlyOneConcurrentConsumerGets(transactions, ownerId, pool, variable, expected,
+                codec);
     }
 
     private static void assertExactlyOneConcurrentConsumerGetsTheSyncValue(
@@ -417,6 +498,13 @@ class FclSystemFunctionsExternalIT {
                         new com.follarce.domain.process.Continuation.PersistedValue("string",
                                 codec.valueToJson(expected)), process.identity().processUid(),
                         process.executionEpoch(), Optional.empty(), now)));
+        assertExactlyOneConcurrentConsumerGets(transactions, ownerId, pool, variable, expected,
+                codec);
+    }
+
+    private static void assertExactlyOneConcurrentConsumerGets(
+            JdbcTransactionExecutor transactions, UUID ownerId, String pool, String variable,
+            String expected, FclContinuationCodec codec) throws Exception {
 
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
@@ -555,7 +643,7 @@ class FclSystemFunctionsExternalIT {
         });
         unprotected.start();
 
-        long controlKey = Math.abs(suffix.hashCode()) + 1L;
+        long controlKey = 0x51A7C0DE5L;
         long proofKey = controlKey ^ 0x9e3779b97f4a7c15L;
         Connection controlConnection = transactions.dataSource().getConnection();
         try (PreparedStatement lock = controlConnection.prepareStatement(
@@ -592,7 +680,7 @@ class FclSystemFunctionsExternalIT {
                 new com.follarce.persistence.postgres.repository.RuntimeMetadataStore(
                         transactions.dataSource());
         com.follarce.persistence.postgres.repository.RuntimeMetadataStore.BootIdentity boot =
-                metadata.beginBoot("cilexec-test-" + suffix, controlKey, "test", 1,
+                metadata.beginBoot("cilexec-test-shared", controlKey, "test", 1,
                         com.follarce.fcl.FclContinuation.FORMAT_VERSION, control);
         metadata.markReady(boot);
         UUID bootId = boot.bootId();
@@ -645,6 +733,187 @@ class FclSystemFunctionsExternalIT {
             unprotected.stop(0);
         }
         assertNull(fatal.get());
+    }
+
+    /**
+     * A terminal REPL root forks children. The children must not inherit the terminal
+     * lifecycle: a child reaching the end of its bytecode (natural end) or calling
+     * {@code util.exit()} must reach TERMINATED, {@code process.waitPID} must return, and
+     * {@code process.kill}/{@code process.gc} must be able to clean the child up — while
+     * the terminal root itself keeps pausing between submissions.
+     */
+    static void executeForkChildLifecycle(JdbcTransactionExecutor transactions) throws Exception {
+        Clock clock = Clock.systemUTC();
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        UserAccount owner = new AuthService(transactions, clock).create("fork-owner-" + suffix,
+                "owner-password-123".toCharArray(), Set.of(Capability.PROCESS_CREATE,
+                        Capability.PROCESS_CONTROL_OWN, Capability.TERMINAL_ATTACH,
+                        Capability.VFS_READ, Capability.VFS_WRITE, Capability.SYSTEM_ADMIN));
+        UUID sessionId = UUID.randomUUID();
+        Instant now = clock.instant();
+        transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED, transaction -> {
+            transaction.terminal().saveSession(new TerminalSession(sessionId, owner.userId(),
+                    TerminalSession.Status.OPEN, 1, now, now, Optional.empty()));
+            return null;
+        });
+
+        long controlKey = 0x51A7C0DE5L;
+        long proofKey = controlKey ^ 0x9e3779b97f4a7c15L;
+        Connection controlConnection = transactions.dataSource().getConnection();
+        try (PreparedStatement lock = controlConnection.prepareStatement(
+                "SELECT pg_try_advisory_lock(?)")) {
+            lock.setLong(1, controlKey);
+            try (ResultSet result = lock.executeQuery()) {
+                if (!result.next() || !result.getBoolean(1)) {
+                    throw new IllegalStateException("control advisory lock unavailable");
+                }
+            }
+        }
+        try (PreparedStatement proof = controlConnection.prepareStatement(
+                "SELECT pg_try_advisory_lock(?)")) {
+            proof.setLong(1, proofKey);
+            try (ResultSet result = proof.executeQuery()) {
+                if (!result.next() || !result.getBoolean(1)) {
+                    throw new IllegalStateException("control proof lock unavailable");
+                }
+            }
+        }
+        com.follarce.persistence.postgres.connection.ControlLock.ControlIdentity control;
+        try (PreparedStatement identity = controlConnection.prepareStatement(
+                "SELECT pid, backend_start FROM pg_catalog.pg_stat_activity "
+                        + "WHERE pid = pg_backend_pid()");
+             ResultSet identityRow = identity.executeQuery()) {
+            if (!identityRow.next()) {
+                throw new IllegalStateException("control backend identity unavailable");
+            }
+            control = new com.follarce.persistence.postgres.connection.ControlLock.ControlIdentity(
+                    identityRow.getInt("pid"),
+                    identityRow.getTimestamp("backend_start").toInstant(), proofKey);
+        }
+        com.follarce.persistence.postgres.repository.RuntimeMetadataStore metadata =
+                new com.follarce.persistence.postgres.repository.RuntimeMetadataStore(
+                        transactions.dataSource());
+        com.follarce.persistence.postgres.repository.RuntimeMetadataStore.BootIdentity boot =
+                metadata.beginBoot("cilexec-test-shared", controlKey, "test", 1,
+                        com.follarce.fcl.FclContinuation.FORMAT_VERSION, control);
+        metadata.markReady(boot);
+        UUID bootId = boot.bootId();
+        AtomicReference<Throwable> fatal = new AtomicReference<>();
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(transactions);
+        SchedulerService scheduler = new SchedulerService(transactions, executor, bootId, 2,
+                Duration.ofSeconds(30), Duration.ofMillis(50), fatal::set);
+        TimerWorkerService timers = new TimerWorkerService(new TimerService(transactions,
+                transactions, clock), 16, Duration.ofMillis(25), fatal::set);
+        scheduler.start();
+        timers.start();
+        try {
+            TerminalReplService repl = new TerminalReplService(transactions, scheduler::wake);
+            TerminalReplService.Submission first = repl.submit(owner.userId(), sessionId,
+                    "child = process.fork()\n"
+                            + "if child == 0 { util.exit(\"child done\") } else {"
+                            + " waited = process.waitPID(child) }\n");
+            UUID rootUid = first.process().identity().processUid();
+            FclContinuation root = awaitForkPaused(transactions, scheduler, owner, rootUid,
+                    "waited", fatal);
+            Map<String, Object> waited = forkMap(root, "waited");
+            assertEquals("TERMINATED", waited.get("status"),
+                    "waitPID must report the exited fork child as TERMINATED");
+            long childPid = ((Number) waited.get("pid")).longValue();
+            CilProcess child = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findByPid(childPid).orElseThrow());
+            assertEquals(CilProcess.Status.TERMINATED, child.status(),
+                    "a fork child calling util.exit must terminate");
+            FclContinuation childRuntime = new FclPersistenceBridge(new FclContinuationCodec())
+                    .restore(child.continuation());
+            assertFalse(childRuntime.scope().contains(
+                            TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY),
+                    "fork child must not inherit the terminal lifecycle marker");
+            assertFalse(childRuntime.scope().contains(
+                            TerminalReplService.TERMINAL_SESSION_SCOPE_KEY),
+                    "fork child must not inherit the terminal session marker");
+            assertTrue(root.scope().contains(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY),
+                    "terminal root keeps its lifecycle marker");
+
+            TerminalReplService.Submission second = repl.submit(owner.userId(), sessionId,
+                    "child2 = process.fork()\n"
+                            + "if child2 == 0 { util.sleep(2500) } else {"
+                            + " waited2 = process.waitPID(child2) }\n");
+            FclContinuation root2 = awaitForkPaused(transactions, scheduler, owner, rootUid,
+                    "waited2", fatal);
+            Map<String, Object> waited2 = forkMap(root2, "waited2");
+            assertEquals("TERMINATED", waited2.get("status"),
+                    "waitPID must report the naturally ended fork child as TERMINATED");
+            CilProcess naturalChild = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findByPid(((Number) waited2.get("pid")).longValue())
+                            .orElseThrow());
+            assertEquals(CilProcess.Status.TERMINATED, naturalChild.status(),
+                    "a fork child reaching the end of its bytecode must terminate");
+
+            TerminalReplService.Submission third = repl.submit(owner.userId(), sessionId,
+                    "child3 = process.fork()\n"
+                            + "if child3 == 0 { util.sleep(60000) } else {"
+                            + " killed = process.kill(child3) }\n");
+            FclContinuation root3 = awaitForkPaused(transactions, scheduler, owner, rootUid,
+                    "killed", fatal);
+            assertEquals(true, root3.scope().get("killed"),
+                    "killing a sleeping fork child must succeed");
+
+            TerminalReplService.Submission fourth = repl.submit(owner.userId(), sessionId,
+                    "gced = process.gc(child)\n");
+            FclContinuation root4 = awaitForkPaused(transactions, scheduler, owner, rootUid,
+                    "gced", fatal);
+            assertEquals(true, root4.scope().get("gced"),
+                    "a terminated fork child must be garbage collectable");
+            boolean deletedRow = transactions.inUserTransaction(owner.userId(),
+                            Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                                    .findByPid(childPid).isEmpty());
+            assertTrue(deletedRow,
+                    "process.gc must delete the terminated fork child row");
+            assertEquals(CilProcess.Status.PAUSED,
+                    transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                            transaction -> transaction.processes().findByUid(rootUid)
+                                    .orElseThrow().status()),
+                    "terminal root must remain PAUSED after its submissions");
+        } finally {
+            scheduler.close();
+            timers.close();
+            controlConnection.close();
+        }
+        assertNull(fatal.get());
+    }
+
+    private static FclContinuation awaitForkPaused(JdbcTransactionExecutor transactions,
+                                                   SchedulerService scheduler,
+                                                   UserAccount owner, UUID processUid,
+                                                   String variable,
+                                                   AtomicReference<Throwable> fatal)
+            throws Exception {
+        FclPersistenceBridge bridge = new FclPersistenceBridge(new FclContinuationCodec());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
+        while (System.nanoTime() < deadline) {
+            scheduler.wake();
+            Thread.sleep(25);
+            CilProcess current = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findByUid(processUid).orElseThrow());
+            FclContinuation restored = bridge.restore(current.continuation());
+            if (current.status() == CilProcess.Status.PAUSED
+                    && restored.scope().contains(variable)) {
+                return restored;
+            }
+        }
+        CilProcess stuck = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.processes().findByUid(processUid).orElseThrow());
+        throw new AssertionError("terminal root never paused with " + variable + ": uid="
+                + processUid + " status=" + stuck.status()
+                + (fatal.get() != null ? " FATAL=" + fatal.get() : ""));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> forkMap(FclContinuation restored, String variable) {
+        return (Map<String, Object>) restored.scope().get(variable);
     }
 
     private static CilProcess awaitDownload(JdbcTransactionExecutor transactions,

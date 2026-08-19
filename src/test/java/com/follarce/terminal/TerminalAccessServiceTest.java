@@ -1,6 +1,7 @@
 package com.follarce.terminal;
 
 import com.follarce.domain.audit.AuditEvent;
+import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.domain.port.AuthRepository;
@@ -25,11 +26,16 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TerminalAccessServiceTest {
     private static final Instant NOW = Instant.parse("2026-08-09T10:00:00Z");
     private static final char[] PASSWORD = "correct-password".toCharArray();
+    private static final char[] ADMIN_PASSWORD = "correct-admin-password".toCharArray();
+    private static final char[] NEW_ADMIN_PASSWORD = "new-admin-password".toCharArray();
 
     @Test
     void persistsSuccessfulLoginAsUserAudit() {
@@ -82,6 +88,113 @@ class TerminalAccessServiceTest {
         assertEquals(3, persistence.events.size());
     }
 
+    @Test
+    void currentAdministratorCanCreateAnotherAdministrator() {
+        Persistence persistence = new Persistence(false);
+        TerminalAccessService access = service(persistence);
+
+        UserAccount created = access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                ADMIN_PASSWORD.clone());
+
+        assertNotNull(created);
+        assertEquals(List.of("bob"), persistence.createdUsernames);
+        assertEquals(List.of(TerminalAccessService.ADMIN_CAPABILITIES),
+                persistence.assignedCapabilities);
+    }
+
+    @Test
+    void revokedAdministratorCannotCreateAnotherAdministrator() {
+        Persistence persistence = new Persistence(false);
+        persistence.administratorCapabilities =
+                Set.copyOf(TerminalAccessService.USER_CAPABILITIES);
+        TerminalAccessService access = service(persistence);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                        ADMIN_PASSWORD.clone()));
+
+        assertTrue(persistence.createdUsernames.isEmpty());
+        assertTrue(persistence.assignedCapabilities.isEmpty());
+        // The credential itself was valid; the denial is an authorization failure,
+        // so it must not consume the login-failure throttle shared with normal login.
+        assertTrue(persistence.recordedFailures.isEmpty());
+    }
+
+    @Test
+    void expiredAdministratorCapabilityCannotCreateAdministrator() {
+        // capabilities() already resolves expiry/group inheritance, so an expired
+        // SYSTEM_ADMIN is observed here as an effective set without SYSTEM_ADMIN.
+        // The PostgreSQL-backed expiry path is exercised end to end in
+        // TerminalAccessServiceIT.
+        Persistence persistence = new Persistence(false);
+        persistence.administratorCapabilities = Set.of();
+        TerminalAccessService access = service(persistence);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                        ADMIN_PASSWORD.clone()));
+
+        assertTrue(persistence.createdUsernames.isEmpty());
+    }
+
+    @Test
+    void administratorPasswordAloneDoesNotGrantAdministratorCreation() {
+        Persistence persistence = new Persistence(false);
+        persistence.administratorCapabilities = Set.of(Capability.TERMINAL_ATTACH);
+        TerminalAccessService access = service(persistence);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                        ADMIN_PASSWORD.clone()));
+
+        assertTrue(persistence.createdUsernames.isEmpty());
+        assertTrue(persistence.assignedCapabilities.isEmpty());
+    }
+
+    @Test
+    void groupGrantedSystemAdminCanCreateAdministrator() {
+        // At the service boundary capabilities() is the effective set, so a
+        // group-derived SYSTEM_ADMIN is indistinguishable from a direct one, and
+        // must keep authorizing administrator creation.
+        Persistence persistence = new Persistence(false);
+        persistence.administratorCapabilities = Set.of(Capability.SYSTEM_ADMIN);
+        TerminalAccessService access = service(persistence);
+
+        UserAccount created = access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                ADMIN_PASSWORD.clone());
+
+        assertNotNull(created);
+        assertEquals(List.of(TerminalAccessService.ADMIN_CAPABILITIES),
+                persistence.assignedCapabilities);
+    }
+
+    @Test
+    void disabledAdministratorCannotCreateAdministrator() {
+        Persistence persistence = new Persistence(false);
+        persistence.administratorActive = false;
+        TerminalAccessService access = service(persistence);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                        ADMIN_PASSWORD.clone()));
+
+        assertTrue(persistence.createdUsernames.isEmpty());
+        assertEquals(List.of("local"), persistence.recordedFailures);
+    }
+
+    @Test
+    void wrongAdministratorPasswordCannotCreateAdministrator() {
+        Persistence persistence = new Persistence(false);
+        TerminalAccessService access = service(persistence);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> access.register("bob", NEW_ADMIN_PASSWORD.clone(),
+                        "wrong-admin-password".toCharArray()));
+
+        assertTrue(persistence.createdUsernames.isEmpty());
+        assertEquals(List.of("local"), persistence.recordedFailures);
+    }
+
     private static TerminalAccessService service(Persistence persistence) {
         return new TerminalAccessService(persistence, persistence,
                 "jdbc:postgresql://127.0.0.1/cilexec",
@@ -91,6 +204,8 @@ class TerminalAccessServiceTest {
     private static final class Persistence
             implements TransactionExecutor, UserTransactionExecutor, TransactionContext {
         private final UserAccount account = UserAccount.active(UUID.randomUUID(), "alice", NOW);
+        private final UserAccount administrator =
+                UserAccount.active(UUID.randomUUID(), "local", NOW);
         private final List<AuditEvent> events = new ArrayList<>();
         private final List<String> throttleLookups = new ArrayList<>();
         private final List<String> recordedFailures = new ArrayList<>();
@@ -98,19 +213,40 @@ class TerminalAccessServiceTest {
         private final AuthRepository auth;
         private final VfsRepository vfs;
         private final AuditRepository audit;
+        private final List<String> createdUsernames = new ArrayList<>();
+        private final List<Set<Capability>> assignedCapabilities = new ArrayList<>();
         private UUID lastUserTransaction;
         private int credentialChecks;
+        private boolean administratorActive = true;
+        private Set<Capability> administratorCapabilities =
+                Set.copyOf(TerminalAccessService.ADMIN_CAPABILITIES);
 
         private Persistence(boolean credentialAccepted) {
             this.credentialAccepted = credentialAccepted;
             this.auth = proxy(AuthRepository.class, (method, arguments) -> switch (method.getName()) {
-                case "findUser" -> arguments[0] instanceof String username
-                        && username.equals(account.username()) ? Optional.of(account) : Optional.empty();
+                case "findUser" -> findUser(arguments);
                 case "credentialMatches" -> {
                     credentialChecks++;
-                    yield credentialAccepted
-                            && arguments[0].equals(account.userId())
-                            && Arrays.equals((char[]) arguments[1], PASSWORD);
+                    yield credentialMatches(arguments);
+                }
+                case "capabilities" -> {
+                    UUID userId = (UUID) arguments[0];
+                    if (userId.equals(account.userId())) {
+                        yield Set.copyOf(TerminalAccessService.USER_CAPABILITIES);
+                    }
+                    if (userId.equals(administrator.userId())) {
+                        yield Set.copyOf(administratorCapabilities);
+                    }
+                    yield Set.of();
+                }
+                case "saveUser" -> {
+                    createdUsernames.add(((UserAccount) arguments[0]).username());
+                    yield null;
+                }
+                case "provisionPrincipal" -> UserAccount.roleNameFor((UUID) arguments[0]);
+                case "replaceCapabilities" -> {
+                    assignedCapabilities.add(Set.copyOf((Set<Capability>) arguments[1]));
+                    yield null;
                 }
                 case "loginBlockedUntil" -> {
                     throttleLookups.add((String) arguments[0]);
@@ -136,6 +272,30 @@ class TerminalAccessServiceTest {
                 }
                 throw new UnsupportedOperationException(method.getName());
             });
+        }
+
+        private Optional<UserAccount> findUser(Object[] arguments) {
+            if (arguments[0] instanceof String username) {
+                if (username.equals(account.username())) return Optional.of(account);
+                if (username.equals(administrator.username())) return Optional.of(administrator);
+                return Optional.empty();
+            }
+            UUID userId = (UUID) arguments[0];
+            if (userId.equals(account.userId())) return Optional.of(account);
+            if (userId.equals(administrator.userId())) return Optional.of(administrator);
+            return Optional.empty();
+        }
+
+        private boolean credentialMatches(Object[] arguments) {
+            UUID userId = (UUID) arguments[0];
+            char[] supplied = (char[]) arguments[1];
+            if (userId.equals(account.userId())) {
+                return credentialAccepted && Arrays.equals(supplied, PASSWORD);
+            }
+            if (userId.equals(administrator.userId())) {
+                return administratorActive && Arrays.equals(supplied, ADMIN_PASSWORD);
+            }
+            return false;
         }
 
         @Override

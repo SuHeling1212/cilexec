@@ -537,6 +537,61 @@ class TerminalReplServiceTest {
         assertEquals("second:ok", repl.active(owner, sessionId).orElseThrow().result());
     }
 
+    @Test
+    void keepsImportTextInsideMultilineStringsWhenBuildingTheLibrary() {
+        ProgramServiceTest.TestPersistence persistence = new ProgramServiceTest.TestPersistence();
+        UUID owner = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        persistence.terminal.saveSession(new TerminalSession(sessionId, owner,
+                TerminalSession.Status.OPEN, 1, NOW, NOW, Optional.empty()));
+        ProgramService programs = new ProgramService(persistence, new FclCompiler(),
+                new FclProgramCodec(), CLOCK, UUID::randomUUID);
+        TerminalReplService repl = new TerminalReplService(persistence, programs,
+                new FclCompiler(), new FclContinuationCodec(), CLOCK);
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
+                new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
+
+        // The declaration text embeds an import-looking line inside a multiline
+        // string. Only the real top-level import may be stripped.
+        PackageHashes pkg = registerPackage(persistence, "pkg", "1.0.0", "tag");
+        String declaration = "func doc() {\n"
+                + "    text = \"the docs say:\n"
+                + "import something from somewhere\n"
+                + "import another thing\"\n"
+                + "    return text\n"
+                + "}\n"
+                + "import \"" + pkg.fileHash + "\" as \"m\"";
+        repl.submit(owner, sessionId, declaration);
+        try {
+            run(persistence, executor, owner);
+        } catch (AssertionError failure) {
+            TerminalReplService.Snapshot snapshot = repl.active(owner, sessionId).orElseThrow();
+            System.out.println("DEBUG after declaration: status=" + snapshot.status()
+                    + " errors=" + snapshot.errors());
+            throw failure;
+        }
+
+        com.follarce.fcl.FclContinuation restored =
+                new com.follarce.application.FclPersistenceBridge(
+                        new FclContinuationCodec()).restore(
+                        persistence.processes.current.continuation());
+        Object library = restored.scope().get(TerminalReplService.LIBRARY_SCOPE_KEY);
+        String text = String.valueOf(library);
+        assertTrue(text.contains("import something from somewhere"),
+                "import text inside a multiline string must not be stripped: " + text);
+        assertTrue(text.contains("import another thing"),
+                "every multiline string line must survive: " + text);
+        assertTrue(text.contains("func doc()"), "the declaration itself must be kept: " + text);
+        assertEquals(1, text.split("import \"" + pkg.fileHash + "\" as \"m\"", -1).length - 1,
+                "the real top-level import must survive exactly once: " + text);
+        assertTrue(text.indexOf("import \"") < text.indexOf("func doc()"),
+                "the import line must precede the declaration: " + text);
+
+        repl.submit(owner, sessionId, "m.greet(\"ok\")");
+        run(persistence, executor, owner);
+        assertEquals("tag:ok", repl.active(owner, sessionId).orElseThrow().result());
+    }
+
     private record PackageHashes(String fileHash, String packageHash) { }
 
     private static PackageHashes registerPackage(ProgramServiceTest.TestPersistence persistence,

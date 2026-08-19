@@ -75,7 +75,7 @@ class FclBuiltinsExhaustiveTest {
         assertEquals(true, call("util.isNumber", 1L));
         assertEquals(true, call("util.isString", "x"));
         assertEquals(true, call("util.isBool", false));
-        assertEquals("[1, x]", call("util.toString", List.of(1L, "x")));
+        assertEquals("[1,\"x\"]", call("util.toString", List.of(1L, "x")));
         assertEquals("x", call("util.string", "x"));
         assertEquals(2L, call("util.length", Map.of("a", 1L, "b", 2L)));
 

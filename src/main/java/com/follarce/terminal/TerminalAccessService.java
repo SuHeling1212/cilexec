@@ -154,8 +154,20 @@ public final class TerminalAccessService implements TerminalAccess {
             recordLoginFailure(administratorUsername);
             return false;
         }
-        if (!principalAccepts(administrator.orElseThrow(), password)) {
+        UserAccount account = administrator.orElseThrow();
+        if (!principalAccepts(account, password)) {
             recordLoginFailure(administratorUsername);
+            return false;
+        }
+        // The configured administrator username only locates the identity whose password is
+        // being verified. Creating a new SYSTEM_ADMIN account must additionally be authorized
+        // by that identity's current effective SYSTEM_ADMIN capability (direct or group
+        // derived, expiry aware): a revoked or expired capability must not be re-minted by
+        // creating another administrator with the still-valid password.
+        boolean currentAdministrator = transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().capabilities(account.userId())
+                        .contains(Capability.SYSTEM_ADMIN));
+        if (!currentAdministrator) {
             return false;
         }
         loginFailures.remove(administratorUsername);

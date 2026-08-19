@@ -230,6 +230,11 @@ administrator authority require explicit grants.
 - Concurrent credential checks are bounded by a semaphore.
 - Administrator password verification (used by `:shutdown` and by
   admin-account registration) goes through the same rate limiter.
+- Admin-account registration also requires the operator account to currently
+  hold the effective `SYSTEM_ADMIN` capability (direct or group-derived,
+  expiry-aware). A correct administrator password alone is never sufficient:
+  a revoked or expired `SYSTEM_ADMIN` cannot be used to mint a fresh
+  administrator account.
 - Passwords are read through `PasswordPrompt`, whose `Secret` buffer is
   deterministically zeroed when its lexical scope ends; usernames, passwords, and
   raw `io.input()` content never enter command history.
@@ -265,6 +270,13 @@ File functions accept an optional trailing target user, e.g.
 while `SYSTEM_ADMIN` holders may reach any user's files (each cross-user access
 leaves an audit record). `system.*` functions, `user.*` user administration, and
 `system.*` management functions and `user.*` administration require administrator authority.
+`user.create(username, password [, administratorCredentials])` creates users from FCL:
+without the third argument any logged-in user may self-register a normal account (matching
+terminal registration). Creating an administrator requires `[administratorUsername,
+administratorPassword]`: the named administrator must be ACTIVE, match the password, and
+currently hold effective `SYSTEM_ADMIN` - the database verifies all of this atomically with
+the creation (via `auth.create_user_by_credential`), so a revoked or expired capability can
+never mint a fresh administrator.
 Direct `socket.bind`/`socket.accept` calls use the ordinary external-effect capability and
 the built-in handler restricts binds to loopback; they are not administrator-only.
 

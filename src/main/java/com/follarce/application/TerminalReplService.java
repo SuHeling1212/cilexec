@@ -238,7 +238,7 @@ public final class TerminalReplService {
         boolean declaration = librarySubmission(compiled);
         if (declaration) {
             String changedLibrary = mergeImports(existingLibrary, importsFrom(compiled))
-                    + strippedImports(normalized);
+                    + strippedImports(compiled, normalized);
             // Compile the complete accumulated library now so duplicate or incompatible
             // declarations fail before a process or terminal attachment is created.
             compiler.compile(changedLibrary);
@@ -343,12 +343,21 @@ public final class TerminalReplService {
         return merged.toString();
     }
 
-    /** Removes top-level import lines from a declaration submission, keeping declarations. */
-    private static String strippedImports(String source) {
+    /** Removes compiled top-level import lines from a declaration submission, keeping declarations. */
+    private static String strippedImports(FclProgram compiled, String source) {
+        java.util.BitSet importLines = new java.util.BitSet();
+        for (FclInstruction instruction : compiled.instructions()) {
+            if (instruction instanceof FclInstruction.Import value) {
+                importLines.set(value.line());
+            }
+        }
         StringBuilder result = new StringBuilder();
-        for (String line : source.split("\n")) {
-            if (line.stripLeading().startsWith("import ")) continue;
-            result.append(line).append('\n');
+        String[] lines = source.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            if (!importLines.get(i + 1)) {
+                result.append(lines[i]);
+                if (i + 1 < lines.length) result.append('\n');
+            }
         }
         return result.toString();
     }

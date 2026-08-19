@@ -36,6 +36,23 @@ public interface AuthRepository {
         throw new UnsupportedOperationException("Atomic administrator user creation is not implemented");
     }
 
+    /**
+     * Creates an account guarded by an administrator credential pair resolved in the
+     * current transaction. When both credential arguments are null the account is a
+     * self-registration attributed to the caller; otherwise the named administrator
+     * must be ACTIVE, match the given password, and currently hold SYSTEM_ADMIN
+     * (direct or group derived, expiry aware). The new user receives the supplied
+     * capabilities and an audit event is written.
+     */
+    default UserAccount createUserByCredential(String administratorUsername,
+                                               char[] administratorPassword,
+                                               UUID userId, String username,
+                                               char[] password,
+                                               Set<Capability> capabilities,
+                                               UUID auditEventId, Instant at) {
+        throw new UnsupportedOperationException("Credential guarded user creation is not implemented");
+    }
+
     /** Disables the CilExec account and its stable tenant role in the current transaction. */
     default UserAccount disableUserByAdministrator(UUID administratorId, UUID userId,
                                                     UUID auditEventId, Instant at) {

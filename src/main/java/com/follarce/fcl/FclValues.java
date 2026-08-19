@@ -133,9 +133,88 @@ final class FclValues {
         return value.getClass().getSimpleName();
     }
 
+    /**
+     * FCL display text. Top-level strings keep their exact text (string
+     * concatenation and {@code text.join} must not quote or alter them); values
+     * nested inside arrays and maps use the FCL literal/JSON syntax so container
+     * contents stay unambiguous and host {@code toString()} representations never
+     * leak into the language layer.
+     */
     static String display(Object value) {
         if (value == null) return "null";
+        if (value instanceof String text) return text;
+        if (value instanceof Character character) return String.valueOf(character);
+        if (value instanceof Number || value instanceof Boolean) {
+            return String.valueOf(value);
+        }
+        if (value instanceof List<?> list) {
+            StringBuilder result = new StringBuilder("[");
+            for (int index = 0; index < list.size(); index++) {
+                if (index > 0) result.append(',');
+                result.append(displayNested(list.get(index)));
+            }
+            return result.append(']').toString();
+        }
+        if (value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            StringBuilder result = new StringBuilder("[");
+            for (int index = 0; index < length; index++) {
+                if (index > 0) result.append(',');
+                result.append(displayNested(Array.get(value, index)));
+            }
+            return result.append(']').toString();
+        }
+        if (value instanceof Map<?, ?> map) {
+            StringBuilder result = new StringBuilder("{");
+            boolean first = true;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (!first) result.append(',');
+                first = false;
+                result.append(displayMapKey(entry.getKey())).append(':')
+                        .append(displayNested(entry.getValue()));
+            }
+            return result.append('}').toString();
+        }
         return String.valueOf(value);
+    }
+
+    /** Display of a nested value: strings are quoted with JSON escapes. */
+    private static String displayNested(Object value) {
+        if (value instanceof String text) return jsonQuoted(text);
+        if (value instanceof Character character) return jsonQuoted(String.valueOf(character));
+        return display(value);
+    }
+
+    /** Display of a map key: quoted when it is a string, else plain. */
+    private static String displayMapKey(Object key) {
+        if (key instanceof String text) return jsonQuoted(text);
+        if (key instanceof Character character) return jsonQuoted(String.valueOf(character));
+        return display(key);
+    }
+
+    private static String jsonQuoted(String text) {
+        StringBuilder result = new StringBuilder("\"");
+        for (int offset = 0; offset < text.length();) {
+            int codePoint = text.codePointAt(offset);
+            switch (codePoint) {
+                case '"' -> result.append("\\\"");
+                case '\\' -> result.append("\\\\");
+                case '\n' -> result.append("\\n");
+                case '\r' -> result.append("\\r");
+                case '\t' -> result.append("\\t");
+                case '\b' -> result.append("\\b");
+                case '\f' -> result.append("\\f");
+                default -> {
+                    if (codePoint < 0x20) {
+                        result.append(String.format("\\u%04x", codePoint));
+                    } else {
+                        result.appendCodePoint(codePoint);
+                    }
+                }
+            }
+            offset += Character.charCount(codePoint);
+        }
+        return result.append('"').toString();
     }
 
     private static Object add(Object left, Object right) {
@@ -246,6 +325,9 @@ final class FclValues {
         if ((left instanceof Number && right instanceof String)
                 || (left instanceof String && right instanceof Number)) {
             throw new FclRuntimeException("Cannot compare string and number");
+        }
+        if (left instanceof Boolean || right instanceof Boolean) {
+            throw new FclRuntimeException("bool cannot be ordered");
         }
         if (left.getClass().isInstance(right) && left instanceof Comparable comparable) {
             return comparable.compareTo(right);

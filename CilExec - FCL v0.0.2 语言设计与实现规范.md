@@ -3095,3 +3095,1304 @@ Memory Model
 最终目标不是让 FCL 变成 Java，也不是让它变成 Python。
 
 而是形成一套属于 FCL 自己的、足够小但语义完整的对象系统。
+
+---
+
+# 107. try / catch
+
+FCL v0.0.2 加入基础异常捕获机制：
+
+```fcl
+try {
+    statements
+} catch (e) {
+    statements
+}
+```
+
+语义：
+
+1. 执行 `try` 中的代码。
+2. 如果正常完成，则跳过 `catch`。
+3. 如果发生可捕获的 FCL 异常，则立即中止 `try` 中剩余语句。
+4. Runtime 寻找与该 `try` 对应的 `catch`。
+5. 将异常值绑定到 `catch` 参数。
+6. 执行 `catch`。
+7. `catch` 正常结束后继续执行后续代码。
+
+例如：
+
+```fcl
+try {
+    io.println("A")
+    somethingWrong()
+    io.println("B")
+} catch (e) {
+    io.println("C")
+}
+
+io.println("D")
+```
+
+如果 `somethingWrong()` 抛出异常，则输出：
+
+```text
+A
+C
+D
+```
+
+`B` 不会执行。
+
+---
+
+# 108. catch 参数
+
+`catch` 后的参数表示捕获到的异常。
+
+例如：
+
+```fcl
+try {
+    user.name
+} catch (e) {
+    io.println(e.message)
+}
+```
+
+`e` 只是变量名。
+
+因此也允许：
+
+```fcl
+catch (error) {
+    io.println(error.message)
+}
+```
+
+或其他合法变量名。
+
+---
+
+# 109. catch 变量作用域
+
+异常变量只存在于对应的 `catch` 作用域中。
+
+例如：
+
+```fcl
+try {
+    somethingWrong()
+} catch (e) {
+    io.println(e.message)
+}
+
+io.println(e)
+```
+
+最后一行应产生：
+
+```text
+Undefined variable: e
+```
+
+但异常可以主动保存到外部变量：
+
+```fcl
+error = null
+
+try {
+    somethingWrong()
+} catch (e) {
+    error = e
+}
+
+io.println(error.message)
+```
+
+这是合法的。
+
+---
+
+# 110. 异常传播
+
+异常不仅可以被当前函数中的 `catch` 捕获，也可以沿函数调用链向上传播。
+
+例如：
+
+```fcl
+func c() {
+    somethingWrong()
+}
+
+func b() {
+    c()
+}
+
+func a() {
+    b()
+}
+
+try {
+    a()
+} catch (e) {
+    io.println(e.message)
+}
+```
+
+异常传播过程：
+
+```text
+somethingWrong()
+       ↓
+      c()
+       ↓
+      b()
+       ↓
+      a()
+       ↓
+外层 try/catch
+```
+
+如果当前函数没有能够处理异常的 `catch`，异常继续向调用者传播。
+
+---
+
+# 111. 未捕获异常
+
+如果异常一直传播到进程顶层仍然没有被捕获，则成为：
+
+```text
+Uncaught Exception
+```
+
+Runtime 按当前 FCL 进程失败语义处理。
+
+例如：
+
+```text
+error in PID 12:
+UndefinedMethod: Undefined method User.print/2
+    at ...
+```
+
+此时当前进程进入失败状态。
+
+---
+
+# 112. catch 内再次发生异常
+
+`catch` 本身不是安全区域。
+
+例如：
+
+```fcl
+try {
+    a()
+} catch (e) {
+    b()
+}
+```
+
+如果：
+
+```text
+a() 抛出异常
+```
+
+则进入 `catch`。
+
+如果随后：
+
+```text
+b() 再次抛出异常
+```
+
+这个新的异常必须继续向外传播。
+
+它不能重新被当前正在执行的这个 `catch` 捕获。
+
+例如：
+
+```fcl
+try {
+    try {
+        a()
+    } catch (e) {
+        b()
+    }
+} catch (e) {
+    io.println("outer")
+}
+```
+
+如果 `a()` 和 `b()` 都产生异常，则最终由外层 `catch` 捕获 `b()` 的异常。
+
+---
+
+# 113. 可捕获异常与系统故障
+
+`try/catch` 只能处理：
+
+> FCL 程序级异常。
+
+例如：
+
+```text
+NullAccess
+UndefinedFunction
+UndefinedMethod
+InvalidConstructor
+PrivateAccess
+ObjectDestroyed
+InvalidArgument
+FileNotFound
+```
+
+等运行时程序错误。
+
+`try/catch` 不允许捕获：
+
+* 进程被强制终止
+* Runtime 自身崩溃
+* JVM Fatal Error
+* CilExec Kernel Failure
+* 系统 Shutdown
+* 无法继续保证运行时一致性的数据库故障
+* 其他系统级终止事件
+
+因此实现层必须区分：
+
+```text
+FCL Exception
+```
+
+和：
+
+```text
+Runtime / Kernel Failure
+```
+
+只有前者可以进入 FCL `catch`。
+
+---
+
+# 114. Exception
+
+`catch` 捕获到的值属于 Runtime 原生异常类型：
+
+```text
+Exception
+```
+
+第一版结构定义为：
+
+```text
+Exception {
+    readonly type
+    readonly message
+    readonly stack
+}
+```
+
+其中：
+
+```text
+type: String
+message: String
+stack: List<StackFrame>
+```
+
+---
+
+# 115. Exception 不是普通 FCL 对象
+
+虽然异常在语法上可以：
+
+```fcl
+e.type
+e.message
+e.stack
+```
+
+看起来类似普通对象，但它在 Runtime 内部不应实现成普通：
+
+```text
+ObjectInstance
+```
+
+而应实现成独立的 Runtime Value。
+
+概念上的 FCL Value 体系：
+
+```text
+FCL Value
+├── Number
+├── String
+├── Boolean
+├── Null
+├── List
+├── Map
+├── ObjectReference
+└── Exception
+```
+
+这样异常机制不会依赖普通对象创建、构造方法、方法分派和对象生命周期系统。
+
+---
+
+# 116. ExceptionValue
+
+Runtime 内部建议使用类似：
+
+```text
+ExceptionValue {
+    type
+    message
+    stack
+}
+```
+
+的结构保存异常。
+
+具体 Java 类型名称属于实现细节。
+
+例如可以叫：
+
+```text
+FclExceptionValue
+```
+
+或其他符合现有项目风格的名称。
+
+语言规范只保证其行为，不规定 Java 类名。
+
+---
+
+# 117. e.type
+
+`type` 是异常的稳定机器可读类型。
+
+例如：
+
+```text
+NullAccess
+UndefinedFunction
+UndefinedMethod
+InvalidConstructor
+PrivateAccess
+ObjectDestroyed
+FileNotFound
+InvalidArgument
+```
+
+例如：
+
+```fcl
+try {
+    file.read(path)
+} catch (e) {
+    if (e.type == "FileNotFound") {
+        io.println("File does not exist")
+    }
+}
+```
+
+必须遵循原则：
+
+```text
+type = 给程序判断
+message = 给人阅读
+```
+
+程序不应该依赖异常消息字符串判断异常种类。
+
+---
+
+# 118. e.message
+
+`message` 保存人类可读错误描述。
+
+例如：
+
+```text
+Cannot access member 'name' of null
+```
+
+或者：
+
+```text
+Undefined method User.print/2
+```
+
+使用：
+
+```fcl
+io.println(e.message)
+```
+
+可以直接显示错误。
+
+错误消息未来允许调整措辞，因此：
+
+```fcl
+if (e.message == "...")
+```
+
+不属于稳定 API。
+
+---
+
+# 119. e.stack
+
+`stack` 保存异常产生时的 FCL 调用栈。
+
+不能只保存已经格式化好的字符串。
+
+内部应该保存结构化 StackFrame。
+
+例如：
+
+```text
+[
+    {
+        function: "User.test",
+        source: "/app/test.fcl",
+        line: 15,
+        column: 8
+    },
+    {
+        function: "<main>",
+        source: "/app/main.fcl",
+        line: 7,
+        column: 4
+    }
+]
+```
+
+这样 FCL 可以：
+
+```fcl
+io.println(e.stack[0].function)
+io.println(e.stack[0].source)
+io.println(e.stack[0].line)
+```
+
+---
+
+# 120. StackFrame
+
+`Exception.stack` 中的每一个元素属于只读 StackFrame 值。
+
+第一版结构：
+
+```text
+StackFrame {
+    readonly function
+    readonly source
+    readonly line
+    readonly column
+}
+```
+
+类型：
+
+```text
+function: String
+source: String
+line: Integer
+column: Integer
+```
+
+StackFrame 同样属于 Runtime 原生只读值，而不是普通 FCL ObjectInstance。
+
+---
+
+# 121. 异常栈生成时间
+
+异常栈必须在：
+
+> 异常真正发生时
+
+立即生成。
+
+不能等到进入 `catch` 时才生成。
+
+例如：
+
+```fcl
+func c() {
+    somethingWrong()
+}
+
+func b() {
+    c()
+}
+
+func a() {
+    b()
+}
+
+try {
+    a()
+} catch (e) {
+}
+```
+
+`e.stack` 必须包含类似：
+
+```text
+somethingWrong
+c
+b
+a
+```
+
+而不是只包含：
+
+```text
+catch
+```
+
+---
+
+# 122. 同一个异常值传播
+
+异常沿调用链传播时，应传播同一个：
+
+```text
+ExceptionValue
+```
+
+不能每经过一个函数就重新创建新的异常。
+
+流程：
+
+```text
+异常发生
+↓
+创建 ExceptionValue
+↓
+捕获 type
+↓
+捕获 message
+↓
+捕获 stack
+↓
+沿调用栈传播同一个 ExceptionValue
+↓
+找到 catch
+↓
+绑定给 catch 参数
+```
+
+这样可以保证异常原始位置和调用栈保持不变。
+
+---
+
+# 123. Exception 不可变
+
+Exception 必须是：
+
+```text
+immutable
+```
+
+即：
+
+```fcl
+e.type
+e.message
+e.stack
+```
+
+允许读取。
+
+但是：
+
+```fcl
+e.type = "NothingWrong"
+```
+
+```fcl
+e.message = "No error"
+```
+
+```fcl
+e.stack = []
+```
+
+必须拒绝。
+
+异常表示已经发生的事实，不允许程序修改异常历史。
+
+---
+
+# 124. StackFrame 不可变
+
+同样：
+
+```fcl
+e.stack[0].line = 100
+```
+
+不得修改原始调用栈。
+
+StackFrame 必须是只读值。
+
+---
+
+# 125. Exception 生命周期
+
+Exception 不属于普通对象生命周期。
+
+因此：
+
+```fcl
+Memory.destroy(e)
+```
+
+应当拒绝。
+
+Exception：
+
+* 不拥有普通 Object ID
+* 不进入普通对象 destroy 生命周期
+* 不允许显式销毁
+* 不依赖 JVM 对应 ObjectInstance 的对象图管理
+
+但是 Exception 可以像普通值一样：
+
+* 保存到变量
+* 传给函数
+* 从函数返回
+* 放入 List
+* 放入 Map
+* 被进程持久化
+* 被进程恢复
+
+---
+
+# 126. Exception 持久化
+
+如果进程在异常值已经被保存到变量后进入持久化：
+
+```fcl
+lastError = null
+
+try {
+    somethingWrong()
+} catch (e) {
+    lastError = e
+}
+
+process.wait(...)
+```
+
+恢复后：
+
+```fcl
+lastError.type
+lastError.message
+lastError.stack
+```
+
+必须保持与持久化前一致。
+
+因此 `ExceptionValue` 和 `StackFrameValue` 必须进入 FCL Continuation / Runtime Value 的序列化体系。
+
+---
+
+# 127. Exception 与对象图的区别
+
+普通对象：
+
+```text
+ObjectReference
+↓
+Object ID
+↓
+ObjectInstance
+```
+
+Exception：
+
+```text
+ExceptionValue
+↓
+直接保存异常数据
+```
+
+Exception 不需要普通对象身份，也不参与共享对象生命周期。
+
+如果同一个 ExceptionValue 被多个变量引用，Runtime 可以保持同值语义，但语言层不需要暴露 Exception Object ID。
+
+---
+
+# 128. Exception 格式化
+
+直接：
+
+```fcl
+io.println(e)
+```
+
+时 Runtime 应提供默认可读格式。
+
+例如：
+
+```text
+UndefinedMethod: Undefined method User.print/2
+    at User.test (/app/test.fcl:15:8)
+    at <main> (/app/main.fcl:7:4)
+```
+
+这只是展示形式。
+
+程序需要结构化处理时应使用：
+
+```fcl
+e.type
+e.message
+e.stack
+```
+
+---
+
+# 129. 第一版 Exception 最小接口
+
+v0.0.2 正式保证：
+
+```text
+Exception {
+    readonly type: String
+    readonly message: String
+    readonly stack: List<StackFrame>
+}
+```
+
+以及：
+
+```text
+StackFrame {
+    readonly function: String
+    readonly source: String
+    readonly line: Integer
+    readonly column: Integer
+}
+```
+
+这是 v0.0.2 的稳定异常接口。
+
+---
+
+# 130. 未来可扩展字段
+
+未来版本可以在保持兼容的情况下增加：
+
+```text
+cause
+data
+code
+location
+```
+
+其中：
+
+### cause
+
+表示导致当前异常的底层异常。
+
+### data
+
+保存某类异常特有的结构化信息。
+
+例如：
+
+```text
+UndefinedMethod.data = {
+    class: "User",
+    method: "print",
+    argumentCount: 2
+}
+```
+
+### code
+
+提供更加稳定或数字化的错误代码。
+
+### location
+
+提供异常发生位置的快捷访问。
+
+它通常可以等价于：
+
+```fcl
+e.stack[0]
+```
+
+这些字段不属于 v0.0.2 必须实现内容。
+
+---
+
+# 131. throw
+
+`throw` 与自定义异常属于异常系统下一阶段。
+
+v0.0.2 可以暂时只实现 Runtime 异常的捕获：
+
+```fcl
+try {
+} catch (e) {
+}
+```
+
+未来可加入：
+
+```fcl
+throw ...
+```
+
+以及：
+
+```fcl
+throw e
+```
+
+重新传播已有异常。
+
+如果未来支持：
+
+```fcl
+throw e
+```
+
+必须传播原有 ExceptionValue，不重新生成 stack。
+
+---
+
+# 132. finally
+
+v0.0.2 暂不要求实现：
+
+```fcl
+finally {
+}
+```
+
+未来可以支持：
+
+```fcl
+try {
+} catch (e) {
+} finally {
+}
+```
+
+`finally` 无论：
+
+* try 正常结束
+* try 发生异常
+* catch 正常结束
+
+都执行。
+
+但该语义会影响：
+
+* return
+* break
+* continue
+* throw
+* 进程挂起
+* Runtime continuation
+
+因此不应阻塞 v0.0.2。
+
+---
+
+# 133. 类型化 catch
+
+v0.0.2 暂不支持：
+
+```fcl
+catch (FileNotFound e) {
+}
+```
+
+以及多个：
+
+```fcl
+catch (FileNotFound e) {
+}
+
+catch (PermissionDenied e) {
+}
+```
+
+第一版统一：
+
+```fcl
+catch (e) {
+}
+```
+
+如果程序需要区分：
+
+```fcl
+catch (e) {
+    if (e.type == "FileNotFound") {
+        ...
+    }
+}
+```
+
+这样可以避免 v0.0.2 立即引入完整异常类型继承系统。
+
+---
+
+# 134. try/catch 与进程挂起
+
+由于 FCL 支持 Continuation 和进程持久化，因此：
+
+```fcl
+try {
+    process.wait(...)
+} catch (e) {
+    ...
+}
+```
+
+如果进程在 `try` 内部挂起，恢复后必须仍然知道：
+
+```text
+当前执行位置属于哪个 try
+对应哪个 catch
+catch 跳转位置
+当前异常处理上下文
+```
+
+因此 try/catch 信息必须成为 continuation 状态的一部分，不能只存在于 Java 调用栈中。
+
+---
+
+# 135. try/catch 与恢复
+
+例如：
+
+```fcl
+try {
+    a()
+    process.wait(...)
+    b()
+} catch (e) {
+    io.println(e.message)
+}
+```
+
+进程在：
+
+```fcl
+process.wait(...)
+```
+
+处持久化。
+
+恢复以后 `b()` 如果产生异常，仍然必须进入原来的：
+
+```fcl
+catch (e)
+```
+
+不能因为发生了一次 suspend / restore 就丢失异常处理区域。
+
+---
+
+# 136. try/catch 与 FCL Continuation
+
+编译器或运行时必须保存异常处理区域信息。
+
+概念上可以表示：
+
+```text
+ExceptionHandler {
+    tryStart
+    tryEnd
+    catchTarget
+    catchVariable
+}
+```
+
+具体实现可以：
+
+* 编译成异常处理表
+* 编译成显式 handler stack
+* 保存到 FclContinuation
+
+具体结构属于实现细节。
+
+必须保证语义：
+
+```text
+异常发生位置
+↓
+寻找最内层有效 handler
+↓
+恢复作用域
+↓
+绑定 ExceptionValue
+↓
+跳转 catch
+```
+
+---
+
+# 137. 作用域展开
+
+异常传播过程中，已经离开的作用域必须正常清理。
+
+例如：
+
+```fcl
+try {
+    {
+        a = new User()
+        somethingWrong()
+    }
+} catch (e) {
+}
+```
+
+发生异常以后：
+
+```text
+内部 block scope
+```
+
+必须被退出。
+
+其中局部变量绑定按正常作用域规则销毁。
+
+异常不能因为跳转到 `catch` 而留下已经失效的局部作用域。
+
+---
+
+# 138. try 内 return
+
+如果：
+
+```fcl
+func test() {
+    try {
+        return 1
+    } catch (e) {
+        return 2
+    }
+}
+```
+
+`try` 没有异常，则函数直接返回：
+
+```text
+1
+```
+
+不会执行 `catch`。
+
+---
+
+# 139. catch 内 return
+
+允许：
+
+```fcl
+func test() {
+    try {
+        somethingWrong()
+    } catch (e) {
+        return null
+    }
+}
+```
+
+发生异常后，`catch` 可以像普通 block 一样执行：
+
+```text
+return
+```
+
+---
+
+# 140. 嵌套 try/catch
+
+FCL 必须支持：
+
+```fcl
+try {
+    try {
+        somethingWrong()
+    } catch (e) {
+        ...
+    }
+} catch (e) {
+    ...
+}
+```
+
+异常总是优先寻找：
+
+> 当前执行位置对应的最内层有效 catch。
+
+只有内层未处理或内层处理过程中产生新异常，才继续向外传播。
+
+---
+
+# 141. v0.0.2 异常测试要求
+
+至少增加以下测试。
+
+## 基础 try/catch
+
+* try 正常完成时 catch 不执行。
+* try 抛异常时 catch 执行。
+* 异常发生后 try 剩余语句不执行。
+* catch 完成后继续后续代码。
+
+## Exception
+
+* `e.type` 正确。
+* `e.message` 正确。
+* `e.stack` 正确。
+* stack frame 顺序正确。
+* source 正确。
+* line 正确。
+* column 正确。
+* function 正确。
+
+## Scope
+
+* `e` 只存在于 catch 内。
+* catch 可以保存异常到外部变量。
+* 异常传播时旧 scope 被正确清理。
+
+## Propagation
+
+* 同函数捕获。
+* 跨一层函数传播。
+* 跨多层函数传播。
+* 无 catch 时成为未捕获异常。
+* 内层 catch 优先于外层 catch。
+* catch 中的新异常传播到外层。
+
+## Immutability
+
+以下必须失败：
+
+```fcl
+e.type = ...
+e.message = ...
+e.stack = ...
+e.stack[0].line = ...
+```
+
+## Memory
+
+以下必须失败：
+
+```fcl
+Memory.destroy(e)
+```
+
+## Persistence
+
+* Exception 可以持久化。
+* Exception 恢复后 type 不变。
+* message 不变。
+* stack 不变。
+* try 中 suspend 后恢复仍可捕获异常。
+* 多层 try 中 suspend 后恢复 handler 顺序正确。
+
+## System Failure
+
+确认：
+
+* FCL Exception 可以捕获。
+* Kernel Failure 不可捕获。
+* Process Kill 不可捕获。
+* Runtime Fatal Failure 不可捕获。
+
+---
+
+# 142. v0.0.2 完成标准补充
+
+原 v0.0.2 完成清单追加：
+
+* [ ] `try`
+* [ ] `catch`
+* [ ] catch 局部异常变量
+* [ ] 异常传播
+* [ ] 嵌套 try/catch
+* [ ] 未捕获异常处理
+* [ ] Runtime `ExceptionValue`
+* [ ] `e.type`
+* [ ] `e.message`
+* [ ] `e.stack`
+* [ ] `StackFrame`
+* [ ] Exception 不可变
+* [ ] StackFrame 不可变
+* [ ] Exception 禁止 `Memory.destroy`
+* [ ] Exception 持久化
+* [ ] try/catch continuation 持久化
+* [ ] suspend / restore 后异常捕获正确
+* [ ] FCL Exception 与 Kernel Failure 明确区分
+* [ ] 对应单元测试
+* [ ] 对应集成测试
+
+---
+
+# 143. v0.0.2 异常系统最终定位
+
+v0.0.2 的异常系统保持最小设计：
+
+```text
+try
+catch
+ExceptionValue
+```
+
+不在本版本强制实现：
+
+```text
+throw
+finally
+typed catch
+异常继承
+自定义 Exception class
+checked exception
+throws 声明
+```
+
+其核心目标是：
+
+> 允许 FCL 程序安全处理 Runtime 产生的程序级异常，同时保持异常本身可检查、可传播、可持久化，并且不会让程序捕获 CilExec 内核级故障。
+
+最终基础模型：
+
+```text
+Runtime 产生异常
+        ↓
+创建不可变 ExceptionValue
+        ↓
+记录 type / message / stack
+        ↓
+沿 FCL 调用栈传播
+        ↓
+寻找最内层 try/catch
+      ↙          ↘
+   找到           没找到
+    ↓               ↓
+绑定 e          Uncaught Exception
+    ↓               ↓
+执行 catch       进程失败
+```
+
+这样，`try/catch` 就成为 FCL 控制流体系的一部分，而不是简单套在 Java Exception 外面的一层语法糖。

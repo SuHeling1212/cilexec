@@ -1,6 +1,8 @@
 package com.follarce.application;
 
 import com.follarce.auth.Authorization;
+import com.follarce.auth.PasswordPolicy;
+import com.follarce.auth.UsernamePolicy;
 import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
@@ -51,6 +53,7 @@ import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;
 import com.follarce.market.client.MarketRuntimeFunctions;
+import com.follarce.terminal.TerminalAccessService;
 import com.follarce.terminal.TerminalDimensions;
 import com.follarce.timer.TimerService;
 
@@ -59,6 +62,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -828,6 +832,7 @@ public final class FclRuntimeFunctions {
                     UUID childUid = UUID.randomUUID();
                     long childPid = transaction.processes().allocatePid();
                     FclContinuation childRuntime = invocation.continuation().snapshot();
+                    stripTerminalLifecycle(childRuntime);
                     childRuntime.cacheCallResult(invocation.expressionId(), 0L);
                     childRuntime.clearWait();
                     Continuation childContinuation = new FclPersistenceBridge(
@@ -955,6 +960,52 @@ public final class FclRuntimeFunctions {
                     arity(args, 0, "user.getListOfUsers");
                     return transaction.auth().findUsersByAdministrator(process.ownerId()).stream()
                             .map(FclRuntimeFunctions::userMap).toList();
+                })
+                .register("user", "create", args -> {
+                    if (args.size() < 2 || args.size() > 3) {
+                        throw new FclRuntimeException("user.create expects 2 or 3 arguments, got "
+                                + args.size());
+                    }
+                    String username = string(args.get(0), "user.create username");
+                    String password = string(args.get(1), "user.create password");
+                    Set<Capability> capabilities = TerminalAccessService.USER_CAPABILITIES;
+                    String administratorUsername = null;
+                    String administratorPassword = null;
+                    if (args.size() > 2) {
+                        // Creating an administrator is a delegation: an existing
+                        // administrator's identity and password must be supplied, and
+                        // the database re-checks that identity's current effective
+                        // SYSTEM_ADMIN atomically with the creation.
+                        if (!(args.get(2) instanceof List<?> credentials)
+                                || credentials.size() != 2) {
+                            throw new FclRuntimeException(
+                                    "user.create administrator credentials must be "
+                                            + "[administratorUsername, administratorPassword]");
+                        }
+                        administratorUsername = string(credentials.get(0),
+                                "user.create administrator username");
+                        administratorPassword = string(credentials.get(1),
+                                "user.create administrator password");
+                        capabilities = TerminalAccessService.ADMIN_CAPABILITIES;
+                    }
+                    String normalized = UsernamePolicy.normalize(username);
+                    char[] secret = password.toCharArray();
+                    char[] secretAdmin = administratorPassword == null
+                            ? null : administratorPassword.toCharArray();
+                    try {
+                        PasswordPolicy.require(secret);
+                        UserAccount created = transaction.auth().createUserByCredential(
+                                administratorUsername, secretAdmin,
+                                UUID.randomUUID(), normalized, secret, capabilities,
+                                UUID.randomUUID(), now);
+                        // The VFS root is provisioned idempotently on the new user's first login
+                        // (TerminalAccessService.ensureRoot); user transactions cannot insert a
+                        // node owned by another user under forced RLS.
+                        return userMap(created);
+                    } finally {
+                        Arrays.fill(secret, '\0');
+                        if (secretAdmin != null) Arrays.fill(secretAdmin, '\0');
+                    }
                 })
                 .register("user", "removeUser", args -> {
                     arity(args, 1, "user.removeUser");
@@ -3211,8 +3262,30 @@ public final class FclRuntimeFunctions {
         throw FclSuspension.suspend();
     }
 
-    private CilProcess targetProcess(long pid, String operation) {
-        CilProcess target = transaction.processes().findByPid(pid)
+    /**
+     * A fork child inherits its parent's full execution context but must not inherit
+     * the terminal process's lifecycle markers: only the interactive terminal root
+     * pauses when its appended bytecode runs out and waits for the next submission.
+     * Without this the child would be treated as a terminal process and never reach
+     * TERMINATED after a natural end or {@code util.exit()}.
+     */
+    private static void stripTerminalLifecycle(FclContinuation runtime) {
+        FclScope root = runtime.globalScope();
+        removeIfPresent(root, TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
+        removeIfPresent(root, TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
+        removeIfPresent(root, TerminalReplService.LIBRARY_SCOPE_KEY);
+        for (FclContinuation.CallFrame frame : runtime.callStack()) {
+            removeIfPresent(frame.callerScope(), TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
+            removeIfPresent(frame.callerScope(), TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
+            removeIfPresent(frame.callerScope(), TerminalReplService.LIBRARY_SCOPE_KEY);
+        }
+    }
+
+    private static void removeIfPresent(FclScope scope, String key) {
+        if (scope.contains(key)) scope.remove(key);
+    }
+
+    private CilProcess targetProcess(long pid, String operation) {        CilProcess target = transaction.processes().findByPid(pid)
                 .orElseThrow(() -> new FclRuntimeException("Unknown PID: " + pid));
         Set<Capability> capabilities = transaction.auth().capabilities(process.ownerId());
         boolean allowed = capabilities.contains(Capability.SYSTEM_ADMIN)
