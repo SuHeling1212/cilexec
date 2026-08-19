@@ -13,6 +13,7 @@ import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.fcl.FclBuiltins;
+import com.follarce.fcl.FclCompileException;
 import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
@@ -83,9 +84,9 @@ class ProcessStatementExecutorTest {
                 func hi() { return value }
                 symbols = memory.list(true)
                 allSymbols = memory.list({includeRuntime: true})
-                removedValue = memory.destroy("value")
-                removedFunction = memory.destroy("hi")
-                removedBuiltin = memory.destroy("io.print")
+                removedValue = memory.destroy(value)
+                removedFunction = memory.destroy(hi)
+                removedBuiltin = memory.destroy(io.print)
                 """, com.follarce.extension.SourceExtensionIndex.catalog());
 
         while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
@@ -119,6 +120,249 @@ class ProcessStatementExecutorTest {
         Map<String, Object> allSymbols = (Map<String, Object>) restored.scope().get("allSymbols");
         assertTrue(((List<?>) allSymbols.get("functions")).stream().anyMatch(value ->
                 value instanceof Map<?, ?> function && "io.print".equals(function.get("name"))));
+    }
+
+    @Test
+    void memoryDestroyDeletesTopLevelVariablesAndFunctionsAndReportsBooleans() {
+        Fixture fixture = new Fixture("""
+                a = 1
+                missing = memory.destroy(absent)
+                ok = memory.destroy(a)
+                presentAfter = memory.destroy(a)
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(false, restored.scope().get("missing"),
+                "destroying an absent top-level symbol returns false");
+        assertEquals(true, restored.scope().get("ok"));
+        assertEquals(false, restored.scope().get("presentAfter"),
+                "destroying an already-deleted variable returns false");
+        assertFalse(restored.scope().contains("a"));
+    }
+
+    @Test
+    void memoryDestroyRemovesArrayElementsWithRealShiftAndNoHoles() {
+        Fixture fixture = new Fixture("""
+                a = [10, 20, 30]
+                mid = memory.destroy(a[1])
+                midSize = #a
+                first = memory.destroy(a[0])
+                firstSize = #a
+                last = memory.destroy(a[0])
+                lastSize = #a
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("mid"));
+        assertEquals(2L, restored.scope().get("midSize"));
+        assertEquals(true, restored.scope().get("first"));
+        assertEquals(1L, restored.scope().get("firstSize"));
+        assertEquals(true, restored.scope().get("last"));
+        assertEquals(0L, restored.scope().get("lastSize"));
+        assertTrue(restored.scope().get("a") instanceof List<?> list && list.isEmpty());
+    }
+
+    @Test
+    void memoryDestroyRemovesMapEntriesAndHandlesMissingKeys() {
+        Fixture fixture = new Fixture("""
+                m = {"a": 1, "b": 2}
+                removed = memory.destroy(m["a"])
+                remaining = m
+                missing = memory.destroy(m["zzz"])
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("removed"));
+        assertEquals(false, restored.scope().get("missing"),
+                "destroying an absent map key returns false");
+        Map<?, ?> remaining = (Map<?, ?>) restored.scope().get("remaining");
+        assertEquals(1, remaining.size());
+        assertEquals(2L, remaining.get("b"));
+        assertFalse(remaining.containsKey("a"));
+    }
+
+    @Test
+    void memoryDestroyRemovesNestedElementsThroughRealContainers() {
+        Fixture fixture = new Fixture("""
+                people = [{"name": "Alice", "age": 18}]
+                nestedMap = memory.destroy(people[0]["name"])
+                grids = [[1, 2, 3], [4, 5, 6]]
+                nestedList = memory.destroy(grids[0][1])
+                deep = [{"x": [1, 2, 3]}]
+                deepRemoved = memory.destroy(deep[0]["x"][1])
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("nestedMap"));
+        assertEquals(true, restored.scope().get("nestedList"));
+        assertEquals(true, restored.scope().get("deepRemoved"));
+        List<?> people = (List<?>) restored.scope().get("people");
+        assertEquals(Map.of("age", 18L), people.getFirst());
+        List<?> grids = (List<?>) restored.scope().get("grids");
+        assertEquals(List.of(1L, 3L), grids.get(0));
+        assertEquals(List.of(4L, 5L, 6L), grids.get(1));
+        List<?> deep = (List<?>) restored.scope().get("deep");
+        assertEquals(Map.of("x", List.of(1L, 3L)), deep.getFirst());
+    }
+
+    @Test
+    void memoryDestroyPreservesValueSemanticsCopies() {
+        Fixture fixture = new Fixture("""
+                a = [1, 2, 3]
+                b = a
+                destroyed = memory.destroy(a[1])
+                c = {"x": 1}
+                d = c
+                whole = memory.destroy(c)
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("destroyed"));
+        assertEquals(true, restored.scope().get("whole"));
+        assertEquals(List.of(1L, 3L), restored.scope().get("a"));
+        assertEquals(List.of(1L, 2L, 3L), restored.scope().get("b"),
+                "a copied value must not be affected by destroying the source element");
+        assertEquals(Map.of("x", 1L), restored.scope().get("d"),
+                "a copied value must survive destroying the source variable");
+        assertFalse(restored.scope().contains("c"));
+    }
+
+    @Test
+    void memoryDestroyPersistsInEnvelopeAndNormalizedScopeProjection() {
+        Fixture fixture = new Fixture("""
+                a = [1, 2, 3]
+                destroyed = memory.destroy(a[1])
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+
+        runToCompletion(fixture);
+
+        Continuation persisted = fixture.persistence.processes.current.continuation();
+        FclContinuation envelope = new FclContinuationCodec().fromJson(
+                persisted.globalVariables()
+                        .get(FclPersistenceBridge.ENVELOPE_KEY).canonicalPayload());
+        assertEquals(List.of(1L, 3L), envelope.scope().get("a"));
+        assertEquals(true, envelope.scope().get("destroyed"));
+        Continuation.ScopeFrame normalized = persisted.scopeStack().getLast();
+        assertEquals(List.of(1L, 3L), new FclContinuationCodec().valueFromJson(
+                normalized.variables().get("a").canonicalPayload()));
+    }
+
+    @Test
+    void memoryDestroyRejectsInvalidTargetsAtCompileTime() {
+        for (String source : List.of(
+                "memory.destroy(\"a\")\n",
+                "memory.destroy(1)\n",
+                "memory.destroy(a + b)\n",
+                "memory.destroy([1, 2, 3])\n",
+                "memory.destroy(func())\n",
+                "memory.destroy()\n",
+                "memory.destroy(a, b)\n")) {
+            assertThrows(FclCompileException.class, () -> new Fixture(source,
+                            com.follarce.extension.SourceExtensionIndex.catalog()),
+                    "must reject non-target argument: " + source.strip());
+        }
+    }
+
+    @Test
+    void memoryDestroyFailsOnStringElementAndOutOfRangeIndexesWithoutPartialDeletion() {
+        Fixture stringElement = new Fixture("""
+                text = "abc"
+                bad = memory.destroy(text[1])
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        runToFailure(stringElement);
+        FclContinuation stringFailure = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(stringElement.persistence.processes.current.continuation());
+        assertTrue(stringFailure.failed());
+
+        Fixture outOfRange = new Fixture("""
+                a = [1]
+                bad = memory.destroy(a[5])
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        runToFailure(outOfRange);
+        FclContinuation rangeFailure = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(outOfRange.persistence.processes.current.continuation());
+        assertTrue(rangeFailure.failed());
+        assertEquals(List.of(1L), rangeFailure.scope().get("a"),
+                "an out-of-range destroy must leave the array untouched");
+    }
+
+    @Test
+    void memoryDestroyRejectsReservedRuntimeStateAndImmutableRuntimeFunctions() {
+        Fixture fixture = new Fixture("""
+                reserved = memory.destroy(cilexec.fcl.disabledFunctions)
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        runToFailure(fixture);
+
+        Fixture immutable = new Fixture("""
+                removed = memory.destroy(io.print)
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        runToCompletion(immutable);
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(immutable.persistence.processes.current.continuation());
+        assertEquals(false, restored.scope().get("removed"),
+                "destroying an immutable runtime function returns false");
+    }
+
+    @Test
+    void memoryDestroyRemovesReplLibraryFunctionsFromThePersistedLibrarySource() {
+        String library = "func hello() { return 1 }\nfunc keep() { return 2 }\n";
+        Fixture fixture = new Fixture(library + "removed = memory.destroy(hello)\n",
+                com.follarce.extension.SourceExtensionIndex.catalog());
+        FclContinuation runtime = new FclContinuation();
+        runtime.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
+        runtime.scope().put(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY,
+                UUID.randomUUID().toString());
+        runtime.scope().put(com.follarce.fcl.FclPath.SCOPE_KEY, "/");
+        runtime.scope().put(TerminalReplService.LIBRARY_SCOPE_KEY, library);
+        Continuation seeded = new FclPersistenceBridge(new FclContinuationCodec())
+                .persist(fixture.processUid, fixture.program, initial(fixture.program), runtime);
+        CilProcess original = fixture.persistence.processes.current;
+        fixture.persistence.processes.current = new CilProcess(original.identity(),
+                original.ownerId(), original.status(), original.stateVersion(),
+                original.executionEpoch(), seeded, original.parentProcessUid(),
+                original.createdAt(), original.updatedAt());
+
+        while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
+                || fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+            fixture.executor.executeSlice(fixture.claim);
+            CilProcess current = fixture.persistence.processes.current;
+            if (current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+        }
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(CilProcess.Status.PAUSED,
+                fixture.persistence.processes.current.status(),
+                "terminal roots stay PAUSED after each submission");
+        assertEquals(true, restored.scope().get("removed"));
+        assertTrue(restored.functionDisabled("hello"));
+        assertFalse(restored.functionDisabled("keep"));
+        String persistedLibrary = (String) restored.globalScope().get(
+                TerminalReplService.LIBRARY_SCOPE_KEY);
+        assertFalse(persistedLibrary.contains("func hello"),
+                "library must drop the destroyed declaration");
+        assertTrue(persistedLibrary.contains("func keep"),
+                "unrelated declarations must be retained");
     }
 
     @Test
@@ -874,8 +1118,7 @@ class ProcessStatementExecutorTest {
         assertEquals(fixture.processUid, fixture.persistence.timers.deletedProcess);
     }
 
-    private static SchedulerClaim claim(UUID processUid, UUID ownerId, long epoch) {
-        return new SchedulerClaim(processUid, ownerId, UUID.randomUUID(), UUID.randomUUID(), epoch,
+    private static SchedulerClaim claim(UUID processUid, UUID ownerId, long epoch) {        return new SchedulerClaim(processUid, ownerId, UUID.randomUUID(), UUID.randomUUID(), epoch,
                 NOW.minusSeconds(1), NOW.minusSeconds(1), NOW.plus(Duration.ofMinutes(1)));
     }
 
@@ -883,6 +1126,38 @@ class ProcessStatementExecutorTest {
         return new Continuation(program.programId(), program.programHash(), 0,
                 List.of(), List.of(), List.of(), List.of(), Optional.empty(), Map.of(), Map.of(),
                 program.languageVersion(), Integer.toString(program.runtimeFormatVersion()));
+    }
+
+    private static void runToCompletion(Fixture fixture) {
+        while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
+                || fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+            fixture.executor.executeSlice(fixture.claim);
+            CilProcess current = fixture.persistence.processes.current;
+            if (current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+        }
+        assertEquals(CilProcess.Status.TERMINATED,
+                fixture.persistence.processes.current.status());
+    }
+
+    private static void runToFailure(Fixture fixture) {
+        while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
+                || fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
+            fixture.executor.executeSlice(fixture.claim);
+            CilProcess current = fixture.persistence.processes.current;
+            if (current.status() == CilProcess.Status.READY) {
+                CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
+                fixture.persistence.processes.current = claimed;
+                fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+                fixture.persistence.scheduler.lease = fixture.claim;
+            }
+        }
+        assertEquals(CilProcess.Status.FAILED,
+                fixture.persistence.processes.current.status());
     }
 
     private static final class Fixture {

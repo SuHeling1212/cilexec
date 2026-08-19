@@ -16,6 +16,9 @@ public final class FclCompiler {
             "func", "if", "else", "while", "break", "continue", "return",
             "import", "include", "as", "and", "or", "not", "public", "private",
             "true", "false", "null");
+    /** Qualified names treated as the language-level memory.destroy operation. */
+    private static final java.util.Set<String> DESTROY_FUNCTIONS = java.util.Set.of(
+            "memory.destroy", "memory.unset", "memory.release");
     public FclProgram compile(String source) {
         Objects.requireNonNull(source, "source");
         return new Parser(source, new Lexer(source).scan()).compile();
@@ -635,6 +638,10 @@ public final class FclCompiler {
                         fail(previous(), "Only named functions can be called");
                     }
                     FclExpression.Variable variable = (FclExpression.Variable) expression;
+                    if (DESTROY_FUNCTIONS.contains(variable.name())) {
+                        expression = destroyTarget(variable.name());
+                        continue;
+                    }
                     List<FclExpression> arguments = new ArrayList<>();
                     if (!check(Type.RIGHT_PAREN)) {
                         do {
@@ -653,6 +660,33 @@ public final class FclCompiler {
                 }
                 return expression;
             }
+        }
+
+        /**
+         * Parses a {@code memory.destroy} delete target: a symbol name optionally followed
+         * by index brackets. Anything else (literals, strings, binary expressions, array or
+         * map literals, function calls) is rejected here so the runtime always receives the
+         * real root name plus the index path instead of a deep-copied value.
+         */
+        private FclExpression destroyTarget(String qualifiedName) {
+            if (check(Type.RIGHT_PAREN)) {
+                fail(peek(), qualifiedName + " expects a symbol target");
+            }
+            Token root = consume(Type.IDENTIFIER, qualifiedName
+                    + " target must be a symbol name such as " + qualifiedName + "(a)");
+            if (RESERVED_WORDS.contains(root.text())) {
+                fail(root, root.text() + " is a reserved word");
+            }
+            List<FclExpression> indices = new ArrayList<>();
+            while (match(Type.LEFT_BRACKET)) {
+                indices.add(expression());
+                consume(Type.RIGHT_BRACKET, "Expected ']' after destroy index");
+            }
+            if (check(Type.COMMA)) {
+                fail(peek(), qualifiedName + " accepts exactly one target");
+            }
+            consume(Type.RIGHT_PAREN, "Expected ')' after destroy target");
+            return new FclExpression.DestroyTarget(nextId(), root.text(), indices);
         }
 
         private FclExpression primary() {

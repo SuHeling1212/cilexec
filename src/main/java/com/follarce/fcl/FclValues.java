@@ -9,7 +9,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /** FCL value semantics kept independent of storage and host services. */
-final class FclValues {
+public final class FclValues {
+    /** Sentinel for an absent final map key: the destroy reported "nothing removed". */
+    public static final Object NO_ENTRY = new Object();
+
     private FclValues() {}
 
     static Object deepCopy(Object value) {
@@ -116,6 +119,52 @@ final class FclValues {
             return;
         }
         throw new FclRuntimeException("Value is not assignable by index: " + typeOf(target));
+    }
+
+    /**
+     * Removes the real element at the end of the index path from the authoritative
+     * container tree. List elements shift left (no holes); Map entries are removed by
+     * the normalized key. Returns the removed value, or {@link #NO_ENTRY} when the final
+     * Map key is absent. Out-of-range list indexes, non-indexable intermediates, and
+     * String element targets raise a runtime error.
+     */
+    @SuppressWarnings("unchecked")
+    public static Object removeIndexed(Object root, List<Object> indices) {
+        if (indices.isEmpty()) {
+            throw new IllegalArgumentException("Indexed removal requires an index");
+        }
+        Object target = root;
+        for (int offset = 0; offset < indices.size() - 1; offset++) {
+            Object index = indices.get(offset);
+            if (target instanceof List<?> list) {
+                target = list.get(listIndex(index, list.size()));
+            } else if (target instanceof Map<?, ?> map) {
+                Object key = normalizeKey(deepCopy(index));
+                if (!map.containsKey(key)) {
+                    return NO_ENTRY;
+                }
+                target = map.get(key);
+            } else {
+                throw new FclRuntimeException("Value is not indexable: " + typeOf(target));
+            }
+        }
+        Object finalIndex = indices.getLast();
+        if (target instanceof List<?> rawList) {
+            List<Object> list = (List<Object>) rawList;
+            return list.remove(listIndex(finalIndex, list.size()));
+        }
+        if (target instanceof Map<?, ?> rawMap) {
+            Map<Object, Object> map = (Map<Object, Object>) rawMap;
+            Object key = normalizeKey(deepCopy(finalIndex));
+            if (!map.containsKey(key)) {
+                return NO_ENTRY;
+            }
+            return map.remove(key);
+        }
+        if (target instanceof String) {
+            throw new FclRuntimeException("memory.destroy cannot remove a string element");
+        }
+        throw new FclRuntimeException("Value is not indexable: " + typeOf(target));
     }
 
     static Number requireNumber(Object value, String operation) {

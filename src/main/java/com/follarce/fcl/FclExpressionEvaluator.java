@@ -77,6 +77,9 @@ final class FclExpressionEvaluator {
         if (expression instanceof FclExpression.Index index) {
             return FclValues.index(evaluate(index.target()), evaluate(index.index()));
         }
+        if (expression instanceof FclExpression.DestroyTarget destroy) {
+            return destroyTarget(destroy);
+        }
         if (expression instanceof FclExpression.Call call) {
             FclContinuation.PendingStatement pending = continuation.pendingStatement();
             if (pending != null && pending.hasResult(call.id())) {
@@ -114,6 +117,19 @@ final class FclExpressionEvaluator {
     private String currentPackageIdentity() {
         FclProgram.Function function = currentFunction();
         return function == null ? null : function.packageIdentity();
+    }
+
+    /**
+     * A {@code memory.destroy(target)} call passes the symbol root and the evaluated index
+     * path to the registered destroy implementation instead of the deep-copied target value,
+     * so the deletion can operate on the real continuation scope and containers.
+     */
+    private Object destroyTarget(FclExpression.DestroyTarget destroy) {
+        List<Object> indices = new ArrayList<>(destroy.indices().size());
+        for (FclExpression index : destroy.indices()) indices.add(evaluate(index));
+        return functions.invoke("memory.destroy", List.of(destroy.rootName(), indices),
+                new FclFunctionRegistry.Invocation(destroy.id(), continuation,
+                        currentPackageIdentity(), program));
     }
 
     private FclProgram.Function currentFunction() {

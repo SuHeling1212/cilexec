@@ -42,6 +42,7 @@ import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclScope;
+import com.follarce.fcl.FclValues;
 import com.follarce.fcl.TerminalModeState;
 import com.follarce.fcl.FclSuspension;
 import com.follarce.extension.JavaExtensionCatalog;
@@ -499,31 +500,55 @@ public final class FclRuntimeFunctions {
                     "functions", memoryFunctions(invocation, options.includeRuntime()));
         }, "ls");
         registry.registerContextual("memory", "destroy", (args, invocation) -> {
-            arity(args, 1, "memory.destroy");
-            String name = string(args.getFirst(), "variable name");
-            if (reservedScopeKey(name)) {
-                throw new FclRuntimeException("memory.destroy cannot remove runtime state: " + name);
+            if (args.size() != 2) {
+                throw new FclRuntimeException("memory.destroy requires a symbol target such as "
+                        + "memory.destroy(a) or memory.destroy(a[1])");
             }
-            boolean removed = false;
-            if (invocation.continuation().scope().contains(name)) {
-                releaseValue(invocation.continuation().scope().remove(name), new IdentityHashMap<>());
-                removed = true;
+            String rootName = string(args.get(0), "memory.destroy target");
+            if (reservedScopeKey(rootName)) {
+                throw new FclRuntimeException("memory.destroy cannot remove runtime state: " + rootName);
             }
-            FclProgram current = invocation.program();
-            if (current != null && current.function(name) != null) {
-                invocation.continuation().disableFunction(name);
-                FclScope root = invocation.continuation().globalScope();
-                if (root.contains(TerminalReplService.LIBRARY_SCOPE_KEY)) {
-                    Object library = root.get(TerminalReplService.LIBRARY_SCOPE_KEY);
-                    if (library instanceof String source) {
-                        root.put(TerminalReplService.LIBRARY_SCOPE_KEY,
-                                TerminalReplService.removeFunctionDeclaration(source, name));
-                    }
+            @SuppressWarnings("unchecked")
+            List<Object> indices = (List<Object>) args.get(1);
+            if (indices.isEmpty()) {
+                if (invocation.continuation().scope().contains(rootName)) {
+                    releaseValue(invocation.continuation().scope().remove(rootName),
+                            new IdentityHashMap<>());
+                    return true;
                 }
-                removed = true;
+                FclProgram current = invocation.program();
+                if (current != null && current.function(rootName) != null) {
+                    invocation.continuation().disableFunction(rootName);
+                    FclScope root = invocation.continuation().globalScope();
+                    if (root.contains(TerminalReplService.LIBRARY_SCOPE_KEY)) {
+                        Object library = root.get(TerminalReplService.LIBRARY_SCOPE_KEY);
+                        if (library instanceof String source) {
+                            root.put(TerminalReplService.LIBRARY_SCOPE_KEY,
+                                    TerminalReplService.removeFunctionDeclaration(source, rootName));
+                        }
+                    }
+                    return true;
+                }
+                return false;
             }
-            return removed;
+            return destroyIndexed(invocation, rootName, indices);
         }, "unset", "release");
+    }
+
+    /** Removes the real element at the end of the index path from the authoritative scope container. */
+    private static boolean destroyIndexed(FclFunctionRegistry.Invocation invocation,
+                                          String rootName, List<Object> indices) {
+        FclContinuation continuation = invocation.continuation();
+        if (!continuation.scope().contains(rootName)) {
+            return false;
+        }
+        Object root = continuation.scope().get(rootName);
+        Object removed = FclValues.removeIndexed(root, indices);
+        if (removed == FclValues.NO_ENTRY) {
+            return false;
+        }
+        releaseValue(removed, new IdentityHashMap<>());
+        return true;
     }
 
     private static Map<String, Object> memoryVariables(FclContinuation continuation,

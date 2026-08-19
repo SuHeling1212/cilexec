@@ -6,7 +6,8 @@ import java.util.Objects;
 /** Immutable expression tree. Node ids make suspended function calls resumable. */
 public sealed interface FclExpression permits FclExpression.Literal, FclExpression.Variable,
         FclExpression.ArrayLiteral, FclExpression.MapLiteral, FclExpression.Unary,
-        FclExpression.Binary, FclExpression.Index, FclExpression.Call {
+        FclExpression.Binary, FclExpression.Index, FclExpression.Call,
+        FclExpression.DestroyTarget {
 
     long id();
 
@@ -64,6 +65,19 @@ public sealed interface FclExpression permits FclExpression.Literal, FclExpressi
         public Call {
             Objects.requireNonNull(name, "name");
             arguments = List.copyOf(arguments);
+        }
+    }
+
+    /**
+     * A language-level {@code memory.destroy} target: the symbol name and its optional
+     * index path are captured at compile time so the runtime can delete the real
+     * variable/function binding or the real container element instead of a deep copy.
+     */
+    record DestroyTarget(long id, String rootName,
+                         List<FclExpression> indices) implements FclExpression {
+        public DestroyTarget {
+            Objects.requireNonNull(rootName, "rootName");
+            indices = List.copyOf(indices);
         }
     }
 }
