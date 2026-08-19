@@ -3,6 +3,7 @@ package com.follarce.market.server;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
@@ -96,5 +97,49 @@ class TokenStoreTest {
         other.remove("late");
         assertFalse(store.isValid(plaintext),
                 "removed tokens must stop working without a restart");
+    }
+
+    @Test
+    void writesFromAnotherInstanceNeverOverwriteTheLatestState() throws Exception {
+        TokenStore first = new TokenStore(tokensFile());
+        TokenStore second = new TokenStore(tokensFile());
+
+        String alice = first.add("alice");
+        second.add("bob");
+        // A write through the second instance must reload the file first; otherwise
+        // alice (written by the first instance) would silently disappear.
+        assertEquals(Set.of("alice", "bob"), new TokenStore(tokensFile()).names());
+
+        assertTrue(second.remove("alice"));
+        assertEquals(Set.of("bob"), new TokenStore(tokensFile()).names());
+        assertFalse(first.isValid(alice),
+                "a removal through another instance must invalidate the token");
+    }
+
+    @Test
+    void concurrentAddsAcrossInstancesKeepEveryToken() throws Exception {
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.Future<String> alice = pool.submit(() -> {
+                try {
+                    return new TokenStore(tokensFile()).add("alice");
+                } catch (IOException failure) {
+                    throw new java.io.UncheckedIOException(failure);
+                }
+            });
+            java.util.concurrent.Future<String> bob = pool.submit(() -> {
+                try {
+                    return new TokenStore(tokensFile()).add("bob");
+                } catch (IOException failure) {
+                    throw new java.io.UncheckedIOException(failure);
+                }
+            });
+            alice.get();
+            bob.get();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals(Set.of("alice", "bob"), new TokenStore(tokensFile()).names());
     }
 }

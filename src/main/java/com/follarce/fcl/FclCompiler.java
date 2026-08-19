@@ -129,8 +129,16 @@ public final class FclCompiler {
             }
             String text = source.substring(start, current);
             try {
-                if (decimal) add(Type.NUMBER, Double.parseDouble(text));
-                else add(Type.NUMBER, Long.parseLong(text));
+                if (decimal) {
+                    double value = Double.parseDouble(text);
+                    // parseDouble saturates overflowing literals to Infinity, which later
+                    // fails when the continuation is serialized to JSON. Reject the literal
+                    // at compile time instead of accepting a value that cannot round-trip.
+                    if (!Double.isFinite(value)) error("Numeric literal is not finite: '" + text + "'");
+                    add(Type.NUMBER, value);
+                } else {
+                    add(Type.NUMBER, Long.parseLong(text));
+                }
             } catch (NumberFormatException failure) {
                 error("Invalid number '" + text + "'");
             }

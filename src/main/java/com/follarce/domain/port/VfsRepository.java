@@ -126,6 +126,16 @@ public interface VfsRepository {
 
     void insertNode(VfsNode node);
 
+    /**
+     * Inserts a node only when no conflicting row exists (one root per owner, or one
+     * sibling name per parent). Returns false when the row already exists. Used by
+     * idempotent bootstrap/login paths so concurrent first-time logins cannot fail
+     * on the unique indexes.
+     */
+    default boolean insertNodeIfAbsent(VfsNode node) {
+        throw new UnsupportedOperationException("Idempotent VFS insert is not implemented");
+    }
+
     default boolean renameNode(UUID nodeId, UUID ownerId, String replacementName,
                                Instant updatedAt) {
         throw new UnsupportedOperationException("VFS rename is not implemented");

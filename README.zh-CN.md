@@ -144,7 +144,7 @@ src/main/resources/db/baseline/   已冻结的 V001 模块（角色、RLS、SQL 
 ## 构建与测试
 
 ```bash
-mvn clean test        # 370+ 单元与生命周期测试
+mvn clean test        # 400+ 单元与生命周期测试
 mvn clean verify      # 强制 PostgreSQL/崩溃恢复集成测试、质量门禁与 JAR
 ```
 

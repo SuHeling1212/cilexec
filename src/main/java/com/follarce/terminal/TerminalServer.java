@@ -53,6 +53,7 @@ public final class TerminalServer implements AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean();
     private final Set<Socket> clients = ConcurrentHashMap.newKeySet();
     private final Set<Thread> sessionThreads = ConcurrentHashMap.newKeySet();
+    private final Set<DimensionInputStream> transports = ConcurrentHashMap.newKeySet();
     private final Semaphore connectionSlots = new Semaphore(MAX_CONNECTIONS);
     private volatile ServerSocket server;
     private volatile Thread acceptor;
@@ -178,6 +179,7 @@ public final class TerminalServer implements AutoCloseable {
     private void serve(Socket client) {
         sessionThreads.add(Thread.currentThread());
         PrintWriter output = null;
+        DimensionInputStream transported = null;
         try (client) {
             output = new LockedPrintWriter(new OutputStreamWriter(client.getOutputStream(),
                     StandardCharsets.UTF_8));
@@ -196,29 +198,30 @@ public final class TerminalServer implements AutoCloseable {
                 output.flush();
                 return;
             }
-            DimensionInputStream transported = new DimensionInputStream(connection,
-                    idleDisconnectNanos);
+            transported = new DimensionInputStream(connection, idleDisconnectNanos);
+            final DimensionInputStream transport = transported;
+            transports.add(transport);
             PrintWriter sessionOutput = output;
             java.util.concurrent.atomic.AtomicReference<TerminalControl> attached =
                     new java.util.concurrent.atomic.AtomicReference<>();
-            transported.onIdleWarning(() -> {
+            transport.onIdleWarning(() -> {
                 sessionOutput.println("session idle; this terminal will close in 1 minute if "
                         + "the attached process stays suspended (input or activity resets the "
                         + "timer)");
                 sessionOutput.flush();
             });
-            transported.onIdleCheck(() -> {
+            transport.onIdleCheck(() -> {
                 TerminalControl control = attached.get();
                 return control == null ? Long.MAX_VALUE
                         : control.idleRemainingNanos(idleDisconnectNanos);
             });
-            transported.onDisconnect(transported::interruptForeground);
-            TerminalInput input = TerminalInput.remoteRaw(transported, transported::width);
+            transport.onDisconnect(transport::interruptForeground);
+            TerminalInput input = TerminalInput.remoteRaw(transport, transport::width);
             new TerminalAccessConsole(input, output, access, account -> {
                         TerminalControl control = interactiveControls.apply(account,
                                 handshake.interactiveContext());
                         attached.set(control);
-                        transported.bind(account.userId(), control::interruptForeground);
+                        transport.bind(account.userId(), control::interruptForeground);
                         control.outputRouteId().ifPresent(
                                 routeId -> TerminalOutputRouter.attach(routeId, sessionOutput));
                         String restore = control.terminalRestoreSequence();
@@ -232,6 +235,15 @@ public final class TerminalServer implements AutoCloseable {
         } catch (IOException ignored) {
             // Disconnecting a host terminal ends only this authenticated connection.
         } finally {
+            if (transported != null) {
+                transports.remove(transported);
+                try {
+                    // Stops the input pump even when it is blocked on a full queue.
+                    transported.close();
+                } catch (IOException ignored) {
+                    // The socket is already gone; close() still interrupts the pump.
+                }
+            }
             sessionThreads.remove(Thread.currentThread());
             clients.remove(client);
             connectionSlots.release();
@@ -404,6 +416,14 @@ public final class TerminalServer implements AutoCloseable {
         closeServer();
         sessionThreads.forEach(Thread::interrupt);
         clients.forEach(this::closeClient);
+        transports.forEach(transport -> {
+            try {
+                transport.close();
+            } catch (IOException ignored) {
+                // The transport is already closed or its socket write failed.
+            }
+        });
+        transports.clear();
         clients.clear();
         if (acceptor != null) {
             acceptor.interrupt();
@@ -440,17 +460,25 @@ public final class TerminalServer implements AutoCloseable {
         private volatile TerminalDimensions.Size size = new TerminalDimensions.Size(80, 24);
         private volatile BooleanSupplier interrupt = () -> false;
         private final AtomicBoolean disconnected = new AtomicBoolean();
+        private final AtomicBoolean closed = new AtomicBoolean();
         private final long idleDisconnectNanos;
         private volatile LongSupplier idleCheck = () -> Long.MAX_VALUE;
         private volatile Runnable disconnectListener = () -> { };
         private volatile Runnable idleWarning = () -> { };
+        private volatile Thread pumpThread;
         private final ArrayBlockingQueue<Integer> input =
                 new ArrayBlockingQueue<>(MAX_BUFFERED_INPUT_BYTES);
 
         DimensionInputStream(InputStream input, long idleDisconnectNanos) {
             super(input);
             this.idleDisconnectNanos = idleDisconnectNanos;
-            Thread.ofVirtual().name("cilexec-terminal-input").start(this::pump);
+            this.pumpThread = Thread.ofVirtual().name("cilexec-terminal-input")
+                    .start(this::pump);
+        }
+
+        /** The socket-draining thread; exposed for shutdown and for the full-buffer test. */
+        Thread pumpThread() {
+            return pumpThread;
         }
 
         private void bind(java.util.UUID ownerId, BooleanSupplier interrupt) {
@@ -555,7 +583,7 @@ public final class TerminalServer implements AutoCloseable {
                     }
                     if (value < 0) break;
                     if (value == 0) readFrame();
-                    else input.put(value);
+                    else enqueue(value);
                 }
             } catch (IOException ignored) {
                 // Socket closure ends the terminal input stream.
@@ -563,10 +591,12 @@ public final class TerminalServer implements AutoCloseable {
                 Thread.currentThread().interrupt();
             } finally {
                 disconnected.set(true);
-                try {
-                    input.put(END_OF_STREAM);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                // Never block here: the pump may have been interrupted while the queue
+                // was full. Clear and retry once so the end-of-stream marker is always
+                // delivered and the virtual thread can terminate.
+                if (!input.offer(END_OF_STREAM)) {
+                    input.clear();
+                    input.offer(END_OF_STREAM);
                 }
                 Runnable listener = disconnectListener;
                 if (listener != null) {
@@ -596,7 +626,7 @@ public final class TerminalServer implements AutoCloseable {
                 // Always wake whichever console read is active. If FCL was running, byte 3 is
                 // only an in-band acknowledgement of the already-persisted cancellation; if no
                 // process was running it cancels the editable prompt.
-                input.put(3);
+                enqueue(3);
                 return;
             }
             if (fields.length != 3 || !fields[0].equals("S")) return;
@@ -613,12 +643,27 @@ public final class TerminalServer implements AutoCloseable {
             }
         }
 
+        /** Queues one byte without blocking the pump forever when the queue is full. */
+        private void enqueue(int value) throws InterruptedException {
+            if (closed.get()) return;
+            try {
+                input.put(value);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            }
+        }
+
         @Override
         public void close() throws IOException {
+            if (!closed.compareAndSet(false, true)) return;
+            Thread pump = pumpThread;
+            if (pump != null) pump.interrupt();
             super.close();
             input.clear();
             if (!input.offer(END_OF_STREAM)) {
-                throw new IllegalStateException("Cannot close terminal input queue");
+                input.clear();
+                input.offer(END_OF_STREAM);
             }
         }
     }

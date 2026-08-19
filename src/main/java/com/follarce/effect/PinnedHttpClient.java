@@ -44,11 +44,32 @@ final class PinnedHttpClient {
         long startedAtNanos = System.nanoTime();
         NetworkTargetPolicy.ResolvedHttpTarget target =
                 NetworkTargetPolicy.resolveHttpTarget(uri);
-        boolean proxied = target.throughTrustedProxy();
-        URL requestUrl = proxied ? uri.toURL() : target.pinnedUri().toURL();
-        Proxy proxy = proxied
-                ? NetworkTargetPolicy.trustedProxy().orElseThrow()
-                : Proxy.NO_PROXY;
+        if (target.throughTrustedProxy()) {
+            return sendOnce(target, uri.toURL(),
+                    NetworkTargetPolicy.trustedProxy().orElseThrow(), method, body, headers,
+                    startedAtNanos, null);
+        }
+        // Direct mode: connect attempts fail over across every validated address without
+        // ever re-resolving the host name. Only connection-stage failures retry; once a
+        // response is received, later body-read errors are returned to the caller.
+        IOException lastFailure = null;
+        for (InetAddress address : target.addresses()) {
+            try {
+                return sendOnce(target, target.pinnedUri(address).toURL(), Proxy.NO_PROXY,
+                        method, body, headers, startedAtNanos, address);
+            } catch (IOException failure) {
+                lastFailure = failure;
+            }
+        }
+        throw lastFailure != null ? lastFailure
+                : new IOException("No validated address for " + uri.getHost());
+    }
+
+    private static Response sendOnce(NetworkTargetPolicy.ResolvedHttpTarget target,
+                                     URL requestUrl, Proxy proxy, String method,
+                                     Optional<String> body, Map<String, String> headers,
+                                     long startedAtNanos, InetAddress pinnedAddress)
+            throws IOException {
         HttpURLConnection connection = (HttpURLConnection) requestUrl.openConnection(proxy);
         try {
             connection.setInstanceFollowRedirects(false);
@@ -57,7 +78,7 @@ final class PinnedHttpClient {
             connection.setRequestMethod(method);
             connection.setRequestProperty("Host", target.hostHeader());
             headers.forEach(connection::setRequestProperty);
-            if (!proxied && connection instanceof HttpsURLConnection https) {
+            if (proxy.equals(Proxy.NO_PROXY) && connection instanceof HttpsURLConnection https) {
                 // No custom HostnameVerifier: with the default verifier, HttpsClient
                 // enables standard TLS endpoint identification, which checks the
                 // ORIGINAL host name against the certificate. The socket factory layers
@@ -65,7 +86,7 @@ final class PinnedHttpClient {
                 // SNI) to that original name.
                 https.setSSLSocketFactory(new PinnedSslSocketFactory(
                         (SSLSocketFactory) SSLSocketFactory.getDefault(),
-                        target.addresses(), uri.getHost()));
+                        List.of(pinnedAddress), target.originalUri().getHost()));
             }
             if ("POST".equals(method)) {
                 byte[] content = body.orElse("").getBytes(StandardCharsets.UTF_8);

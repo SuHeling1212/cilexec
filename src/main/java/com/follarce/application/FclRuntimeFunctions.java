@@ -2019,7 +2019,9 @@ public final class FclRuntimeFunctions {
 
     /**
      * Blocking receive: consumes an already-delivered envelope from the process inbox, or
-     * suspends the process as WAITING_IPC until a delivery wakes it.
+     * suspends the process as WAITING_IPC until a delivery wakes it. A delivery committed
+     * before this statement runs is reserved from the durable PENDING queue inside the
+     * slice transaction, so the check-before-sleep window cannot lose a message.
      */
     private Object ipcReceive(FclFunctionRegistry.Invocation invocation) {
         FclContinuation continuation = invocation.continuation();
@@ -2029,6 +2031,12 @@ public final class FclRuntimeFunctions {
                 return codec.valueFromJson(persisted.canonicalPayload());
             }
             return delivered;
+        }
+        Optional<IpcService.Envelope> pending = IpcService.receiveIn(transaction,
+                process.ownerId(), process.identity().processUid(), UUID.randomUUID(), now);
+        if (pending.isPresent()) {
+            IpcService.Envelope envelope = pending.orElseThrow();
+            return IpcService.envelopeMap(envelope.delivery(), envelope.message());
         }
         continuation.waitFor("ipc:" + process.identity().processUid(),
                 Map.of("ipc", "receive"));

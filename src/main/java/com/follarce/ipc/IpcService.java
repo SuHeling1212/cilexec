@@ -36,6 +36,8 @@ public final class IpcService {
     private static final Gson JSON = new Gson();
     public static final int MAX_PURGE_BATCH = 10_000;
     private static final int MAX_EXPIRY_SCAN = 100;
+    /** Defensive cap on consecutive full batches of expired/contended deliveries. */
+    private static final int MAX_EXPIRY_ROUNDS = 10;
     private final com.follarce.persistence.postgres.transaction.UserTransactionExecutor transactions;
     private final Clock clock;
 
@@ -314,23 +316,44 @@ public final class IpcService {
     public static Optional<Envelope> reserveNextIn(TransactionContext transaction,
                                                    UUID ownerId, UUID receiverProcessUid,
                                                    UUID workerId, Instant now) {
-        List<IpcDelivery> pending = transaction.ipc().findPending(
-                receiverProcessUid, MAX_EXPIRY_SCAN);
-        for (IpcDelivery candidate : pending) {
-            IpcDelivery reserved = candidate.reserve(workerId, now);
-            if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
-                continue;
+        // Scan in batches: deliveries that expire or are contended stop being PENDING, so
+        // every round moves the cursor forward and a live message behind expired ones is
+        // still found. MAX_EXPIRY_ROUNDS is only a defensive cap against a caller that
+        // keeps adding deliveries faster than the scan drains them.
+        for (int round = 0; round < MAX_EXPIRY_ROUNDS; round++) {
+            List<IpcDelivery> pending = transaction.ipc().findPending(
+                    receiverProcessUid, MAX_EXPIRY_SCAN);
+            if (pending.isEmpty()) return Optional.empty();
+            for (IpcDelivery candidate : pending) {
+                IpcDelivery reserved = candidate.reserve(workerId, now);
+                if (!transaction.ipc().updateDelivery(reserved, IpcDelivery.Status.PENDING)) {
+                    continue;
+                }
+                IpcMessage message = transaction.ipc().findMessage(reserved.messageId())
+                        .orElseThrow(() -> new IllegalStateException("Delivery message is missing"));
+                if (message.isExpiredAt(now)) {
+                    IpcDelivery dead = reserved.dead(now, "message expired before consumption");
+                    transaction.ipc().updateDelivery(dead, IpcDelivery.Status.RESERVED);
+                    continue;
+                }
+                return Optional.of(new Envelope(message, reserved));
             }
-            IpcMessage message = transaction.ipc().findMessage(reserved.messageId())
-                    .orElseThrow(() -> new IllegalStateException("Delivery message is missing"));
-            if (message.isExpiredAt(now)) {
-                IpcDelivery dead = reserved.dead(now, "message expired before consumption");
-                transaction.ipc().updateDelivery(dead, IpcDelivery.Status.RESERVED);
-                continue;
-            }
-            return Optional.of(new Envelope(message, reserved));
         }
         return Optional.empty();
+    }
+
+    /**
+     * Blocking-receive reservation. The receiver process is serialized with the sender
+     * wake path (see {@link com.follarce.domain.port.IpcRepository#lockReceiverProcess});
+     * the caller persists the durable IPC wait in the same transaction after this returns
+     * empty, so a delivery committed before the wait state is never lost to a
+     * check-before-sleep race.
+     */
+    public static Optional<Envelope> receiveIn(TransactionContext transaction,
+                                               UUID ownerId, UUID receiverProcessUid,
+                                               UUID workerId, Instant now) {
+        transaction.ipc().lockReceiverProcess(receiverProcessUid);
+        return reserveNextIn(transaction, ownerId, receiverProcessUid, workerId, now);
     }
 
     public boolean consume(UUID ownerId, UUID deliveryId) {
@@ -356,6 +379,10 @@ public final class IpcService {
                                             IpcDelivery delivery, IpcMessage message,
                                             Instant now) {
         UUID receiver = delivery.receiverProcessUid();
+        // Serialize with the receiver's own reservation/wait-state transaction: the wake
+        // decision must observe either the committed WAITING_IPC row or the reservation
+        // performed inside that same transaction, never a stale pre-wait snapshot.
+        transaction.ipc().lockReceiverProcess(receiver);
         CilProcess current = requireProcess(transaction, receiver);
         if (!isWaitingFor(current, delivery, message)) return;
         // The fast path delivers directly into the durable process inbox. The process row is

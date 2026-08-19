@@ -66,6 +66,7 @@ public final class TerminalOutputRouter {
         private final ArrayBlockingQueue<Entry> queue = new ArrayBlockingQueue<>(CAPACITY);
         private final Thread writer;
         private volatile boolean closed;
+        private volatile boolean failed;
 
         private SessionOutput(PrintWriter output) {
             this.output = output;
@@ -74,7 +75,7 @@ public final class TerminalOutputRouter {
         }
 
         private boolean offer(String text, boolean newline) {
-            if (closed) return false;
+            if (closed || failed) return false;
             try {
                 return queue.offer(new Entry(text, newline), OFFER_TIMEOUT_MILLIS,
                         TimeUnit.MILLISECONDS);
@@ -100,6 +101,15 @@ public final class TerminalOutputRouter {
                     if (entry.newline()) output.println(entry.text());
                     else output.print(entry.text());
                     output.flush();
+                    // PrintWriter never throws; a broken socket is only observable
+                    // through checkError(). Fail this session explicitly so publish()
+                    // stops reporting delivery to a dead terminal instead of letting
+                    // the effect succeed silently.
+                    if (output.checkError()) {
+                        failed = true;
+                        queue.clear();
+                        return;
+                    }
                     TerminalOutputTracker.printed(output, entry.text(), entry.newline());
                 }
             }

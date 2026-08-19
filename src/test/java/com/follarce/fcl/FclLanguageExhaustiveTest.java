@@ -170,6 +170,7 @@ class FclLanguageExhaustiveTest {
                 "import \"bad-name\"",
                 "import \"editor\" as \"bad-name\"",
                 "value = 9223372036854775808",
+                "value = " + "9".repeat(400) + ".5",
                 "true = 1",
                 "not = 1",
                 "func not() { return 1 }")) {

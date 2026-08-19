@@ -256,6 +256,17 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
     }
 
     @Override
+    public void lockReceiverProcess(UUID receiverProcessUid) {
+        try (PreparedStatement lock = connection.prepareStatement(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(? AS text),706))")) {
+            lock.setObject(1, receiverProcessUid);
+            lock.executeQuery();
+        } catch (SQLException exception) {
+            throw failure("ipc.lockReceiverProcess", exception);
+        }
+    }
+
+    @Override
     public List<IpcDelivery> findPending(UUID receiverProcessUid, int limit) {
         String sql = "SELECT * FROM ipc.delivery WHERE receiver_process_uid=? AND status='PENDING' "
                 + "ORDER BY created_at,delivery_id LIMIT ?";

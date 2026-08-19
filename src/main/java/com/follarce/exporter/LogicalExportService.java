@@ -25,6 +25,7 @@ public final class LogicalExportService {
     private final LogicalSnapshotProducer snapshot;
     private final SqliteLogicalExportVerifier verifier;
     private final Clock clock;
+    private final ReadonlyHardener hardener;
 
     public LogicalExportService(DataSource dataSource, Clock clock) {
         this(new PostgresLogicalExportSource(dataSource), new SqliteLogicalExportVerifier(), clock);
@@ -32,9 +33,16 @@ public final class LogicalExportService {
 
     LogicalExportService(LogicalSnapshotProducer snapshot,
                          SqliteLogicalExportVerifier verifier, Clock clock) {
+        this(snapshot, verifier, clock, LogicalExportService::makeReadOnly);
+    }
+
+    LogicalExportService(LogicalSnapshotProducer snapshot,
+                         SqliteLogicalExportVerifier verifier, Clock clock,
+                         ReadonlyHardener hardener) {
         this.snapshot = Objects.requireNonNull(snapshot, "snapshot");
         this.verifier = Objects.requireNonNull(verifier, "verifier");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.hardener = Objects.requireNonNull(hardener, "hardener");
     }
 
     public LogicalExportReport export(Path requestedTarget, BuildInfo buildInfo) {
@@ -51,6 +59,11 @@ public final class LogicalExportService {
                 snapshot.writeSnapshot(writer, buildInfo, clock.instant());
             }
             LogicalExportReport verified = verifier.verify(temporary);
+            // The temporary file becomes the final artifact before it is published: a
+            // hard-link publication shares the same inode, so the target is born with
+            // the read-only protection already applied. If hardening fails, nothing has
+            // been published, the temporary is removed, and the export can be retried.
+            hardener.harden(temporary);
             publishByHardLink(temporary, target);
             try {
                 Files.delete(temporary);
@@ -59,7 +72,6 @@ public final class LogicalExportService {
                 LOG.warn("Logical export published but temporary file could not be removed: {}",
                         temporary, cleanupFailure);
             }
-            makeReadOnly(target);
             return new LogicalExportReport(target, verified.tableCount(), verified.rowCount(),
                     verified.manifestSha256());
         } catch (FileAlreadyExistsException exists) {
@@ -91,7 +103,7 @@ public final class LogicalExportService {
         return target;
     }
 
-    private static void makeReadOnly(Path database) throws IOException {
+    static void makeReadOnly(Path database) throws IOException {
         if (Files.getFileStore(database).supportsFileAttributeView(PosixFileAttributeView.class)) {
             Files.setPosixFilePermissions(database, READ_ONLY_PERMISSIONS);
         } else if (!database.toFile().setReadOnly()) {
@@ -108,6 +120,12 @@ public final class LogicalExportService {
                     "Filesystem does not support atomic non-overwriting export publication",
                     unsupported);
         }
+    }
+
+    /** Test seam: applies the final read-only protection to an export file. */
+    @FunctionalInterface
+    interface ReadonlyHardener {
+        void harden(Path database) throws IOException;
     }
 
     private static void cleanup(Path temporary) {

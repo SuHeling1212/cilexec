@@ -3,11 +3,15 @@ package com.follarce.market.server;
 import com.google.gson.Gson;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -21,18 +25,27 @@ import java.util.Set;
  * Publish tokens for external developers. Only a SHA-256 digest of each token is
  * stored in a private JSON file; the plaintext is printed once when a token is
  * created and never persisted, so a leaked file does not reveal usable tokens.
+ *
+ * <p>Writes are serialized across JVMs with an exclusive lock on a sidecar lock
+ * file and re-load the latest on-disk state while holding that lock before any
+ * mutation, so a stale in-memory snapshot can never overwrite a token another
+ * instance just added or removed.
  */
 final class TokenStore {
     private static final Gson JSON = new Gson();
     private static final int TOKEN_BYTES = 32;
     private static final SecureRandom RANDOM = new SecureRandom();
+    /** Serializes writers inside one JVM so overlapping {@link FileLock}s cannot collide. */
+    private static final Object PROCESS_WRITE_LOCK = new Object();
 
     private final Path file;
-    private final Map<String, String> tokens;
+    private final Path lockFile;
 
     TokenStore(Path file) throws IOException {
         this.file = file;
-        this.tokens = new LinkedHashMap<>(load());
+        this.lockFile = file.resolveSibling(file.getFileName() + ".lock");
+        // Validate an existing token file eagerly so a corrupt file fails at startup.
+        load();
     }
 
     private Map<String, String> load() throws IOException {
@@ -59,7 +72,8 @@ final class TokenStore {
     synchronized boolean isValid(String token) throws IOException {
         // The token file is the authority and is re-read on every check, so tokens
         // created or removed while the server runs take effect immediately. The file
-        // is small and publish requests are rare, so this is cheap.
+        // is small and publish requests are rare, so this is cheap. Atomic replacement
+        // on save means a reader always sees one complete snapshot.
         if (token == null || token.isBlank()) return false;
         byte[] digest = hex(token).getBytes(StandardCharsets.UTF_8);
         for (String hash : load().values()) {
@@ -75,28 +89,55 @@ final class TokenStore {
         if (name == null || !name.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")) {
             throw new IllegalArgumentException("Token name must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}");
         }
-        if (tokens.containsKey(name)) {
-            throw new IllegalArgumentException("Token already exists: " + name);
-        }
-        byte[] random = new byte[TOKEN_BYTES];
-        RANDOM.nextBytes(random);
-        String plaintext = hex(random);
-        tokens.put(name, hex(plaintext));
-        save();
-        return plaintext;
+        return mutate(latest -> {
+            if (latest.containsKey(name)) {
+                throw new IllegalArgumentException("Token already exists: " + name);
+            }
+            byte[] random = new byte[TOKEN_BYTES];
+            RANDOM.nextBytes(random);
+            String plaintext = hex(random);
+            latest.put(name, hex(plaintext));
+            return plaintext;
+        });
     }
 
     synchronized boolean remove(String name) throws IOException {
-        if (tokens.remove(name) == null) return false;
-        save();
-        return true;
+        return mutate(latest -> latest.remove(name) != null);
     }
 
-    synchronized Set<String> names() {
-        return new LinkedHashSet<>(tokens.keySet());
+    synchronized Set<String> names() throws IOException {
+        synchronized (PROCESS_WRITE_LOCK) {
+            return new LinkedHashSet<>(load().keySet());
+        }
     }
 
-    private void save() throws IOException {
+    private interface Mutation<T> {
+        T apply(Map<String, String> latest) throws IOException;
+    }
+
+    private <T> T mutate(Mutation<T> mutation) throws IOException {
+        synchronized (PROCESS_WRITE_LOCK) {
+            Path parent = file.getParent() == null ? Path.of(".") : file.getParent();
+            Files.createDirectories(parent);
+            try (FileChannel channel = FileChannel.open(lockFile,
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                restrict(lockFile);
+                // Re-load under the lock: another JVM may have changed the file since
+                // this instance was constructed or since its last write.
+                Map<String, String> latest = load();
+                T result = mutation.apply(latest);
+                save(latest);
+                return result;
+            } catch (OverlappingFileLockException overlap) {
+                // The PROCESS_WRITE_LOCK above already serializes same-JVM writers, so
+                // an overlap indicates a second lock acquisition on the same channel.
+                throw new IllegalStateException("Concurrent token store write", overlap);
+            }
+        }
+    }
+
+    private void save(Map<String, String> tokens) throws IOException {
         Map<String, String> sorted = new LinkedHashMap<>();
         tokens.entrySet().stream().sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> sorted.put(entry.getKey(), entry.getValue()));

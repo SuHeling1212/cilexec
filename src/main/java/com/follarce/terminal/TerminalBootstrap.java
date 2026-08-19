@@ -4,7 +4,6 @@ import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
-import com.follarce.vfs.VfsService;
 
 import java.time.Clock;
 import java.util.Optional;
@@ -45,30 +44,41 @@ public final class TerminalBootstrap {
             return null;
         });
 
-        boolean hasRoot = transactions.inUserTransaction(account.userId(), Isolation.READ_COMMITTED,
-                transaction -> transaction.vfs().findChild(account.userId(), Optional.empty(), "/")
-                        .isPresent());
-        if (!hasRoot) {
-            new VfsService(transactions, clock).createDirectory(account.userId(), Optional.empty(),
-                    "/", Set.of());
-        }
-        ensureUsersDirectory(account);
+        transactions.inUserTransaction(account.userId(), Isolation.READ_COMMITTED,
+                transaction -> {
+                    // Database-level idempotent creation: concurrent bootstrap paths must
+                    // not fail on the unique owner-root index.
+                    var root = transaction.vfs()
+                            .findChild(account.userId(), Optional.empty(), "/")
+                            .orElseGet(() -> {
+                                var now = clock.instant();
+                                transaction.vfs().insertNodeIfAbsent(
+                                        new com.follarce.domain.vfs.VfsNode(
+                                                java.util.UUID.randomUUID(), Optional.empty(),
+                                                account.userId(), "/",
+                                                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                                                Optional.empty(), Set.of(), false, now, now));
+                                return transaction.vfs()
+                                        .findChild(account.userId(), Optional.empty(), "/")
+                                        .orElseThrow(() -> new IllegalStateException(
+                                                "VFS root is missing"));
+                            });
+                    ensureUsersDirectory(transaction, root);
+                    return null;
+                });
         return Optional.of(account);
     }
 
-    private void ensureUsersDirectory(UserAccount account) {
-        transactions.inUserTransaction(account.userId(), Isolation.SERIALIZABLE, transaction -> {
-            var root = transaction.vfs().findChild(account.userId(), Optional.empty(), "/")
-                    .orElseThrow(() -> new IllegalStateException("VFS root is missing"));
-            if (transaction.vfs().findChild(account.userId(), Optional.of(root.nodeId()),
-                    "Users").isEmpty()) {
-                var now = clock.instant();
-                transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
-                        java.util.UUID.randomUUID(), Optional.of(root.nodeId()), account.userId(),
-                        "Users", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
-                        Optional.empty(), Set.of(), false, now, now));
-            }
-            return null;
-        });
+    private void ensureUsersDirectory(
+            com.follarce.domain.port.TransactionContext transaction,
+            com.follarce.domain.vfs.VfsNode root) {
+        if (transaction.vfs().findChild(root.ownerId(), Optional.of(root.nodeId()),
+                "Users").isEmpty()) {
+            var now = clock.instant();
+            transaction.vfs().insertNodeIfAbsent(new com.follarce.domain.vfs.VfsNode(
+                    java.util.UUID.randomUUID(), Optional.of(root.nodeId()), root.ownerId(),
+                    "Users", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                    Optional.empty(), Set.of(), false, now, now));
+        }
     }
 }

@@ -6,6 +6,7 @@ import com.follarce.application.ProgramService;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
+import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import org.flywaydb.core.Flyway;
@@ -105,6 +106,50 @@ class AdminVfsServiceIT {
                         .anyMatch(event -> event.action().equals("vfs.admin.write")
                                 && event.actorId().equals(administrator.userId().toString())));
         assertTrue(audited);
+    }
+
+    @Test
+    void administratorReadsLogicalContentOfChunkedFiles() throws Exception {
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setURL(POSTGRES.getJdbcUrl());
+        dataSource.setUser(POSTGRES.getUsername());
+        dataSource.setPassword(POSTGRES.getPassword());
+        JdbcTransactionExecutor transactions = new JdbcTransactionExecutor(dataSource);
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        AuthService auth = new AuthService(transactions, clock);
+        UserAccount administrator = auth.create("chunk-admin",
+                "admin-chunk-password-123".toCharArray(),
+                Set.of(Capability.SYSTEM_ADMIN, Capability.VFS_READ));
+        UserAccount owner = auth.create("chunk-owner",
+                "owner-chunk-password-123".toCharArray(),
+                Set.of(Capability.VFS_READ, Capability.VFS_WRITE));
+
+        VfsService ownerVfs = new VfsService(transactions, clock);
+        VfsNode root = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.vfs().findChild(owner.userId(), Optional.empty(), "/")
+                        .orElseThrow());
+        VfsNode file = ownerVfs.createFile(owner.userId(), root.nodeId(), "big.txt",
+                "original".getBytes(StandardCharsets.UTF_8), "text/plain", Set.of(), false);
+
+        // Turn the file into a chunked object: the node now points at a small manifest,
+        // not at the logical bytes.
+        Instant later = NOW.plusSeconds(2);
+        transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED, transaction -> {
+            StoredObject chunked = transaction.vfs().appendChunkedObject(
+                    file.currentObjectHash().orElseThrow(),
+                    "-tail".getBytes(StandardCharsets.UTF_8), "text/plain", later);
+            transaction.vfs().replaceContent(file.nodeId(), file.currentObjectHash(),
+                    chunked.objectHash(), later);
+            return null;
+        });
+
+        AdminVfsService adminVfs = new AdminVfsService(transactions, clock);
+        StoredObject logical = adminVfs.readFile(administrator.userId(), owner.userId(),
+                file.nodeId());
+        assertArrayEquals("original-tail".getBytes(StandardCharsets.UTF_8),
+                logical.content().bytes(),
+                "the administrator read must return logical bytes, not the manifest");
+        assertEquals("original-tail".length(), logical.byteSize());
     }
 
     @Test

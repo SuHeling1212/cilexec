@@ -6,6 +6,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -60,6 +62,33 @@ class TerminalOutputRouterTest {
             assertTrue(elapsed < 2000, "publish must not block on a stalled writer: " + elapsed);
         } finally {
             TerminalOutputRouter.detachAll(output);
+        }
+    }
+
+    @Test
+    void publishStopsReportingDeliveryAfterTheSocketBreaks() throws Exception {
+        try (ServerSocket server = new ServerSocket(0);
+             Socket client = new Socket("127.0.0.1", server.getLocalPort())) {
+            Socket accepted = server.accept();
+            PrintWriter output = new PrintWriter(accepted.getOutputStream(), true);
+            UUID route = UUID.randomUUID();
+            TerminalOutputRouter.attach(route, output);
+            try {
+                assertTrue(TerminalOutputRouter.publish(route, "first", true));
+                // The peer disappears; the writer's next flush must surface checkError()
+                // and stop reporting delivery instead of silently succeeding.
+                client.close();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (TerminalOutputRouter.publish(route, "retry", true)
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(5);
+                }
+                assertFalse(TerminalOutputRouter.publish(route, "after-break", true),
+                        "publish must report failure once the writer detects the broken socket");
+            } finally {
+                TerminalOutputRouter.detachAll(output);
+                accepted.close();
+            }
         }
     }
 

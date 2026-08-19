@@ -19,14 +19,25 @@ final class DnsResolver {
     private DnsResolver() { }
 
     static InetAddress[] resolveAll(String host) throws UnknownHostException {
+        return resolveAll(host, InetAddress::getAllByName, DNS_TIMEOUT_NANOS);
+    }
+
+    /** Test seam: bounded resolution against an injected lookup. */
+    @FunctionalInterface
+    interface Lookup {
+        InetAddress[] lookup(String host) throws UnknownHostException;
+    }
+
+    static InetAddress[] resolveAll(String host, Lookup lookup, long timeoutNanos)
+            throws UnknownHostException {
         if (host == null || host.isBlank()) throw new UnknownHostException("missing host");
-        FutureTask<InetAddress[]> lookup = new FutureTask<>(
-                () -> InetAddress.getAllByName(host));
-        Thread.ofVirtual().name("cilexec-dns").start(lookup);
+        FutureTask<InetAddress[]> task = new FutureTask<>(
+                () -> lookup.lookup(host));
+        Thread.ofVirtual().name("cilexec-dns").start(task);
         try {
-            return lookup.get(DNS_TIMEOUT_NANOS, TimeUnit.NANOSECONDS);
+            return task.get(timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException timedOut) {
-            lookup.cancel(true);
+            task.cancel(true);
             throw new UnknownHostException("DNS resolution timed out after 15 seconds: " + host);
         } catch (ExecutionException failed) {
             Throwable cause = failed.getCause();

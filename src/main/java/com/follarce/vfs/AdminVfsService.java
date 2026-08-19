@@ -7,6 +7,7 @@ import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.port.TransactionExecutor;
 import com.follarce.domain.vfs.BinaryContent;
+import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.domain.vfs.VfsFileLimits;
@@ -25,6 +26,10 @@ import java.util.UUID;
  * constrained by PostgreSQL RLS even when their account owns the administrator capability.
  */
 public final class AdminVfsService {
+    private static final String CHUNK_MANIFEST_MEDIA_TYPE =
+            "application/vnd.cilexec.chunk-manifest;version=1";
+    private static final String CHUNK_MANIFEST_HEADER = "CILEXEC-CHUNK-MANIFEST-V1";
+
     private final TransactionExecutor transactions;
     private final Clock clock;
 
@@ -63,16 +68,75 @@ public final class AdminVfsService {
             requireAccess(transaction, administratorId, targetUserId);
             VfsNode node = VfsNodeChecks.requireContent(transaction.vfs(), nodeId, targetUserId,
                     "VFS node belongs to a different target user");
-            StoredObject object = transaction.vfs()
-                    .findObjectByAdministrator(node.currentObjectHash().orElseThrow())
+            ObjectHash hash = node.currentObjectHash().orElseThrow();
+            StoredObject stored = transaction.vfs()
+                    .findObjectByAdministrator(hash)
                     .orElseThrow(() -> new IllegalStateException(
                             "VFS node references a missing object"));
+            // The stored object may be a small chunk-manifest whose content is the
+            // descriptor, not the logical file bytes. This path runs on the trusted
+            // runtime role (no per-user claim is available), so the manifest chain is
+            // reconstructed from the immutable descriptors instead of the user-scoped
+            // range-read functions.
+            StoredObject logical = CHUNK_MANIFEST_MEDIA_TYPE.equals(stored.mediaType())
+                    ? materializeChunkedObject(transaction, stored)
+                    : stored;
             transaction.audit().append(audit(administratorId, targetUserId, "vfs.admin.read",
                     "vfs.node", nodeId.toString(), Map.of(
-                            "name", node.name(), "bytes", Long.toString(object.byteSize())),
+                            "name", node.name(), "bytes", Long.toString(logical.byteSize())),
                     clock.instant()));
-            return object;
+            return logical;
         });
+    }
+
+    /**
+     * Reassembles the logical bytes of a chunked object. Each manifest descriptor is
+     * {@code CILEXEC-CHUNK-MANIFEST-V1\n<base-or-previous>\n<tail>\n<total>\n}; walking
+     * the {@code base-or-previous} link down to a plain object and appending every tail
+     * in append order yields the logical content.
+     */
+    private static StoredObject materializeChunkedObject(TransactionContext transaction,
+                                                         StoredObject manifest) {
+        java.util.ArrayDeque<StoredObject> chain = new java.util.ArrayDeque<>();
+        StoredObject current = manifest;
+        long logicalBytes = 0;
+        while (CHUNK_MANIFEST_MEDIA_TYPE.equals(current.mediaType())) {
+            String[] lines = descriptor(current);
+            chain.push(current);
+            logicalBytes = Long.parseLong(lines[3]);
+            current = transaction.vfs().findObjectByAdministrator(new ObjectHash(lines[1]))
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Chunk manifest references a missing base object"));
+        }
+        VfsFileLimits.requireWithinLimit(logicalBytes);
+        java.io.ByteArrayOutputStream content = new java.io.ByteArrayOutputStream(
+                Math.toIntExact(logicalBytes));
+        content.writeBytes(current.content().bytes());
+        while (!chain.isEmpty()) {
+            StoredObject step = chain.pop();
+            String[] lines = descriptor(step);
+            StoredObject tail = transaction.vfs().findObjectByAdministrator(
+                    new ObjectHash(lines[2])).orElseThrow(() -> new IllegalStateException(
+                    "Chunk manifest references a missing tail object"));
+            content.writeBytes(tail.content().bytes());
+        }
+        byte[] logical = content.toByteArray();
+        if (logical.length != logicalBytes) {
+            throw new IllegalStateException("Chunk manifest size does not match its content");
+        }
+        return StoredObject.create(new BinaryContent(logical), manifest.mediaType(),
+                manifest.createdAt());
+    }
+
+    private static String[] descriptor(StoredObject manifest) {
+        String[] lines = new String(manifest.content().bytes(), java.nio.charset.StandardCharsets.US_ASCII)
+                .split("\n", -1);
+        if (lines.length < 4 || !CHUNK_MANIFEST_HEADER.equals(lines[0])
+                || !lines[1].matches("[0-9a-f]{64}") || !lines[2].matches("[0-9a-f]{64}")
+                || !lines[3].matches("[0-9]+")) {
+            throw new IllegalStateException("Corrupt chunk manifest in VFS object");
+        }
+        return lines;
     }
 
     public VfsNode replaceContent(UUID administratorId, UUID targetUserId, UUID nodeId,

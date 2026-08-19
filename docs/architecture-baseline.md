@@ -1659,7 +1659,7 @@ container IDs
 Java Threads, virtual threads, Futures, or Executor tasks
 ```
 
-The export is written to a temporary file, verified against the snapshot manifest, atomically published by hard link (refusing to overwrite an existing file), and only then marked read-only — so the read-only attribute can never block publication. Export filenames may contain `?`; they are treated as literal path characters rather than URI query syntax.
+The export is written to a temporary file, verified against the snapshot manifest, marked read-only while still temporary, and only then atomically published by hard link (refusing to overwrite an existing file). The hard link shares the temporary file's inode, so the target is born with the read-only protection already applied; a failed hardening therefore never leaves a published artifact and the export can always be retried. Export filenames may contain `?`; they are treated as literal path characters rather than URI query syntax.
 
 Application-level export and PostgreSQL disaster backups are two different product capabilities.
 

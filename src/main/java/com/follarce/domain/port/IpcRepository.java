@@ -37,6 +37,14 @@ public interface IpcRepository {
 
     List<IpcDelivery> findPending(UUID receiverProcessUid, int limit);
 
+    /**
+     * Serializes the receiver-side decision ("reserve a pending delivery" vs "persist a
+     * durable IPC wait") with the sender-side wake check. Both {@code ipc.receive} and the
+     * wake fast path must hold this transaction-scoped lock so a message committed before
+     * the wait state cannot be missed by a check-before-sleep race.
+     */
+    void lockReceiverProcess(UUID receiverProcessUid);
+
     boolean updateDelivery(IpcDelivery delivery, IpcDelivery.Status expectedStatus);
 
     /** Deletes bounded, aged messages whose deliveries are terminal or whose expiry passed. */

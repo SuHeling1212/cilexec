@@ -414,6 +414,7 @@ class ProgramServiceTest {
         Instant purgeCutoff;
         Instant purgeNow;
         int purgeLimit;
+        int receiverLocks;
 
         @Override public void saveChannel(IpcChannel channel) {
             throw new UnsupportedOperationException();
@@ -451,6 +452,9 @@ class ProgramServiceTest {
                     .filter(delivery -> delivery.receiverProcessUid().equals(receiverProcessUid))
                     .filter(delivery -> delivery.status() == IpcDelivery.Status.PENDING)
                     .limit(limit).toList();
+        }
+        @Override public void lockReceiverProcess(UUID receiverProcessUid) {
+            receiverLocks++;
         }
         @Override public boolean updateDelivery(IpcDelivery delivery,
                                                  IpcDelivery.Status expectedStatus) {

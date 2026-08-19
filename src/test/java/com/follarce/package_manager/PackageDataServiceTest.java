@@ -87,6 +87,21 @@ class PackageDataServiceTest {
     }
 
     @Test
+    void archivesAndImportsEmptyFiles() throws Exception {
+        MemoryPackageDataRepository source = new MemoryPackageDataRepository();
+        source.writeDataEntry(OWNER, FILE_HASH, "empty.txt", new byte[0],
+                "application/octet-stream", -1);
+        byte[] archive = PackageDataService.exportArchive(new FakeTransaction(source), OWNER,
+                FILE_HASH);
+
+        MemoryPackageDataRepository target = new MemoryPackageDataRepository();
+        long imported = PackageDataService.importArchive(new FakeTransaction(target), OWNER,
+                FILE_HASH, archive);
+        assertEquals(1, imported);
+        assertArrayEquals(new byte[0], target.readDataEntry(OWNER, FILE_HASH, "empty.txt"));
+    }
+
+    @Test
     void importReplacesCollidingEntriesAndRejectsMalformedArchives() throws Exception {
         MemoryPackageDataRepository target = new MemoryPackageDataRepository();
         target.writeDataEntry(OWNER, FILE_HASH, "config.json",

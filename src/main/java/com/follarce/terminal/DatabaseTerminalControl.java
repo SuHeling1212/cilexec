@@ -30,7 +30,6 @@ public final class DatabaseTerminalControl implements TerminalControl {
     private final Runnable shutdown;
     private final Predicate<char[]> passwordVerifier;
     private UUID sessionId;
-    private volatile Boolean isAdmin;
 
     public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
                                    Runnable shutdown, Predicate<char[]> passwordVerifier) {
@@ -235,18 +234,15 @@ public final class DatabaseTerminalControl implements TerminalControl {
         return coloredUser + "@" + coloredHost + ":" + coloredPath + "$ ";
     }
 
+    /**
+     * The capability is checked live on every call so a revoked or expired
+     * SYSTEM_ADMIN grant takes effect immediately on existing terminal sessions.
+     * The check is a cheap indexed read and terminal commands are user-paced.
+     */
     private boolean isAdmin() {
-        if (isAdmin == null) {
-            synchronized (this) {
-                if (isAdmin == null) {
-                    isAdmin = transactions.inUserTransaction(user.userId(),
-                            Isolation.READ_COMMITTED,
-                            transaction -> transaction.auth().capabilities(user.userId())
-                                    .contains(com.follarce.domain.auth.Capability.SYSTEM_ADMIN));
-                }
-            }
-        }
-        return isAdmin;
+        return transactions.inUserTransaction(user.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().capabilities(user.userId())
+                        .contains(com.follarce.domain.auth.Capability.SYSTEM_ADMIN));
     }
 
     private String changeDirectory(String path) {

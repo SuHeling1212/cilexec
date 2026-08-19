@@ -7,10 +7,10 @@ import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
+import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.port.TransactionExecutor;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
-import com.follarce.vfs.VfsService;
 import java.time.Clock;
 import java.util.Map;
 import java.util.Optional;
@@ -50,7 +50,6 @@ public final class TerminalAccessService implements TerminalAccess {
     private final Clock clock;
     private final String administratorUsername;
     private final AuthService auth;
-    private final VfsService vfs;
     private final ConcurrentHashMap<String, LoginFailure> loginFailures =
             new ConcurrentHashMap<>();
     private final Semaphore credentialChecks = new Semaphore(
@@ -76,7 +75,6 @@ public final class TerminalAccessService implements TerminalAccess {
         this.clock = java.util.Objects.requireNonNull(clock, "clock");
         this.administratorUsername = UsernamePolicy.normalize(administratorUsername);
         this.auth = new AuthService(transactions, clock);
-        this.vfs = new VfsService(userTransactions, clock);
     }
 
     @Override
@@ -254,31 +252,37 @@ public final class TerminalAccessService implements TerminalAccess {
     private record LoginFailure(int count, java.time.Instant at) { }
 
     private void ensureRoot(UserAccount account) {
-        boolean exists = userTransactions.inUserTransaction(account.userId(),
-                Isolation.READ_COMMITTED, transaction -> transaction.vfs()
-                        .findChild(account.userId(), Optional.empty(), "/").isPresent());
-        if (!exists) {
-            vfs.createDirectory(account.userId(), Optional.empty(), "/", Set.of());
-        }
-        if (account.username().equals(administratorUsername)) {
-            ensureUsersDirectory(account);
-        }
-    }
-
-    /** The administrator gets a stable entry point for the virtual per-user home mounts. */
-    private void ensureUsersDirectory(UserAccount account) {
-        userTransactions.inUserTransaction(account.userId(), Isolation.SERIALIZABLE, transaction -> {
-            var root = transaction.vfs().findChild(account.userId(), Optional.empty(), "/")
-                    .orElseThrow(() -> new IllegalStateException("VFS root is missing"));
-            if (transaction.vfs().findChild(account.userId(), Optional.of(root.nodeId()),
-                    "Users").isEmpty()) {
-                transaction.vfs().insertNode(new com.follarce.domain.vfs.VfsNode(
-                        java.util.UUID.randomUUID(), Optional.of(root.nodeId()), account.userId(),
-                        "Users", com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
-                        Optional.empty(), Set.of(), false, clock.instant(), clock.instant()));
+        userTransactions.inUserTransaction(account.userId(), Isolation.READ_COMMITTED, transaction -> {
+            // Idempotent database-level creation: a concurrent first-time login that
+            // races this one must not fail on the unique owner-root index.
+            com.follarce.domain.vfs.VfsNode root = transaction.vfs()
+                    .findChild(account.userId(), Optional.empty(), "/")
+                    .orElseGet(() -> {
+                        transaction.vfs().insertNodeIfAbsent(new com.follarce.domain.vfs.VfsNode(
+                                UUID.randomUUID(), Optional.empty(), account.userId(), "/",
+                                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                                Optional.empty(), Set.of(), false,
+                                clock.instant(), clock.instant()));
+                        return transaction.vfs().findChild(account.userId(), Optional.empty(), "/")
+                                .orElseThrow(() -> new IllegalStateException("VFS root is missing"));
+                    });
+            if (account.username().equals(administratorUsername)) {
+                ensureUsersDirectory(transaction, root);
             }
             return null;
         });
+    }
+
+    /** The administrator gets a stable entry point for the virtual per-user home mounts. */
+    private void ensureUsersDirectory(TransactionContext transaction,
+                                      com.follarce.domain.vfs.VfsNode root) {
+        if (transaction.vfs().findChild(root.ownerId(), Optional.of(root.nodeId()),
+                "Users").isEmpty()) {
+            transaction.vfs().insertNodeIfAbsent(new com.follarce.domain.vfs.VfsNode(
+                    UUID.randomUUID(), Optional.of(root.nodeId()), root.ownerId(), "Users",
+                    com.follarce.domain.vfs.VfsNode.Type.DIRECTORY,
+                    Optional.empty(), Set.of(), false, clock.instant(), clock.instant()));
+        }
     }
 
 }

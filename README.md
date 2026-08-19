@@ -178,7 +178,7 @@ src/main/resources/db/baseline/   frozen V001 modules (roles, RLS, SQL functions
 ## Build & test
 
 ```bash
-mvn clean test        # 370+ unit and lifecycle tests
+mvn clean test        # 400+ unit and lifecycle tests
 mvn clean verify      # mandatory PostgreSQL/crash-recovery ITs + quality gates + JAR
 ```
 

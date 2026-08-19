@@ -343,6 +343,117 @@ class BuiltinEffectHandlersTest {
         }
     }
 
+    @Test
+    void redirectAndDownloadErrorStatusesReleaseTheConnectionDeterministically()
+            throws Exception {
+        java.util.concurrent.atomic.AtomicInteger served = new java.util.concurrent.atomic.AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/redirect", exchange -> {
+            served.incrementAndGet();
+            exchange.getResponseHeaders().set("Location", "http://localhost/elsewhere");
+            exchange.sendResponseHeaders(302, -1);
+            exchange.close();
+        });
+        server.createContext("/missing", exchange -> {
+            served.incrementAndGet();
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+        });
+        server.createContext("/broken", exchange -> {
+            served.incrementAndGet();
+            exchange.sendResponseHeaders(500, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            EffectHandlerRegistry handlers = new EffectHandlerRegistry(
+                    BuiltinEffectHandlers.defaults());
+            EffectHandler http = handlers.require("network.http-get");
+            EffectHandler download = handlers.require("network.download");
+            String base = "http://127.0.0.1:" + port;
+
+            assertThrows(java.io.IOException.class, () -> http.execute(
+                    typed(Map.of("url", base + "/redirect")), Optional.empty()));
+            assertThrows(java.io.IOException.class, () -> download.execute(
+                    typed(Map.of("url", base + "/redirect")), Optional.empty()));
+            assertThrows(java.io.IOException.class, () -> download.execute(
+                    typed(Map.of("url", base + "/missing")), Optional.empty()));
+            assertThrows(java.io.IOException.class, () -> download.execute(
+                    typed(Map.of("url", base + "/broken")), Optional.empty()));
+
+            // Every rejected exchange must have been served and released; a follow-up
+            // request proves the worker is not holding dead connections from failures.
+            assertEquals(4, served.get());
+            Continuation.PersistedValue after = http.execute(
+                    typed(Map.of("url", base + "/missing")), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(after.canonicalPayload());
+            assertEquals(404L, ((Map<?, ?>) envelope.get("value")).get("status"));
+            assertEquals(5, served.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void lastModifiedIsAStableValidatorForMultiChunkDownloads() throws Exception {
+        byte[] part = "cde".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/large.bin", exchange -> {
+            exchange.getResponseHeaders().set("Content-Range", "bytes 2-4/8");
+            exchange.getResponseHeaders().set("Last-Modified", "Wed, 01 Jan 2026 00:00:00 GMT");
+            exchange.sendResponseHeaders(206, part.length);
+            exchange.getResponseBody().write(part);
+            exchange.close();
+        });
+        server.start();
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.download");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of(
+                    "url", "http://127.0.0.1:" + server.getAddress().getPort() + "/large.bin",
+                    "offset", 2L, "maximumBytes", 3L)), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(result.canonicalPayload());
+            Map<?, ?> response = (Map<?, ?>) envelope.get("value");
+            assertEquals(206L, response.get("status"));
+            assertEquals(false, response.get("complete"));
+            assertEquals("Wed, 01 Jan 2026 00:00:00 GMT", response.get("validator"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void weakEtagIsNotTreatedAsAStableValidator() throws Exception {
+        byte[] part = "cde".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        HttpServer server = HttpServer.create(new InetSocketAddress(
+                InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/large.bin", exchange -> {
+            exchange.getResponseHeaders().set("Content-Range", "bytes 2-4/8");
+            exchange.getResponseHeaders().set("ETag", "W/\"weak\"");
+            exchange.sendResponseHeaders(206, part.length);
+            exchange.getResponseBody().write(part);
+            exchange.close();
+        });
+        server.start();
+        try {
+            EffectHandler handler = new EffectHandlerRegistry(BuiltinEffectHandlers.defaults())
+                    .require("network.download");
+            Continuation.PersistedValue result = handler.execute(typed(Map.of(
+                    "url", "http://127.0.0.1:" + server.getAddress().getPort() + "/large.bin",
+                    "offset", 2L, "maximumBytes", 3L)), Optional.empty());
+            Map<?, ?> envelope = (Map<?, ?>) codec.valueFromJson(result.canonicalPayload());
+            Map<?, ?> response = (Map<?, ?>) envelope.get("value");
+            assertEquals(206L, response.get("status"));
+            assertEquals(false, response.get("complete"));
+            assertFalse(response.containsKey("validator"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private Continuation.PersistedValue typed(Object value) {
         return new Continuation.PersistedValue(codec.valueType(value), codec.valueToJson(value));
     }

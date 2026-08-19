@@ -60,6 +60,48 @@ class IpcServiceTest {
         assertTrue(persistence.processes.current.continuation().globalVariables()
                 .containsKey(ProcessInbox.IPC_RESULT));
         assertEquals(1, persistence.scheduler.enqueues);
+        assertEquals(1, persistence.ipc.receiverLocks,
+                "the wake decision must serialize with the receiver wait-state transaction");
+    }
+
+    @Test
+    void receiveInReservesAMessageThatArrivedWhileTheReceiverWasNotWaiting() {
+        ProgramServiceTest.TestPersistence persistence =
+                new ProgramServiceTest.TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        UUID receiver = UUID.randomUUID();
+        UUID worker = UUID.randomUUID();
+        IpcMessage message = message(NOW.minusSeconds(5), Optional.of(NOW.plusSeconds(30)));
+        IpcDelivery delivery = IpcDelivery.pending(UUID.randomUUID(), message.messageId(),
+                receiver);
+        // The message was committed while the receiver was RUNNING, so no wake was
+        // delivered; the delivery is still PENDING when ipc.receive() finally runs.
+        persistence.ipc.messages.put(message.messageId(), message);
+        persistence.ipc.deliveries.put(delivery.deliveryId(), delivery);
+
+        IpcService.Envelope envelope = IpcService.receiveIn(
+                persistence, ownerId, receiver, worker, NOW).orElseThrow();
+
+        assertEquals(message.messageId(), envelope.message().messageId());
+        assertEquals(receiver, envelope.delivery().receiverProcessUid());
+        assertEquals(IpcDelivery.Status.RESERVED,
+                persistence.ipc.deliveries.get(delivery.deliveryId()).status());
+        assertEquals(1, persistence.ipc.receiverLocks);
+    }
+
+    @Test
+    void receiveInWithoutPendingMessagesLeavesTheProcessFreeToWait() {
+        ProgramServiceTest.TestPersistence persistence =
+                new ProgramServiceTest.TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        UUID receiver = UUID.randomUUID();
+
+        Optional<IpcService.Envelope> envelope = IpcService.receiveIn(
+                persistence, ownerId, receiver, UUID.randomUUID(), NOW);
+
+        assertTrue(envelope.isEmpty());
+        assertEquals(1, persistence.ipc.receiverLocks);
+        assertTrue(persistence.ipc.deliveries.isEmpty());
     }
 
     @Test
@@ -108,6 +150,37 @@ class IpcServiceTest {
         assertEquals(valid.messageId(), envelope.message().messageId());
         assertEquals(IpcDelivery.Status.DEAD,
                 persistence.ipc.deliveries.get(expiredDelivery.deliveryId()).status());
+        assertEquals(IpcDelivery.Status.RESERVED,
+                persistence.ipc.deliveries.get(validDelivery.deliveryId()).status());
+    }
+
+    @Test
+    void pollFindsALiveMessageBehindMoreThanOneScanBatchOfExpiredDeliveries() {
+        ProgramServiceTest.TestPersistence persistence =
+                new ProgramServiceTest.TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        UUID receiver = UUID.randomUUID();
+        UUID worker = UUID.randomUUID();
+        for (int index = 0; index < 105; index++) {
+            IpcMessage expired = message(NOW.minusSeconds(10),
+                    Optional.of(NOW.minusSeconds(1)));
+            IpcDelivery delivery = IpcDelivery.pending(
+                    UUID.randomUUID(), expired.messageId(), receiver);
+            persistence.ipc.messages.put(expired.messageId(), expired);
+            persistence.ipc.deliveries.put(delivery.deliveryId(), delivery);
+        }
+        IpcMessage valid = message(NOW.minusSeconds(5), Optional.of(NOW.plusSeconds(10)));
+        IpcDelivery validDelivery = IpcDelivery.pending(
+                UUID.randomUUID(), valid.messageId(), receiver);
+        persistence.ipc.messages.put(valid.messageId(), valid);
+        persistence.ipc.deliveries.put(validDelivery.deliveryId(), validDelivery);
+
+        IpcService.Envelope envelope = IpcService.reserveNextIn(
+                persistence, ownerId, receiver, worker, NOW).orElseThrow();
+
+        assertEquals(valid.messageId(), envelope.message().messageId());
+        assertEquals(105L, persistence.ipc.deliveries.values().stream()
+                .filter(delivery -> delivery.status() == IpcDelivery.Status.DEAD).count());
         assertEquals(IpcDelivery.Status.RESERVED,
                 persistence.ipc.deliveries.get(validDelivery.deliveryId()).status());
     }

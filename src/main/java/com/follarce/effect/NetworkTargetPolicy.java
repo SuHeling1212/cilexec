@@ -345,10 +345,15 @@ final class NetworkTargetPolicy {
         }
 
         URI pinnedUri() {
+            return pinnedUri(firstAddress());
+        }
+
+        /** The original request with the host replaced by one validated address. */
+        URI pinnedUri(InetAddress address) {
             try {
                 String path = originalUri.getRawPath();
                 if (path == null || path.isEmpty()) path = "/";
-                return new URI(originalUri.getScheme(), null, firstAddress().getHostAddress(),
+                return new URI(originalUri.getScheme(), null, address.getHostAddress(),
                         originalUri.getPort(), path, originalUri.getRawQuery(), null);
             } catch (java.net.URISyntaxException impossible) {
                 throw new IllegalArgumentException("Cannot pin validated HTTP target", impossible);

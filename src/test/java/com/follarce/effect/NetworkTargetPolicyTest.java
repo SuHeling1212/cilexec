@@ -7,6 +7,7 @@ import java.net.InetAddress;
 import java.net.URI;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -92,5 +93,26 @@ class NetworkTargetPolicyTest {
             System.clearProperty("cilexec.networkTrustProxy");
             System.clearProperty("cilexec.networkProxy");
         }
+    }
+
+    @Test
+    void defaultModeRejectsBenchmarkFakeIpRanges() {
+        // Without the admin-configured trusted proxy, 198.18.0.0/15 stays blocked.
+        assertThrows(SecurityException.class,
+                () -> NetworkTargetPolicy.resolveHttpTarget(URI.create("http://198.18.0.1/")));
+        assertThrows(SecurityException.class,
+                () -> NetworkTargetPolicy.requirePublicAddress("198.19.255.1"));
+    }
+
+    @Test
+    void trustedProxyModeIsOffByDefault() throws Exception {
+        System.clearProperty("cilexec.networkTrustProxy");
+        System.clearProperty("cilexec.networkProxy");
+        NetworkTargetPolicy.ResolvedHttpTarget direct =
+                NetworkTargetPolicy.resolveHttpTarget(
+                        URI.create("http://localhost:8080/path"));
+        assertFalse(direct.throughTrustedProxy());
+        assertFalse(direct.addresses().isEmpty());
+        assertFalse(NetworkTargetPolicy.trustProxyEnabled());
     }
 }

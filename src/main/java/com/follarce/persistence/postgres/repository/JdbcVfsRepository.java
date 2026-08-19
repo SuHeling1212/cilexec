@@ -387,6 +387,36 @@ public final class JdbcVfsRepository extends JdbcRepositorySupport implements Vf
     }
 
     @Override
+    public boolean insertNodeIfAbsent(VfsNode node) {
+        String conflict = node.parentNodeId().isEmpty()
+                ? "ON CONFLICT (owner_id) WHERE parent_node_id IS NULL DO NOTHING"
+                : "ON CONFLICT (parent_node_id,node_name) "
+                        + "WHERE parent_node_id IS NOT NULL DO NOTHING";
+        String sql = "INSERT INTO vfs.node(node_id,owner_id,parent_node_id,node_name,node_type,"
+                + "current_object_hash,capability_json,revision_enabled,created_at,updated_at) "
+                + "VALUES (?,?,?,?,?,?,?,?,?,?) " + conflict;
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, node.nodeId());
+            statement.setObject(2, node.ownerId());
+            JdbcValues.nullableUuid(statement, 3, node.parentNodeId());
+            statement.setString(4, node.name());
+            statement.setString(5, node.type().name());
+            if (node.currentObjectHash().isPresent()) {
+                statement.setBytes(6, JdbcValues.hash(node.currentObjectHash().get()));
+            } else {
+                statement.setNull(6, java.sql.Types.BINARY);
+            }
+            statement.setObject(7, JdbcValues.json(json.write(node.capabilities())));
+            statement.setBoolean(8, node.revisionEnabled());
+            statement.setTimestamp(9, java.sql.Timestamp.from(node.createdAt()));
+            statement.setTimestamp(10, java.sql.Timestamp.from(node.updatedAt()));
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("vfs.insertNodeIfAbsent", exception);
+        }
+    }
+
+    @Override
     public boolean renameNode(UUID nodeId, UUID ownerId, String replacementName,
                               Instant updatedAt) {
         String sql = "UPDATE vfs.node SET node_name=?,state_version=state_version+1,updated_at=? "

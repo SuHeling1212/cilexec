@@ -43,6 +43,17 @@ public final class ControlLock implements AutoCloseable {
         // connectTimeout bounds the TCP connect and handshake; socketTimeout is deliberately
         // absent because the passive monitor relies on an indefinite notification read.
         properties.setProperty("connectTimeout", "15");
+        // The control session must follow the same transport policy as the worker pools:
+        // remote databases require verify-full with the configured root CA, everything
+        // else is explicitly TLS-disabled rather than left to pgjdbc's opportunistic
+        // "prefer" default.
+        if (database.verifyFullTls()) {
+            properties.setProperty("sslmode", "verify-full");
+            properties.setProperty("sslrootcert",
+                    database.sslRootCertificateFile().orElseThrow().toString());
+        } else {
+            properties.setProperty("sslmode", "disable");
+        }
         try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
             properties.setProperty("password", secret.exposeForDriver());
         }

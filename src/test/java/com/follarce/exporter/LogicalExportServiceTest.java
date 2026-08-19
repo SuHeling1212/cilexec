@@ -174,9 +174,65 @@ class LogicalExportServiceTest {
                 () -> new SqliteLogicalExportVerifier().verify(database));
     }
 
+    @Test
+    void exportDoesNotPublishWhenReadonlyHardeningFails() throws Exception {
+        Path target = temporaryDirectory.resolve("unhardened.db");
+        LogicalExportService service = service(LogicalExportServiceTest::writeSnapshot,
+                database -> {
+                    throw new java.io.IOException("permission denied");
+                });
+
+        assertThrows(LogicalExportException.class, () -> service.export(target, BUILD));
+
+        assertFalse(Files.exists(target), "a failed hardening must not publish the file");
+        try (var files = Files.list(temporaryDirectory)) {
+            assertTrue(files.toList().isEmpty(), "temporary files must be cleaned up");
+        }
+    }
+
+    @Test
+    void successfulExportProducesReadonlyFile() throws Exception {
+        Path target = temporaryDirectory.resolve("readonly.db");
+        LogicalExportService service = service(LogicalExportServiceTest::writeSnapshot);
+
+        LogicalExportReport report = service.export(target, BUILD);
+
+        assertEquals(target.toAbsolutePath(), report.database());
+        assertTrue(Files.exists(target));
+        assertReadOnly(target);
+    }
+
+    @Test
+    void failedReadonlyHardeningAllowsRetry() throws Exception {
+        Path target = temporaryDirectory.resolve("retry.db");
+        java.util.concurrent.atomic.AtomicBoolean firstAttempt = new java.util.concurrent.atomic.AtomicBoolean();
+        LogicalExportService service = service(LogicalExportServiceTest::writeSnapshot,
+                database -> {
+                    if (firstAttempt.compareAndSet(false, true)) {
+                        throw new java.io.IOException("permission denied");
+                    }
+                    LogicalExportService.makeReadOnly(database);
+                });
+
+        assertThrows(LogicalExportException.class, () -> service.export(target, BUILD));
+        assertFalse(Files.exists(target));
+
+        LogicalExportReport report = service.export(target, BUILD);
+        assertEquals(target.toAbsolutePath(), report.database());
+        assertEquals("3", scalar(target, "SELECT metadata_value FROM export_metadata "
+                + "WHERE metadata_key='export.row_count'"));
+        assertReadOnly(target);
+    }
+
     private LogicalExportService service(LogicalSnapshotProducer snapshot) {
         return new LogicalExportService(snapshot, new SqliteLogicalExportVerifier(),
                 Clock.fixed(EXPORTED_AT, ZoneOffset.UTC));
+    }
+
+    private LogicalExportService service(LogicalSnapshotProducer snapshot,
+                                         LogicalExportService.ReadonlyHardener hardener) {
+        return new LogicalExportService(snapshot, new SqliteLogicalExportVerifier(),
+                Clock.fixed(EXPORTED_AT, ZoneOffset.UTC), hardener);
     }
 
     private static void writeSnapshot(SqliteLogicalExportWriter writer, BuildInfo build,
