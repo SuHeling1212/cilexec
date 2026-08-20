@@ -1,6 +1,6 @@
 CilExec 0.0.2
 
-Build revision: b1cc89c3a1572a9ea0b44e97273dd3e61fbdcbdc-dirty
+Build revision: ab225fbd6ee23105cdda14af6f9096da5a06d46e-dirty
 Runtime requirement: Java 26
 Market server requirement: Java 21 or newer
 Market protocol: cilexec.market/v1
