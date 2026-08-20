@@ -555,7 +555,7 @@ public final class TerminalServer implements AutoCloseable {
         private void pump() {
             boolean warnedRecently = false;
             try {
-                while (true) {
+                while (!closed.get()) {
                     int value;
                     try {
                         value = in.read();
