@@ -401,6 +401,7 @@ jobs:
           path: release-assets
       - name: Create tag and publish changeable release
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           tag="v${VERSION}"
@@ -414,6 +415,7 @@ jobs:
             --title "CilExec ${VERSION}" --generate-notes
       - name: Verify release page and downloadability
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           gh release view "v${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null
