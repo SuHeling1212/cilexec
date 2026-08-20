@@ -125,7 +125,10 @@ release with a real Git tag and a downloadable GitHub Release page. The tag base
 with the project version (`0.0.2-SNAPSHOT` is accepted, `0.0.3-SNAPSHOT` is not). The workflow
 creates the tag, uploads the two installers, the Windows package, and the checksum file, and
 auto-generates the release notes. Nothing is signed and no OCI image is published, so the
-release remains replaceable: delete the tag and Release to republish. A later push of the exact
+release remains replaceable: delete the tag and Release to republish. If a run creates its tag
+but fails before creating the Release page, a later manual run safely recovers that incomplete
+publication by moving the tag to the new verified revision; an existing Release is never
+overwritten. A later push of the exact
 `v<pom-version>` tag still produces the formal immutable release; validate-runtime refuses a
 formal tag whose version does not equal the pom version, so a snapshot tag never triggers the
 formal path. The formal archive contains
