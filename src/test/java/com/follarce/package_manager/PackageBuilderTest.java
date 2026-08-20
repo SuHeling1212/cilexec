@@ -38,7 +38,7 @@ class PackageBuilderTest {
         Path source = Files.createDirectory(temporaryDirectory.resolve("hello"));
         Files.writeString(source.resolve("package.json"), """
                 {"namespace":"demo","name":"hello","version":"1.0.0",
-                 "languageVersion":"fcl-1",
+                 "languageVersion":"fcl-0.0.2",
                  "kind":"application",
                  "modules":[{"name":"main","path":"main.fcl"}],
                  "entrypoints":[{"name":"run","module":"main","function":"run"}],
@@ -54,7 +54,7 @@ class PackageBuilderTest {
 
     @Test
     void rejectsMissingEntrypointFunctions() {
-        PackageManifest invalid = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        PackageManifest invalid = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "missing")),
                 List.of(), List.of());
@@ -67,17 +67,17 @@ class PackageBuilderTest {
         PackageBuilder builder = new PackageBuilder();
         assertThrows(IllegalArgumentException.class, () -> builder.parseManifest("""
                 {"namespace":"demo","name":"missing-kind","version":"1.0.0",
-                 "languageVersion":"fcl-1",
+                 "languageVersion":"fcl-0.0.2",
                  "modules":[{"name":"main","path":"main.fcl"}]}
                 """.getBytes(StandardCharsets.UTF_8)));
 
         assertThrows(IllegalArgumentException.class, () -> new PackageManifest(
-                "demo", "application", "1.0.0", "fcl-1", PackageKind.APPLICATION,
+                "demo", "application", "1.0.0", "fcl-0.0.2", PackageKind.APPLICATION,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
                 List.of(), List.of(), List.of(), List.of()));
 
         PackageManifest library = new PackageManifest(
-                "demo", "library", "1.0.0", "fcl-1", PackageKind.LIBRARY,
+                "demo", "library", "1.0.0", "fcl-0.0.2", PackageKind.LIBRARY,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
                 List.of(), List.of(), List.of(), List.of());
         byte[] database = builder.build(library, path ->
@@ -98,7 +98,7 @@ class PackageBuilderTest {
 
     @Test
     void rejectsDotComponentsInNamespaceAndName() {
-        PackageManifest base = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        PackageManifest base = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
                 List.of(), List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(), List.of());
@@ -126,7 +126,7 @@ class PackageBuilderTest {
 
     @Test
     void storesThePackageAuthorInTheMetadataTable() throws Exception {
-        PackageManifest authored = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        PackageManifest authored = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 PackageKind.APPLICATION,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")), List.of(),
@@ -138,7 +138,7 @@ class PackageBuilderTest {
         var descriptor = new SqlitePackageReader().inspect(database);
         assertEquals("Ada Lovelace", descriptor.author());
 
-        PackageManifest anonymous = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        PackageManifest anonymous = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 PackageKind.APPLICATION,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")), List.of(),
@@ -150,7 +150,7 @@ class PackageBuilderTest {
     }
 
     private PackageManifest manifest() {
-        return new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        return new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 List.of(new PackageManifest.Module("main", "main.fcl")),
                 List.of("assets/message.txt"), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "0.0.1",
-  "revision": "5d1067c25627f84ea575cfd5ffa40992992eedf4",
+  "version": "0.0.2",
+  "revision": "b1cc89c3a1572a9ea0b44e97273dd3e61fbdcbdc-dirty",
   "formal": false,
   "tag": null,
   "artifacts": {
@@ -14,11 +14,11 @@
       "size": 12041
     },
     "RELEASE.txt": {
-      "sha256": "564e9f4237ce833419a0ed55b987a5fb0d1077b34564ef6e28ee6e1a12d50063",
-      "size": 700
+      "sha256": "3213364ec3a70875fa070f888c68a7175e6ab02b119786a1de66dfd43f1e9258",
+      "size": 706
     },
     "SBOM.cdx.json": {
-      "sha256": "d3a336b206ccc1d6fa0fa5b8acfa5e7a6349a1cfd0282845d4edb402c172f386",
+      "sha256": "278fdbcf380b01a6a49b2f86e8e902c95ab9f8fa7fcf36955a93ac7847a93bf8",
       "size": 8342
     },
     "THIRD_PARTY_NOTICES.txt": {
@@ -26,23 +26,23 @@
       "size": 1452
     },
     "catalog.json": {
-      "sha256": "9ff74982948dd6b31f66f4e9984ee5a5853dc312c20d000ee637fca069b1b4b9",
+      "sha256": "44d3f88777e29f57b727a99a88343b087255ad3b679722bbd8adbd016c7a1212",
       "size": 296
     },
     "cilexec-app.jar": {
-      "sha256": "619e6c1a87339b8297cecbcc34437a2872cecb1a040f84dc182f4796fc629544",
-      "size": 21304267
+      "sha256": "38e00522b3cc365766ac8fe5b7ffea2289fe251c1d60d38f287a58d236309cff",
+      "size": 21400675
     },
     "cilexec-market-server.jar": {
-      "sha256": "543ac97ad484b47adc09a903074eb6f784bfa3d336aad084af0459129500526c",
-      "size": 14793311
+      "sha256": "abb5e126f7db357714c80a739277235a71be2ff22c3070781e6b549eb6de761a",
+      "size": 14795163
     },
     "market-dependencies.txt": {
       "sha256": "8c5d85a6e1f18d5b4af5252ea12cb3c7ed79351979962ebf5e425ee24969ffcd",
       "size": 172
     },
-    "repository/packages/cilexec/editor/0.0.1/editor.db": {
-      "sha256": "9ddc9ffc36751d775029f626f0b3ae916c133ec05099f6e67058c17718e2de00",
+    "repository/packages/cilexec/editor/0.0.2/editor.db": {
+      "sha256": "9834f731da3b0e67cdd7088dba7e0fb089d1221a098d17343ff61b3c55f42b79",
       "size": 53248
     },
     "runtime-dependencies.txt": {

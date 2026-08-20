@@ -52,6 +52,8 @@ public final class FclRuntime {
             // roll the transaction back and retry the same broken statement forever.
             try {
                 return enterCall(program, continuation, initialPointer, call.call());
+            } catch (FclRuntimeException failure) {
+                return handleFclFailure(program, continuation, initialPointer, failure);
             } catch (RuntimeException failure) {
                 return fail(program, continuation, initialPointer, failure);
             }
@@ -62,7 +64,11 @@ public final class FclRuntime {
             }
             return result(FclStepResult.Status.WAITING, initialPointer, continuation,
                     lineAt(program, continuation.programCounter()), null);
+        } catch (FclRuntimeException failure) {
+            return handleFclFailure(program, continuation, initialPointer, failure);
         } catch (RuntimeException failure) {
+            // A non-FCL RuntimeException is a kernel/extension fault, not language control
+            // flow. It must never enter an FCL catch block.
             return fail(program, continuation, initialPointer, failure);
         }
     }
@@ -76,18 +82,33 @@ public final class FclRuntime {
         if (instruction instanceof FclInstruction.Assignment assignment) {
             Object value = evaluator.evaluate(assignment.value());
             if (assignment.indices().isEmpty()) {
-                continuation.scope().put(assignment.variable(), value);
+                if (nativeReadOnlyMember(continuation, assignment.variable())) {
+                    throw new FclRuntimeException("ImmutableValue",
+                            "Exception and StackFrame members are read-only");
+                } else if (FclObjectRuntime.isMemberPath(continuation, assignment.variable())) {
+                    FclObjectRuntime.setMember(program, continuation, assignment.variable(), value);
+                } else {
+                    continuation.scope().put(assignment.variable(), value);
+                }
             } else {
-                Object root = continuation.scope().get(assignment.variable());
+                boolean memberPath = FclObjectRuntime.isMemberPath(continuation, assignment.variable());
+                Object root = memberPath ? FclObjectRuntime.member(program, continuation, assignment.variable())
+                        : continuation.scope().get(assignment.variable());
                 List<Object> indices = new ArrayList<>(assignment.indices().size());
                 for (FclExpression index : assignment.indices()) {
                     indices.add(evaluator.evaluate(index));
                 }
                 FclValues.setIndexed(root, indices, value);
+                if (memberPath) FclObjectRuntime.setMember(program, continuation, assignment.variable(), root);
             }
             advance(program, continuation, pointer + 1);
             return result(FclStepResult.Status.ADVANCED, pointer, continuation,
                     assignment.line(), value);
+        }
+        if (instruction instanceof FclInstruction.Link link) {
+            continuation.scope().link(link.target(), link.source());
+            advance(program, continuation, pointer + 1);
+            return result(FclStepResult.Status.ADVANCED, pointer, continuation, link.line(), null);
         }
         if (instruction instanceof FclInstruction.Evaluation evaluation) {
             Object value = evaluator.evaluate(evaluation.expression());
@@ -149,6 +170,12 @@ public final class FclRuntime {
             return result(FclStepResult.Status.ADVANCED, pointer, continuation,
                     continueInstruction.line(), null);
         }
+        if (instruction instanceof FclInstruction.Update update) {
+            Object value = evaluator.update(update.variable(), update.indices(), update.delta(),
+                    Long.MIN_VALUE + pointer);
+            advance(program, continuation, pointer + 1);
+            return result(FclStepResult.Status.ADVANCED, pointer, continuation, update.line(), value);
+        }
         if (instruction instanceof FclInstruction.Return returnInstruction) {
             Object value = returnInstruction.value() == null
                     ? null : evaluator.evaluate(returnInstruction.value());
@@ -178,6 +205,33 @@ public final class FclRuntime {
             return result(FclStepResult.Status.DIRECTIVE, pointer, continuation,
                     includeInstruction.line(), includeInstruction.target());
         }
+        if (instruction instanceof FclInstruction.TryStart tryStart) {
+            boolean hadPrevious = continuation.scope().contains(tryStart.catchVariable());
+            Object previous = hadPrevious ? continuation.scope().get(tryStart.catchVariable()) : null;
+            continuation.mutableExceptionHandlers().add(new FclContinuation.ExceptionHandlerFrame(
+                    tryStart.catchTarget(), tryStart.catchEndTarget(), tryStart.catchVariable(),
+                    continuation.callDepth(), false, hadPrevious, previous));
+            advance(program, continuation, pointer + 1);
+            return result(FclStepResult.Status.ADVANCED, pointer, continuation,
+                    tryStart.line(), null);
+        }
+        if (instruction instanceof FclInstruction.CatchEnter catchEnter) {
+            FclContinuation.ExceptionHandlerFrame handler = activeHandler(continuation, pointer);
+            if (handler == null || !handler.handling()) {
+                throw new FclRuntimeException("Internal exception handler entry without a failure");
+            }
+            advance(program, continuation, pointer + 1);
+            return result(FclStepResult.Status.ADVANCED, pointer, continuation,
+                    catchEnter.line(), null);
+        }
+        if (instruction instanceof FclInstruction.CatchEnd catchEnd) {
+            FclContinuation.ExceptionHandlerFrame handler = activeHandlingHandler(continuation);
+            if (handler == null) throw new FclRuntimeException("Internal exception handler exit without a catch");
+            removeHandler(continuation, continuation.mutableExceptionHandlers().size() - 1, true);
+            advance(program, continuation, pointer + 1);
+            return result(FclStepResult.Status.ADVANCED, pointer, continuation,
+                    catchEnd.line(), null);
+        }
         throw new FclRuntimeException("Internal jump reached semantic executor");
     }
 
@@ -186,10 +240,10 @@ public final class FclRuntime {
                                     FclExpressionEvaluator.UserCall call) {
         FclProgram.Function function = program.function(call.name());
         if (function == null) {
-            throw new FclRuntimeException("Undefined user function: " + call.name());
+            throw new FclRuntimeException("UndefinedFunction", "Undefined user function: " + call.name());
         }
         if (call.arguments().size() != function.parameters().size()) {
-            throw new FclRuntimeException("Function " + call.name() + " expects "
+            throw new FclRuntimeException("InvalidArgument", "Function " + call.name() + " expects "
                     + function.parameters().size() + " arguments, got " + call.arguments().size());
         }
         if (continuation.callDepth() >= MAX_CALL_DEPTH) {
@@ -199,9 +253,11 @@ public final class FclRuntime {
         int returnPointer = continuation.programCounter();
         FclContinuation.PendingStatement callerPending = continuation.pendingStatement();
         continuation.mutableCallStack().add(new FclContinuation.CallFrame(returnPointer,
-                continuation.scope(), callerPending, call.expressionId(), call.name()));
+                continuation.scope(), callerPending, call.expressionId(), call.name(),
+                call.receiverPath(), call.construction()));
         FclScope functionScope = function.moduleBindings() == null
                 ? new FclScope() : new FclScope(function.moduleBindings());
+        if (call.receiver() != null) functionScope.put("this", call.receiver());
         for (int index = 0; index < function.parameters().size(); index++) {
             functionScope.put(function.parameters().get(index), call.arguments().get(index));
         }
@@ -216,36 +272,81 @@ public final class FclRuntime {
     private FclStepResult completeReturn(FclProgram program, FclContinuation continuation,
                                          int pointer, int line, Object value) {
         if (continuation.mutableCallStack().isEmpty()) {
+            removeHandlersAtOrAbove(continuation, 0, true);
             continuation.programCounter(program.instructions().size());
             continuation.halt(value);
             return result(FclStepResult.Status.COMPLETED, pointer, continuation, line, value);
         }
         int returningDepth = continuation.callDepth();
+        removeHandlersAtOrAbove(continuation, returningDepth, true);
         continuation.mutableLoopState().removeIf(frame -> frame.callDepth() >= returningDepth);
         continuation.mutableBranchState().removeIf(frame -> frame.callDepth() >= returningDepth);
         FclContinuation.CallFrame frame = continuation.mutableCallStack()
                 .removeLast();
+        FclObjectValue receiver = null;
+        if (frame.receiverPath() != null || frame.construction()) {
+            receiver = FclObjectRuntime.currentThis(continuation);
+        }
         continuation.scope(frame.callerScope());
         FclContinuation.PendingStatement pending = frame.callerPending();
         if (pending == null) pending = new FclContinuation.PendingStatement(frame.returnPointer());
-        continuation.pendingStatement(pending.withResult(frame.callExpressionId(), value));
+        Object returned = value;
+        if (frame.construction()) {
+            returned = receiver;
+        } else if (frame.receiverPath() != null) {
+            FclObjectRuntime.replaceObject(program, continuation, frame.receiverPath(), receiver);
+        }
+        continuation.pendingStatement(pending.withResult(frame.callExpressionId(), returned));
         continuation.programCounter(frame.returnPointer());
         normalizePointer(program, continuation);
         pruneState(continuation);
         return result(FclStepResult.Status.RETURNED, pointer, continuation, line, value);
     }
 
+    private FclStepResult handleFclFailure(FclProgram program, FclContinuation continuation,
+                                           int pointerBefore, FclRuntimeException failure) {
+        FclExceptionValue exception = exceptionValue(program, continuation, failure);
+        int handlerIndex = innermostCatchableHandler(continuation);
+        if (handlerIndex < 0) return fail(program, continuation, pointerBefore, failure, exception);
+        FclContinuation.ExceptionHandlerFrame handler = continuation.mutableExceptionHandlers()
+                .get(handlerIndex);
+        // Handlers nested inside the selected region have left scope. A handler already in its
+        // catch body cannot catch a second failure; discard it so the outer one can run.
+        while (continuation.mutableExceptionHandlers().size() > handlerIndex + 1) {
+            removeHandler(continuation, continuation.mutableExceptionHandlers().size() - 1,
+                    continuation.mutableExceptionHandlers().getLast().callDepth()
+                            == continuation.callDepth());
+        }
+        unwindToHandler(continuation, handler.callDepth());
+        continuation.mutableExceptionHandlers().set(handlerIndex, handler.asHandling());
+        continuation.scope().put(handler.variable(), exception);
+        continuation.pendingStatement(null);
+        continuation.clearWait();
+        continuation.programCounter(handler.catchTarget());
+        pruneState(continuation);
+        return result(FclStepResult.Status.ADVANCED, pointerBefore, continuation,
+                lineAt(program, handler.catchTarget()), exception);
+    }
+
     private FclStepResult fail(FclProgram program, FclContinuation continuation,
                                int pointerBefore, RuntimeException failure) {
+        return fail(program, continuation, pointerBefore, failure,
+                failure instanceof FclRuntimeException fcl ? exceptionValue(program, continuation, fcl) : null);
+    }
+
+    private FclStepResult fail(FclProgram program, FclContinuation continuation,
+                               int pointerBefore, RuntimeException failure,
+                               FclExceptionValue exception) {
         int pointer = continuation.programCounter();
         int line = lineAt(program, pointer);
         String message = failure.getMessage() == null
                 ? failure.getClass().getSimpleName() : failure.getMessage();
         continuation.mutableExceptionStack().add(new FclContinuation.ExceptionFrame(
-                pointer, line, failure.getClass().getSimpleName(), message,
+                pointer, line, exception == null ? failure.getClass().getSimpleName() : exception.type(), message,
                 continuation.callDepth()));
-        continuation.fail(message);
-        return result(FclStepResult.Status.FAILED, pointerBefore, continuation, line, message);
+        continuation.fail(exception == null ? message : exception);
+        return result(FclStepResult.Status.FAILED, pointerBefore, continuation, line,
+                exception == null ? message : exception);
     }
 
     private static void ensurePending(FclContinuation continuation, int pointer) {
@@ -291,11 +392,99 @@ public final class FclRuntime {
                 && pointer >= frame.endPointer());
         continuation.mutableLoopState().removeIf(frame -> frame.callDepth() == depth
                 && pointer >= frame.endPointer());
+        for (int index = continuation.mutableExceptionHandlers().size() - 1; index >= 0; index--) {
+            FclContinuation.ExceptionHandlerFrame handler = continuation.mutableExceptionHandlers().get(index);
+            if (handler.callDepth() == depth && pointer >= handler.catchEndTarget()) {
+                removeHandler(continuation, index, handler.handling());
+            }
+        }
+    }
+
+    private static FclContinuation.ExceptionHandlerFrame activeHandler(FclContinuation continuation,
+                                                                         int pointer) {
+        for (int index = continuation.mutableExceptionHandlers().size() - 1; index >= 0; index--) {
+            FclContinuation.ExceptionHandlerFrame frame = continuation.mutableExceptionHandlers().get(index);
+            if (frame.callDepth() == continuation.callDepth() && frame.catchTarget() == pointer) return frame;
+        }
+        return null;
+    }
+
+    private static FclContinuation.ExceptionHandlerFrame activeHandlingHandler(FclContinuation continuation) {
+        for (int index = continuation.mutableExceptionHandlers().size() - 1; index >= 0; index--) {
+            FclContinuation.ExceptionHandlerFrame frame = continuation.mutableExceptionHandlers().get(index);
+            if (frame.callDepth() == continuation.callDepth() && frame.handling()) return frame;
+        }
+        return null;
+    }
+
+    private static int innermostCatchableHandler(FclContinuation continuation) {
+        for (int index = continuation.mutableExceptionHandlers().size() - 1; index >= 0; index--) {
+            FclContinuation.ExceptionHandlerFrame frame = continuation.mutableExceptionHandlers().get(index);
+            if (!frame.handling() && frame.callDepth() <= continuation.callDepth()) return index;
+        }
+        return -1;
+    }
+
+    private static void unwindToHandler(FclContinuation continuation, int depth) {
+        while (continuation.callDepth() > depth) {
+            FclContinuation.CallFrame discarded = continuation.mutableCallStack().removeLast();
+            continuation.scope(discarded.callerScope());
+        }
+        continuation.mutableLoopState().removeIf(frame -> frame.callDepth() > depth);
+        continuation.mutableBranchState().removeIf(frame -> frame.callDepth() > depth);
+    }
+
+    private static void removeHandlersAtOrAbove(FclContinuation continuation, int depth,
+                                                 boolean restoreCurrentScope) {
+        for (int index = continuation.mutableExceptionHandlers().size() - 1; index >= 0; index--) {
+            if (continuation.mutableExceptionHandlers().get(index).callDepth() >= depth) {
+                removeHandler(continuation, index, restoreCurrentScope
+                        && continuation.mutableExceptionHandlers().get(index).callDepth()
+                        == continuation.callDepth());
+            }
+        }
+    }
+
+    private static void removeHandler(FclContinuation continuation, int index,
+                                      boolean restoreCurrentScope) {
+        FclContinuation.ExceptionHandlerFrame handler = continuation.mutableExceptionHandlers().remove(index);
+        if (restoreCurrentScope && handler.handling()) {
+            if (handler.hadPreviousBinding()) continuation.scope().put(handler.variable(), handler.previousValue());
+            else continuation.scope().mutableValues().remove(handler.variable());
+        }
+    }
+
+    private static FclExceptionValue exceptionValue(FclProgram program, FclContinuation continuation,
+                                                    FclRuntimeException failure) {
+        List<FclStackFrame> stack = new ArrayList<>();
+        int pointer = continuation.programCounter();
+        String function = continuation.callStack().isEmpty() ? "<main>"
+                : continuation.callStack().getLast().functionName();
+        stack.add(new FclStackFrame(function, "<main>", Math.max(1, lineAt(program, pointer)), 1));
+        for (int index = continuation.callStack().size() - 2; index >= 0; index--) {
+            FclContinuation.CallFrame frame = continuation.callStack().get(index);
+            stack.add(new FclStackFrame(frame.functionName(), "<main>",
+                    Math.max(1, lineAt(program, frame.returnPointer())), 1));
+        }
+        return new FclExceptionValue(failure.type(), failure.getMessage() == null
+                ? failure.type() : failure.getMessage(), stack);
     }
 
     private static boolean hasLoop(FclContinuation continuation, int header, int depth) {
         return continuation.mutableLoopState().stream().anyMatch(frame ->
                 frame.headerPointer() == header && frame.callDepth() == depth);
+    }
+
+    private static boolean nativeReadOnlyMember(FclContinuation continuation, String path) {
+        int separator = path.indexOf('.');
+        if (separator < 1) return false;
+        String root = path.substring(0, separator);
+        Object value;
+        if (continuation.scope().contains(root)) value = continuation.scope().get(root);
+        else if (continuation.globalScope() != continuation.scope()
+                && continuation.globalScope().contains(root)) value = continuation.globalScope().get(root);
+        else return false;
+        return value instanceof FclExceptionValue || value instanceof FclStackFrame;
     }
 
     private static void removeLoop(FclContinuation continuation, int header, int depth) {

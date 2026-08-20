@@ -241,7 +241,8 @@ src/main/java/com/follarce/
 ├── Main.java                      stable executable entry point
 ├── app/                           startup/shutdown/commands (CilExecApplication,
 │                                  RuntimeBootstrap, RuntimeLifecycle, ApplicationCommand)
-├── application/                   database-aware FCL functions (FclRuntimeFunctions),
+├── application/                   database-aware FCL registries (FclRuntimeFunctions facade;
+│                                  file/process/network/package/memory registrars),
 │                                  statement dispatch (ProcessStatementExecutor),
 │                                  ProgramService, ProcessService, TerminalReplService
 ├── auth/                          AuthService, Authorization, PasswordPolicy, UsernamePolicy
@@ -683,9 +684,13 @@ Flyway is the schema versioning tool.
 
 ```text
 V001__CilexecBaseline.java       # frozen CilExec 0.0.1 modular baseline
-V002__later_forward_change.java   # next schema or persisted-format change
+V002.java                        # unreleased CilExec 0.0.2 forward migration
 ...
 ```
+
+V002 is intentionally a single Java migration while 0.0.2 is unreleased. It contains the
+post-baseline schema work for the release, including the persisted FCL continuation format
+change. Once applied outside development, it becomes immutable like V001.
 
 Rules:
 
@@ -931,8 +936,8 @@ program_counter
 call stack
 return address
 scope stack
-current local variable values
-exception handling stack
+current local variable values, including complete value-semantic object trees
+exception values (type/message/structured FCL stack frames) and active try/catch handler stack
 loop/branch continuations
 wait reason
 wait object ID
@@ -2072,7 +2077,7 @@ legacy .proc and legacy file persistence code are deleted
 | 75 | P0 | Export all of PostgreSQL's runtime state | B. Export only durable semantic state |  |
 | 76 | P1 | PostgreSQL major-version upgrade strategy | B. dump/restore |  |
 | 77 | P0 | What is used for database tests | C. Real PostgreSQL test containers |  |
-| 78 | P0 | Real forced-crash tests | B. Verify recovery after force-killing the JVM and container |  |
+| 78 | P0 | Real forced-crash tests | B. Verify recovery after force-killing the JVM and container | `DockerObjectCrashRecoveryIT` force-kills the Runtime container after object and active-try state are committed, then verifies aliases, tombstones, and catch recovery after restart. |
 | 79 | P1 | Package determinism tests | C. Test both hashes separately |  |
 | 80 | P1 | Docker test platforms | C. CI builds Linux amd64 and arm64 images | Runtime verification currently runs on the GitHub-hosted AMD64 matrix |
 | 81 | P1 | Performance benchmark targets | A. Finish a runnable version, measure the baseline, then set targets |  |

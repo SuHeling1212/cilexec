@@ -87,19 +87,19 @@ enter_program() {
 }
 
 enter_data() {
-    echo "Entering postgres 数据库容器..."
+    echo "Entering the postgres database container..."
     echo "Type 'exit' or press Ctrl+D to leave."
     echo
     "${compose[@]}" exec -it postgres /bin/bash
 }
 
 echo
-echo "  [1] program  — 当前 cilexec 应用容器 (root；系统目录只读)"
-echo "  [2] data     — postgres 数据库容器 (直接操作数据库)"
+echo "  [1] program  — running cilexec application container (root; read-only system directories)"
+echo "  [2] data     — postgres database container (direct database access)"
 echo
 
 if [[ -t 0 ]]; then
-    read -r -p "选择要进入的容器 [1/program]: " choice
+    read -r -p "Choose a container [1/program]: " choice
     target_args=("$@")
 else
     choice="${1:-program}"
@@ -115,7 +115,7 @@ case "${choice:-1}" in
         enter_data
         ;;
     *)
-        echo "无效选择，默认进入 program。" >&2
+        echo "Invalid selection; entering program by default." >&2
         enter_program "${target_args[@]}"
         ;;
 esac

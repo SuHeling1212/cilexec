@@ -108,13 +108,13 @@ public final class FclFunctionRegistry {
         if (identifier.contains(".")) {
             Definition definition = qualified.get(identifier);
             if (definition == null) {
-                throw new FclRuntimeException("Undefined function: " + identifier);
+                throw new FclRuntimeException("UndefinedFunction", "Undefined function: " + identifier);
             }
             return definition;
         }
         Map<String, Definition> matches = bare.get(identifier);
         if (matches == null || matches.isEmpty()) {
-            throw new FclRuntimeException("Undefined function: " + identifier);
+            throw new FclRuntimeException("UndefinedFunction", "Undefined function: " + identifier);
         }
         if (matches.size() > 1) {
             throw new FclRuntimeException("Ambiguous bare function '" + identifier
@@ -139,7 +139,7 @@ public final class FclFunctionRegistry {
         } catch (FclRuntimeException failure) {
             throw failure;
         } catch (RuntimeException failure) {
-            throw new FclRuntimeException("Function " + definition.qualifiedName()
+            throw new FclKernelFailure("Function " + definition.qualifiedName()
                     + " failed: " + failure.getMessage(), failure);
         }
     }

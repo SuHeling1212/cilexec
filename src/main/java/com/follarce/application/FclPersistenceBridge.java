@@ -30,7 +30,7 @@ import java.util.UUID;
 final class FclPersistenceBridge {
     static final String ENVELOPE_KEY = "cilexec.fcl.continuation";
     static final String ENVELOPE_TYPE =
-            "application/vnd.cilexec.fcl-continuation+json;version=1";
+            "application/vnd.cilexec.fcl-continuation+json;version=2";
 
     private final FclContinuationCodec codec;
 
@@ -160,8 +160,8 @@ final class FclPersistenceBridge {
             Optional<UUID> parent = index == 0 ? Optional.empty()
                     : Optional.of(stableId(processUid, program.programId(), "scope", index - 1));
             Map<String, Object> values = index < runtime.callStack().size()
-                    ? runtime.callStack().get(index).callerScope().values()
-                    : runtime.scope().values();
+                    ? runtime.callStack().get(index).callerScope().persistedValues()
+                    : runtime.scope().persistedValues();
             projected.add(new Continuation.ScopeFrame(scopeId, parent,
                     projectVariables(values)));
         }

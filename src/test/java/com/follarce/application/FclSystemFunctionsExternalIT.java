@@ -99,7 +99,7 @@ class FclSystemFunctionsExternalIT {
                   "namespace":"demo",
                   "name":"hello",
                   "version":"1.0.0",
-                  "languageVersion":"fcl-1",
+                  "languageVersion":"fcl-0.0.2",
                   "kind":"application",
                   "modules":[{"name":"main","path":"main.fcl"}],
                   "entrypoints":[{"name":"run","module":"main","function":"run"}],
@@ -116,7 +116,7 @@ class FclSystemFunctionsExternalIT {
         String source = """
                 file.write("/note.txt", "hello")
                 content = file.read("/note.txt")
-                link = file.link("/note-link.txt", "/note.txt")
+                createdLink = file.link("/note-link.txt", "/note.txt")
                 linkedContent = file.read("/note-link.txt")
                 chain = file.link("/note-chain.txt", "/note-link.txt")
                 chainedContent = file.read("/note-chain.txt")

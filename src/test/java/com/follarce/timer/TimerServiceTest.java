@@ -27,7 +27,7 @@ class TimerServiceTest {
         return new Continuation(UUID.randomUUID(), new ObjectHash("0".repeat(64)), 0,
                 List.of(), List.of(), List.of(), List.of(),
                 Optional.of(new Continuation.WaitState(kind, targetId, Optional.empty())),
-                Map.of(), Map.of(), "fcl-1", "1");
+                Map.of(), Map.of(), "fcl-0.0.2", "1");
     }
 
     private static CilProcess process(CilProcess.Status status, Continuation.WaitState wait) {

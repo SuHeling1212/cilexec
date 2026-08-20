@@ -78,15 +78,14 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void memoryListsVisibleSymbolsAndOnlyRemovesMutableCurrentProcessBindings() {
+    void memoryListsVisibleSymbolsAndDestroysOnlyCurrentProcessValues() {
         Fixture fixture = new Fixture("""
                 value = 7
                 func hi() { return value }
                 symbols = memory.list(true)
                 allSymbols = memory.list({includeRuntime: true})
                 removedValue = memory.destroy(value)
-                removedFunction = memory.destroy(hi)
-                removedBuiltin = memory.destroy(io.print)
+                missing = memory.destroy(absent)
                 """, com.follarce.extension.SourceExtensionIndex.catalog());
 
         while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
@@ -104,16 +103,14 @@ class ProcessStatementExecutorTest {
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(fixture.persistence.processes.current.continuation());
         assertEquals(true, restored.scope().get("removedValue"));
-        assertEquals(true, restored.scope().get("removedFunction"));
-        assertEquals(false, restored.scope().get("removedBuiltin"));
+        assertEquals(false, restored.scope().get("missing"));
         assertFalse(restored.scope().contains("value"));
-        assertTrue(restored.functionDisabled("hi"));
         @SuppressWarnings("unchecked")
         Map<String, Object> symbols = (Map<String, Object>) restored.scope().get("symbols");
         assertEquals(7L, ((Map<?, ?>) symbols.get("variables")).get("value"));
         assertTrue(((List<?>) symbols.get("functions")).stream().anyMatch(value ->
                 value instanceof Map<?, ?> function && "hi".equals(function.get("name"))
-                        && Boolean.TRUE.equals(function.get("mutable"))));
+                        && Boolean.FALSE.equals(function.get("mutable"))));
         assertFalse(((List<?>) symbols.get("functions")).stream().anyMatch(value ->
                 value instanceof Map<?, ?> function && "io.print".equals(function.get("name"))));
         @SuppressWarnings("unchecked")
@@ -123,7 +120,7 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void memoryDestroyDeletesTopLevelVariablesAndFunctionsAndReportsBooleans() {
+    void memoryDestroyDeletesTopLevelVariablesAndReportsBooleans() {
         Fixture fixture = new Fixture("""
                 a = 1
                 missing = memory.destroy(absent)
@@ -243,6 +240,46 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void memoryDestroyRemovesOnlyOneObjectValueAndLeavesItsCopyUsable() {
+        Fixture fixture = new Fixture("""
+                class Counter {
+                    value = 0
+                    func increment() { this.value++ }
+                }
+                a = new Counter()
+                b = a
+                b.increment()
+                removed = memory.destroy(a)
+                answer = b.value
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("removed"));
+        assertFalse(restored.scope().contains("a"));
+        assertEquals(1L, restored.scope().get("answer"));
+    }
+
+    @Test
+    void memoryDestroyingAnyLinkedNameAlsoDestroysItsSourceAndEveryLinkedName() {
+        Fixture fixture = new Fixture("""
+                a = 10
+                b link a
+                removedLink = memory.destroy(b)
+                removedSource = memory.destroy(a)
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(true, restored.scope().get("removedLink"));
+        assertEquals(false, restored.scope().get("removedSource"));
+        assertFalse(restored.scope().contains("a"));
+        assertFalse(restored.scope().contains("b"));
+    }
+
+    @Test
     void memoryDestroyPersistsInEnvelopeAndNormalizedScopeProjection() {
         Fixture fixture = new Fixture("""
                 a = [1, 2, 3]
@@ -302,67 +339,12 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void memoryDestroyRejectsReservedRuntimeStateAndImmutableRuntimeFunctions() {
+    void memoryDestroyRejectsReservedRuntimeState() {
         Fixture fixture = new Fixture("""
                 reserved = memory.destroy(cilexec.fcl.disabledFunctions)
                 """, com.follarce.extension.SourceExtensionIndex.catalog());
         runToFailure(fixture);
 
-        Fixture immutable = new Fixture("""
-                removed = memory.destroy(io.print)
-                """, com.follarce.extension.SourceExtensionIndex.catalog());
-        runToCompletion(immutable);
-        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
-                .restore(immutable.persistence.processes.current.continuation());
-        assertEquals(false, restored.scope().get("removed"),
-                "destroying an immutable runtime function returns false");
-    }
-
-    @Test
-    void memoryDestroyRemovesReplLibraryFunctionsFromThePersistedLibrarySource() {
-        String library = "func hello() { return 1 }\nfunc keep() { return 2 }\n";
-        Fixture fixture = new Fixture(library + "removed = memory.destroy(hello)\n",
-                com.follarce.extension.SourceExtensionIndex.catalog());
-        FclContinuation runtime = new FclContinuation();
-        runtime.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
-        runtime.scope().put(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY,
-                UUID.randomUUID().toString());
-        runtime.scope().put(com.follarce.fcl.FclPath.SCOPE_KEY, "/");
-        runtime.scope().put(TerminalReplService.LIBRARY_SCOPE_KEY, library);
-        Continuation seeded = new FclPersistenceBridge(new FclContinuationCodec())
-                .persist(fixture.processUid, fixture.program, initial(fixture.program), runtime);
-        CilProcess original = fixture.persistence.processes.current;
-        fixture.persistence.processes.current = new CilProcess(original.identity(),
-                original.ownerId(), original.status(), original.stateVersion(),
-                original.executionEpoch(), seeded, original.parentProcessUid(),
-                original.createdAt(), original.updatedAt());
-
-        while (fixture.persistence.processes.current.status() == CilProcess.Status.RUNNING
-                || fixture.persistence.processes.current.status() == CilProcess.Status.READY) {
-            fixture.executor.executeSlice(fixture.claim);
-            CilProcess current = fixture.persistence.processes.current;
-            if (current.status() == CilProcess.Status.READY) {
-                CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
-                fixture.persistence.processes.current = claimed;
-                fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
-                fixture.persistence.scheduler.lease = fixture.claim;
-            }
-        }
-
-        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
-                .restore(fixture.persistence.processes.current.continuation());
-        assertEquals(CilProcess.Status.PAUSED,
-                fixture.persistence.processes.current.status(),
-                "terminal roots stay PAUSED after each submission");
-        assertEquals(true, restored.scope().get("removed"));
-        assertTrue(restored.functionDisabled("hello"));
-        assertFalse(restored.functionDisabled("keep"));
-        String persistedLibrary = (String) restored.globalScope().get(
-                TerminalReplService.LIBRARY_SCOPE_KEY);
-        assertFalse(persistedLibrary.contains("func hello"),
-                "library must drop the destroyed declaration");
-        assertTrue(persistedLibrary.contains("func keep"),
-                "unrelated declarations must be retained");
     }
 
     @Test
@@ -616,7 +598,7 @@ class ProcessStatementExecutorTest {
 
     @Test
     void linksAliasedPackageExportsAndPersistsTheExactHash() {
-        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(new PackageManifest.Export("greet", "main", "greet")), List.of());
@@ -661,7 +643,7 @@ class ProcessStatementExecutorTest {
     @Test
     void transitivelyLinksDependencyExportsByDatabaseFileSha256() {
         PackageManifest dependencyManifest = new PackageManifest("demo", "base", "1.0.0",
-                "fcl-1", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
+                "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(), List.of(new PackageManifest.Export("value", "main", "value")),
                 List.of());
@@ -671,7 +653,7 @@ class ProcessStatementExecutorTest {
         String dependencyHash = dependencyDescriptor.databaseFileHash();
 
         PackageManifest parentManifest = new PackageManifest("demo", "parent", "1.0.0",
-                "fcl-1", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
+                "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
                 List.of(new PackageManifest.Dependency(dependencyHash, false)),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
@@ -743,7 +725,7 @@ class ProcessStatementExecutorTest {
 
     @Test
     void resolvesAnInstalledPackageByHashAndPinsItsExactHash() {
-        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-1",
+        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(new PackageManifest.Export("greet", "main", "greet")),
@@ -829,7 +811,7 @@ class ProcessStatementExecutorTest {
     }
 
     private static byte[] buildEditorDatabase(String tag) {
-        return new PackageBuilder().build(new PackageManifest("demo", "pkg", "1.0.0", "fcl-1",
+        return new PackageBuilder().build(new PackageManifest("demo", "pkg", "1.0.0", "fcl-0.0.2",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(new PackageManifest.Export("greet", "main", "greet")), List.of()),

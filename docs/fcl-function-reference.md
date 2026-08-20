@@ -24,7 +24,8 @@ slice, which may then replay from the preceding checkpoint.
   `#`, including forms like `#(...)`, is this operator; there is no comment syntax
   involving `#`. `#null` is `0`, and a single non-collection value has length `1`.
 - **Reserved words.** `func`, `if`, `else`, `while`, `break`, `continue`, `return`,
-  `import`, `include`, `as`, `and`, `or`, `not`, `public`, `private`, `true`, `false`, `null` cannot be used as
+  `import`, `include`, `as`, `and`, `or`, `not`, `public`, `private`, `class`, `extends`,
+  `new`, `this`, `super`, `try`, `catch`, `true`, `false`, `null` cannot be used as
   identifiers, function names, or parameter names; doing so is a compile error.
 - **String escapes.** Only `\n`, `\t`, `\r`, `\\`, `\"` are valid. Any other escape
   (for example `\q` or `\u0041`) is a compile error.
@@ -70,9 +71,119 @@ slice, which may then replay from the preceding checkpoint.
   resolve names only from their module's persisted globals. No function can read a caller's
   locals. Assignments always write the current invocation. Root bindings and call frames are
   persisted across suspension and recovery.
+
+- **Exceptions.** `try { ... } catch (e) { ... }` catches only deterministic FCL program
+  failures. `e` is catch-local and is an immutable Runtime value, not an FCL object: its stable
+  fields are `e.type`, `e.message`, and `e.stack`; each `StackFrame` provides `function`,
+  `source`, `line`, and `column`. The same exception value propagates across FCL calls. Runtime
+  shutdown, forced process termination, database consistency failures, and other kernel faults
+  cannot be caught. Exception values and active handlers are included in every continuation
+  checkpoint, so a suspended `try` retains its catch after restart. `throw`, `finally`, and
+  typed/multiple catches are not part of v0.0.2.
 - **Module visibility.** `public func` exports a module function (and is the default for
   an unqualified `func`); `private func` is an implementation function. Private functions
   remain callable by module functions but are not callable from imported module clients.
+
+## FCL v0.0.2 Object-Oriented Programming
+
+For a complete beginner-oriented explanation, see the English
+[object-oriented guide](fcl-object-oriented-guide.md) or the Chinese
+[object-oriented guide](fcl-object-oriented-guide.zh-CN.md).
+
+Classes are top-level declarations. Fields and methods are `public` by default; use `private`
+for implementation details. Objects are objects: assigning one object name to another creates
+an independent copy.
+
+```fcl
+class Counter {
+    value = 0
+
+    init(initial) {
+        this.value = initial
+    }
+
+    func increment() {
+        this.value = this.value + 1
+        return this.value
+    }
+}
+
+counter = new Counter(10)
+copy = counter
+copy.increment()
+io.println(counter.value) // 10
+io.println(copy.value)    // 11
+```
+
+Use `private` to prevent callers outside the declaring class from reading a field or calling a
+method. A `private class` is not exported by `import`; a `public class` is importable.
+
+```fcl
+public class User {
+    private password = ""
+
+    init(password) { this.password = password }
+    func hasPassword() { return this.password != "" }
+}
+```
+
+FCL supports single inheritance and overload resolution by method name plus argument count.
+`super(...)` calls a parent constructor; `super.method(...)` selects the parent implementation.
+
+```fcl
+class Person {
+    name = ""
+    init(name) { this.name = name }
+    func label() { return "Person: " + this.name }
+}
+
+class Admin extends Person {
+    init(name) { super(name) }
+    func label() { return super.label() + " (admin)" }
+}
+
+user = new Admin("Ada")
+io.println(user.label())
+```
+
+Numeric variables, public fields, and list/Map elements support postfix `++` and `--`.
+An update expression evaluates to its updated value; there is deliberately no prefix form such
+as `++count`. Updating a non-number or a private/immutable value is rejected.
+
+```fcl
+count = 1
+before = count++ // before = 2, count = 2
+after = count++  // after = 3, count = 3
+count--
+
+counter.value++
+items[0]--
+```
+
+Normal assignment, arguments, returns, and collection writes create independent copies; methods
+still modify the object at their receiver location. The Runtime may use Copy-on-Write internally.
+
+`b link a` is the one explicit exception: it makes `b` follow the name `a`, so writes or a later
+assignment through either name change what both names represent. It is a persisted name-to-name
+relationship, not a default object-reference model and not an object ID, JVM pointer, or reference
+count. `link` is reserved and must appear as the standalone middle word; `b linka` and
+`linkb a` are not link expressions.
+
+`memory.destroy(target)` is the sole deletion API. It deletes a current-scope variable or an
+array/Map element; it does not destroy an object copied by ordinary assignment because default
+object sharing does not exist. It returns `true` when something was removed and `false` for a
+missing variable or map key. A `link` is the explicit exception: destroying either linked name
+destroys their shared object, so the source and every name `link`ed to it are all removed.
+
+```fcl
+user = new User()
+copy = user
+memory.destroy(user)
+// user is undefined; copy remains a complete User value
+```
+
+The deliberately excluded v0.0.2 features are static members, interfaces, abstract classes,
+generics, multiple inheritance, reflection, object cloning, `throw`, `finally`, and typed catch.
 
 ## Start With These Examples
 
@@ -159,7 +270,7 @@ import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff" as "ed
 editor.open("notes.txt")
 ```
 
-Its package coordinate is `cilexec/editor/0.0.1`, and its public function is
+Its package coordinate is `cilexec/editor/0.0.2`, and its public function is
 `editor.open(path)`. A package is identified by the SHA-256 of its `.db` file; two
 different hashes are two independent packages. `import` accepts either the 64-character
 SHA-256 of an installed `.db` file or a VFS `.fcl` source path. Package imports are
@@ -178,8 +289,8 @@ human-readable package coordinate.
 | Paths | Relative paths are based on the `:pwd` result; a leading `/` is an absolute VFS path. |
 | Administrators | The initial `local` account has `SYSTEM_ADMIN`. Functions authorize as the currently logged-in user. |
 | External operations | Input, printing, HTTP, sockets, and system commands suspend the FCL process and resume it automatically when done. |
-| Symbol view | `memory.list([includeParents])` (alias `memory.ls`) returns a snapshot `{variables, functions}` of current-process mutable functions and visible variables. Variables are only from the current scope unless `includeParents` is true, in which case lexical root values are included with local shadowing. Pass `{"includeRuntime":true}` (and optionally `"includeParents":true`) to include immutable built-ins, aliases, and extensions. Functions list `name`, `kind`, `origin`, and `mutable`. |
-| Releasing symbols | `memory.destroy(target)` (aliases `memory.unset(target)`, `memory.release(target)`) deletes the real target from the current process Memory and returns `true` when something was removed: a current-scope variable, a mutable function binding, a list element (later elements shift left; no holes), a map entry, or a nested element such as `a[0]["name"]`. A missing top-level symbol or map key returns `false`. String literals are no longer accepted as symbol names — `memory.destroy("name")` is a compile error; use `memory.destroy(name)`. Destroying a REPL library function also strips its declaration from the persisted library source so it cannot reappear after recompilation or a restart, and the function stays unavailable across scheduler slices, submissions, and restores. It never deletes a parent variable, VFS file, package, built-in, Java extension, or reserved runtime state (`cilexec.*`, inbox keys). FCL values are deep-copied on assignment, so destroying `a` or an element of `a` never affects a previously copied `b`. |
+| Symbol view | `memory.list([includeParents])` (alias `memory.ls`) returns a snapshot `{variables, functions}` of current-process visible variables and callable functions. Variables are only from the current scope unless `includeParents` is true, in which case lexical root values are included with local shadowing. Pass `{"includeRuntime":true}` (and optionally `"includeParents":true`) to include immutable built-ins, aliases, and extensions. Functions list `name`, `kind`, `origin`, and `mutable` (`false`). |
+| Deleting values | `memory.destroy(target)` is the only deletion API. It removes a current-scope variable, or a specified array/Map element. Object values are copied on assignment, so deleting `a` never affects `b = a`. A missing symbol or map key returns `false`. String literals are not accepted as target names. It never deletes parent variables, functions, VFS files, packages, built-ins, Java extensions, or reserved runtime state (`cilexec.*`, inbox keys). |
 | Listing real names | `system.ls()` returns every qualified function name and alias callable in this Runtime. |
 | Java extensions | `system.extensions()` returns the fixed list of extensions sealed into the system at build time. |
 
@@ -671,7 +782,12 @@ This manual was compiled from the current code registration points:
 
 - `src/main/java/com/follarce/fcl/FclBuiltins.java`: pure math, utility, path, and
   terminal styling functions.
-- `src/main/java/com/follarce/application/FclRuntimeFunctions.java`: file, process,
-  user, package, network, swap-pool, and system functions.
+- `src/main/java/com/follarce/application/FclRuntimeFunctions.java`: registry composition,
+  environment, utility, user functions, and shared durable-operation helpers.
+- `src/main/java/com/follarce/application/FclFileRuntimeFunctions.java`,
+  `FclProcessRuntimeFunctions.java`, `FclNetworkRuntimeFunctions.java`, and
+  `FclPackageRuntimeFunctions.java`: the corresponding database-aware function domains.
+- `src/main/java/com/follarce/application/FclMemoryFunctions.java`: process-local memory
+  inspection and value deletion through `memory.destroy`.
 - `src/main/java/com/follarce/terminal/DatabaseTerminalControl.java`: terminal colon
   commands.

@@ -21,10 +21,10 @@ import java.util.function.Supplier;
 
 /** Compiles immutable FCL programs and persists both source and runtime format objects. */
 public final class ProgramService {
-    public static final String LANGUAGE_VERSION = "fcl-1";
+    public static final String LANGUAGE_VERSION = "fcl-0.0.2";
     public static final String SOURCE_MEDIA_TYPE = "text/x-fcl; charset=utf-8";
     public static final String COMPILED_MEDIA_TYPE =
-            "application/vnd.cilexec.fcl-program+json; version=1";
+            "application/vnd.cilexec.fcl-program+json; version=2";
 
     private final UserTransactionExecutor transactions;
     private final FclCompiler compiler;

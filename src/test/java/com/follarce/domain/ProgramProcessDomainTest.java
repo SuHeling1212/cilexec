@@ -30,9 +30,9 @@ class ProgramProcessDomainTest {
     @Test
     void programIdentityIsImmutableAndContentBased() {
         ObjectHash source = hash("source");
-        Program first = new Program(UUID.randomUUID(), hash("program"), "fcl-1", 1, source,
+        Program first = new Program(UUID.randomUUID(), hash("program"), "fcl-0.0.2", 1, source,
                 Optional.empty(), 3, T0);
-        Program sameContent = new Program(UUID.randomUUID(), first.programHash(), "fcl-1", 1, source,
+        Program sameContent = new Program(UUID.randomUUID(), first.programHash(), "fcl-0.0.2", 1, source,
                 Optional.of(hash("compiled")), 3, T0.plusSeconds(1));
         Program changedLanguage = new Program(UUID.randomUUID(), first.programHash(), "fcl-2",
                 1, source, Optional.empty(), 3, T0);
@@ -82,7 +82,7 @@ class ProgramProcessDomainTest {
                         Optional.empty())),
                 globals,
                 packages,
-                "fcl-1",
+                "fcl-0.0.2",
                 "runtime-1");
 
         calls.clear();
@@ -184,7 +184,7 @@ class ProgramProcessDomainTest {
 
     private static Continuation continuation(Optional<Continuation.WaitState> waitState) {
         return new Continuation(UUID.randomUUID(), hash("program"), 0, List.of(), List.of(),
-                List.of(), List.of(), waitState, Map.of(), Map.of(), "fcl-1", "runtime-1");
+                List.of(), List.of(), waitState, Map.of(), Map.of(), "fcl-0.0.2", "runtime-1");
     }
 
     private static Continuation.PersistedValue value(String type, String payload) {

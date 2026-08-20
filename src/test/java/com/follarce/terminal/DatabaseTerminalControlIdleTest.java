@@ -24,7 +24,7 @@ class DatabaseTerminalControlIdleTest {
                 status, 0L, 0L,
                 new Continuation(UUID.randomUUID(), new ObjectHash("0".repeat(64)), 0,
                         List.of(), List.of(), List.of(), List.of(), Optional.empty(),
-                        Map.of(), Map.of(), "fcl-1", "1"),
+                        Map.of(), Map.of(), "fcl-0.0.2", "1"),
                 Optional.empty(), updatedAt.minusSeconds(1), updatedAt);
     }
 

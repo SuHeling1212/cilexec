@@ -20,6 +20,7 @@ public final class FclValues {
                 || value instanceof Boolean || value instanceof Character) {
             return value;
         }
+        if (value instanceof FclObjectValue object) return object.copy();
         if (value instanceof List<?> list) {
             List<Object> copy = new ArrayList<>(list.size());
             list.forEach(item -> copy.add(deepCopy(item)));
@@ -172,6 +173,24 @@ public final class FclValues {
         throw new FclRuntimeException(operation + " requires a number, got " + typeOf(value));
     }
 
+    static Object increment(Object value, int delta) {
+        if (delta != 1 && delta != -1) throw new IllegalArgumentException("Increment delta must be ±1");
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+            try {
+                return Math.addExact(((Number) value).longValue(), delta);
+            } catch (ArithmeticException failure) {
+                throw new FclRuntimeException("NumericOverflow", "Increment exceeds integer range", failure);
+            }
+        }
+        if (value instanceof Float || value instanceof Double) {
+            double result = ((Number) value).doubleValue() + delta;
+            if (!Double.isFinite(result)) throw new FclRuntimeException("NumericOverflow",
+                    "Increment produces a non-finite number");
+            return result;
+        }
+        throw new FclRuntimeException("InvalidArgument", "++ and -- require a number, got " + typeOf(value));
+    }
+
     static String typeOf(Object value) {
         if (value == null) return "null";
         if (value instanceof Boolean) return "bool";
@@ -189,7 +208,7 @@ public final class FclValues {
      * contents stay unambiguous and host {@code toString()} representations never
      * leak into the language layer.
      */
-    static String display(Object value) {
+    public static String display(Object value) {
         if (value == null) return "null";
         if (value instanceof String text) return text;
         if (value instanceof Character character) return String.valueOf(character);
@@ -224,6 +243,7 @@ public final class FclValues {
             }
             return result.append('}').toString();
         }
+        if (value instanceof FclObjectValue object) return object.toString();
         return String.valueOf(value);
     }
 

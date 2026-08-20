@@ -75,13 +75,13 @@ class ProcessServiceTest {
             Instant now = Instant.now().minusSeconds(2);
             ObjectHash hash = ObjectHash.sha256(new BinaryContent(
                     "program".getBytes(StandardCharsets.UTF_8)));
-            Program program = new Program(UUID.randomUUID(), hash, "fcl-1", 1,
+            Program program = new Program(UUID.randomUUID(), hash, "fcl-0.0.2", 1,
                     hash, Optional.empty(), 0, now);
             persistence.programs.byId.put(program.programId(), program);
             persistence.programs.byHash.put(program.programHash(), program);
             Continuation continuation = new Continuation(program.programId(), hash, 0,
                     List.of(), List.of(), List.of(), List.of(), wait, globals, Map.of(),
-                    "fcl-1", "1");
+                    "fcl-0.0.2", "1");
             persistence.processes.current = new CilProcess(
                     new ProcessIdentity(UUID.randomUUID(), 42), ownerId, status,
                     3, 7, continuation, Optional.empty(), now, now);

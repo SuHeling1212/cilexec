@@ -146,7 +146,7 @@ class EffectServiceTest {
             return new Continuation(UUID.randomUUID(), hash, 3, List.of(), List.of(), List.of(),
                     List.of(), Optional.of(new Continuation.WaitState(
                     Continuation.WaitKind.EFFECT, Optional.of(effectId), Optional.empty())),
-                    Map.of(), Map.of(), "fcl-1", "1");
+                    Map.of(), Map.of(), "fcl-0.0.2", "1");
         }
     }
 

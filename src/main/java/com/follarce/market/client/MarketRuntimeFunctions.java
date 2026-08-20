@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
 /** Java implementation of the built-in, user-scoped CilExec package market client. */
 public final class MarketRuntimeFunctions {
     public static final String API_VERSION = "cilexec.market/v1";
-    public static final String CLIENT_VERSION = "0.0.1";
+    public static final String CLIENT_VERSION = "0.0.2";
     public static final String ORIGIN_VARIABLE = "MARKET_ORIGIN";
 
     private static final String ROOT = "/market";

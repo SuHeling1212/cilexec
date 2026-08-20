@@ -11,6 +11,38 @@ import java.util.Objects;
 
 /** Immutable compiled FCL program. */
 public final class FclProgram {
+    public enum Access { PUBLIC, PRIVATE }
+
+    public record Field(String name, Access access, FclExpression defaultValue) {
+        public Field {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(access, "access");
+            Objects.requireNonNull(defaultValue, "defaultValue");
+        }
+    }
+
+    /** Method bodies are ordinary compiled functions; this metadata owns their dispatch key. */
+    public record Method(String name, int arity, Access access, String functionKey,
+                         boolean constructor) {
+        public Method {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(access, "access");
+            Objects.requireNonNull(functionKey, "functionKey");
+            if (arity < 0) throw new IllegalArgumentException("Method arity cannot be negative");
+        }
+
+        public String signature() { return name + "/" + arity; }
+    }
+
+    public record ClassDefinition(String name, Access access, String parent,
+                                  Map<String, Field> fields, Map<String, Method> methods) {
+        public ClassDefinition {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(access, "access");
+            fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+            methods = Collections.unmodifiableMap(new LinkedHashMap<>(methods));
+        }
+    }
     /**
      * Functions linked from an imported module carry that module's origin in
      * {@code packageIdentity}; functions compiled from the base program carry {@code null}.
@@ -37,13 +69,20 @@ public final class FclProgram {
 
     private final List<FclInstruction> instructions;
     private final Map<String, Function> functions;
+    private final Map<String, ClassDefinition> classes;
     private final String source;
     private final String sourceHash;
 
     FclProgram(List<FclInstruction> instructions, Map<String, Function> functions,
                String source) {
+        this(instructions, functions, Map.of(), source);
+    }
+
+    FclProgram(List<FclInstruction> instructions, Map<String, Function> functions,
+               Map<String, ClassDefinition> classes, String source) {
         this.instructions = List.copyOf(instructions);
         this.functions = Collections.unmodifiableMap(new LinkedHashMap<>(functions));
+        this.classes = Collections.unmodifiableMap(new LinkedHashMap<>(classes));
         this.source = source;
         this.sourceHash = sha256(source);
     }
@@ -60,12 +99,16 @@ public final class FclProgram {
         return functions.get(name);
     }
 
+    public Map<String, ClassDefinition> classes() { return classes; }
+
+    public ClassDefinition classDefinition(String name) { return classes.get(name); }
+
     /** Returns a resolver view with explicitly disabled function names omitted. */
     public FclProgram withoutFunctions(java.util.Set<String> disabled) {
         if (disabled == null || disabled.isEmpty()) return this;
         Map<String, Function> remaining = new LinkedHashMap<>(functions);
         disabled.forEach(remaining::remove);
-        return new FclProgram(instructions, remaining, source);
+        return new FclProgram(instructions, remaining, classes, source);
     }
 
     public String sourceHash() {

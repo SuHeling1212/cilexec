@@ -101,7 +101,7 @@ jobs:
           push: false
           tags: cilexec:ci-multiarch
           build-args: |
-            BUILD_VERSION=0.0.1
+            BUILD_VERSION=0.0.2
             BUILD_REVISION=${{ github.sha }}
           provenance: mode=max
           sbom: true
@@ -112,7 +112,7 @@ jobs:
           load: true
           tags: cilexec:ci
           build-args: |
-            BUILD_VERSION=0.0.1
+            BUILD_VERSION=0.0.2
             BUILD_REVISION=${{ github.sha }}
       - name: Scan image vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7

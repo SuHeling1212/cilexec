@@ -7,7 +7,8 @@ import java.util.Objects;
 public sealed interface FclExpression permits FclExpression.Literal, FclExpression.Variable,
         FclExpression.ArrayLiteral, FclExpression.MapLiteral, FclExpression.Unary,
         FclExpression.Binary, FclExpression.Index, FclExpression.Call,
-        FclExpression.DestroyTarget {
+        FclExpression.Member, FclExpression.Update, FclExpression.DestroyTarget, FclExpression.NewObject,
+        FclExpression.SuperConstructor {
 
     long id();
 
@@ -61,6 +62,24 @@ public sealed interface FclExpression permits FclExpression.Literal, FclExpressi
         }
     }
 
+    /** Member access after a non-identifier expression, for example {@code e.stack[0].line}. */
+    record Member(long id, FclExpression target, String name) implements FclExpression {
+        public Member {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(name, "name");
+        }
+    }
+
+    /** Postfix update expression; it evaluates to the updated target value. */
+    record Update(long id, String variable, List<FclExpression> indices, int delta)
+            implements FclExpression {
+        public Update {
+            Objects.requireNonNull(variable, "variable");
+            indices = List.copyOf(indices);
+            if (delta != 1 && delta != -1) throw new IllegalArgumentException("Update delta must be ±1");
+        }
+    }
+
     record Call(long id, String name, List<FclExpression> arguments) implements FclExpression {
         public Call {
             Objects.requireNonNull(name, "name");
@@ -73,11 +92,24 @@ public sealed interface FclExpression permits FclExpression.Literal, FclExpressi
      * index path are captured at compile time so the runtime can delete the real
      * variable/function binding or the real container element instead of a deep copy.
      */
-    record DestroyTarget(long id, String rootName,
+    record DestroyTarget(long id, String functionName, String rootName,
                          List<FclExpression> indices) implements FclExpression {
         public DestroyTarget {
+            Objects.requireNonNull(functionName, "functionName");
             Objects.requireNonNull(rootName, "rootName");
             indices = List.copyOf(indices);
         }
+    }
+
+    record NewObject(long id, String className, List<FclExpression> arguments)
+            implements FclExpression {
+        public NewObject {
+            Objects.requireNonNull(className, "className");
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    record SuperConstructor(long id, List<FclExpression> arguments) implements FclExpression {
+        public SuperConstructor { arguments = List.copyOf(arguments); }
     }
 }

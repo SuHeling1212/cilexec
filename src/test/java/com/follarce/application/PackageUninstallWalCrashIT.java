@@ -97,7 +97,7 @@ class PackageUninstallWalCrashIT {
                 + "func run() { return greet(\"package\") }\n";
         com.follarce.package_manager.PackageManifest manifest =
                 new com.follarce.package_manager.PackageManifest("cilexec", "editor", "0.0.1",
-                        "fcl-1", List.of(new com.follarce.package_manager.PackageManifest.Module(
+                        "fcl-0.0.2", List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), List.of(), List.of(),
                         List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
                                 "run", "main", "run")), List.of(), List.of());

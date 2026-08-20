@@ -218,7 +218,7 @@ class JdbcProcessEffectIT {
                 : List.of(new Continuation.ControlFrame(Continuation.ControlKind.BLOCK,
                 0, 20, scopes.getFirst().scopeId()));
         return new Continuation(programId, programHash, 3, calls, scopes, exceptions, controls,
-                wait, globals, Map.of(), "fcl-1", "1");
+                wait, globals, Map.of(), "fcl-0.0.2", "1");
     }
 
     @Test
@@ -331,7 +331,7 @@ class JdbcProcessEffectIT {
             try (PreparedStatement program = connection.prepareStatement(
                     "INSERT INTO program.program(program_id,owner_id,program_hash,language_version,"
                             + "runtime_format_version,source_object_hash,statement_count) "
-                            + "VALUES (?,?,?,'fcl-1',1,?,1)")) {
+                            + "VALUES (?,?,?,'fcl-0.0.2',1,?,1)")) {
                 program.setObject(1, programId);
                 program.setObject(2, ownerId);
                 program.setBytes(3, JdbcValues.hash(programHash));

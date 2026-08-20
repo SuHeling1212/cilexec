@@ -84,6 +84,7 @@ public final class FclProgramLinker {
         int exitJump = instructions.size();
         instructions.add(new FclInstruction.Jump(-1, -1));
         Map<String, FclProgram.Function> functions = new LinkedHashMap<>(base.functions());
+        Map<String, FclProgram.ClassDefinition> classes = new LinkedHashMap<>(base.classes());
 
         for (Context context : contexts) {
             int offset = instructions.size();
@@ -112,6 +113,7 @@ public final class FclProgramLinker {
                     bind(functions, publicName, linked);
                 }
             }
+            linkPublicClasses(classes, functions, context, localNames, internalNames);
         }
         instructions.set(exitJump, new FclInstruction.Jump(-1, instructions.size()));
         StringBuilder linkedSource = new StringBuilder(base.source());
@@ -120,7 +122,7 @@ public final class FclProgramLinker {
                     .append('/').append(context.module().moduleName()).append('\n')
                     .append(context.module().source());
         }
-        return new FclProgram(instructions, functions, linkedSource.toString());
+        return new FclProgram(instructions, functions, classes, linkedSource.toString());
     }
 
     /** Validates that an importable module contains no import or include directives. */
@@ -151,6 +153,9 @@ public final class FclProgramLinker {
                     value.indices().stream().map(expression).toList(),
                     expression.apply(value.value()));
         }
+        if (instruction instanceof FclInstruction.Link value) {
+            return new FclInstruction.Link(value.line(), value.target(), value.source());
+        }
         if (instruction instanceof FclInstruction.Evaluation value) {
             return new FclInstruction.Evaluation(value.line(), expression.apply(value.expression()));
         }
@@ -168,6 +173,10 @@ public final class FclProgramLinker {
         if (instruction instanceof FclInstruction.Continue value) {
             return new FclInstruction.Continue(value.line());
         }
+        if (instruction instanceof FclInstruction.Update value) {
+            return new FclInstruction.Update(value.line(), value.variable(),
+                    value.indices().stream().map(expression).toList(), value.delta());
+        }
         if (instruction instanceof FclInstruction.Return value) {
             return new FclInstruction.Return(value.line(), expression.apply(value.value()),
                     value.implicit());
@@ -176,6 +185,16 @@ public final class FclProgramLinker {
             return new FclInstruction.FunctionDeclaration(value.line(),
                     localNames.get(value.name()), value.parameters(), value.bodyTarget() + offset,
                     value.endTarget() + offset, value.publicBinding());
+        }
+        if (instruction instanceof FclInstruction.TryStart value) {
+            return new FclInstruction.TryStart(value.line(), value.catchTarget() + offset,
+                    value.catchEndTarget() + offset, value.catchVariable());
+        }
+        if (instruction instanceof FclInstruction.CatchEnter value) {
+            return new FclInstruction.CatchEnter(value.line());
+        }
+        if (instruction instanceof FclInstruction.CatchEnd value) {
+            return new FclInstruction.CatchEnd(value.line());
         }
         if (instruction instanceof FclInstruction.Jump value) {
             return new FclInstruction.Jump(value.line(), value.target() + offset);
@@ -225,10 +244,34 @@ public final class FclProgramLinker {
                     copyExpression(value.target(), offset, context, allNames, localNames),
                     copyExpression(value.index(), offset, context, allNames, localNames));
         }
-        FclExpression.Call call = (FclExpression.Call) expression;
-        String name = resolveCallName(call.name(), context, allNames, localNames);
-        return new FclExpression.Call(id, name, call.arguments().stream()
-                .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList());
+        if (expression instanceof FclExpression.Member value) {
+            return new FclExpression.Member(id, copyExpression(value.target(), offset, context,
+                    allNames, localNames), value.name());
+        }
+        if (expression instanceof FclExpression.Update value) {
+            return new FclExpression.Update(id, value.variable(), value.indices().stream()
+                    .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList(),
+                    value.delta());
+        }
+        if (expression instanceof FclExpression.DestroyTarget value) {
+            return new FclExpression.DestroyTarget(id, value.functionName(), value.rootName(),
+                    value.indices().stream().map(item -> copyExpression(item, offset, context,
+                            allNames, localNames)).toList());
+        }
+        if (expression instanceof FclExpression.NewObject value) {
+            return new FclExpression.NewObject(id, value.className(), value.arguments().stream()
+                    .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList());
+        }
+        if (expression instanceof FclExpression.SuperConstructor value) {
+            return new FclExpression.SuperConstructor(id, value.arguments().stream()
+                    .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList());
+        }
+        if (expression instanceof FclExpression.Call call) {
+            String name = resolveCallName(call.name(), context, allNames, localNames);
+            return new FclExpression.Call(id, name, call.arguments().stream()
+                    .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList());
+        }
+        throw new IllegalArgumentException("Unsupported FCL expression: " + expression.getClass());
     }
 
     private static String resolveCallName(String name, Context context,
@@ -271,6 +314,8 @@ public final class FclProgramLinker {
                 maximum = Math.max(maximum, max(value.condition()));
             } else if (instruction instanceof FclInstruction.Return value) {
                 maximum = Math.max(maximum, max(value.value()));
+            } else if (instruction instanceof FclInstruction.Update value) {
+                for (FclExpression index : value.indices()) maximum = Math.max(maximum, max(index));
             }
         }
         return maximum;
@@ -296,8 +341,46 @@ public final class FclProgramLinker {
             maximum = Math.max(maximum, max(value.index()));
         } else if (expression instanceof FclExpression.Call value) {
             for (FclExpression child : value.arguments()) maximum = Math.max(maximum, max(child));
+        } else if (expression instanceof FclExpression.Member value) {
+            maximum = Math.max(maximum, max(value.target()));
+        } else if (expression instanceof FclExpression.Update value) {
+            for (FclExpression child : value.indices()) maximum = Math.max(maximum, max(child));
+        } else if (expression instanceof FclExpression.DestroyTarget value) {
+            for (FclExpression child : value.indices()) maximum = Math.max(maximum, max(child));
+        } else if (expression instanceof FclExpression.NewObject value) {
+            for (FclExpression child : value.arguments()) maximum = Math.max(maximum, max(child));
+        } else if (expression instanceof FclExpression.SuperConstructor value) {
+            for (FclExpression child : value.arguments()) maximum = Math.max(maximum, max(child));
         }
         return maximum;
+    }
+
+    private static void linkPublicClasses(Map<String, FclProgram.ClassDefinition> classes,
+                                          Map<String, FclProgram.Function> functions,
+                                          Context context, Map<String, String> localNames,
+                                          Map<String, Map<String, String>> allNames) {
+        for (FclProgram.ClassDefinition source : context.program().classes().values()) {
+            if (source.access() != FclProgram.Access.PUBLIC) continue;
+            Map<String, FclProgram.Field> fields = new LinkedHashMap<>();
+            source.fields().forEach((name, field) -> fields.put(name, new FclProgram.Field(name,
+                    field.access(), copyExpression(field.defaultValue(), context.expressionOffset(), context,
+                            allNames, localNames))));
+            Map<String, FclProgram.Method> methods = new LinkedHashMap<>();
+            source.methods().forEach((signature, method) -> {
+                String functionKey = localNames.get(method.functionKey());
+                if (functionKey == null) throw new FclRuntimeException("Imported class method is missing: "
+                        + source.name() + "." + signature);
+                String classScopedKey = source.name() + "." + functionKey;
+                bind(functions, classScopedKey, functions.get(functionKey));
+                methods.put(signature, new FclProgram.Method(method.name(), method.arity(), method.access(),
+                        classScopedKey, method.constructor()));
+            });
+            FclProgram.ClassDefinition copied = new FclProgram.ClassDefinition(source.name(), source.access(),
+                    source.parent(), fields, methods);
+            if (classes.putIfAbsent(copied.name(), copied) != null) {
+                throw new FclRuntimeException("Imported class conflicts with existing class: " + copied.name());
+            }
+        }
     }
 
     private static String internalPrefix(Module module, int index) {

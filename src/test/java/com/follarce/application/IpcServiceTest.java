@@ -39,7 +39,7 @@ class IpcServiceTest {
                 List.of(), List.of(), List.of(), List.of(),
                 Optional.of(new Continuation.WaitState(Continuation.WaitKind.IPC,
                         Optional.of(receiverUid), Optional.empty())),
-                Map.of(), Map.of(), "fcl-1", "1");
+                Map.of(), Map.of(), "fcl-0.0.2", "1");
         persistence.processes.current = new CilProcess(
                 new ProcessIdentity(receiverUid, 55), ownerId,
                 CilProcess.Status.WAITING_IPC, 3, 9, continuation,

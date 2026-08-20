@@ -15,10 +15,13 @@ public final class FclCompiler {
     private static final java.util.Set<String> RESERVED_WORDS = java.util.Set.of(
             "func", "if", "else", "while", "break", "continue", "return",
             "import", "include", "as", "and", "or", "not", "public", "private",
-            "true", "false", "null");
+            "true", "false", "null", "class", "extends", "new", "this", "super", "link",
+            "try", "catch");
     /** Qualified names treated as the language-level memory.destroy operation. */
     private static final java.util.Set<String> DESTROY_FUNCTIONS = java.util.Set.of(
-            "memory.destroy", "memory.unset", "memory.release");
+            "memory.destroy");
+    private static final java.util.Set<String> RESERVED_MEMBER_ROOTS = java.util.Set.of(
+            "effect", "io", "memory", "file", "process", "system", "package", "env", "path");
     public FclProgram compile(String source) {
         Objects.requireNonNull(source, "source");
         return new Parser(source, new Lexer(source).scan()).compile();
@@ -28,7 +31,7 @@ public final class FclCompiler {
         IDENTIFIER, NUMBER, STRING,
         LEFT_PAREN, RIGHT_PAREN, LEFT_BRACKET, RIGHT_BRACKET,
         LEFT_BRACE, RIGHT_BRACE, COMMA, COLON, DOT,
-        PLUS, MINUS, STAR, SLASH, PERCENT, HASH,
+        PLUS, PLUS_PLUS, MINUS, MINUS_MINUS, STAR, SLASH, PERCENT, HASH,
         BANG, BANG_EQUAL, EQUAL, EQUAL_EQUAL,
         LESS, LESS_EQUAL, GREATER, GREATER_EQUAL,
         AND, OR, SEMICOLON, NEWLINE, EOF
@@ -78,8 +81,8 @@ public final class FclCompiler {
                 case ',' -> add(Type.COMMA);
                 case ':' -> add(Type.COLON);
                 case '.' -> add(Type.DOT);
-                case '+' -> add(Type.PLUS);
-                case '-' -> add(Type.MINUS);
+                case '+' -> add(match('+') ? Type.PLUS_PLUS : Type.PLUS);
+                case '-' -> add(match('-') ? Type.MINUS_MINUS : Type.MINUS);
                 case '*' -> add(Type.STAR);
                 case '%' -> add(Type.PERCENT);
                 case ';' -> add(Type.SEMICOLON);
@@ -282,6 +285,7 @@ public final class FclCompiler {
         private final List<Token> tokens;
         private final List<FclInstruction> instructions = new ArrayList<>();
         private final Map<String, FclProgram.Function> functions = new LinkedHashMap<>();
+        private final Map<String, FclProgram.ClassDefinition> classes = new LinkedHashMap<>();
         private int current;
         private long expressionId = 1;
 
@@ -296,11 +300,17 @@ public final class FclCompiler {
                 statement(true, 0, 0);
                 skipSeparators();
             }
-            return new FclProgram(instructions, functions, source);
+            validateInheritance();
+            return new FclProgram(instructions, functions, classes, source);
         }
 
         private void statement(boolean topLevel, int loopDepth, int functionDepth) {
             Token start = peek();
+            if (word("class")) {
+                if (!topLevel || functionDepth != 0) fail(start, "Classes may only be declared at top level");
+                classDefinition(start, FclProgram.Access.PUBLIC);
+                return;
+            }
             if (word("func")) {
                 if (!topLevel || functionDepth != 0) {
                     fail(start, "Functions may only be declared at top level");
@@ -310,6 +320,11 @@ public final class FclCompiler {
             }
             if (word("public") || word("private")) {
                 boolean publicBinding = previous().text().equals("public");
+                if (word("class")) {
+                    if (!topLevel || functionDepth != 0) fail(start, "Classes may only be declared at top level");
+                    classDefinition(start, publicBinding ? FclProgram.Access.PUBLIC : FclProgram.Access.PRIVATE);
+                    return;
+                }
                 if (!topLevel || functionDepth != 0) {
                     fail(start, "Functions may only be declared at top level");
                 }
@@ -325,6 +340,10 @@ public final class FclCompiler {
             }
             if (word("while")) {
                 loop(start, loopDepth, functionDepth);
+                return;
+            }
+            if (word("try")) {
+                tryCatch(start, loopDepth, functionDepth);
                 return;
             }
             if (word("break")) {
@@ -394,6 +413,96 @@ public final class FclCompiler {
                     bodyTarget, endTarget, null, publicBinding, null));
         }
 
+        private void classDefinition(Token start, FclProgram.Access access) {
+            Token name = consume(Type.IDENTIFIER, "Expected class name");
+            requireBindableIdentifier(name, "Class name");
+            if (classes.containsKey(name.text())) fail(name, "Class is already declared: " + name.text());
+            String parent = null;
+            if (word("extends")) {
+                Token parentName = consume(Type.IDENTIFIER, "Expected parent class name");
+                requireBindableIdentifier(parentName, "Parent class name");
+                parent = parentName.text();
+            }
+            openBlock("Expected '{' before class body");
+            Map<String, FclProgram.Field> fields = new LinkedHashMap<>();
+            Map<String, FclProgram.Method> methods = new LinkedHashMap<>();
+            skipSeparators();
+            while (!check(Type.RIGHT_BRACE) && !check(Type.EOF)) {
+                FclProgram.Access memberAccess = FclProgram.Access.PUBLIC;
+                if (word("public")) memberAccess = FclProgram.Access.PUBLIC;
+                else if (word("private")) memberAccess = FclProgram.Access.PRIVATE;
+                Token memberStart = peek();
+                if (word("func")) {
+                    classMethod(memberStart, name.text(), memberAccess, methods, false);
+                } else if (word("init")) {
+                    classMethod(memberStart, name.text(), memberAccess, methods, true);
+                } else {
+                    Token field = consume(Type.IDENTIFIER, "Expected class field or method");
+                    requireBindableIdentifier(field, "Field name");
+                    if (fields.containsKey(field.text())) fail(field, "Field is already declared: " + field.text());
+                    consume(Type.EQUAL, "Expected '=' after class field name");
+                    FclExpression value = expression();
+                    finishSimple();
+                    fields.put(field.text(), new FclProgram.Field(field.text(), memberAccess, value));
+                }
+                skipSeparators();
+            }
+            consume(Type.RIGHT_BRACE, "Expected '}' after class body");
+            classes.put(name.text(), new FclProgram.ClassDefinition(name.text(), access, parent, fields, methods));
+        }
+
+        private void classMethod(Token start, String className, FclProgram.Access access,
+                                 Map<String, FclProgram.Method> methods, boolean constructor) {
+            Token name = constructor ? new Token(Type.IDENTIFIER, "init", null, start.line(), start.column())
+                    : consume(Type.IDENTIFIER, "Expected method name");
+            requireBindableIdentifier(name, "Method name");
+            consume(Type.LEFT_PAREN, "Expected '(' after method name");
+            List<String> parameters = new ArrayList<>();
+            if (!check(Type.RIGHT_PAREN)) {
+                do {
+                    Token parameter = consume(Type.IDENTIFIER, "Expected parameter name");
+                    requireBindableIdentifier(parameter, "Parameter name");
+                    if (parameters.contains(parameter.text())) fail(parameter, "Duplicate parameter: " + parameter.text());
+                    parameters.add(parameter.text());
+                } while (match(Type.COMMA));
+            }
+            consume(Type.RIGHT_PAREN, "Expected ')' after parameters");
+            String signature = name.text() + "/" + parameters.size();
+            if (methods.containsKey(signature)) fail(name, "Method is already declared: " + signature);
+            String functionKey = className + "." + signature;
+            int declarationPointer = instructions.size();
+            instructions.add(new FclInstruction.FunctionDeclaration(start.line(), functionKey, parameters,
+                    -1, -1, access == FclProgram.Access.PUBLIC));
+            openBlock("Expected '{' before method body");
+            int bodyTarget = instructions.size();
+            block(0, 1);
+            instructions.add(new FclInstruction.Return(start.line(), literal(null), true));
+            int endTarget = instructions.size();
+            instructions.set(declarationPointer, new FclInstruction.FunctionDeclaration(start.line(), functionKey,
+                    parameters, bodyTarget, endTarget, access == FclProgram.Access.PUBLIC));
+            functions.put(functionKey, new FclProgram.Function(functionKey, parameters, bodyTarget,
+                    endTarget, null, access == FclProgram.Access.PUBLIC, null));
+            methods.put(signature, new FclProgram.Method(name.text(), parameters.size(), access, functionKey,
+                    constructor));
+        }
+
+        private void validateInheritance() {
+            for (FclProgram.ClassDefinition definition : classes.values()) {
+                String parent = definition.parent();
+                if (parent != null && !classes.containsKey(parent)) {
+                    throw new FclCompileException("Parent class not found: " + parent, 1, 1);
+                }
+                java.util.HashSet<String> seen = new java.util.HashSet<>();
+                String cursor = definition.name();
+                while (cursor != null) {
+                    if (!seen.add(cursor)) throw new FclCompileException(
+                            "Inheritance cycle involving " + definition.name(), 1, 1);
+                    FclProgram.ClassDefinition current = classes.get(cursor);
+                    cursor = current == null ? null : current.parent();
+                }
+            }
+        }
+
         private void conditional(Token start, int loopDepth, int functionDepth) {
             FclExpression condition = conditionExpression("if");
             int conditionalPointer = instructions.size();
@@ -434,6 +543,30 @@ public final class FclCompiler {
             int endTarget = instructions.size();
             instructions.set(header, new FclInstruction.Loop(start.line(), condition,
                     bodyTarget, endTarget));
+        }
+
+        private void tryCatch(Token start, int loopDepth, int functionDepth) {
+            int tryPointer = instructions.size();
+            instructions.add(new FclInstruction.TryStart(start.line(), -1, -1, ""));
+            openBlock("Expected '{' after try");
+            block(loopDepth, functionDepth);
+            int skipCatch = instructions.size();
+            instructions.add(new FclInstruction.Jump(start.line(), -1));
+            skipSeparators();
+            if (!word("catch")) fail(peek(), "Expected catch after try block");
+            consume(Type.LEFT_PAREN, "Expected '(' after catch");
+            Token variable = consume(Type.IDENTIFIER, "Expected catch variable");
+            requireBindableIdentifier(variable, "Catch variable");
+            consume(Type.RIGHT_PAREN, "Expected ')' after catch variable");
+            int catchTarget = instructions.size();
+            instructions.add(new FclInstruction.CatchEnter(variable.line()));
+            openBlock("Expected '{' after catch");
+            block(loopDepth, functionDepth);
+            instructions.add(new FclInstruction.CatchEnd(variable.line()));
+            int endTarget = instructions.size();
+            instructions.set(tryPointer, new FclInstruction.TryStart(start.line(), catchTarget,
+                    endTarget, variable.text()));
+            instructions.set(skipCatch, new FclInstruction.Jump(start.line(), endTarget));
         }
 
         private FclExpression conditionExpression(String keyword) {
@@ -509,13 +642,40 @@ public final class FclCompiler {
             int marker = current;
             if (match(Type.IDENTIFIER)) {
                 Token variable = previous();
+                if (word("link")) {
+                    requireBindableIdentifier(variable, "Link target");
+                    Token source = consume(Type.IDENTIFIER, "Expected a source name after link");
+                    requireBindableIdentifier(source, "Link source");
+                    instructions.add(new FclInstruction.Link(start.line(), variable.text(), source.text()));
+                    finishSimple();
+                    return;
+                }
                 List<FclExpression> indices = new ArrayList<>();
                 while (match(Type.LEFT_BRACKET)) {
                     indices.add(expression());
                     consume(Type.RIGHT_BRACKET, "Expected ']' after assignment index");
                 }
+                if (match(Type.PLUS_PLUS, Type.MINUS_MINUS)) {
+                    validateUpdateTarget(variable);
+                    instructions.add(new FclInstruction.Update(start.line(), variable.text(), indices,
+                            previous().type() == Type.PLUS_PLUS ? 1 : -1));
+                    finishSimple();
+                    return;
+                }
                 if (match(Type.EQUAL)) {
-                    requireBindableIdentifier(variable, "Assignment target");
+                    if (variable.text().contains(".")) {
+                        String[] members = variable.text().split("\\.");
+                        if (RESERVED_MEMBER_ROOTS.contains(members[0])) {
+                            fail(variable, "Assignment target cannot be a runtime namespace");
+                        }
+                        for (String member : members) {
+                            if (!SIMPLE_IDENTIFIER.matcher(member).matches()) {
+                                fail(variable, "Invalid member assignment target");
+                            }
+                        }
+                    } else {
+                        requireBindableIdentifier(variable, "Assignment target");
+                    }
                     FclExpression value = expression();
                     instructions.add(new FclInstruction.Assignment(start.line(), variable.text(),
                             indices, value));
@@ -527,6 +687,17 @@ public final class FclCompiler {
             FclExpression expression = expression();
             instructions.add(new FclInstruction.Evaluation(start.line(), expression));
             finishSimple();
+        }
+
+        private void validateUpdateTarget(Token variable) {
+            if (variable.text().contains(".")) {
+                String[] members = variable.text().split("\\.");
+                if (RESERVED_MEMBER_ROOTS.contains(members[0])) {
+                    fail(variable, "Update target cannot be a runtime namespace");
+                }
+            } else {
+                requireBindableIdentifier(variable, "Update target");
+            }
         }
 
         private FclExpression expression() {
@@ -639,8 +810,13 @@ public final class FclCompiler {
                     }
                     FclExpression.Variable variable = (FclExpression.Variable) expression;
                     if (DESTROY_FUNCTIONS.contains(variable.name())) {
-                        expression = destroyTarget(variable.name());
-                        continue;
+                        if (check(Type.IDENTIFIER) && !RESERVED_WORDS.contains(peek().text())) {
+                            expression = destroyTarget(variable.name());
+                            continue;
+                        }
+                        if (!check(Type.IDENTIFIER) || !peek().text().equals("null")) {
+                            fail(peek(), variable.name() + " expects a symbol target or null");
+                        }
                     }
                     List<FclExpression> arguments = new ArrayList<>();
                     if (!check(Type.RIGHT_PAREN)) {
@@ -658,8 +834,41 @@ public final class FclCompiler {
                     expression = new FclExpression.Index(nextId(), expression, index);
                     continue;
                 }
+                if (match(Type.PLUS_PLUS, Type.MINUS_MINUS)) {
+                    return updateExpression(expression, previous());
+                }
+                if (match(Type.DOT)) {
+                    Token member = consume(Type.IDENTIFIER, "Expected member name after '.'");
+                    if (!SIMPLE_IDENTIFIER.matcher(member.text()).matches()) {
+                        fail(member, "Invalid member name");
+                    }
+                    expression = new FclExpression.Member(nextId(), expression, member.text());
+                    continue;
+                }
                 return expression;
             }
+        }
+
+        private FclExpression updateExpression(FclExpression target, Token operator) {
+            UpdateTarget update = updateTarget(target);
+            return new FclExpression.Update(nextId(), update.variable(), update.indices(),
+                    operator.type() == Type.PLUS_PLUS ? 1 : -1);
+        }
+
+        private UpdateTarget updateTarget(FclExpression expression) {
+            List<FclExpression> indices = new ArrayList<>();
+            FclExpression current = expression;
+            while (current instanceof FclExpression.Index index) {
+                indices.addFirst(index.index());
+                current = index.target();
+            }
+            if (!(current instanceof FclExpression.Variable)) {
+                fail(previous(), "++ and -- require a variable, field, or indexed value");
+            }
+            FclExpression.Variable variable = (FclExpression.Variable) current;
+            Token synthetic = new Token(Type.IDENTIFIER, variable.name(), null, previous().line(), previous().column());
+            validateUpdateTarget(synthetic);
+            return new UpdateTarget(variable.name(), indices);
         }
 
         /**
@@ -686,7 +895,7 @@ public final class FclCompiler {
                 fail(peek(), qualifiedName + " accepts exactly one target");
             }
             consume(Type.RIGHT_PAREN, "Expected ')' after destroy target");
-            return new FclExpression.DestroyTarget(nextId(), root.text(), indices);
+            return new FclExpression.DestroyTarget(nextId(), qualifiedName, root.text(), indices);
         }
 
         private FclExpression primary() {
@@ -696,6 +905,30 @@ public final class FclCompiler {
             if (word("true")) return literal(true);
             if (word("false")) return literal(false);
             if (word("null")) return literal(null);
+            if (word("new")) {
+                Token className = consume(Type.IDENTIFIER, "Expected class name after new");
+                requireBindableIdentifier(className, "Class name");
+                consume(Type.LEFT_PAREN, "Expected '(' after class name");
+                List<FclExpression> arguments = new ArrayList<>();
+                if (!check(Type.RIGHT_PAREN)) {
+                    do {
+                        arguments.add(expression());
+                    } while (match(Type.COMMA));
+                }
+                consume(Type.RIGHT_PAREN, "Expected ')' after constructor arguments");
+                return new FclExpression.NewObject(nextId(), className.text(), arguments);
+            }
+            if (word("super")) {
+                consume(Type.LEFT_PAREN, "Expected '(' after super");
+                List<FclExpression> arguments = new ArrayList<>();
+                if (!check(Type.RIGHT_PAREN)) {
+                    do {
+                        arguments.add(expression());
+                    } while (match(Type.COMMA));
+                }
+                consume(Type.RIGHT_PAREN, "Expected ')' after super arguments");
+                return new FclExpression.SuperConstructor(nextId(), arguments);
+            }
             if (match(Type.IDENTIFIER)) {
                 Token identifier = previous();
                 if (RESERVED_WORDS.contains(identifier.text())) {
@@ -842,6 +1075,10 @@ public final class FclCompiler {
 
         private void fail(Token token, String message) {
             throw new FclCompileException(message, token.line(), token.column());
+        }
+
+        private record UpdateTarget(String variable, List<FclExpression> indices) {
+            private UpdateTarget { indices = List.copyOf(indices); }
         }
     }
 }

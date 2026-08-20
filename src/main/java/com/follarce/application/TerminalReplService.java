@@ -116,7 +116,6 @@ public final class TerminalReplService {
             Program program = programs.compileAndSaveIn(transaction, prepared.source());
 
             FclContinuation runtime = nextSubmission(previous);
-            runtime.enableFunctions(functionNames(expandedSubmission));
             runtime.scope().put(TERMINAL_PROCESS_SCOPE_KEY, true);
             runtime.scope().put(TERMINAL_SESSION_SCOPE_KEY, sessionId.toString());
             runtime.scope().put(FclPath.SCOPE_KEY,
@@ -201,7 +200,7 @@ public final class TerminalReplService {
 
     private Snapshot snapshot(CilProcess process) {
         FclContinuation runtime = bridge.restore(process.continuation());
-        Map<String, Object> variables = new LinkedHashMap<>(runtime.scope().values());
+        Map<String, Object> variables = new LinkedHashMap<>(runtime.scope().persistedValues());
         ProcessInbox.keys().forEach(variables::remove);
         variables.remove(LIBRARY_SCOPE_KEY);
         variables.remove(TERMINAL_PROCESS_SCOPE_KEY);
@@ -449,20 +448,6 @@ public final class TerminalReplService {
         return combined;
     }
 
-    /** Removes a mutable process-local source function without touching package/runtime code. */
-    static String removeFunctionDeclaration(String library, String name) {
-        if (library == null || library.isBlank()) return library == null ? "" : library;
-        StringBuilder remaining = new StringBuilder(library.length());
-        int cursor = 0;
-        for (FunctionDeclaration declaration : declarations(library)) {
-            if (!declaration.name().equals(name)) continue;
-            remaining.append(library, cursor, declaration.start());
-            cursor = declaration.end();
-        }
-        remaining.append(library, cursor, library.length());
-        return remaining.toString();
-    }
-
     private static String functionDeclarations(String source) {
         StringBuilder declarations = new StringBuilder();
         for (FunctionDeclaration declaration : declarations(source)) {
@@ -470,11 +455,6 @@ public final class TerminalReplService {
             if (!declarations.toString().endsWith("\n")) declarations.append('\n');
         }
         return declarations.toString();
-    }
-
-    private static java.util.Set<String> functionNames(String source) {
-        return declarations(source).stream().map(FunctionDeclaration::name)
-                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
     }
 
     /** Minimal source scanner: FCL functions are top-level and braces in strings/comments are ignored. */

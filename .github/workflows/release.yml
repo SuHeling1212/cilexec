@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a changeable release (e.g. v0.0.1-snapshot; formal v* tag pushes stay immutable)'
+        description: 'Version tag to publish as a changeable release (e.g. v0.0.2-snapshot; formal v* tag pushes stay immutable)'
         required: false
   push:
     tags:

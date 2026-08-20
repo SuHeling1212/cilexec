@@ -167,7 +167,6 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 compiled = loadProgram(transaction, program);
                 compiled = linkPackages(transaction, current, compiled, program);
                 compiled = linkSourceImports(transaction, current, program, continuation, now, compiled);
-                compiled = compiled.withoutFunctions(continuation.disabledFunctions());
             } catch (IllegalArgumentException | IllegalStateException
                     | FclRuntimeException | FclCompileException failure) {
                 failDeterministic(transaction, current, claim, failure, now);
@@ -811,7 +810,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             throw new FclRuntimeException("Source module initialization exceeds "
                     + MAX_TERMINAL_STEPS_PER_SLICE + " steps");
         }
-        return module.scope().values();
+        return module.scope().persistedValues();
     }
 
     private static Map<String, Object> persistedSourceBindings(Map<?, ?> sourceImport) {

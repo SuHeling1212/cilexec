@@ -8,7 +8,7 @@ ARG UBUNTU_IMAGE=ubuntu:noble@sha256:561618e2c15bf2397621dd04f96926663a3b5616c18
 # digest-pinned image once it ships 26.0.2.
 ARG JRE_TARBALL_SHA256_X64=585c4cce5807ce5677289a123680a8648c84c9afac66727a0e3027298d8e32c7
 ARG JRE_TARBALL_SHA256_AARCH64=3c689572d2ea7aa3e19db5e5bc4ee41e90b557593d15eefcec179a9b8abfff0e
-ARG BUILD_VERSION=0.0.1
+ARG BUILD_VERSION=0.0.2
 ARG BUILD_REVISION=development
 ARG BUILD_SOURCE=https://github.com/SuHeling1212/cilexec
 
@@ -26,6 +26,9 @@ RUN --mount=type=cache,target=/root/.m2 \
         dependency:go-offline
 
 COPY src ./src
+# The FCL runtime test compiles this published example. Keep the build check independent
+# from the runtime image while making the source available to Maven's test phase.
+COPY docs/examples/fcl-oop-smoke-test.fcl ./docs/examples/fcl-oop-smoke-test.fcl
 COPY docker/postgres/init/00-cilexec-bootstrap.sh ./docker/postgres/init/00-cilexec-bootstrap.sh
 # Editor source is a distributable FCL package fixture used by package tests;
 # the old market/sources tree no longer exists.

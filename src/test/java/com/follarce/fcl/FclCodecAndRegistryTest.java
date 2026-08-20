@@ -67,6 +67,44 @@ class FclCodecAndRegistryTest {
     }
 
     @Test
+    void roundTripsIndependentObjectValuesWithoutPersistingIdentityOrSharing() {
+        FclContinuation continuation = new FclContinuation();
+        FclObjectValue first = new FclObjectValue("Node", Map.of("name", "first",
+                "child", new FclObjectValue("Node", Map.of("name", "child"))));
+        continuation.scope().put("a", first);
+        continuation.scope().put("b", first);
+
+        FclContinuation restored = new FclContinuationCodec().fromJson(
+                new FclContinuationCodec().toJson(continuation));
+        assertEquals(restored.scope().get("a"), restored.scope().get("b"));
+        assertFalse(restored.scope().get("a") == restored.scope().get("b"));
+        assertEquals("object", new FclContinuationCodec().valueType(restored.scope().get("a")));
+    }
+
+    @Test
+    void roundTripsExplicitLinkRelationshipsWithoutChangingThemIntoObjectSharing() {
+        FclProgram program = new FclCompiler().compile("""
+                class Counter { value = 0 }
+                a = new Counter()
+                b link a
+                b.value = 7
+                """);
+        FclContinuation continuation = new FclContinuation();
+        FclRuntime runtime = new FclRuntime(FclBuiltins.pureRegistry());
+        runToCompletion(runtime, program, continuation);
+
+        FclContinuationCodec codec = new FclContinuationCodec();
+        String json = codec.toJson(continuation);
+        assertTrue(json.contains("\"type\":\"link\""));
+        FclContinuation restored = codec.fromJson(json);
+        restored.scope().put("a", new FclObjectValue("Counter", Map.of("value", 9L)));
+
+        assertEquals(9L, ((FclObjectValue) restored.scope().get("b")).field("value"));
+        restored.scope().put("b", new FclObjectValue("Counter", Map.of("value", 11L)));
+        assertEquals(11L, ((FclObjectValue) restored.scope().get("a")).field("value"));
+    }
+
+    @Test
     void persistsImportAndIncludeAsWaitableDirectives() {
         FclProgram program = new FclCompiler().compile("""
                 import "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as "numbers"

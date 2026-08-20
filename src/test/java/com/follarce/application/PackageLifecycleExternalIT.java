@@ -309,7 +309,7 @@ class PackageLifecycleExternalIT {
                 + "func run() { return value() }\n";
         com.follarce.package_manager.PackageManifest libManifest =
                 new com.follarce.package_manager.PackageManifest("cilexec", "lib", "1.0.0",
-                        "fcl-1", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
+                        "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
                         List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), List.of(), List.of(), List.of(),
                         List.of(new com.follarce.package_manager.PackageManifest.Export(
@@ -333,7 +333,7 @@ class PackageLifecycleExternalIT {
                 + "func run() { return answer() }\n";
         com.follarce.package_manager.PackageManifest appManifest =
                 new com.follarce.package_manager.PackageManifest("cilexec", "app", "1.0.0",
-                        "fcl-1", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
+                        "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
                         List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), List.of(),
                         List.of(new com.follarce.package_manager.PackageManifest.Dependency(
@@ -580,7 +580,7 @@ class PackageLifecycleExternalIT {
                 + "func run() { return save() }\n";
         com.follarce.package_manager.PackageManifest manifest =
                 new com.follarce.package_manager.PackageManifest("cilexec", "datanote", "0.0.1",
-                        "fcl-1", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
+                        "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
                         List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), List.of(), List.of(),
                         List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
@@ -691,7 +691,7 @@ class PackageLifecycleExternalIT {
                 + "func run() { return greet(\"package\") }\n";
         com.follarce.package_manager.PackageManifest manifest =
                 new com.follarce.package_manager.PackageManifest(namespace, name, version,
-                        "fcl-1", List.of(new com.follarce.package_manager.PackageManifest.Module(
+                        "fcl-0.0.2", List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), List.of(), List.of(),
                         List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
                                 "run", "main", "run")),

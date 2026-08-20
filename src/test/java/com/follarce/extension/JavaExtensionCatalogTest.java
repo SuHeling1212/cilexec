@@ -158,10 +158,10 @@ class JavaExtensionCatalogTest {
         UUID programId = UUID.randomUUID();
         ObjectHash hash = ObjectHash.sha256(new BinaryContent(
                 "extension-test".getBytes(StandardCharsets.UTF_8)));
-        Program program = new Program(programId, hash, "fcl-1", 1, hash, Optional.empty(),
+        Program program = new Program(programId, hash, "fcl-0.0.2", 1, hash, Optional.empty(),
                 1, NOW);
         Continuation persisted = new Continuation(programId, hash, 0, List.of(), List.of(),
-                List.of(), List.of(), Optional.empty(), Map.of(), Map.of(), "fcl-1", "1");
+                List.of(), List.of(), Optional.empty(), Map.of(), Map.of(), "fcl-0.0.2", "1");
         CilProcess process = new CilProcess(new ProcessIdentity(UUID.randomUUID(), 7), owner,
                 CilProcess.Status.RUNNING, 0, 1, persisted, Optional.empty(), NOW, NOW);
         return new ProcessAndProgram(process, program);

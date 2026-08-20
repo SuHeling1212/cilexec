@@ -25,16 +25,18 @@ public final class FclContinuationCodec {
         Map<String, Object> encoded = new LinkedHashMap<>();
         encoded.put("formatVersion", continuation.formatVersion());
         encoded.put("programCounter", continuation.programCounter());
-        encoded.put("scope", encodeValue(continuation.scope().values()));
+        encoded.put("scope", encodeValue(continuation.scope().persistedValues()));
 
         List<Object> calls = new ArrayList<>();
         for (FclContinuation.CallFrame frame : continuation.callStack()) {
             Map<String, Object> call = new LinkedHashMap<>();
             call.put("returnPointer", frame.returnPointer());
-            call.put("callerScope", encodeValue(frame.callerScope().values()));
+            call.put("callerScope", encodeValue(frame.callerScope().persistedValues()));
             call.put("callerPending", encodePending(frame.callerPending()));
             call.put("callExpressionId", Long.toString(frame.callExpressionId()));
             call.put("functionName", frame.functionName());
+            call.put("receiverPath", frame.receiverPath());
+            call.put("construction", frame.construction());
             calls.add(call);
         }
         encoded.put("callStack", calls);
@@ -50,6 +52,20 @@ public final class FclContinuationCodec {
             exceptions.add(exception);
         }
         encoded.put("exceptionStack", exceptions);
+
+        List<Object> handlers = new ArrayList<>();
+        for (FclContinuation.ExceptionHandlerFrame frame : continuation.exceptionHandlers()) {
+            Map<String, Object> handler = new LinkedHashMap<>();
+            handler.put("catchTarget", frame.catchTarget());
+            handler.put("catchEndTarget", frame.catchEndTarget());
+            handler.put("variable", frame.variable());
+            handler.put("callDepth", frame.callDepth());
+            handler.put("handling", frame.handling());
+            handler.put("hadPreviousBinding", frame.hadPreviousBinding());
+            handler.put("previousValue", encodeValue(frame.previousValue()));
+            handlers.add(handler);
+        }
+        encoded.put("exceptionHandlers", handlers);
 
         List<Object> loops = new ArrayList<>();
         for (FclContinuation.LoopFrame frame : continuation.loopState()) {
@@ -125,7 +141,9 @@ public final class FclContinuationCodec {
                     scope(call.get("callerScope"), "callerScope"),
                     decodePending(call.get("callerPending")),
                     longString(call.get("callExpressionId"), "callExpressionId"),
-                    string(call.get("functionName"), "functionName")));
+                    string(call.get("functionName"), "functionName"),
+                    nullableString(call.get("receiverPath"), "receiver path"),
+                    bool(call.get("construction"), "construction")));
         }
 
         List<FclContinuation.ExceptionFrame> exceptions = new ArrayList<>();
@@ -137,6 +155,20 @@ public final class FclContinuationCodec {
                     string(exception.get("type"), "type"),
                     string(exception.get("message"), "message"),
                     integer(exception.get("callDepth"), "callDepth")));
+        }
+
+        List<FclContinuation.ExceptionHandlerFrame> handlers = new ArrayList<>();
+        Object encodedHandlers = encoded.get("exceptionHandlers");
+        if (encodedHandlers != null) for (Object item : list(encodedHandlers, "exceptionHandlers")) {
+            Map<String, ?> handler = map(item, "exceptionHandler item");
+            handlers.add(new FclContinuation.ExceptionHandlerFrame(
+                    integer(handler.get("catchTarget"), "catchTarget"),
+                    integer(handler.get("catchEndTarget"), "catchEndTarget"),
+                    string(handler.get("variable"), "handler variable"),
+                    integer(handler.get("callDepth"), "handler callDepth"),
+                    bool(handler.get("handling"), "handler handling"),
+                    bool(handler.get("hadPreviousBinding"), "handler hadPreviousBinding"),
+                    decodeValue(handler.get("previousValue"))));
         }
 
         List<FclContinuation.LoopFrame> loops = new ArrayList<>();
@@ -172,7 +204,7 @@ public final class FclContinuationCodec {
                 waitKind, waitKey, waitPayload);
 
         return FclContinuation.restore(formatVersion, programCounter, scope, calls,
-                exceptions, loops, branches, waitState,
+                exceptions, handlers, loops, branches, waitState,
                 decodePending(encoded.get("pendingStatement")),
                 bool(encoded.get("halted"), "halted"),
                 bool(encoded.get("failed"), "failed"),
@@ -253,6 +285,41 @@ public final class FclContinuationCodec {
             encoded.put("value", character.toString());
             return encoded;
         }
+        if (value instanceof FclLinkedName link) {
+            encoded.put("type", "link");
+            encoded.put("source", link.source());
+            return encoded;
+        }
+        if (value instanceof FclObjectValue object) {
+            encoded.put("type", "object");
+            encoded.put("className", object.className());
+            encoded.put("fields", encodeValue(object.fields()));
+            return encoded;
+        }
+        if (value instanceof FclExceptionValue exception) {
+            encoded.put("type", "exception");
+            encoded.put("exceptionType", exception.type());
+            encoded.put("message", exception.message());
+            List<Object> stack = new ArrayList<>();
+            for (FclStackFrame frame : exception.stack()) {
+                Map<String, Object> encodedFrame = new LinkedHashMap<>();
+                encodedFrame.put("function", frame.function());
+                encodedFrame.put("source", frame.source());
+                encodedFrame.put("line", Long.toString(frame.line()));
+                encodedFrame.put("column", Long.toString(frame.column()));
+                stack.add(encodedFrame);
+            }
+            encoded.put("stack", stack);
+            return encoded;
+        }
+        if (value instanceof FclStackFrame frame) {
+            encoded.put("type", "stack-frame");
+            encoded.put("function", frame.function());
+            encoded.put("source", frame.source());
+            encoded.put("line", Long.toString(frame.line()));
+            encoded.put("column", Long.toString(frame.column()));
+            return encoded;
+        }
         if (value instanceof List<?> list) {
             encoded.put("type", "array");
             List<Object> elements = new ArrayList<>();
@@ -296,6 +363,25 @@ public final class FclContinuationCodec {
             case "bigint" -> bigInteger(value.get("value"), "bigint value");
             case "string" -> string(value.get("value"), "string value");
             case "char" -> charValue(value.get("value"), "char value");
+            case "link" -> new FclLinkedName(string(value.get("source"), "link source"));
+            case "object" -> new FclObjectValue(string(value.get("className"), "object class name"),
+                    stringMap(decodeValue(value.get("fields")), "object fields"));
+            case "exception" -> {
+                List<FclStackFrame> stack = new ArrayList<>();
+                for (Object item : list(value.get("stack"), "exception stack")) {
+                    Map<String, ?> frame = map(item, "exception stack frame");
+                    stack.add(new FclStackFrame(string(frame.get("function"), "stack function"),
+                            string(frame.get("source"), "stack source"),
+                            longString(frame.get("line"), "stack line"),
+                            longString(frame.get("column"), "stack column")));
+                }
+                yield new FclExceptionValue(string(value.get("exceptionType"), "exception type"),
+                        string(value.get("message"), "exception message"), stack);
+            }
+            case "stack-frame" -> new FclStackFrame(string(value.get("function"), "stack function"),
+                    string(value.get("source"), "stack source"),
+                    longString(value.get("line"), "stack line"),
+                    longString(value.get("column"), "stack column"));
             case "array" -> {
                 List<Object> elements = new ArrayList<>();
                 for (Object item : list(value.get("value"), "array value")) {
@@ -315,6 +401,7 @@ public final class FclContinuationCodec {
             default -> throw new IllegalArgumentException("Unknown FCL value type: " + type);
         };
     }
+
 
     private FclScope scope(Object encoded, String field) {
         return new FclScope(stringMap(decodeValue(encoded), field));
@@ -415,4 +502,5 @@ public final class FclContinuationCodec {
         if (value == null) return null;
         return string(value, field);
     }
+
 }

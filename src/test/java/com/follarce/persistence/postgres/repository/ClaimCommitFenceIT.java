@@ -136,7 +136,7 @@ class ClaimCommitFenceIT {
             try (PreparedStatement statement = connection.prepareStatement(
                     "INSERT INTO program.program(program_id,owner_id,program_hash,language_version,"
                             + "runtime_format_version,source_object_hash,statement_count) "
-                            + "VALUES (?,?,?,'fcl-1',1,?,1)")) {
+                            + "VALUES (?,?,?,'fcl-0.0.2',1,?,1)")) {
                 statement.setObject(1, programId);
                 statement.setObject(2, ownerId);
                 statement.setBytes(3, hash);
@@ -147,7 +147,7 @@ class ClaimCommitFenceIT {
                     "INSERT INTO process.process(process_uid,pid,owner_id,program_id,status,"
                             + "program_counter,state_version,execution_epoch,runtime_format_version,"
                             + "language_version,continuation_json,last_boot_id) "
-                            + "VALUES (?,1,?,?,'RUNNING',0,1,1,1,'fcl-1','{}'::jsonb,?)")) {
+                            + "VALUES (?,1,?,?,'RUNNING',0,1,1,1,'fcl-0.0.2','{}'::jsonb,?)")) {
                 statement.setObject(1, processUid);
                 statement.setObject(2, ownerId);
                 statement.setObject(3, programId);

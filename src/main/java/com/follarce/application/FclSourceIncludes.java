@@ -27,6 +27,8 @@ final class FclSourceIncludes {
     private static final Pattern DIRECTIVE = Pattern.compile(
             "(?m)(^|[;{}\\n])([\\t ]*)include[\\t ]+\"((?:\\\\.|[^\"\\\\\\r\\n])*)\""
                     + "[\\t ]*(?=;|\\r?$|}|//[^\\r\\n]*)");
+    private static final Pattern PRIVATE_TOP_LEVEL = Pattern.compile(
+            "(?m)^\\s*private\\s+(?:func|class)\\b");
 
     String expand(TransactionContext transaction, UUID ownerId, String source,
                   String workingDirectory) {
@@ -71,6 +73,10 @@ final class FclSourceIncludes {
                             + " files at " + absolute);
                 }
                 String included = readUtf8File(absolute);
+                if (PRIVATE_TOP_LEVEL.matcher(included).find()) {
+                    throw new FclRuntimeException("include cannot load a file with top-level private definitions: "
+                            + absolute);
+                }
                 consume(included);
                 stack.addLast(absolute);
                 String expanded = expand(included, parent(absolute), stack);

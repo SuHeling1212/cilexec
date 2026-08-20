@@ -1,10 +1,10 @@
-CilExec 0.0.1
+CilExec 0.0.2
 
-Build revision: 5d1067c25627f84ea575cfd5ffa40992992eedf4
+Build revision: b1cc89c3a1572a9ea0b44e97273dd3e61fbdcbdc-dirty
 Runtime requirement: Java 26
 Market server requirement: Java 21 or newer
 Market protocol: cilexec.market/v1
-Published packages: cilexec/editor/0.0.1
+Published packages: cilexec/editor/0.0.2
 
 Contents: cilexec-app.jar, cilexec-market-server.jar, repository/, catalog.json,
 MARKET.md, LICENSE, THIRD_PARTY_NOTICES.txt, SBOM.cdx.json, release-manifest.json,

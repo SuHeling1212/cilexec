@@ -6,7 +6,7 @@ import org.flywaydb.core.api.migration.Context;
 import java.sql.Statement;
 
 /**
- * V002: forward schema fixes for the frozen V001 baseline.
+ * V002 / CilExec 0.0.2: the single forward migration for this unreleased version.
  *
  * <p>First, package private data FILE entries may be empty. The frozen V001 baseline
  * requires {@code byte_size > 0} for FILE entries, so
@@ -43,7 +43,7 @@ import java.sql.Statement;
  * way {@code meta.assert_security_invariants()} accepts a SECURITY DEFINER function
  * with a PUBLIC execute ACL.
  */
-public final class V002__PackageDataAllowEmptyFiles extends BaseJavaMigration {
+public final class V002 extends BaseJavaMigration {
     @Override
     public void migrate(Context context) throws Exception {
         try (Statement statement = context.getConnection().createStatement()) {

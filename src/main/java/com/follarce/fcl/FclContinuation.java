@@ -18,7 +18,6 @@ import java.util.Objects;
  */
 public final class FclContinuation {
     public static final int FORMAT_VERSION = 2;
-    public static final String DISABLED_FUNCTIONS_SCOPE_KEY = "cilexec.fcl.disabledFunctions";
 
     public enum WaitKind {
         NONE,
@@ -57,7 +56,7 @@ public final class FclContinuation {
 
     public record CallFrame(int returnPointer, FclScope callerScope,
                             PendingStatement callerPending, long callExpressionId,
-                            String functionName) {
+                            String functionName, String receiverPath, boolean construction) {
         public CallFrame {
             callerScope = Objects.requireNonNull(callerScope, "callerScope");
             callerPending = callerPending == null ? null
@@ -65,6 +64,7 @@ public final class FclContinuation {
                     callerPending.callResults());
             Objects.requireNonNull(functionName, "functionName");
         }
+
     }
 
     public record ExceptionFrame(int instructionPointer, int sourceLine, String type,
@@ -72,6 +72,21 @@ public final class FclContinuation {
         public ExceptionFrame {
             Objects.requireNonNull(type, "type");
             Objects.requireNonNull(message, "message");
+        }
+    }
+
+    /** A persisted try/catch region; no Java call-stack state is required to resume it. */
+    public record ExceptionHandlerFrame(int catchTarget, int catchEndTarget, String variable,
+                                        int callDepth, boolean handling,
+                                        boolean hadPreviousBinding, Object previousValue) {
+        public ExceptionHandlerFrame {
+            Objects.requireNonNull(variable, "variable");
+            previousValue = FclValues.deepCopy(previousValue);
+        }
+
+        public ExceptionHandlerFrame asHandling() {
+            return new ExceptionHandlerFrame(catchTarget, catchEndTarget, variable, callDepth,
+                    true, hadPreviousBinding, previousValue);
         }
     }
 
@@ -107,6 +122,7 @@ public final class FclContinuation {
     private FclScope scope;
     private final List<CallFrame> callStack;
     private final List<ExceptionFrame> exceptionStack;
+    private final List<ExceptionHandlerFrame> exceptionHandlers;
     private final List<LoopFrame> loopState;
     private final List<BranchFrame> branchState;
     private WaitState waitState;
@@ -116,13 +132,14 @@ public final class FclContinuation {
     private Object result;
 
     public FclContinuation() {
-        this(FORMAT_VERSION, 0, new FclScope(), List.of(), List.of(), List.of(),
+        this(FORMAT_VERSION, 0, new FclScope(), List.of(), List.of(), List.of(), List.of(),
                 List.of(), WaitState.ready(), null, false, false, null);
     }
 
     private FclContinuation(int formatVersion, int programCounter, FclScope scope,
                             List<CallFrame> callStack,
                             List<ExceptionFrame> exceptionStack,
+                            List<ExceptionHandlerFrame> exceptionHandlers,
                             List<LoopFrame> loopState,
                             List<BranchFrame> branchState,
                             WaitState waitState,
@@ -138,9 +155,11 @@ public final class FclContinuation {
         this.callStack = new ArrayList<>();
         for (CallFrame frame : callStack) {
             this.callStack.add(new CallFrame(frame.returnPointer(), frame.callerScope().copy(),
-                    frame.callerPending(), frame.callExpressionId(), frame.functionName()));
+                    frame.callerPending(), frame.callExpressionId(), frame.functionName(),
+                    frame.receiverPath(), frame.construction()));
         }
         this.exceptionStack = new ArrayList<>(exceptionStack);
+        this.exceptionHandlers = new ArrayList<>(exceptionHandlers);
         this.loopState = new ArrayList<>(loopState);
         this.branchState = new ArrayList<>(branchState);
         WaitState persistedWait = Objects.requireNonNull(waitState, "waitState");
@@ -174,48 +193,6 @@ public final class FclContinuation {
         return scope.get(name);
     }
 
-    /** Process-local user/import binding removals, persisted with the lexical root scope. */
-    public boolean functionDisabled(String name) {
-        FclScope root = globalScope();
-        if (!root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) return false;
-        Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
-        return values instanceof List<?> list && list.contains(name);
-    }
-
-    public java.util.Set<String> disabledFunctions() {
-        FclScope root = globalScope();
-        if (!root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) return java.util.Set.of();
-        Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
-        if (!(values instanceof List<?> list)) return java.util.Set.of();
-        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
-        for (Object value : list) if (value instanceof String name) names.add(name);
-        return java.util.Set.copyOf(names);
-    }
-
-    public void disableFunction(String name) {
-        FclScope root = globalScope();
-        List<Object> names = new ArrayList<>();
-        if (root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) {
-            Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
-            if (values instanceof List<?> list) names.addAll(list);
-        }
-        if (!names.contains(name)) names.add(name);
-        root.put(DISABLED_FUNCTIONS_SCOPE_KEY, names);
-    }
-
-    /** An explicit new declaration restores that process-local binding. */
-    public void enableFunctions(java.util.Collection<String> declared) {
-        if (declared == null || declared.isEmpty()) return;
-        FclScope root = globalScope();
-        if (!root.contains(DISABLED_FUNCTIONS_SCOPE_KEY)) return;
-        Object values = root.get(DISABLED_FUNCTIONS_SCOPE_KEY);
-        if (!(values instanceof List<?> list)) return;
-        List<Object> names = new ArrayList<>(list);
-        names.removeIf(value -> value instanceof String name && declared.contains(name));
-        if (names.isEmpty()) root.remove(DISABLED_FUNCTIONS_SCOPE_KEY);
-        else root.put(DISABLED_FUNCTIONS_SCOPE_KEY, names);
-    }
-
     /** Durable outermost scope retained across function returns and terminal submissions. */
     public FclScope globalScope() {
         return callStack.isEmpty() ? scope : callStack.getFirst().callerScope();
@@ -227,6 +204,10 @@ public final class FclContinuation {
 
     public List<ExceptionFrame> exceptionStack() {
         return List.copyOf(exceptionStack);
+    }
+
+    public List<ExceptionHandlerFrame> exceptionHandlers() {
+        return List.copyOf(exceptionHandlers);
     }
 
     public List<LoopFrame> loopState() {
@@ -302,14 +283,15 @@ public final class FclContinuation {
             CallFrame current = callStack.get(index);
             callStack.set(index, new CallFrame(current.returnPointer(),
                     new FclScope(projectedScopes.get(index)), current.callerPending(),
-                    current.callExpressionId(), current.functionName()));
+                    current.callExpressionId(), current.functionName(), current.receiverPath(),
+                    current.construction()));
         }
         scope = new FclScope(projectedScopes.getLast());
     }
 
     public FclContinuation snapshot() {
         return new FclContinuation(formatVersion, programCounter, scope, callStack,
-                exceptionStack, loopState, branchState, waitState, pendingStatement,
+                exceptionStack, exceptionHandlers, loopState, branchState, waitState, pendingStatement,
                 halted, failed, result);
     }
 
@@ -326,7 +308,7 @@ public final class FclContinuation {
         }
         FclScope global = globalScope();
         return new FclContinuation(formatVersion, 0, global, List.of(), List.of(),
-                List.of(), List.of(), WaitState.ready(), null, false, false, null);
+                List.of(), List.of(), List.of(), WaitState.ready(), null, false, false, null);
     }
 
     /**
@@ -341,19 +323,20 @@ public final class FclContinuation {
     public FclContinuation cancelSubmission() {
         FclScope global = globalScope();
         return new FclContinuation(formatVersion, 0, global, List.of(), List.of(),
-                List.of(), List.of(), WaitState.ready(), null, true, false, null);
+                List.of(), List.of(), List.of(), WaitState.ready(), null, true, false, null);
     }
 
     static FclContinuation restore(int formatVersion, int programCounter, FclScope scope,
                                    List<CallFrame> callStack,
                                    List<ExceptionFrame> exceptionStack,
+                                   List<ExceptionHandlerFrame> exceptionHandlers,
                                    List<LoopFrame> loopState,
                                    List<BranchFrame> branchState,
                                    WaitState waitState,
                                    PendingStatement pendingStatement,
                                    boolean halted, boolean failed, Object result) {
         return new FclContinuation(formatVersion, programCounter, scope, callStack,
-                exceptionStack, loopState, branchState, waitState, pendingStatement,
+                exceptionStack, exceptionHandlers, loopState, branchState, waitState, pendingStatement,
                 halted, failed, result);
     }
 
@@ -375,6 +358,10 @@ public final class FclContinuation {
 
     List<ExceptionFrame> mutableExceptionStack() {
         return exceptionStack;
+    }
+
+    List<ExceptionHandlerFrame> mutableExceptionHandlers() {
+        return exceptionHandlers;
     }
 
     List<LoopFrame> mutableLoopState() {

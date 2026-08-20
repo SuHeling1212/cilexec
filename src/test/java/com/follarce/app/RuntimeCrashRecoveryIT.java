@@ -157,11 +157,11 @@ class RuntimeCrashRecoveryIT {
             connection.setAutoCommit(false);
             insertObject(connection, sourceHash, sourceBytes, "text/x-fcl", ownerId);
             insertObject(connection, compiledHash, compiledBytes,
-                    "application/vnd.cilexec.fcl-program+json; version=1", ownerId);
+                    "application/vnd.cilexec.fcl-program+json; version=2", ownerId);
             try (PreparedStatement statement = connection.prepareStatement(
                     "INSERT INTO program.program(program_id,owner_id,program_hash,language_version,"
                             + "runtime_format_version,source_object_hash,compiled_object_hash,"
-                            + "statement_count) VALUES (?,?,?,'fcl-1',?,?,?,1)")) {
+                            + "statement_count) VALUES (?,?,?,'fcl-0.0.2',?,?,?,1)")) {
                 statement.setObject(1, programId);
                 statement.setObject(2, ownerId);
                 statement.setBytes(3, JdbcValues.hash(sourceHash));
@@ -172,7 +172,7 @@ class RuntimeCrashRecoveryIT {
             }
             Continuation continuation = new Continuation(programId, sourceHash, 0,
                     List.of(), List.of(), List.of(), List.of(), Optional.empty(), Map.of(),
-                    Map.of(), "fcl-1", Integer.toString(FclProgramCodec.FORMAT_VERSION));
+                    Map.of(), "fcl-0.0.2", Integer.toString(FclProgramCodec.FORMAT_VERSION));
             Instant now = Instant.now();
             new JdbcProcessRepository(connection, new JsonCodec()).insert(new CilProcess(
                     new ProcessIdentity(processUid, 7001), ownerId, CilProcess.Status.RUNNING,

@@ -1,0 +1,117 @@
+// FCL v0.0.2 object-oriented smoke test.
+// Success: every check prints PASS and the script returns 0.
+// Failure: the first failed check prints FAIL and the script returns 1.
+
+func require(condition, label) {
+    if !condition {
+        io.println("FAIL: " + label)
+        return false
+    }
+    io.println("PASS: " + label)
+    return true
+}
+
+class Human {
+    name = ""
+    private age = 0
+
+    init(name, age) {
+        this.name = name
+        this.age = age
+    }
+
+    func birthday() {
+        this.age++
+    }
+
+    func description() {
+        return this.name + ":" + this.age
+    }
+}
+
+class Employee extends Human {
+    role = ""
+
+    init(name, age, role) {
+        super(name, age)
+        this.role = role
+    }
+
+    func description() {
+        return super.description() + ":" + this.role
+    }
+}
+
+class Joiner {
+    func join(first) {
+        return "[" + first + "]"
+    }
+
+    func join(first, second) {
+        return first + ":" + second
+    }
+}
+
+// Constructor arguments, private fields, methods, and ordinary object copying.
+human = new Human("Ada", 20)
+copy = human
+copy.birthday()
+if !require(human.description() == "Ada:20", "ordinary assignment keeps the original object independent") {
+    return 1
+}
+if !require(copy.description() == "Ada:21", "method changes the copied object") {
+    return 1
+}
+
+// Inheritance, super, method overriding, and method overloads.
+employee = new Employee("Bob", 30, "developer")
+if !require(employee.description() == "Bob:30:developer", "inheritance, super constructor, and override") {
+    return 1
+}
+joiner = new Joiner()
+if !require(joiner.join("one") == "[one]", "one-argument method overload") {
+    return 1
+}
+if !require(joiner.join("one", "two") == "one:two", "two-argument method overload") {
+    return 1
+}
+
+// Explicit name linking: sharedHuman follows human, including later replacement of human.
+sharedHuman link human
+sharedHuman.birthday()
+if !require(human.description() == "Ada:21", "link writes through to the source name") {
+    return 1
+}
+human = new Human("Cara", 40)
+if !require(sharedHuman.description() == "Cara:40", "link follows a later source replacement") {
+    return 1
+}
+sharedHuman.birthday()
+if !require(human.description() == "Cara:41", "shared method call changes the source object") {
+    return 1
+}
+
+// Arrays keep ordinary-copy behavior, while link makes the second name follow the first.
+numbers = [1, 2, 3]
+numbersCopy = numbers
+numbersCopy[0] = 99
+if !require(numbers[0] == 1, "ordinary array assignment copies") {
+    return 1
+}
+visibleNumbers link numbers
+visibleNumbers[1] = 88
+if !require(numbers[1] == 88, "link works for arrays") {
+    return 1
+}
+
+// Destroying any linked name destroys the shared object and every linked name.
+owner = 10
+follower link owner
+removedFollower = memory.destroy(follower)
+removedOwner = memory.destroy(owner)
+if !require(removedFollower == true and removedOwner == false, "destroying a linked name also destroys its source") {
+    return 1
+}
+
+io.println("FCL OOP SMOKE TEST: ALL PASSED")
+return 0

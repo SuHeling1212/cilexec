@@ -185,6 +185,8 @@ mvn clean verify      # mandatory PostgreSQL/crash-recovery ITs + quality gates 
 ## Documentation
 
 - [FCL function & terminal reference](docs/fcl-function-reference.md)
+- [FCL v0.0.2 object-oriented guide](docs/fcl-object-oriented-guide.md)
+- [FCL v0.0.2 object-oriented guide (中文)](docs/fcl-object-oriented-guide.zh-CN.md)
 - [Architecture baseline](docs/architecture-baseline.md)
 - [Java source extensions](docs/java-extension-development.md)
 - [Package & market](docs/package-market.md)

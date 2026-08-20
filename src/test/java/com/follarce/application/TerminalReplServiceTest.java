@@ -397,7 +397,7 @@ class TerminalReplServiceTest {
 
         byte[] database = new com.follarce.package_manager.PackageBuilder().build(
                 new com.follarce.package_manager.PackageManifest("demo", "pkg", "1.0.0",
-                        "fcl-1",
+                        "fcl-0.0.2",
                         java.util.List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), java.util.List.of(), java.util.List.of(),
                         java.util.List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(
@@ -597,7 +597,7 @@ class TerminalReplServiceTest {
     private static PackageHashes registerPackage(ProgramServiceTest.TestPersistence persistence,
                                                  String name, String version, String tag) {
         byte[] database = new com.follarce.package_manager.PackageBuilder().build(
-                new com.follarce.package_manager.PackageManifest("demo", name, version, "fcl-1",
+                new com.follarce.package_manager.PackageManifest("demo", name, version, "fcl-0.0.2",
                         java.util.List.of(new com.follarce.package_manager.PackageManifest.Module(
                                 "main", "main.fcl")), java.util.List.of(), java.util.List.of(),
                         java.util.List.of(new com.follarce.package_manager.PackageManifest.Entrypoint(

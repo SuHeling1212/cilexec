@@ -142,6 +142,7 @@ export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="$(dotenv_or_env CILEXEC_NETWO
 if [[ -z "$CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS" ]]; then
     export CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS="http://host.docker.internal:${market_port}"
 fi
+export CILEXEC_NETWORK_ALLOW_PRIVATE_HOSTS="$(dotenv_or_env CILEXEC_NETWORK_ALLOW_PRIVATE_HOSTS)"
 
 echo "Starting CilExec..."
 "${compose[@]}" up -d postgres

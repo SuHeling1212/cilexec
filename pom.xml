@@ -6,7 +6,7 @@
 
     <groupId>com.follarce</groupId>
     <artifactId>cilexec</artifactId>
-    <version>0.0.1</version>
+    <version>0.0.2</version>
     <name>CilExec</name>
     <description>Database-driven CilExec FCL runtime</description>
 
