@@ -53,10 +53,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 
-/** Executes one durable scheduler slice; interactive terminal slices may contain pure steps. */
+/** Executes one bounded durable scheduler slice for any FCL process. */
 public final class ProcessStatementExecutor implements ClaimedProcessHandler {
-    private static final int MAX_TERMINAL_STEPS_PER_SLICE = 4_096;
-    private static final long MAX_TERMINAL_SLICE_NANOS = Duration.ofMillis(20).toNanos();
+    /**
+     * Every FCL process uses the same bounded durable slice.  Keeping the limit independent
+     * of the process origin preserves fair scheduling while avoiding one database commit per
+     * interpreter instruction.
+     */
+    private static final int MAX_STEPS_PER_SLICE = 4_096;
+    private static final long MAX_SLICE_NANOS = Duration.ofMillis(20).toNanos();
     static final String SOURCE_IMPORTS_SCOPE_KEY = "cilexec.fcl.sourceImports";
     private final UserTransactionExecutor transactions;
     private final FclRuntime fixedRuntime;
@@ -179,9 +184,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             FclStepResult step = null;
             Program committedProgram = program;
             Continuation previousForPersistence = current.continuation();
-            int stepLimit = terminalProcess ? MAX_TERMINAL_STEPS_PER_SLICE : 1;
             long sliceStarted = System.nanoTime();
-            for (int executed = 0; executed < stepLimit; executed++) {
+            for (int executed = 0; executed < MAX_STEPS_PER_SLICE; executed++) {
                 step = statementRuntime.executeOne(compiled, continuation);
                 ExecutionReplacement replacement;
                 try {
@@ -205,8 +209,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     return PostCommitSignal.NONE;
                 }
                 deliverPendingTerminalInput(transaction, current, continuation, now);
-                if (terminalSliceBoundary(step, continuation)
-                        || System.nanoTime() - sliceStarted >= MAX_TERMINAL_SLICE_NANOS) {
+                if (sliceBoundary(step, continuation)
+                        || System.nanoTime() - sliceStarted >= MAX_SLICE_NANOS) {
                     break;
                 }
             }
@@ -245,8 +249,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         private static final PostCommitSignal NONE = new PostCommitSignal(false, false);
     }
 
-    private static boolean terminalSliceBoundary(FclStepResult step,
-                                                  FclContinuation continuation) {
+    private static boolean sliceBoundary(FclStepResult step,
+                                         FclContinuation continuation) {
         if (step.status() == FclStepResult.Status.COMPLETED
                 || step.status() == FclStepResult.Status.FAILED
                 || step.status() == FclStepResult.Status.DIRECTIVE) {
@@ -795,7 +799,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 : new FclRuntime(FclRuntimeFunctions.create(transaction, process, program,
                 module, now, extensions));
         int steps = 0;
-        while (!module.halted() && steps++ < MAX_TERMINAL_STEPS_PER_SLICE) {
+        while (!module.halted() && steps++ < MAX_STEPS_PER_SLICE) {
             FclStepResult step = moduleRuntime.executeOne(imported, module);
             if (step.status() == FclStepResult.Status.DIRECTIVE
                     || step.status() == FclStepResult.Status.WAITING) {
@@ -808,7 +812,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         }
         if (!module.halted()) {
             throw new FclRuntimeException("Source module initialization exceeds "
-                    + MAX_TERMINAL_STEPS_PER_SLICE + " steps");
+                    + MAX_STEPS_PER_SLICE + " steps");
         }
         return module.scope().persistedValues();
     }

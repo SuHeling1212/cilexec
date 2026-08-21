@@ -42,8 +42,8 @@ reconstructed from the database. There is no `.proc` snapshot format and no
 
 ## Core Constraints
 
-- Each execution slice corresponds to one explicit database commit. Non-terminal slices run
-  one interpreter step; terminal slices may batch up to 4,096 steps or 20 ms.
+- Each execution slice corresponds to one explicit database commit. Every process slice may
+  batch up to 4,096 interpreter steps or 20 ms.
 - `state_version + execution_epoch` prevents stale workers from committing.
 - A PostgreSQL advisory lock guarantees only one active Runtime per database.
 - PIDs are monotonic and never reused.

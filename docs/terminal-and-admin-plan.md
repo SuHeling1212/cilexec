@@ -198,8 +198,8 @@ FIFO scheduler, and waits for the process to return to `PAUSED` or start waiting
 A top-level `return` completes the submission; its value is rendered at the prompt and the
 same PID remains available for the next submission. Terminal processes share the bounded worker
 pools (default 10 scheduler workers, 6 effect workers) and the shared connection
-pool; processes beyond the worker count wait in the durable queue. A terminal
-process executes at most 4096 interpreter steps or 20 ms per scheduler slice and stops early
+pool; processes beyond the worker count wait in the durable queue. Every process
+executes at most 4096 interpreter steps or 20 ms per scheduler slice and stops early
 on suspension, directive, completion, or failure, then persists and re-enqueues when ready.
 
 REPL rendering uses indented JSON for maps and arrays. A string whose trimmed content is a

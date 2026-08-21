@@ -801,13 +801,12 @@ append required audit events
 COMMIT
 ```
 
-A scheduling slice is at most 4096 interpreter steps or 20 ms for terminal processes
-(one interpreter step per slice for all other processes). Every committed slice is
+A scheduling slice is at most 4096 interpreter steps or 20 ms for every process. Every committed slice is
 therefore a recovery checkpoint.
 
 ### 8.3 Slice Boundaries and Replay
 
-Terminal slices stop on suspension, directive, completion, failure, the 4,096-step limit,
+Slices stop on suspension, directive, completion, failure, the 4,096-step limit,
 or the 20 ms limit. They do not currently force an immediate boundary after every VFS or IPC
 operation; those database changes commit or roll back with the rest of the slice. Effect
 requests and blocking operations suspend the continuation and therefore end the slice.
@@ -2023,7 +2022,7 @@ legacy .proc and legacy file persistence code are deleted
 | 21 | P0 | How the single active Kernel is guaranteed | B. PostgreSQL session advisory lock |  |
 | 22 | P0 | What happens when the control connection drops | B. Stop claiming and committing, enter fenced state, exit the container |  |
 | 23 | P1 | Pure computation allowed during a temporary outage | B. Freeze all processes immediately |  |
-| 24 | P0 | Does every FCL statement map to a database transaction | One transaction per execution slice | Non-terminal: one interpreter step; terminal: up to 4,096 steps or 20 ms |
+| 24 | P0 | Does every FCL statement map to a database transaction | One transaction per execution slice | Every process: up to 4,096 steps or 20 ms |
 | 25 | P1 | Execution-quantum termination conditions | Suspension, directive, completion, failure, step limit, or time limit | Database-visible calls do not all force an immediate boundary |
 | 26 | P0 | Forced checkpoint operations | Blocking/effect suspension and the end of the current slice | VFS and IPC writes commit or roll back with the slice |
 | 27 | P0 | Default transaction isolation | A. READ COMMITTED | per overall plan consistency |

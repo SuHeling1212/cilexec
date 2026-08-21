@@ -52,7 +52,7 @@ class ProcessStatementExecutorTest {
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
     @Test
-    void executesOnlyOneStatementAndAtomicallyPersistsReadyContinuation() {
+    void batchesNonTerminalStatementsAndAtomicallyPersistsTheirFinalContinuation() {
         Fixture fixture = new Fixture("first = 1\nsecond = first + 1\n");
 
         fixture.executor.executeSlice(fixture.claim);
@@ -60,10 +60,10 @@ class ProcessStatementExecutorTest {
         CilProcess committed = fixture.persistence.processes.current;
         assertEquals(1, fixture.persistence.userTransactions);
         assertEquals(fixture.ownerId, fixture.persistence.lastUser);
-        assertEquals(CilProcess.Status.READY, committed.status());
+        assertEquals(CilProcess.Status.TERMINATED, committed.status());
         assertEquals(8, committed.stateVersion());
         assertEquals(fixture.claim.executionEpoch(), committed.executionEpoch());
-        assertEquals(1, committed.continuation().programCounter());
+        assertEquals(2, committed.continuation().programCounter());
         assertEquals(1, fixture.persistence.processes.updates);
         assertEquals(1, fixture.persistence.scheduler.heartbeats);
         assertEquals(1, fixture.persistence.scheduler.releases);
@@ -74,7 +74,7 @@ class ProcessStatementExecutorTest {
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(committed.continuation());
         assertEquals(1L, restored.scope().get("first"));
-        assertFalse(restored.scope().contains("second"));
+        assertEquals(2L, restored.scope().get("second"));
     }
 
     @Test
@@ -522,14 +522,6 @@ class ProcessStatementExecutorTest {
         fixture.persistence.vfs.insertNode(root);
 
         fixture.executor.executeSlice(fixture.claim);
-        CilProcess ready = fixture.persistence.processes.current;
-        assertEquals(CilProcess.Status.READY, ready.status());
-        fixture.persistence.processes.current = ready.claim(ready.executionEpoch() + 1, NOW);
-        fixture.claim = claim(fixture.processUid, fixture.ownerId,
-                fixture.persistence.processes.current.executionEpoch());
-        fixture.persistence.scheduler.lease = fixture.claim;
-        fixture.executor.executeSlice(fixture.claim);
-
         assertEquals(CilProcess.Status.FAILED, fixture.persistence.processes.current.status());
         com.follarce.domain.vfs.VfsNode created = fixture.persistence.vfs.findChild(
                 fixture.ownerId, Optional.of(root.nodeId()), "note.txt").orElseThrow();
@@ -577,7 +569,7 @@ class ProcessStatementExecutorTest {
 
         fixture.executor.executeSlice(fixture.claim);
 
-        assertEquals(CilProcess.Status.READY, fixture.persistence.processes.current.status());
+        assertEquals(CilProcess.Status.TERMINATED, fixture.persistence.processes.current.status());
     }
 
     @Test

@@ -12,9 +12,8 @@ the current terminal working directory by default; use `:cd` to change it. There
 ## FCL Language Essentials
 
 FCL is compiled into interpreter instructions. Each execution slice is one database
-transaction and one recovery checkpoint. Non-terminal processes execute one interpreter
-step per slice; terminal processes may batch up to 4,096 steps or 20 ms and stop when they
-suspend, execute a directive, complete, or fail. A crash rolls back the whole uncommitted
+transaction and one recovery checkpoint. Every process may batch up to 4,096 steps or 20 ms
+per slice and stops when it suspends, executes a directive, completes, or fails. A crash rolls back the whole uncommitted
 slice, which may then replay from the preceding checkpoint.
 
 - **Comments.** Only `//` line comments exist; everything from `//` to the end of the

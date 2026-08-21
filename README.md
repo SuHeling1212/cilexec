@@ -151,9 +151,8 @@ FCL source → compiler → ProcessStatementExecutor (one transaction per execut
           → effect workers (journaled side effects) · timers · IPC · terminal · VFS
 ```
 
-Non-terminal slices execute one interpreter step. Terminal slices may batch up to 4,096 steps
-or 20 ms and stop on suspension, directive, completion, or failure. Everything else — pools,
-threads, caches — is disposable and rebuilt from committed rows on
+Every process slice may batch up to 4,096 interpreter steps or 20 ms and stops on suspension,
+directive, completion, or failure. Everything else — pools, threads, caches — is disposable and rebuilt from committed rows on
 startup. Source layout and design decisions: [docs/architecture-baseline.md](docs/architecture-baseline.md).
 
 ## Repository map
