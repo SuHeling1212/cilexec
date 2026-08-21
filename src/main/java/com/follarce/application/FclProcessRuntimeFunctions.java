@@ -185,7 +185,7 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                             "process.waitPID pid"), "process.waitPID");
                     return waitForProcess(target, invocation);
                 })
-                .register("process", "gc", args -> processGc(args));
+                .register("process", "removeFinished", args -> removeFinishedProcesses(args));
     }
 
     /**
@@ -193,25 +193,25 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
      * removes every TERMINATED/FAILED process; with a PID it removes only that process when
      * it has already ended. Running, suspended, and waiting processes are never removed.
      */
-    protected Object processGc(List<Object> args) {
+    protected Object removeFinishedProcesses(List<Object> args) {
         if (args.size() > 1) throw new FclRuntimeException(
-                "process.gc expects zero arguments or one process PID");
+                "process.removeFinished expects zero arguments or one process PID");
         Authorization.requireAdministrator(transaction, process.ownerId());
         if (args.isEmpty()) {
             long deleted = transaction.processes().deleteTerminated();
-            audit("process.gc", process.identity().processUid(), Map.of(
+            audit("process.removeFinished", process.identity().processUid(), Map.of(
                     "deleted", Long.toString(deleted)));
             return deleted;
         }
-        long pid = integer(args.getFirst(), "process.gc pid");
+        long pid = integer(args.getFirst(), "process.removeFinished pid");
         Optional<CilProcess> target = transaction.processes().findByPid(pid);
-        if (target.isPresent() && !targetProcess(pid, "process.gc").isTerminal()) {
+        if (target.isPresent() && !targetProcess(pid, "process.removeFinished").isTerminal()) {
             throw new FclRuntimeException(
-                    "process.gc can only remove a process that has already ended; "
+                    "process.removeFinished can only remove a process that has already ended; "
                             + "process " + pid + " is still active");
         }
         boolean deleted = transaction.processes().deleteTerminatedByPid(pid);
-        audit("process.gc", process.identity().processUid(), Map.of(
+        audit("process.removeFinished", process.identity().processUid(), Map.of(
                 "pid", Long.toString(pid), "deleted", Boolean.toString(deleted)));
         return deleted;
     }
@@ -223,9 +223,19 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                             process.identity().processUid(), pool, now);
                 })
                 .register("swapPool", "remove", args -> {
-                    String pool = path(args, 0, 1, "swapPool.remove");
-                    return transaction.ipc().removeSwapPool(process.ownerId(),
-                            process.identity().processUid(), pool);
+                    if (args.size() == 1) {
+                        String pool = path(args, 0, 1, "swapPool.remove");
+                        return transaction.ipc().removeSwapPool(process.ownerId(),
+                                process.identity().processUid(), pool);
+                    }
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "swapPool.remove expects a pool, optional variable, and optional fencing token");
+                    return transaction.ipc().removeSwapValue(process.ownerId(),
+                            string(args.get(0), "swapPool.remove pool"),
+                            string(args.get(1), "swapPool.remove variable"),
+                            process.identity().processUid(), process.executionEpoch(),
+                            args.size() == 3 ? Optional.of(integer(args.get(2),
+                                    "swapPool.remove fencing token")) : Optional.empty());
                 })
                 .register("swapPool", "exists", args -> transaction.ipc().swapPoolExists(
                         process.ownerId(), path(args, 0, 1, "swapPool.exists")))
@@ -253,16 +263,6 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                             process.identity().processUid(), process.executionEpoch(),
                             args.size() == 4 ? Optional.of(integer(args.get(3),
                                     "swapPool.update fencing token")) : Optional.empty(), now);
-                })
-                .register("swapPool", "removeVar", args -> {
-                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
-                            "swapPool.removeVar expects two or three arguments");
-                    return transaction.ipc().removeSwapValue(process.ownerId(),
-                            string(args.get(0), "swapPool.removeVar pool"),
-                            string(args.get(1), "swapPool.removeVar variable"),
-                            process.identity().processUid(), process.executionEpoch(),
-                            args.size() == 3 ? Optional.of(integer(args.get(2),
-                                    "swapPool.removeVar fencing token")) : Optional.empty());
                 })
                 .register("swapPool", "clear", args -> transaction.ipc().clearSwapPool(
                         process.ownerId(), path(args, 0, 1, "swapPool.clear"),
@@ -568,38 +568,6 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                         throw new FclRuntimeException("system.invoke arguments must be an array");
                     }
                     return registry.invoke(function, arguments, invocation);
-                })
-                .register("system", "forceRemove", args -> {
-                    Authorization.requireAdministrator(transaction, process.ownerId());
-                    if (args.size() == 1) {
-                        String path = string(args.getFirst(), "system.forceRemove path");
-                        VfsNode node = requireNode(path);
-                        if (!transaction.vfs().findChildren(node.ownerId(),
-                                Optional.of(node.nodeId())).isEmpty()
-                                || !transaction.vfs().findRevisions(node.nodeId()).isEmpty()) {
-                            throw new FclRuntimeException(
-                                    "system.forceRemove cannot remove a non-empty directory or "
-                                            + "versioned file at " + normalize(path)
-                                            + "; the two-argument form (target user, node ID) "
-                                            + "has the same restriction");
-                        }
-                        boolean removed = transaction.vfs().deleteByAdministrator(
-                                process.ownerId(), node.ownerId(), node.nodeId(),
-                                UUID.randomUUID(), now);
-                        if (!removed) {
-                            throw new FclRuntimeException(
-                                    "system.forceRemove was rejected; the node is a root, mount, "
-                                            + "or was concurrently changed: " + normalize(path));
-                        }
-                        return true;
-                    }
-                    if (args.size() == 2) {
-                        return transaction.vfs().deleteByAdministrator(process.ownerId(),
-                                uuid(args.get(0), "target user"), uuid(args.get(1), "node"),
-                                UUID.randomUUID(), now);
-                    }
-                    throw new FclRuntimeException(
-                            "system.forceRemove expects path or target-user/node IDs");
                 })
                 .register("system", "extensions", args -> {
                     arity(args, 0, "system.extensions");

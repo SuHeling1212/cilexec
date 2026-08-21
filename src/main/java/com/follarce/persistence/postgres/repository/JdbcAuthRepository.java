@@ -218,6 +218,25 @@ public final class JdbcAuthRepository extends JdbcRepositorySupport implements A
     }
 
     @Override
+    public boolean removeUserByAdministrator(UUID administratorId, UUID userId,
+                                             UUID auditEventId, Instant at) {
+        String sql = "SELECT auth.admin_remove_user(?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, userId);
+            statement.setObject(3, auditEventId);
+            statement.setTimestamp(4, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) throw new IllegalStateException(
+                        "Administrator user remover returned no result");
+                return rows.getBoolean(1);
+            }
+        } catch (SQLException exception) {
+            throw failure("auth.removeUserByAdministrator", exception);
+        }
+    }
+
+    @Override
     public void saveUser(UserAccount user) {
         String sql = "INSERT INTO auth.user_account(user_id,username,postgres_role_name,status,"
                 + "credential_version,created_at,updated_at,disabled_at) VALUES (?,?,?,?,?,?,?,?) "

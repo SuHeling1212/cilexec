@@ -232,7 +232,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 throw new StatementConflictException("Statement state version is stale");
             }
             if (terminal(target)) {
-                transaction.timers().deleteForProcess(current.identity().processUid());
+                transaction.timers().cancelForProcess(current.identity().processUid());
             }
 
             // Queue state and continuation become visible in the same commit. READY is
@@ -261,6 +261,10 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     private FclProgram loadProgram(com.follarce.domain.port.TransactionContext transaction,
                                    Program program) {
+        if (!FclProgramCodec.supportsFormat(program.runtimeFormatVersion())) {
+            throw new IllegalStateException("Unsupported persisted FCL program format: "
+                    + program.runtimeFormatVersion());
+        }
         FclProgram decoded;
         if (program.compiledObjectHash().isPresent()) {
             ObjectHash compiledHash = program.compiledObjectHash().orElseThrow();
@@ -272,29 +276,21 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 StoredObject compiledObject = transaction.vfs().findObject(compiledHash)
                         .orElseThrow(() -> new IllegalStateException(
                                 "Compiled program object is missing"));
-                FclProgram loaded = programCodec.fromJson(
-                        utf8(compiledObject, "compiled program"));
-                if (!loaded.source().equals(source)) {
-                    throw new IllegalStateException(
-                            "Compiled program does not match its source object");
-                }
-                return loaded;
+                return programCodec.fromBytes(compiledObject.content().bytes(),
+                        program.runtimeFormatVersion(), source);
             });
         } else {
+            if (program.runtimeFormatVersion() != FclProgramCodec.LEGACY_FORMAT_VERSION) {
+                throw new IllegalStateException("FCLB program has no executable artifact");
+            }
             StoredObject sourceObject = transaction.vfs().findObject(program.sourceObjectHash())
                     .orElseThrow(() -> new IllegalStateException(
                             "Program source object is missing"));
             String source = utf8(sourceObject, "program source");
-            decoded = programCodec.decode(java.util.Map.of(
-                    "formatVersion", FclProgramCodec.FORMAT_VERSION,
-                    "source", source,
-                    "sourceHash", program.programHash().value()));
+            decoded = new FclCompiler().compile(source);
         }
         if (!decoded.sourceHash().equals(program.programHash().value())) {
             throw new IllegalStateException("Loaded program hash does not match metadata");
-        }
-        if (FclProgramCodec.FORMAT_VERSION != program.runtimeFormatVersion()) {
-            throw new IllegalStateException("Loaded program runtime format does not match metadata");
         }
         return decoded;
     }
@@ -328,7 +324,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             PackageDescriptor descriptor = cached.descriptor();
             cached.capabilityPolicy().requireUserCapabilities(
                     transaction.auth().capabilities(process.ownerId()));
-            if (!descriptor.languageVersion().equals(program.languageVersion())) {
+            if (!ProgramService.compatiblePackageLanguage(descriptor.languageVersion(),
+                    program.languageVersion())) {
                 throw new IllegalStateException("Package language version does not match program: "
                         + descriptor.coordinate());
             }
@@ -379,7 +376,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             PackageDescriptor descriptor = cached.descriptor();
             cached.capabilityPolicy().requireUserCapabilities(
                     transaction.auth().capabilities(process.ownerId()));
-            if (!descriptor.languageVersion().equals(program.languageVersion())) {
+            if (!ProgramService.compatiblePackageLanguage(descriptor.languageVersion(),
+                    program.languageVersion())) {
                 throw new IllegalStateException("Dependency language version does not match program: "
                         + descriptor.coordinate());
             }
@@ -566,7 +564,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             throw new StaleClaimException("Interrupt termination was fenced");
         }
         transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
-        transaction.timers().deleteForProcess(claim.processUid());
+        transaction.timers().cancelForProcess(claim.processUid());
     }
 
     private void cancelTerminalSubmission(
@@ -611,7 +609,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             throw new StaleClaimException("Failure commit was fenced: " + update);
         }
         transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
-        transaction.timers().deleteForProcess(claim.processUid());
+        transaction.timers().cancelForProcess(claim.processUid());
         transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
                 current.ownerId().toString(), "process.failed", "process",
                 current.identity().processUid().toString(), AuditEvent.Result.FAILED,
@@ -625,8 +623,9 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 new LinkedHashMap<>(previous.globalVariables());
         ProcessInbox.keys().forEach(globals::remove);
         globals.put(FclPersistenceBridge.ENVELOPE_KEY, new Continuation.PersistedValue(
-                FclPersistenceBridge.ENVELOPE_TYPE,
-                continuationCodec.toJson(failedFclContinuation(failure))));
+                FclPersistenceBridge.envelopeType(runtimeFormat(previous.runtimeFormatVersion())),
+                continuationCodec.toJson(failedFclContinuation(failure,
+                        runtimeFormat(previous.runtimeFormatVersion())))));
         UUID rootScopeId = UUID.nameUUIDFromBytes((current.identity().processUid()
                 + ":" + previous.programId() + ":scope:0").getBytes(StandardCharsets.UTF_8));
         return new Continuation(previous.programId(), previous.programHash(), 0,
@@ -637,7 +636,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 previous.runtimeFormatVersion());
     }
 
-    private FclContinuation failedFclContinuation(RuntimeException failure) {
+    private FclContinuation failedFclContinuation(RuntimeException failure, int formatVersion) {
         String message = failureMessage(failure);
         Map<String, Object> exception = new LinkedHashMap<>();
         exception.put("instructionPointer", 0);
@@ -650,7 +649,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         wait.put("key", null);
         wait.put("payload", Map.of("type", "map", "value", List.of()));
         Map<String, Object> encoded = new LinkedHashMap<>();
-        encoded.put("formatVersion", FclContinuation.FORMAT_VERSION);
+        encoded.put("formatVersion", formatVersion);
         encoded.put("programCounter", 0);
         encoded.put("scope", Map.of("type", "map", "value", List.of()));
         encoded.put("callStack", List.of());
@@ -668,6 +667,14 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private static String failureMessage(RuntimeException failure) {
         return failure.getMessage() == null
                 ? failure.getClass().getSimpleName() : failure.getMessage();
+    }
+
+    private static int runtimeFormat(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException failure) {
+            throw new IllegalStateException("Invalid runtime format version: " + value, failure);
+        }
     }
 
     private static void deliverPendingTerminalInput(
@@ -912,7 +919,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         }
         Program target = transaction.programs().findById(programId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown exec program"));
-        FclContinuation replacement = new FclContinuation();
+        FclContinuation replacement = new FclContinuation(target.runtimeFormatVersion());
         if (TerminalReplService.isTerminalProcess(continuation)) {
             // A terminal PID is a durable REPL context, not a disposable command
             // process. exec replaces only its program and execution frames; the

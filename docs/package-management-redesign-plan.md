@@ -16,8 +16,7 @@ This redesign follows these confirmed requirements:
 - Package installation and uninstallation are scoped per user.
 - Global release payloads are garbage-collected only after the last user and process reference disappears.
 - Uninstallation rejects active process references by default.
-- `force=true` terminates and removes affected processes.
-- `market.uninstall()` delegates directly to the same core uninstaller as `package.uninstall()`.
+- Package removal is available only through `package.uninstall()`.
 - Uninstallation removes package-managed data, caches, receipts, bindings, orphan dependencies, and unreferenced payloads.
 - Ordinary user documents are never guessed or deleted.
 - Every user and exact immutable package release has an isolated private data space.
@@ -171,7 +170,7 @@ ordinary user files. No SQLite package format bump is required.
 ## 13. User Package Data Management
 
 `package.dataInfo`, `package.dataList`, `package.dataRead`,
-`package.dataExport`, `package.dataImport`, `package.dataClear`. The target
+`package.dataExport`, `package.dataImport`, `package.clearData`. The target
 package must be effectively installed. Exports are deterministic SQLite
 archives in the user's VFS and are ordinary user files. Cross-user operations
 require `SYSTEM_ADMIN`.
@@ -188,7 +187,7 @@ never share storage automatically. Migration is explicit via
 Writes lock the data-space row, compute old/new usage, resolve the effective
 quota, and reject writes exceeding it. Administrators cannot reduce a quota
 below current usage. Management functions: `package.dataQuota`,
-`package.setDataQuota`, `package.clearDataQuota`.
+`package.setDataQuota`, `package.removeDataQuota`.
 
 ## 16. Implemented Installation Contract
 
@@ -231,8 +230,8 @@ release diagnostics. `package.pin()` remains as a deprecated validation alias.
 
 ## 21. Implemented Uninstall Contract
 
-`package.uninstall(sha256)` and `package.uninstall(sha256, {"force": true})` use the shared
-persisted uninstall contract. `market.uninstall()` delegates to that contract.
+`package.uninstall(sha256)` uses the shared
+persisted uninstall contract.
 
 ## 22. Uninstall Preflight
 
@@ -243,13 +242,12 @@ state unchanged.
 
 ## 23. Default Uninstall
 
-Without `force`: purge already-terminal processes, reject if active processes
+It rejects removal if active processes
 use the package, reject if another current-user root depends on it, and report
 blocking PIDs, states, roots, and dependency paths.
 
 ## 24. Forced Uninstall
 
-With `force=true`: remove affected current-user roots, fence and purge
 affected processes (leases, timers, effects, inputs, locks, continuations,
 bindings), delete target and orphan data spaces, Market cache nodes, roots and
 members, then run global GC with one summary audit event. Self-uninstall is
@@ -260,7 +258,7 @@ always rejected; issue it from another terminal process.
 A dependency is removed only when it has no explicit root, no other retained
 root references it, no process binding uses it, and no retained root reaches
 it. Explicit installs are retained. Default uninstall rejects reverse
-dependents; forced uninstall removes affected current-user roots atomically.
+dependents; removal is explicit and never forces an active process to end.
 
 ## 26. Private Data Removal
 
@@ -338,7 +336,7 @@ quota index are both part of V001.
 
 The completed implementation order was: V001 baseline lifecycle schema and tests,
 domain/repository plumbing, installation publication, access enforcement, provenance,
-`packageData.*`, user-data management, quotas, uninstall, forced cleanup, autoremove, global
+`packageData.*`, user-data management, quotas, uninstall, explicit cleanup, autoremove, global
 cleanup, Market delegation, export/recovery updates, full tests, and documentation. This is not
 an instruction to create a package-lifecycle migration after V001.
 

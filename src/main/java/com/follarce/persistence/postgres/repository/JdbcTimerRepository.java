@@ -52,24 +52,14 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
         }
     }
 
-    public int deleteFiredExpired(Instant before) {
-        String sql = "DELETE FROM process.timer WHERE status='FIRED' "
-                + "AND COALESCE(fired_at,created_at)<?";
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setTimestamp(1, java.sql.Timestamp.from(before));
-            return statement.executeUpdate();
-        } catch (SQLException exception) {
-            throw failure("timer.deleteFiredExpired", exception);
-        }
-    }
-
-    public int deleteForProcess(UUID processUid) {
-        String sql = "DELETE FROM process.timer WHERE process_uid=?";
+    public int cancelForProcess(UUID processUid) {
+        String sql = "UPDATE process.timer SET status='CANCELLED',cancelled_at=clock_timestamp() "
+                + "WHERE process_uid=? AND status IN ('SCHEDULED','CLAIMED')";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, processUid);
             return statement.executeUpdate();
         } catch (SQLException exception) {
-            throw failure("timer.deleteForProcess", exception);
+            throw failure("timer.cancelForProcess", exception);
         }
     }
 

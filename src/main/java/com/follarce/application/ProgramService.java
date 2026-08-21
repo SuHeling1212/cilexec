@@ -10,6 +10,7 @@ import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.version.ReleaseVersion;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -19,12 +20,14 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
-/** Compiles immutable FCL programs and persists both source and runtime format objects. */
+/** Persists immutable FCL programs, compiling only when their source identity is new. */
 public final class ProgramService {
-    public static final String LANGUAGE_VERSION = "fcl-0.0.2";
+    public static final String LANGUAGE_VERSION = "fcl-" + ReleaseVersion.current();
+    /** Read compatibility only for packages published with the V002 release. */
+    public static final String LEGACY_LANGUAGE_VERSION = "fcl-0.0.2";
     public static final String SOURCE_MEDIA_TYPE = "text/x-fcl; charset=utf-8";
     public static final String COMPILED_MEDIA_TYPE =
-            "application/vnd.cilexec.fcl-program+json; version=2";
+            "application/vnd.cilexec.fcl-program; version=3";
 
     private final UserTransactionExecutor transactions;
     private final FclCompiler compiler;
@@ -50,10 +53,19 @@ public final class ProgramService {
 
     /**
      * Creates or returns the owner's identical immutable program.
-     * Compilation happens before opening the short database transaction.
      */
     public Program create(UUID ownerId, String source) {
         return create(ownerId, source, "/");
+    }
+
+    /**
+     * V003 did not alter source semantics, so a V002 package can be imported by a V003 program.
+     * This is deliberately narrow: future source-language changes must opt in explicitly.
+     */
+    public static boolean compatiblePackageLanguage(String packageLanguage, String programLanguage) {
+        return packageLanguage.equals(programLanguage)
+                || (LANGUAGE_VERSION.equals(programLanguage)
+                && LEGACY_LANGUAGE_VERSION.equals(packageLanguage));
     }
 
     public Program create(UUID ownerId, String source, String workingDirectory) {
@@ -92,15 +104,17 @@ public final class ProgramService {
 
     private Program compileAndSave(com.follarce.domain.port.TransactionContext transaction,
                                    String source) {
-        FclProgram compiled = compiler.compile(source);
         StoredObject sourceObject = object(source.getBytes(StandardCharsets.UTF_8),
                 SOURCE_MEDIA_TYPE);
+        Optional<Program> existing = transaction.programs().findByIdentity(
+                sourceObject.objectHash(), LANGUAGE_VERSION, FclProgramCodec.FORMAT_VERSION);
+        if (existing.isPresent()) return existing.get();
+
+        FclProgram compiled = compiler.compile(source);
         if (!sourceObject.objectHash().value().equals(compiled.sourceHash())) {
             throw new IllegalStateException("Compiler and object store disagree on source hash");
         }
-        StoredObject compiledObject = object(
-                programCodec.toJson(compiled).getBytes(StandardCharsets.UTF_8),
-                COMPILED_MEDIA_TYPE);
+        StoredObject compiledObject = object(programCodec.toBytes(compiled), COMPILED_MEDIA_TYPE);
         Program candidate = new Program(Objects.requireNonNull(identifiers.get(),
                 "identifier supplier returned null"), new ObjectHash(compiled.sourceHash()),
                 LANGUAGE_VERSION, FclProgramCodec.FORMAT_VERSION, sourceObject.objectHash(),

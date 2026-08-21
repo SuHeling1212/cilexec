@@ -92,7 +92,7 @@ class PostgresLogicalExportIT {
 
         assertTrue(report.tableCount() > 30);
         assertTrue(report.rowCount() > 1);
-        assertEquals("2", scalar(database, "SELECT metadata_value FROM export_metadata "
+        assertEquals("3", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='database.schema.version'"));
         assertEquals("0", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='source.statement.timeout'"));
@@ -102,6 +102,8 @@ class PostgresLogicalExportIT {
                 + "('auth.user_credential','meta.kernel_instance','scheduler.runner','scheduler.lease')"));
         assertEquals(1, number(database, "SELECT count(*) FROM export_table "
                 + "WHERE table_name='scheduler.queue'"));
+        assertEquals(0, number(database, "SELECT count(*) FROM export_table "
+                + "WHERE table_name='meta.runtime_clock'"));
 
         String boot = scalar(database, "SELECT row_json FROM export_row "
                 + "WHERE table_name='meta.boot'");

@@ -97,9 +97,10 @@ class ProgramServiceTest {
         StoredObject compiledObject = persistence.vfs.objects.get(
                 program.compiledObjectHash().orElseThrow());
         assertEquals(ProgramService.COMPILED_MEDIA_TYPE, compiledObject.mediaType());
-        String compiledJson = new String(compiledObject.content().bytes(), StandardCharsets.UTF_8);
-        assertEquals(program.programHash().value(),
-                new FclProgramCodec().fromJson(compiledJson).sourceHash());
+        byte[] compiledBytes = compiledObject.content().bytes();
+        assertArrayEquals(new byte[]{'F', 'C', 'L', 'B'}, java.util.Arrays.copyOf(compiledBytes, 4));
+        assertEquals(program.programHash().value(), new FclProgramCodec().fromBytes(compiledBytes,
+                program.runtimeFormatVersion(), source).sourceHash());
     }
 
     @Test
@@ -122,6 +123,25 @@ class ProgramServiceTest {
         assertEquals(2, persistence.userTransactions);
         assertEquals(1, persistence.programs.byId.size());
         assertEquals(2, persistence.vfs.objects.size());
+    }
+
+    @Test
+    void findsAnExistingSourceIdentityBeforeInvokingTheCompiler() {
+        TestPersistence persistence = new TestPersistence();
+        UUID ownerId = UUID.randomUUID();
+        String source = "@"; // This would fail to compile if the lookup happened too late.
+        StoredObject sourceObject = StoredObject.create(
+                new com.follarce.domain.vfs.BinaryContent(source.getBytes(StandardCharsets.UTF_8)),
+                ProgramService.SOURCE_MEDIA_TYPE, NOW);
+        Program existing = new Program(UUID.randomUUID(), sourceObject.objectHash(),
+                ProgramService.LANGUAGE_VERSION, FclProgramCodec.FORMAT_VERSION,
+                sourceObject.objectHash(), Optional.empty(), 0, NOW);
+        persistence.programs.saveIfAbsent(existing);
+
+        Program result = new ProgramService(persistence).create(ownerId, source);
+
+        assertSame(existing, result);
+        assertTrue(persistence.vfs.objects.isEmpty());
     }
 
     @Test
@@ -239,7 +259,7 @@ class ProgramServiceTest {
         @Override public boolean update(ProcessTimer timer, ProcessTimer.Status expectedStatus) {
             return false;
         }
-        @Override public int deleteForProcess(UUID processUid) {
+        @Override public int cancelForProcess(UUID processUid) {
             processDeletes++;
             deletedProcess = processUid;
             return 0;

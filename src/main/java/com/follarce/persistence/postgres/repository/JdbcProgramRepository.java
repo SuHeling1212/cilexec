@@ -30,7 +30,7 @@ public final class JdbcProgramRepository extends JdbcRepositorySupport implement
                                             int runtimeFormatVersion) {
         return find("program.findByIdentity", "SELECT " + COLUMNS
                         + " FROM program.program WHERE program_hash=? AND language_version=? "
-                        + "AND runtime_format_version=?",
+                        + "AND runtime_format_version=? AND owner_id=auth.current_cilexec_user_id()",
                 statement -> {
                     statement.setBytes(1, JdbcValues.hash(programHash));
                     statement.setString(2, languageVersion);

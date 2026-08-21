@@ -10,6 +10,10 @@ import zipfile
 from pathlib import Path
 
 import release_all
+import versioning
+
+
+CURRENT_VERSION = versioning.project_version()
 
 
 def write_shell_installer(path: Path, version: str, *, uninstall_entry: bool = True,
@@ -42,6 +46,8 @@ def write_shell_installer(path: Path, version: str, *, uninstall_entry: bool = T
     header = "".join(parts)
     payload_members = [
         (".cilexec-image-platform", b"linux-amd64"),
+        (".mvn/maven.config", f"-Drevision={CURRENT_VERSION}\n".encode("ascii")),
+        ("tools/Version.sh", b"#!/usr/bin/env bash\n"),
     ]
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
@@ -87,9 +93,10 @@ class WindowsPackageVerificationTest(unittest.TestCase):
                 }
             contents["Cilexec.ps1"] = b""
             contents["compose.yml"] = b""
-            self.write_package(archive_path, "0.0.2", contents, images,
+            contents[".mvn/maven.config"] = f"-Drevision={CURRENT_VERSION}\n".encode("ascii")
+            self.write_package(archive_path, CURRENT_VERSION, contents, images,
                                {"images": images})
-            release_all.verify_windows_zip(archive_path, "0.0.2")
+            release_all.verify_windows_zip(archive_path, CURRENT_VERSION)
 
     def test_rejects_modified_platform_archive(self) -> None:
         with tempfile.TemporaryDirectory() as name:
@@ -105,42 +112,43 @@ class WindowsPackageVerificationTest(unittest.TestCase):
             contents = {
                 "Cilexec.ps1": b"",
                 "compose.yml": b"",
+                ".mvn/maven.config": f"-Drevision={CURRENT_VERSION}\n".encode("ascii"),
                 images["amd64"]["archive"]: b"changed",
                 images["arm64"]["archive"]: b"arm64",
             }
-            self.write_package(archive_path, "0.0.2", contents, images,
+            self.write_package(archive_path, CURRENT_VERSION, contents, images,
                                {"images": images})
             with self.assertRaisesRegex(RuntimeError, "amd64"):
-                release_all.verify_windows_zip(archive_path, "0.0.2")
+                release_all.verify_windows_zip(archive_path, CURRENT_VERSION)
 
 
 class ShellInstallerVerificationTest(unittest.TestCase):
     def test_accepts_installer_with_embedded_uninstall_function(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-0.0.2-linux-amd64.sh"
-            write_shell_installer(installer, "0.0.2")
-            release_all.verify_shell_installer(installer, "0.0.2")
+            installer = Path(name) / f"cilexec-{CURRENT_VERSION}-linux-amd64.sh"
+            write_shell_installer(installer, CURRENT_VERSION)
+            release_all.verify_shell_installer(installer, CURRENT_VERSION)
 
     def test_rejects_installer_without_uninstall_entry(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-0.0.2-linux-amd64.sh"
-            write_shell_installer(installer, "0.0.2", uninstall_entry=False)
+            installer = Path(name) / f"cilexec-{CURRENT_VERSION}-linux-amd64.sh"
+            write_shell_installer(installer, CURRENT_VERSION, uninstall_entry=False)
             with self.assertRaisesRegex(RuntimeError, "uninstall entry"):
-                release_all.verify_shell_installer(installer, "0.0.2")
+                release_all.verify_shell_installer(installer, CURRENT_VERSION)
 
     def test_rejects_installer_without_embedded_uninstall_function(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-0.0.2-linux-amd64.sh"
-            write_shell_installer(installer, "0.0.2", embedded_uninstall=False)
+            installer = Path(name) / f"cilexec-{CURRENT_VERSION}-linux-amd64.sh"
+            write_shell_installer(installer, CURRENT_VERSION, embedded_uninstall=False)
             with self.assertRaisesRegex(RuntimeError, "embedded uninstall"):
-                release_all.verify_shell_installer(installer, "0.0.2")
+                release_all.verify_shell_installer(installer, CURRENT_VERSION)
 
     def test_rejects_installer_with_incomplete_uninstall_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            installer = Path(name) / "cilexec-0.0.2-linux-amd64.sh"
-            write_shell_installer(installer, "0.0.2", uninstall_cleanup=False)
+            installer = Path(name) / f"cilexec-{CURRENT_VERSION}-linux-amd64.sh"
+            write_shell_installer(installer, CURRENT_VERSION, uninstall_cleanup=False)
             with self.assertRaisesRegex(RuntimeError, "incomplete"):
-                release_all.verify_shell_installer(installer, "0.0.2")
+                release_all.verify_shell_installer(installer, CURRENT_VERSION)
 
 
 if __name__ == "__main__":

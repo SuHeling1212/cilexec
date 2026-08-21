@@ -4,8 +4,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -13,6 +15,49 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FclCodecAndRegistryTest {
+    @Test
+    void roundTripsEveryPersistedV003InstructionAndExpressionForm() {
+        String source = """
+                import "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as "pkg"
+                include "library.fcl"
+                class Parent {
+                    parent = 1
+                    init() { }
+                }
+                class Child extends Parent {
+                    private hidden = 2
+                    public value = 0
+                    init(start) {
+                        super()
+                        value = start
+                    }
+                    public func touch(item) {
+                        value++
+                        return item
+                    }
+                }
+                func helper(item) { return -item }
+                a = new Child(1)
+                b link a
+                data = [1, {key: 2}]
+                data[0]--
+                if a.value == 1 { a.value++ } else { a.value-- }
+                while false {
+                    continue
+                    break
+                }
+                try { memory.destroy(data[0]) } catch(error) { io.println(error) }
+                result = helper(b.value)
+                """;
+        FclProgram original = new FclCompiler().compile(source);
+        FclProgram restored = new FclProgramCodec().fromBytes(
+                new FclProgramCodec().toBytes(original), FclProgramCodec.FORMAT_VERSION, source);
+
+        assertEquals(original.instructions(), restored.instructions());
+        assertEquals(original.functions(), restored.functions());
+        assertEquals(original.classes(), restored.classes());
+    }
+
     @Test
     void roundTripsProgramAndSuspendedContinuationWithoutChangingTypes() {
         String source = """
@@ -22,7 +67,10 @@ class FclCodecAndRegistryTest {
                 """;
         FclProgramCodec programCodec = new FclProgramCodec();
         FclProgram program = new FclCompiler().compile(source);
-        FclProgram restoredProgram = programCodec.fromJson(programCodec.toJson(program));
+        byte[] artifact = programCodec.toBytes(program);
+        assertArrayEquals(new byte[]{'F', 'C', 'L', 'B'}, java.util.Arrays.copyOf(artifact, 4));
+        FclProgram restoredProgram = programCodec.fromBytes(artifact, FclProgramCodec.FORMAT_VERSION,
+                source);
         assertEquals(program.sourceHash(), restoredProgram.sourceHash());
         assertEquals(program.instructions(), restoredProgram.instructions());
 
@@ -44,9 +92,15 @@ class FclCodecAndRegistryTest {
         runToCompletion(runtime, restoredProgram, restored);
         assertEquals(7L, restored.scope().get("answer"));
 
-        Map<String, Object> tampered = programCodec.encode(program);
-        tampered.put("sourceHash", "00");
-        assertThrows(IllegalArgumentException.class, () -> programCodec.decode(tampered));
+        byte[] tampered = artifact.clone();
+        tampered[tampered.length - 1] ^= 1;
+        assertThrows(IllegalArgumentException.class,
+                () -> programCodec.fromBytes(tampered, FclProgramCodec.FORMAT_VERSION, source));
+
+        byte[] legacy = programCodec.toLegacyJson(program).getBytes(StandardCharsets.UTF_8);
+        FclProgram restoredLegacy = programCodec.fromBytes(legacy,
+                FclProgramCodec.LEGACY_FORMAT_VERSION, source);
+        assertEquals(program.instructions(), restoredLegacy.instructions());
     }
 
     @Test

@@ -78,6 +78,26 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void restoresACompletedV002ContinuationAfterTheV003Upgrade() {
+        Fixture fixture = new Fixture("value = 1\n");
+        FclContinuation legacyRuntime = new FclContinuation(FclProgramCodec.LEGACY_FORMAT_VERSION);
+        legacyRuntime.scope().put("survives", 7L);
+        FclContinuationCodec codec = new FclContinuationCodec();
+        Continuation legacy = new Continuation(fixture.program.programId(), fixture.program.programHash(), 0,
+                List.of(), List.of(new Continuation.ScopeFrame(UUID.randomUUID(), Optional.empty(), Map.of(
+                "survives", new Continuation.PersistedValue("long", codec.valueToJson(7L))))), List.of(), List.of(), Optional.empty(), Map.of(
+                FclPersistenceBridge.ENVELOPE_KEY, new Continuation.PersistedValue(
+                        FclPersistenceBridge.LEGACY_ENVELOPE_TYPE,
+                        codec.toJson(legacyRuntime))), Map.of(),
+                fixture.program.languageVersion(), Integer.toString(FclProgramCodec.LEGACY_FORMAT_VERSION));
+
+        FclContinuation restored = new FclPersistenceBridge(codec).restore(legacy);
+
+        assertEquals(FclProgramCodec.LEGACY_FORMAT_VERSION, restored.formatVersion());
+        assertEquals(7L, restored.scope().get("survives"));
+    }
+
+    @Test
     void memoryListsVisibleSymbolsAndDestroysOnlyCurrentProcessValues() {
         Fixture fixture = new Fixture("""
                 value = 7

@@ -422,14 +422,14 @@ public class FclRuntimeFunctions {
                     invocation.continuation().exit(result);
                     return result;
                 })
-                .register("util", "objectgc", args -> {
-                    arity(args, 0, "util.objectgc");
+                .register("storage", "purgeUnreferenced", args -> {
+                    arity(args, 0, "storage.purgeUnreferenced");
                     Authorization.requireAdministrator(transaction, process.ownerId());
                     long deleted = transaction.vfs().garbageCollectObjects(
                             process.ownerId(), 1000);
                     transaction.audit().append(new AuditEvent(UUID.randomUUID(),
                             AuditEvent.ActorType.USER, process.ownerId().toString(),
-                            "util.objectgc", "object_store", process.ownerId().toString(),
+                            "storage.purgeUnreferenced", "object_store", process.ownerId().toString(),
                             AuditEvent.Result.SUCCEEDED,
                             Map.of("limit", "1000", "deleted", Long.toString(deleted)), now));
                     return deleted;
@@ -588,11 +588,17 @@ public class FclRuntimeFunctions {
                         if (secretAdmin != null) Arrays.fill(secretAdmin, '\0');
                     }
                 })
-                .register("user", "removeUser", args -> {
-                    arity(args, 1, "user.removeUser");
-                    UUID userId = uuid(args.getFirst(), "user.removeUser user");
+                .register("user", "disable", args -> {
+                    arity(args, 1, "user.disable");
+                    UUID userId = uuid(args.getFirst(), "user.disable user");
                     return userMap(transaction.auth().disableUserByAdministrator(
                             process.ownerId(), userId, UUID.randomUUID(), now));
+                })
+                .register("user", "remove", args -> {
+                    arity(args, 1, "user.remove");
+                    UUID userId = uuid(args.getFirst(), "user.remove user");
+                    return transaction.auth().removeUserByAdministrator(
+                            process.ownerId(), userId, UUID.randomUUID(), now);
                 })
                 .register("user", "switchUser", args -> unavailable("user.switchUser",
                         "a durable process identity cannot be changed in place"));
@@ -1076,7 +1082,7 @@ public class FclRuntimeFunctions {
         // A symbolic link is a leaf node and is removed through the file-shaped API.
         // Requiring FILE here made links permanent for ordinary users because no separate
         // removeLink function exists.
-        if (node.type() != expected
+        if (expected != null && node.type() != expected
                 && !(expected == VfsNode.Type.FILE && node.type() == VfsNode.Type.SYMLINK)) {
             throw new FclRuntimeException("file.remove requires "
                     + expected.name().toLowerCase(java.util.Locale.ROOT));
@@ -1147,6 +1153,12 @@ public class FclRuntimeFunctions {
         if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                 function + " expects path and optional target user");
         return deletePath(string(args.getFirst(), function + " path"), expected, owner(args, 1));
+    }
+
+    protected Object remove(List<Object> args, String function) {
+        if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                function + " expects path and optional target user");
+        return deletePath(string(args.getFirst(), function + " path"), null, owner(args, 1));
     }
 
     protected UUID owner(List<Object> args, int index) {
@@ -1300,7 +1312,7 @@ public class FclRuntimeFunctions {
         requireUpdated(transaction.processes().update(terminated, terminating.stateVersion(),
                 terminating.executionEpoch()), "process.kill");
         transaction.scheduler().release(target.identity().processUid(), target.executionEpoch());
-        transaction.timers().deleteForProcess(target.identity().processUid());
+        transaction.timers().cancelForProcess(target.identity().processUid());
         audit("process.kill", target.identity().processUid(), Map.of("pid", Long.toString(pid)));
         return true;
     }
@@ -1832,8 +1844,7 @@ public class FclRuntimeFunctions {
         StoredObject sourceObject = StoredObject.create(new BinaryContent(
                 source.getBytes(StandardCharsets.UTF_8)), ProgramService.SOURCE_MEDIA_TYPE, now);
         StoredObject compiledObject = StoredObject.create(new BinaryContent(
-                new FclProgramCodec().toJson(compiled).getBytes(StandardCharsets.UTF_8)),
-                ProgramService.COMPILED_MEDIA_TYPE, now);
+                new FclProgramCodec().toBytes(compiled)), ProgramService.COMPILED_MEDIA_TYPE, now);
         transaction.vfs().saveObject(sourceObject);
         transaction.vfs().saveObject(compiledObject);
         int statements = Math.toIntExact(compiled.instructions().stream()

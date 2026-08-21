@@ -1,6 +1,6 @@
-# FCL v0.0.2: Object-Oriented Programming for Beginners
+# FCL v0.0.3: Object-Oriented Programming for Beginners
 
-This guide explains the object-oriented part of FCL as it exists in v0.0.2. It is written for
+This guide explains the object-oriented part of FCL as it exists in v0.0.3. It is written for
 readers who have not programmed before. For the complete built-in function list, see the
 [FCL function reference](fcl-function-reference.md). For the Chinese edition, see
 [fcl-object-oriented-guide.zh-CN.md](fcl-object-oriented-guide.zh-CN.md).
@@ -9,10 +9,10 @@ readers who have not programmed before. For the complete built-in function list,
 
 | Layer | Current value |
 | --- | --- |
-| CilExec product version | 0.0.2  |
-| FCL language version | fcl-0.0.2 |
-| FCL program and continuation format | 2 |
-| Database migration | V002 (highest schema version: 2) |
+| CilExec product version | 0.0.3  |
+| FCL language version | fcl-0.0.3 |
+| FCL program and continuation format | 3 |
+| Database migration | V003 (highest schema version: 3) |
 
 ## 1. The central idea
 
@@ -574,7 +574,7 @@ An execution slice that has not committed either rolls back or may be replayed. 
 affect the outside world, such as network and command effects, therefore use CilExec's durable
 effect journal rather than ordinary in-memory behavior.
 
-## 18. What v0.0.2 includes and does not include
+## 18. What v0.0.3 includes and does not include
 
 Included:
 

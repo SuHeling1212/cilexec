@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$project_dir"
+export CILEXEC_BUILD_VERSION="${CILEXEC_BUILD_VERSION:-$("$project_dir/tools/Version.sh")}"
 
 if [[ -L "$project_dir/.env" ]]; then
     echo "Error: .env must not be a symbolic link." >&2

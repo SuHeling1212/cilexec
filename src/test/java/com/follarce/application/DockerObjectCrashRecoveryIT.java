@@ -187,8 +187,7 @@ class DockerObjectCrashRecoveryIT {
                 """;
         FclProgram compiled = new FclCompiler().compile(source);
         byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
-        byte[] compiledBytes = new FclProgramCodec().toJson(compiled)
-                .getBytes(StandardCharsets.UTF_8);
+        byte[] compiledBytes = new FclProgramCodec().toBytes(compiled);
         ObjectHash sourceHash = ObjectHash.sha256(new BinaryContent(sourceBytes));
         ObjectHash compiledHash = ObjectHash.sha256(new BinaryContent(compiledBytes));
         Instant now = Instant.now();
@@ -233,13 +232,14 @@ class DockerObjectCrashRecoveryIT {
             try (PreparedStatement statement = connection.prepareStatement(
                     "INSERT INTO program.program(program_id,owner_id,program_hash,language_version,"
                             + "runtime_format_version,source_object_hash,compiled_object_hash,"
-                            + "statement_count) VALUES (?,?,?,'fcl-0.0.2',?,?,?,2)")) {
+                            + "statement_count) VALUES (?,?,?,?,?,?,?,2)")) {
                 statement.setObject(1, programId);
                 statement.setObject(2, ownerId);
                 statement.setBytes(3, JdbcValues.hash(sourceHash));
-                statement.setInt(4, FclProgramCodec.FORMAT_VERSION);
-                statement.setBytes(5, JdbcValues.hash(sourceHash));
-                statement.setBytes(6, JdbcValues.hash(compiledHash));
+                statement.setString(4, ProgramService.LANGUAGE_VERSION);
+                statement.setInt(5, FclProgramCodec.FORMAT_VERSION);
+                statement.setBytes(6, JdbcValues.hash(sourceHash));
+                statement.setBytes(7, JdbcValues.hash(compiledHash));
                 statement.executeUpdate();
             }
             new JdbcProcessRepository(connection, new JsonCodec()).insert(new CilProcess(

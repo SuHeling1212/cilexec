@@ -1,5 +1,6 @@
 package com.follarce.market.client;
 
+import com.follarce.version.ReleaseVersion;
 import com.follarce.fcl.FclFunctionRegistry;
 import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclSuspension;
@@ -23,7 +24,7 @@ import java.util.regex.Pattern;
 /** Java implementation of the built-in, user-scoped CilExec package market client. */
 public final class MarketRuntimeFunctions {
     public static final String API_VERSION = "cilexec.market/v1";
-    public static final String CLIENT_VERSION = "0.0.2";
+    public static final String CLIENT_VERSION = ReleaseVersion.current();
     public static final String ORIGIN_VARIABLE = "MARKET_ORIGIN";
 
     private static final String ROOT = "/market";
@@ -55,7 +56,6 @@ public final class MarketRuntimeFunctions {
                 .registerContextual("market", "download", this::download)
                 .registerContextual("market", "install", this::install)
                 .register("market", "list", this::list)
-                .register("market", "uninstall", this::uninstall)
                 .register("market", "help", this::help)
                 .register("market", "run", this::run);
     }
@@ -125,21 +125,6 @@ public final class MarketRuntimeFunctions {
     private Object list(List<Object> arguments) {
         arity(arguments, 0, "market.list");
         return host.marketInstallations();
-    }
-
-    private Object uninstall(List<Object> arguments) {
-        arity(arguments, 1, "market.uninstall");
-        String packageId = packageId(arguments.getFirst());
-        Map<String, Object> core = host.uninstall(packageId);
-        List<Receipt> current = receipts();
-        List<Receipt> retained = new ArrayList<>();
-        for (Receipt receipt : current) {
-            if (!receipt.sha256().equals(packageId)) retained.add(receipt);
-        }
-        if (retained.size() != current.size()) saveReceipts(retained);
-        Map<String, Object> result = new LinkedHashMap<>(core);
-        result.put("marketCacheRemoved", core.get("cacheFilesRemoved"));
-        return Map.copyOf(result);
     }
 
     private Object help(List<Object> arguments) {
@@ -434,7 +419,6 @@ public final class MarketRuntimeFunctions {
                 + "market.download(sha256)  Download and verify a package\n"
                 + "market.install(sha256)   Install exact package and dependencies\n"
                 + "market.list()            List installed package hashes\n"
-                + "market.uninstall(sha256) Remove an installed package\n"
                 + "market.origin()          Show the configured mirror\n"
                 + "market.run()             Show client version and help";
     }
@@ -578,7 +562,6 @@ public final class MarketRuntimeFunctions {
         Object httpGet(String url, FclFunctionRegistry.Invocation invocation);
         Object download(String url, String path, FclFunctionRegistry.Invocation invocation);
         Map<String, Object> install(String path);
-        Map<String, Object> uninstall(String packageId);
         List<Map<String, Object>> marketInstallations();
         void registerCacheNode(String path, String sha256);
     }

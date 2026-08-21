@@ -1,7 +1,6 @@
 package com.follarce.app;
 
 import com.follarce.application.ProcessStatementExecutor;
-import com.follarce.audit.AuditRetentionService;
 import com.follarce.config.CilExecConfig;
 import com.follarce.effect.EffectHandler;
 import com.follarce.effect.EffectHandlerRegistry;
@@ -84,7 +83,6 @@ public final class RuntimeBootstrap {
 
     private static final class ProductionHooks implements RuntimeLifecycle.Hooks {
         private static final int TIMER_BATCH = 100;
-        private static final int AUDIT_PURGE_BATCH = 100;
 
         private final CilExecConfig config;
         private final BuildInfo buildInfo;
@@ -243,8 +241,6 @@ public final class RuntimeBootstrap {
         public void startTimerLoop() {
             TimerService timers = new TimerService(runtimeTransactions, runtimeTransactions,
                     Clock.systemUTC());
-            AuditRetentionService auditRetention = new AuditRetentionService(
-                    runtimeTransactions, Clock.systemUTC());
             DeliverySweeper sweeper = new DeliverySweeper(runtimeTransactions,
                     Clock.systemUTC());
             UUID runnerId = UUID.randomUUID();
@@ -253,16 +249,14 @@ public final class RuntimeBootstrap {
                         com.follarce.domain.port.Isolation.READ_COMMITTED,
                         transaction -> transaction.scheduler().releaseExpired(Instant.now()));
                 int fired = timers.fireDue(runnerId, TIMER_BATCH);
-                int purged = auditRetention.purgeExpired(AUDIT_PURGE_BATCH);
                 int swept = sweeper.sweepOnce();
                 SchedulerService current = scheduler;
                 if (current != null) {
                     current.wake();
                     current.wakeInterrupt();
                 }
-                return released + fired + purged + swept;
-            }, () -> timers.deleteFiredExpired(Instant.now().minus(
-                    java.time.Duration.ofMinutes(1))), this::nextMaintenanceAt, requireFence());
+                return released + fired + swept;
+            }, () -> 0, this::nextMaintenanceAt, requireFence());
             timerLoop.start();
             health.timerLoop(true);
         }

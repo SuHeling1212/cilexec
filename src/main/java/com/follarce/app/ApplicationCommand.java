@@ -150,6 +150,6 @@ public enum ApplicationCommand {
 
     private static IllegalArgumentException usage() {
         return new IllegalArgumentException(
-                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|compile <source.fcl> [<output.json>]|host move <source-file> <absolute-vfs-path> <username>]");
+                "Usage: cilexec [terminal|runtime|migrate|export <output.db>|package build <source-dir> <output.db>|compile <source.fcl> [<output.fclb>]|host move <source-file> <absolute-vfs-path> <username>]");
     }
 }

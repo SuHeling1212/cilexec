@@ -67,11 +67,8 @@ class MarketRuntimeFunctionsTest {
                 .contains("market.install"));
         assertEquals(MarketRuntimeFunctions.CLIENT_VERSION,
                 ((Map<?, ?>) registry.invoke("market.run", List.of(), invocation)).get("version"));
-        Object uninstalled = registry.invoke("market.uninstall", List.of(sha256), invocation);
-        assertEquals(true, ((Map<?, ?>) uninstalled).get("removed"));
-        assertTrue(((List<?>) registry.invoke("market.list", List.of(), invocation)).isEmpty());
-        Object uninstalledAgain = registry.invoke("market.uninstall", List.of(sha256), invocation);
-        assertEquals(0L, ((Map<?, ?>) uninstalledAgain).get("marketCacheRemoved"));
+        assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("market.uninstall", List.of(sha256), invocation));
     }
 
     @Test
@@ -236,13 +233,6 @@ class MarketRuntimeFunctionsTest {
             String coordinate = coordinates.getOrDefault(hash, "cilexec/editor/1.0.0");
             installedPackages.put(hash, coordinate);
             return Map.of("sha256", hash, "coordinate", coordinate, "hash", hash);
-        }
-        @Override public Map<String, Object> uninstall(String packageId) {
-            boolean present = installedPackages.remove(packageId) != null;
-            return Map.of("removed", present, "packagesRemoved", present ? 1L : 0L,
-                    "dependenciesRemoved", 0L, "processesRemoved", 0L, "bindingsRemoved", 0L,
-                    "cacheFilesRemoved", 0L, "dataNodesRemoved", 0L, "releasesPurged", 0L,
-                    "objectsPurged", 0L);
         }
         @Override public List<Map<String, Object>> marketInstallations() {
             return installedPackages.entrySet().stream().map(entry -> {

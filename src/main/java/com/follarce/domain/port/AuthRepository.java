@@ -59,6 +59,12 @@ public interface AuthRepository {
         throw new UnsupportedOperationException("Atomic administrator user disable is not implemented");
     }
 
+    /** Permanently removes an account and every user-owned durable record in one transaction. */
+    default boolean removeUserByAdministrator(UUID administratorId, UUID userId,
+                                              UUID auditEventId, Instant at) {
+        throw new UnsupportedOperationException("Atomic administrator user removal is not implemented");
+    }
+
     void saveUser(UserAccount user);
 
     /** Provisions the stable PostgreSQL NOLOGIN tenant role in this same transaction. */

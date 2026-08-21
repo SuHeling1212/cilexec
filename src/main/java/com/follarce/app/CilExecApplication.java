@@ -6,13 +6,13 @@ import com.follarce.exporter.LogicalExportService;
 import com.follarce.fcl.FclCompileException;
 import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclProgram;
+import com.follarce.fcl.FclProgramCodec;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
 import com.follarce.persistence.postgres.connection.FlywayMigrator;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.host.HostVfsImportService;
 import com.follarce.persistence.postgres.error.PersistenceFailure;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
-import com.google.gson.GsonBuilder;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -230,8 +230,8 @@ public final class CilExecApplication {
     }
 
     /**
-     * Compiles FCL source into its flat instruction program (the durable bytecode form)
-     * and writes it as JSON. With no output path the JSON goes to stdout.
+     * Compiles FCL source into its versioned FCLB executable artifact. Source remains external
+     * to the artifact and is required for source-hash verification when it is loaded.
      */
     private static void runCompile(Path source, Optional<Path> output) {
         String sourceText;
@@ -247,11 +247,9 @@ public final class CilExecApplication {
         } catch (FclCompileException failure) {
             throw new IllegalArgumentException("compile: " + failure.getMessage());
         }
-        String json = new GsonBuilder().disableHtmlEscaping().setPrettyPrinting()
-                .create().toJson(program);
         if (output.isPresent()) {
             try {
-                Files.writeString(output.orElseThrow(), json + System.lineSeparator());
+                Files.write(output.orElseThrow(), new FclProgramCodec().toBytes(program));
             } catch (IOException failure) {
                 throw new IllegalArgumentException("compile: cannot write " + output.orElseThrow()
                         + ": " + failure.getMessage());
@@ -260,7 +258,9 @@ public final class CilExecApplication {
                     source.getFileName(), program.instructions().size(), program.functions().size(),
                     sourceText.length(), output.orElseThrow());
         } else {
-            System.out.println(json);
+            System.out.printf("Compiled %s: %d instructions, %d functions, %d source bytes (FCLB v%d; supply an output path to write the artifact)%n",
+                    source.getFileName(), program.instructions().size(), program.functions().size(),
+                    sourceText.length(), FclProgramCodec.FORMAT_VERSION);
         }
     }
 

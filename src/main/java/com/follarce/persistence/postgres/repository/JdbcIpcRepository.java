@@ -435,7 +435,8 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                 + "FROM ipc.swap_value value JOIN ipc.swap_pool pool USING (pool_id,owner_id) "
                 + "WHERE value.owner_id=? AND pool.pool_name=? AND value.variable_name=? "
                 + "AND (value.lock_process_uid IS NULL OR value.lease_until<=?) "
-                + "AND (value.retention_mode<>'SYNC' OR value.changed) FOR UPDATE";
+                + "AND (value.retention_mode<>'SYNC' OR value.changed) "
+                + "AND (value.retention_mode<>'TIMES' OR value.remaining_reads>0) FOR UPDATE";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, ownerId);
             statement.setString(2, poolName);
@@ -448,18 +449,14 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
                         rows.getString("value_type"), rows.getString("value_payload"));
                 UUID poolId = rows.getObject("pool_id", UUID.class);
                 int remaining = rows.getInt("remaining_reads");
-                if (mode.equals("ALWAYS") || (mode.equals("TIMES") && remaining <= 1)) {
-                    deleteSwapRow(poolId, variableName);
-                } else {
-                    String update = "UPDATE ipc.swap_value SET changed=false,remaining_reads="
-                            + "CASE WHEN retention_mode='TIMES' THEN remaining_reads-1 "
-                            + "ELSE remaining_reads END,updated_at=? WHERE pool_id=? AND variable_name=?";
-                    try (PreparedStatement changed = connection.prepareStatement(update)) {
-                        changed.setTimestamp(1, java.sql.Timestamp.from(at));
-                        changed.setObject(2, poolId);
-                        changed.setString(3, variableName);
-                        changed.executeUpdate();
-                    }
+                String update = "UPDATE ipc.swap_value SET changed=false,remaining_reads="
+                        + "CASE WHEN retention_mode='TIMES' THEN GREATEST(0, remaining_reads-1) "
+                        + "ELSE remaining_reads END,updated_at=? WHERE pool_id=? AND variable_name=?";
+                try (PreparedStatement changed = connection.prepareStatement(update)) {
+                    changed.setTimestamp(1, java.sql.Timestamp.from(at));
+                    changed.setObject(2, poolId);
+                    changed.setString(3, variableName);
+                    changed.executeUpdate();
                 }
                 return Optional.of(value);
             }
@@ -648,15 +645,6 @@ public final class JdbcIpcRepository extends JdbcRepositorySupport implements Ip
             statement.setString(2, poolName);
             statement.setString(3, variableName);
         }) == 1;
-    }
-
-    private void deleteSwapRow(UUID poolId, String variableName) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "DELETE FROM ipc.swap_value WHERE pool_id=? AND variable_name=?")) {
-            statement.setObject(1, poolId);
-            statement.setString(2, variableName);
-            statement.executeUpdate();
-        }
     }
 
     private List<String> stringList(String operation, String sql, Binder binder) {

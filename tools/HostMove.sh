@@ -2,6 +2,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
+export CILEXEC_BUILD_VERSION="${CILEXEC_BUILD_VERSION:-$("$project_dir/tools/Version.sh")}"
 if [[ -z "${CILEXEC_IMAGE:-}" && -f "$project_dir/.env" ]]; then
     while IFS='=' read -r key value; do
         if [[ "$key" == "CILEXEC_IMAGE" && "$value" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then

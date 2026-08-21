@@ -1,5 +1,6 @@
 package com.follarce.app;
 
+import com.follarce.version.ReleaseVersion;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Objects;
@@ -65,11 +66,17 @@ public record BuildInfo(
     }
 
     private static int number(Properties values, String name) {
+        String value = property(values, name);
         try {
-            return Integer.parseInt(property(values, name));
+            return Integer.parseInt(value);
         } catch (NumberFormatException exception) {
-            throw new IllegalStateException("Build property must be an integer: " + name,
-                    exception);
+            try {
+                return ReleaseVersion.schemaNumber(value);
+            } catch (IllegalArgumentException unsupported) {
+                throw new IllegalStateException(
+                        "Build property must be a positive integer or CilExec 0.0.N version: "
+                                + name, exception);
+            }
         }
     }
 

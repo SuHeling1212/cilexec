@@ -5,6 +5,7 @@ import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.program.Program;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
+import com.follarce.fcl.FclProgramCodec;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
@@ -30,6 +31,8 @@ import java.util.UUID;
 final class FclPersistenceBridge {
     static final String ENVELOPE_KEY = "cilexec.fcl.continuation";
     static final String ENVELOPE_TYPE =
+            "application/vnd.cilexec.fcl-continuation+json;version=3";
+    static final String LEGACY_ENVELOPE_TYPE =
             "application/vnd.cilexec.fcl-continuation+json;version=2";
 
     private final FclContinuationCodec codec;
@@ -46,9 +49,9 @@ final class FclPersistenceBridge {
                 throw new IllegalStateException(
                         "Continuation has runtime state but no FCL persistence envelope");
             }
-            return new FclContinuation();
+            return new FclContinuation(runtimeFormat(persisted.runtimeFormatVersion()));
         }
-        if (!ENVELOPE_TYPE.equals(envelope.type())) {
+        if (!envelopeType(runtimeFormat(persisted.runtimeFormatVersion())).equals(envelope.type())) {
             throw new IllegalStateException("Unsupported FCL continuation envelope: "
                     + envelope.type());
         }
@@ -89,7 +92,7 @@ final class FclPersistenceBridge {
                 new LinkedHashMap<>(previous.globalVariables());
         ProcessInbox.keys().forEach(globals::remove);
         globals.put(ENVELOPE_KEY, new Continuation.PersistedValue(
-                ENVELOPE_TYPE, codec.toJson(runtime)));
+                envelopeType(runtime.formatVersion()), codec.toJson(runtime)));
 
         List<Continuation.CallFrame> calls = projectCalls(processUid, program, runtime);
         List<Continuation.ScopeFrame> scopes = projectScopes(processUid, program, runtime);
@@ -126,8 +129,13 @@ final class FclPersistenceBridge {
                 && continuation.controlStack().isEmpty()
                 && continuation.waitState().isEmpty()
                 && continuation.globalVariables().isEmpty()
-                && runtimeFormat(continuation.runtimeFormatVersion())
-                == FclContinuation.FORMAT_VERSION;
+                && FclProgramCodec.supportsFormat(runtimeFormat(continuation.runtimeFormatVersion()));
+    }
+
+    static String envelopeType(int formatVersion) {
+        if (formatVersion == FclProgramCodec.FORMAT_VERSION) return ENVELOPE_TYPE;
+        if (formatVersion == FclProgramCodec.LEGACY_FORMAT_VERSION) return LEGACY_ENVELOPE_TYPE;
+        throw new IllegalStateException("Unsupported FCL continuation format: " + formatVersion);
     }
 
     private static int runtimeFormat(String value) {

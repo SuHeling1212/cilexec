@@ -78,12 +78,12 @@ slice, which may then replay from the preceding checkpoint.
   shutdown, forced process termination, database consistency failures, and other kernel faults
   cannot be caught. Exception values and active handlers are included in every continuation
   checkpoint, so a suspended `try` retains its catch after restart. `throw`, `finally`, and
-  typed/multiple catches are not part of v0.0.2.
+  typed/multiple catches are not part of v0.0.3.
 - **Module visibility.** `public func` exports a module function (and is the default for
   an unqualified `func`); `private func` is an implementation function. Private functions
   remain callable by module functions but are not callable from imported module clients.
 
-## FCL v0.0.2 Object-Oriented Programming
+## FCL v0.0.3 Object-Oriented Programming
 
 For a complete beginner-oriented explanation, see the English
 [object-oriented guide](fcl-object-oriented-guide.md) or the Chinese
@@ -181,7 +181,7 @@ memory.destroy(user)
 // user is undefined; copy remains a complete User value
 ```
 
-The deliberately excluded v0.0.2 features are static members, interfaces, abstract classes,
+The deliberately excluded v0.0.3 features are static members, interfaces, abstract classes,
 generics, multiple inheritance, reflection, object cloning, `throw`, `finally`, and typed catch.
 
 ## Start With These Examples
@@ -269,7 +269,7 @@ import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff" as "ed
 editor.open("notes.txt")
 ```
 
-Its package coordinate is `cilexec/editor/0.0.2`, and its public function is
+Its package coordinate is `cilexec/editor/0.0.3`, and its public function is
 `editor.open(path)`. A package is identified by the SHA-256 of its `.db` file; two
 different hashes are two independent packages. `import` accepts either the 64-character
 SHA-256 of an installed `.db` file or a VFS `.fcl` source path. Package imports are
@@ -330,7 +330,7 @@ capabilities within their own scope at registration; administrators have all of 
 | `util.input([prompt])` | Optionally show a prompt and wait for one line of user input. Equivalent to `io.input`. |
 | `util.sleep(milliseconds)` | Suspend the current process for the given milliseconds, then resume. |
 | `util.exit([result])` | End the current FCL process normally, optionally returning a result value. |
-| `util.objectgc()` | Administrator-only garbage collection of unreferenced object-store entries that have been unreachable from every durable root for at least one hour. Named `objectgc` because it reclaims the object store; it does not touch VFS files, programs, packages, or process data. |
+| `storage.purgeUnreferenced()` | Administrator-only immediate garbage collection of unreferenced object-store entries that have been unreachable from every durable root for at least one hour. It never deletes VFS files, packages, processes, or Program rows itself. Nothing is deleted on a time schedule. |
 
 ## Paths & Aliases: `path`
 
@@ -466,8 +466,7 @@ durable `PWD`, which `:cd` changes; paths beginning with `/` remain absolute.
 | `file.append(path, content [, targetUser])` | Append text. Own-user append uses chunked storage without loading the old file; administrator cross-user append currently loads the old content and therefore refuses an existing file over 16 MiB. |
 | `file.createFile(path [, content [, targetUser]])` | Create the file only if it does not exist. To specify only a target user, pass an empty string for the content position. |
 | `file.createDir(path [, targetUser])` | Create a directory. |
-| `file.removeFile(path [, targetUser])` | Delete a file. |
-| `file.removeDir(path [, targetUser])` | Delete an empty directory. |
+| `file.remove(path [, targetUser])` | Delete a file, symbolic link, or empty directory. Roots, mounts, versioned files, and non-empty directories are rejected. |
 | `file.rename(path, newName [, targetUser])` | Rename within the same directory; `newName` cannot contain `/`. |
 | `file.link(linkPath, targetPath)` | Create a symbolic-link node whose content is the target path; only within the current user's scope. `file.read`, `file.readChunk`, and `file.size` follow links to the target file (fewer than 16 links; cycles error out). |
 | `file.lock(path, leaseMilliseconds)` | Acquire a file lease lock; on success returns `{fencingToken, leaseUntil}`, on failure `null`. |
@@ -491,11 +490,11 @@ control other users' processes.
 | `process.kill(pid)` | Terminate the given process; killing yourself is equivalent to `util.exit()`. Alias: `system.kill(pid)`. |
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
-| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. The child does not inherit the terminal lifecycle: it runs to the end of its program (or a `util.exit()`) and then reaches `TERMINATED`, so `process.waitPID` and `process.kill`/`process.gc` behave exactly like for an ordinary background process. Only the interactive terminal root itself pauses between submissions. |
+| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. The child does not inherit the terminal lifecycle: it runs to the end of its program (or a `util.exit()`) and then reaches `TERMINATED`, so `process.waitPID`, `process.kill`, and `process.removeFinished` behave exactly like for an ordinary background process. Only the interactive terminal root itself pauses between submissions. |
 | `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. Terminal processes keep global variables, package bindings, working directory, and successfully declared top-level functions when they return to the terminal; ordinary background processes terminate when the target program ends. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
-| `process.gc([pid])` | Manually remove terminal processes (TERMINATED/FAILED) and their persisted state (continuation, variables, events, timers, package pins). Without a PID it removes every terminal process and returns the count removed; with a PID it removes only that process when it has already ended and returns `true`. Running, suspended, and waiting processes are never removed, and `system_kill`ed processes cannot be revived. Administrator (`SYSTEM_ADMIN`) only. |
+| `process.removeFinished([pid])` | Explicitly remove a terminal process that has ended (`TERMINATED` or `FAILED`) and its persisted state (continuation, variables, events, timers, package pins). Without a PID it removes every finished terminal process and returns the count removed; with a PID it removes only that process and returns `true`. Running, suspended, and waiting processes are never removed. Administrator (`SYSTEM_ADMIN`) only. |
 
 ## Users: `user`
 
@@ -506,7 +505,8 @@ control other users' processes.
 | `user.validateUser(usernameOrUuid)` | Verify that a user exists and is visible to the current user; ordinary users only validate themselves. |
 | `user.getListOfUsers()` | Return basic information for all users; requires administrator identity. |
 | `user.create(username, password [, administratorCredentials])` | Create a new user. Without the third argument the account receives the ordinary user capabilities (any user may self-register, matching terminal registration). To create an administrator pass an array `[administratorUsername, administratorPassword]`: the named administrator must be ACTIVE, match the password, and currently hold effective `SYSTEM_ADMIN` (direct or group derived, expiry aware) - the database verifies all of this atomically with the creation, so a revoked or expired capability can never mint a fresh administrator. An audit event records the administrator actor (or the self-registering user). The new user's VFS root is provisioned on first login. |
-| `user.removeUser(userUuid)` | Deactivate a user; requires administrator identity. |
+| `user.disable(userUuid)` | Disable a user account without deleting its data; requires administrator identity. |
+| `user.remove(userUuid)` | Permanently remove a user account and every record owned by that user in one database transaction; requires administrator identity. The calling administrator cannot remove itself. |
 | `user.switchUser(...)` | **Currently unavailable.** A persisted process cannot change identity in place; use `:logout` and log in again. |
 
 ## Networking & One-shot Sockets: `network`, `socket`
@@ -587,7 +587,7 @@ The host market's default index is
 | `package.info(coordinateOrDatabaseFileSha256)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or the complete SHA-256 of the installed `.db` file; `(namespace, name, version)` as three arguments also works. |
 | `package.list()` | Return the releases effectively installed for the current user. |
 | `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. Creates the current user's installation root, the exact dependency closure, and a private data space. |
-| `package.uninstall(databaseFileSha256 [, options])` | Atomically remove the package for the current user. By default active process bindings and dependent installations block the uninstall; `{"force": true}` removes dependent current-user roots and purges affected processes. Deletes private data, orphan dependencies, and globally unreferenced release payloads. Returns a summary map. |
+| `package.uninstall(databaseFileSha256)` | Atomically remove the package for the current user. Active process bindings and dependent installations block removal; stop or remove those processes and uninstall dependents first. It removes the package's private data and unreferenced package payloads, but never ordinary user files. Returns a summary map. |
 | `package.build(manifestPath, outputPath)` | Read the `package.json` and declared files in the VFS and build a `.db` in the VFS. |
 | `package.run(databaseFileSha256 [, entrypoint])` | Create a child process running a package entrypoint. This call uses the installed `.db` file `sha256`; the default entrypoint is `run`, and PID and other information are returned. |
 | `package.verify(coordinateOrDatabaseFileSha256)` | Verify that the package database object still matches the file hash recorded at install time. The three-part coordinate also works as arguments. |
@@ -634,6 +634,7 @@ versions never share data automatically.
 | `packageData.mkdir(path)` | Create a private directory entry. |
 | `packageData.list(path)` | List direct children of a private directory. |
 | `packageData.remove(path)` | Remove a file or empty directory entry. |
+| `packageData.clear(path)` | Delete every entry inside an existing private directory, but keep that directory. For example, `packageData.clear("cache")` clears the package's cache. |
 | `packageData.rename(source, destination)` | Rename inside the same private space. |
 | `packageData.size(path)` | Return a private file's byte size. |
 | `packageData.usage()` | Return `{logicalBytes, quota, files}` for the private space. |
@@ -652,10 +653,10 @@ Users manage their own package data through the `package` namespace:
 | `package.dataRead(databaseFileSha256, path)` | Read one private file as text. |
 | `package.dataExport(databaseFileSha256, destinationVfsPath)` | Write a deterministic SQLite archive of the private space to the user's VFS. The archive is an ordinary user file and survives uninstallation. |
 | `package.dataImport(databaseFileSha256, sourceVfsPath)` | Merge an exported archive into the private space of the installed package. |
-| `package.dataClear(databaseFileSha256)` | Delete every private entry but keep the empty space. |
+| `package.clearData(databaseFileSha256)` | Delete every private entry but keep the empty space. |
 | `package.dataQuota(databaseFileSha256)` | Return the effective quota in bytes. |
 | `package.setDataQuota(user, databaseFileSha256, bytes)` | Administrator quota override; cannot be set below current usage. |
-| `package.clearDataQuota(user, databaseFileSha256)` | Remove an administrator quota override. |
+| `package.removeDataQuota(user, databaseFileSha256)` | Remove an administrator quota override. |
 
 The default quota is 256 MiB per user and exact package. Exact-version isolation is
 deliberate: version migration is an explicit `package.dataExport` +
@@ -683,12 +684,11 @@ standalone server are described in `docs/package-market.md`.
 | `market.download(sha256)` | Download in 4 MiB chunks and recompute the full file hash. |
 | `market.install(sha256)` | Recursively download and register exact-hash dependencies, then save a market receipt. It does not create an import alias. |
 | `market.list()` | List the current user's MARKET installations from the installation ledger. |
-| `market.uninstall(sha256)` | Delegate to the core `package.uninstall`, then remove the market download cache and receipt. It has no force option, so active process bindings or dependent current-user roots block it. On success it removes package private data, installation records, process bindings, orphan dependencies, and globally unreferenced release payloads; ordinary user documents and other users' installations remain. |
 | `market.help()` | Return help text for the market functions. |
 | `market.run()` | Return the built-in client version and help without requiring a configured mirror. |
 
 Except for `market.configure`, `market.origin`, `market.help`, `market.run`, and the
-local-only `market.list` / `market.uninstall`, the operations require a configured mirror.
+local-only `market.list`, the operations require a configured mirror.
 When it is missing, an explicit error names
 the configuration command instead of silently falling back to raw input mode.
 
@@ -704,7 +704,7 @@ and locking.
 | `swapPool.list()` | List all of the current user's swap pools. |
 | `swapPool.ls(path)` | List the variables in a pool. |
 | `swapPool.add("name:value", pool [, option...])` | Add a variable. Optional `"type:sync"` or `"type:times(n)"` control how it is retained. |
-| `swapPool.get(pool, variable)` | Read and consume a variable value; `null` when not found. An ordinary (default `ALWAYS`) variable is removed on read; `type:sync` clears its changed flag (a later `add`/`signal` makes it readable again) and `type:times(n)` decrements the remaining reads and is removed on the last one. |
+| `swapPool.get(pool, variable)` | Read a variable value; `null` when not currently readable. A default `ALWAYS` value stays readable until explicit removal. `type:sync` clears its changed flag (a later `add`/`signal` makes it readable again), while `type:times(n)` decrements the remaining reads and becomes unreadable at zero. Neither mode deletes the variable automatically. |
 | `swapPool.update(pool, variable, value [, fencingToken])` | Update a variable; pass the fencing token when locked. |
 | `swapPool.removeVar(pool, variable [, fencingToken])` | Remove a variable. |
 | `swapPool.clear(pool)` | Clear the pool. |
@@ -753,8 +753,6 @@ unconsumed reservation and the message can be delivered again.
 | `system.kill(pid)` | Alias of `process.kill(pid)`. |
 | `system.exec(command)` | Administrator: execute a command from the host allow-list. `command` can be a string or an array of strings; it does not go through a shell, and `CILEXEC_FCL_EXEC_ALLOWLIST` must be set — no program is allowed by default. |
 | `system.invoke(qualifiedFunction [, argumentArray])` | Administrator: call a function registered in the Runtime registry by string, for example `system.invoke("file.read", ["/x.txt", "alice"])`. It cannot call itself or user-defined, package-exported, or source-imported functions. |
-| `system.forceRemove(path)` | Administrator: constrained deletion by path. It still refuses roots, mounts, versioned files, and non-empty directories. |
-| `system.forceRemove(targetUserUuid, nodeUuid)` | Administrator: the same constrained deletion by target user and node UUID. |
 | `system.resolveEffect(...)` | **Currently unavailable.** External effects are handled by the Runtime control plane. |
 | `system.reset(...)` | **Currently unavailable.** Runtime reset is not exposed to FCL. |
 

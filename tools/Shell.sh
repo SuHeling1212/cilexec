@@ -3,12 +3,27 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$project_dir"
+export CILEXEC_BUILD_VERSION="${CILEXEC_BUILD_VERSION:-$("$project_dir/tools/Version.sh")}"
 
-if [[ -z "${CILEXEC_IMAGE:-}" && -f "$project_dir/.env" ]]; then
+if [[ -f "$project_dir/.env" ]]; then
     while IFS='=' read -r key value; do
-        if [[ "$key" == "CILEXEC_IMAGE" && "$value" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
-            export CILEXEC_IMAGE="$value"
-        fi
+        case "$key" in
+            CILEXEC_IMAGE)
+                if [[ -z "${CILEXEC_IMAGE:-}" && "$value" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
+                    export CILEXEC_IMAGE="$value"
+                fi
+                ;;
+            CILEXEC_CONTAINER_UID)
+                if [[ -z "${CILEXEC_CONTAINER_UID:-}" && "$value" =~ ^[1-9][0-9]*$ ]]; then
+                    export CILEXEC_CONTAINER_UID="$value"
+                fi
+                ;;
+            CILEXEC_CONTAINER_GID)
+                if [[ -z "${CILEXEC_CONTAINER_GID:-}" && "$value" =~ ^[1-9][0-9]*$ ]]; then
+                    export CILEXEC_CONTAINER_GID="$value"
+                fi
+                ;;
+        esac
     done < "$project_dir/.env"
 fi
 
@@ -100,22 +115,20 @@ echo
 
 if [[ -t 0 ]]; then
     read -r -p "Choose a container [1/program]: " choice
-    target_args=("$@")
 else
     choice="${1:-program}"
     shift 2>/dev/null || true
-    target_args=("$@")
 fi
 
 case "${choice:-1}" in
     1|program|p)
-        enter_program "${target_args[@]}"
+        enter_program "$@"
         ;;
     2|data|d)
         enter_data
         ;;
     *)
         echo "Invalid selection; entering program by default." >&2
-        enter_program "${target_args[@]}"
+        enter_program "$@"
         ;;
 esac

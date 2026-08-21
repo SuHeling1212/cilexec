@@ -115,7 +115,6 @@ tells you explicitly to call `market.configure(...)`.
 | `market.download(sha256)` | Downloads in chunks and recomputes the full-file SHA-256. |
 | `market.install(sha256)` | Recursively installs exact-hash dependencies; identity is the SHA-256, so a different hash is a different package. |
 | `market.list()` | Lists installed package SHA-256s and their coordinates. |
-| `market.uninstall(sha256)` | Delegates to the core package uninstaller, then removes the market download cache and receipt. It has no force option, so active process bindings or dependent current-user roots block removal. On success it removes private data, installation records, process bindings, orphan dependencies, and globally unreferenced release payloads. Ordinary user documents and other users' installations are never removed. |
 | `market.help()` | Returns function help. |
 | `market.run()` | Returns the client version and help without requiring a configured origin. |
 
@@ -155,7 +154,7 @@ code writes to it with the `packageData.*` functions, which require the declared
 other packages and ordinary VFS paths cannot reach it. Users inspect, export,
 import, and clear the space with `package.dataInfo`, `package.dataList`,
 `package.dataRead`, `package.dataExport`, `package.dataImport`, and
-`package.dataClear`. Uninstallation removes the private space, the market download
+`package.clearData`. Uninstallation removes the private space, the market download
 cache, the installation ledger, and process bindings, and garbage-collects
 globally unreferenced release payloads; ordinary user documents are never touched.
 
@@ -177,10 +176,10 @@ uses a capability that was not declared. The audit covers the following mapping:
 | `io.readFile`, `file.*` read operations | `vfs.read` |
 | `io.writeFile`, `file.*` write operations | `vfs.write` |
 | `util.input`, `io.input`, `io.readKey`, `io.readChar` | `terminal.raw_input` |
-| `market.configure`, `market.update`, `market.download`, `market.install`, `market.uninstall` | `package.manage` |
+| `market.configure`, `market.update`, `market.download`, `market.install` | `package.manage` |
 | `packageData.*` private data functions | `package.data` |
 | `process.exec`, `process.kill`, `process.pause`, `process.continue`, `process.getList` | `process.control` |
-| `user.validateUser`, `user.getListOfUsers`, `user.removeUser` | `system.admin` |
+| `user.validateUser`, `user.getListOfUsers`, `user.disable`, `user.remove` | `system.admin` |
 
 Query-only market functions (`market.origin`, `market.search`, `market.info`, `market.list`,
 `market.help`, `market.run`) require no capability. `system.ls` and `system.extensions` are

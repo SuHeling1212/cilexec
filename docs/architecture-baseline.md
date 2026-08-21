@@ -684,13 +684,15 @@ Flyway is the schema versioning tool.
 
 ```text
 V001__CilexecBaseline.java       # frozen CilExec 0.0.1 modular baseline
-V002.java                        # unreleased CilExec 0.0.2 forward migration
-...
+V002.java                        # frozen CilExec 0.0.2 forward migration
+V003.java                        # CilExec 0.0.3 executable-artifact and package-data migration
 ```
 
-V002 is intentionally a single Java migration while 0.0.2 is unreleased. It contains the
-post-baseline schema work for the release, including the persisted FCL continuation format
-change. Once applied outside development, it becomes immutable like V001.
+V003 is intentionally a single Java migration. It advances the database contract for the V003
+FCLB executable artifact: new programs persist both readable source and a versioned binary
+instruction artifact; V002 JSON source artifacts remain readable only for safe completion of
+existing processes. It also adds explicit directory clearing for package-private data. It does not
+introduce time-based deletion of user data. Once applied, V003 is immutable like V001 and V002.
 
 Rules:
 
@@ -714,7 +716,7 @@ Java migration and must not edit V001.
 
 **Migration on start.** `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) takes effect: when enabled, the Runtime applies pending migrations at startup through the migrator role and validates them before continuing, instead of requiring the one-shot `migrate` command.
 
-**Schema verification.** At startup `SchemaVerifier` checks the actual schema version against the build's supported `[minimumSchema, maximumSchema]` range, currently `[1, 1]`. A failed or out-of-range migration — a version below the minimum or above the maximum — prevents the Runtime from entering the ready state.
+**Schema verification.** At startup `SchemaVerifier` checks the actual schema version against the build's supported `[minimumSchema, maximumSchema]` range, currently `[3, 3]` for CilExec 0.0.3. A failed or out-of-range migration — a version below the minimum or above the maximum — prevents the Runtime from entering the ready state.
 
 ---
 
@@ -877,7 +879,7 @@ child's root scope and every call-frame scope. A fork child therefore:
 - reaches `TERMINATED` when it runs to the end of its program or calls `util.exit()`
   (never lingering in `PAUSED` waiting for appended bytecode);
 - returns from `process.waitPID` to the parent with `{pid, status}` once it ends;
-- can be cleaned up with `process.kill`/`process.gc` exactly like a background process;
+- can be cleaned up with `process.kill`/`process.removeFinished` exactly like a background process;
 - never re-enters the terminal REPL submission loop, because the marker the REPL checks is
   gone.
 

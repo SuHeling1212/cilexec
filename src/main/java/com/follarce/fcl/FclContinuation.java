@@ -12,12 +12,12 @@ import java.util.Objects;
  *
  * <p>The state deliberately contains no thread, callback, JDBC object, or host handle.
  *
- * <p>Keep this version in lockstep with {@code FclProgramCodec.FORMAT_VERSION}: the
- * continuation stores the compiled program's format version, and a mismatch is a hard
- * failure (see FclPersistenceBridge.ensureProgramIdentity).
+ * <p>The continuation format is coupled to the executable program format. V003 is the active
+ * write format; V002 remains readable so an upgraded Runtime can finish an already-persisted
+ * V002 process before it is explicitly recompiled.
  */
 public final class FclContinuation {
-    public static final int FORMAT_VERSION = 2;
+    public static final int FORMAT_VERSION = FclProgramCodec.FORMAT_VERSION;
 
     public enum WaitKind {
         NONE,
@@ -136,6 +136,12 @@ public final class FclContinuation {
                 List.of(), WaitState.ready(), null, false, false, null);
     }
 
+    /** Creates a pristine continuation for a supported persisted program format. */
+    public FclContinuation(int formatVersion) {
+        this(formatVersion, 0, new FclScope(), List.of(), List.of(), List.of(), List.of(),
+                List.of(), WaitState.ready(), null, false, false, null);
+    }
+
     private FclContinuation(int formatVersion, int programCounter, FclScope scope,
                             List<CallFrame> callStack,
                             List<ExceptionFrame> exceptionStack,
@@ -145,7 +151,7 @@ public final class FclContinuation {
                             WaitState waitState,
                             PendingStatement pendingStatement,
                             boolean halted, boolean failed, Object result) {
-        if (formatVersion != FORMAT_VERSION) {
+        if (!FclProgramCodec.supportsFormat(formatVersion)) {
             throw new IllegalArgumentException("Unsupported continuation format: "
                     + formatVersion);
         }

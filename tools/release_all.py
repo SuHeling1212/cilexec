@@ -27,6 +27,7 @@ WINDOWS_FILES = (
     "compose.yml",
     "Dockerfile",
     ".dockerignore",
+    ".mvn/maven.config",
     "LICENSE",
     "README.md",
     "docker/create-secrets.sh",
@@ -108,6 +109,9 @@ def verify_shell_installer(path: Path, version: str) -> None:
         names = {member.name.removeprefix("./") for member in archive.getmembers()}
         if ".cilexec-image-platform" not in names:
             raise RuntimeError(f"Installer {path.name} payload is missing platform metadata")
+        for required in ("tools/Version.sh", ".mvn/maven.config"):
+            if required not in names:
+                raise RuntimeError(f"Installer {path.name} payload is missing {required}")
 
 
 def verify_image_jar(image: str, expected_hash: str) -> None:
@@ -200,6 +204,7 @@ def verify_windows_zip(path: Path, version: str) -> None:
         required = {
             prefix + "Cilexec.ps1",
             prefix + "compose.yml",
+            prefix + ".mvn/maven.config",
             prefix + "package-manifest.json",
             prefix + "SHA256SUMS",
             prefix + "images/cilexec-linux-amd64.docker.tar.gz",

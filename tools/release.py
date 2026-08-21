@@ -21,9 +21,10 @@ import sys
 import tempfile
 import urllib.parse
 import zipfile
-import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 from typing import Any
+
+from versioning import project_version as canonical_project_version
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,14 +116,10 @@ def build_revision() -> str:
 
 def project_version() -> str:
     try:
-        root = ElementTree.parse(ROOT / "pom.xml").getroot()
-    except (OSError, ElementTree.ParseError) as error:
-        fail(f"Cannot read project version: {error}")
-    element = root.find("{*}version")
-    version = "" if element is None or element.text is None else element.text.strip()
-    if not version:
-        fail("Project version is missing")
-    return version
+        return canonical_project_version(ROOT)
+    except RuntimeError as error:
+        fail(str(error))
+        raise AssertionError from error
 
 
 def validate_formal_release(version: str, revision: str, tag: str | None, dirty: bool,

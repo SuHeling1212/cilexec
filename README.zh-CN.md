@@ -9,6 +9,7 @@
 
 - **零内存状态** —— 程序、完整延续（continuation）、调度租约、IPC、定时器、VFS、包绑定、副作用日志、终端输入和审计事件全部存于 PostgreSQL；数据库 advisory lock 保证同一数据库只有一个活跃运行时。
 - **崩溃安全的延续** —— 每个已提交执行切片持久化完整解释器状态（变量、调用栈、程序计数器）；`state_version` + `execution_epoch` 围栏防止陈旧 worker 提交。
+- **不可变可执行产物** —— 新程序同时保留可读 FCL 源码和独立的版本化 FCLB 指令产物；恢复时校验两者，直接执行原有指令表而不重新编译源码。
 - **天然多租户** —— 每个用户对应一个稳定 PostgreSQL `NOLOGIN`、`NOINHERIT` 租户角色并强制 RLS；`SYSTEM_ADMIN` 是应用级超级用户，绝不获得集群或宿主特权。
 - **内容寻址 VFS** —— 可变命名空间节点指向不可变的 SHA-256 文件或符号链接内容；目录和挂载是关系型元数据。跨用户管理操作经 SECURITY DEFINER API 并全程审计。
 - **不可变包** —— 离线构建的 SQLite `package.db` 发布物按精确 SHA-256 标识；import 使用精确数据库文件哈希。

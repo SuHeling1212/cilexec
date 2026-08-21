@@ -68,6 +68,12 @@ function Invoke-ComposeInteractive {
 }
 
 function Initialize-Environment {
+    if (-not $env:CILEXEC_BUILD_VERSION) {
+        $versionConfig = Join-Path $ProjectDir '.mvn\maven.config'
+        $versionLine = Get-Content -LiteralPath $versionConfig | Where-Object { $_ -match '^-Drevision=' } | Select-Object -First 1
+        if (-not $versionLine) { throw 'Missing -Drevision=<version> in .mvn\maven.config.' }
+        $env:CILEXEC_BUILD_VERSION = $versionLine.Substring('-Drevision='.Length)
+    }
     $normalized = $ProjectDir.ToLowerInvariant() + "`n"
     $bytes = $Utf8NoBom.GetBytes($normalized)
     $sha = [System.Security.Cryptography.SHA256]::Create()

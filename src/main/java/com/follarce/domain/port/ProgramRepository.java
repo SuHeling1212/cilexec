@@ -9,6 +9,7 @@ import java.util.UUID;
 public interface ProgramRepository {
     Optional<Program> findById(UUID programId);
 
+    /** Finds the current principal's immutable program with this complete identity. */
     Optional<Program> findByIdentity(
             ObjectHash programHash,
             String languageVersion,

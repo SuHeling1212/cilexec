@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Version tag to publish as a changeable release (e.g. v0.0.2-snapshot; formal v* tag pushes stay immutable)'
+        description: 'Version tag to publish as a changeable release (e.g. v0.0.3-snapshot; formal v* tag pushes stay immutable)'
         required: false
   push:
     tags:
@@ -35,7 +35,7 @@ jobs:
         if: github.ref_type == 'tag'
         shell: bash
         run: |
-          pom_version="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' pom.xml | head -n1)"
+          pom_version="$(./tools/Version.sh)"
           tag_version="${GITHUB_REF_NAME#v}"
           if [[ "$tag_version" != "$pom_version" ]]; then
             echo "Formal releases require tag v${pom_version}; ${GITHUB_REF_NAME} is a changeable/snapshot release." >&2
@@ -87,7 +87,7 @@ jobs:
         id: identity
         shell: bash
         run: |
-          pom_version="$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' pom.xml | head -n1)"
+          pom_version="$(./tools/Version.sh)"
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
           elif [[ -n "${CILEXEC_TAG_INPUT}" ]]; then

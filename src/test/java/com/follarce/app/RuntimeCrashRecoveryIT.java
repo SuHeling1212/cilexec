@@ -1,6 +1,7 @@
 package com.follarce.app;
 
 import com.follarce.domain.process.CilProcess;
+import com.follarce.application.ProgramService;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.vfs.BinaryContent;
@@ -129,8 +130,7 @@ class RuntimeCrashRecoveryIT {
         String source = "recovered = 42\n";
         FclProgram compiled = new FclCompiler().compile(source);
         byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
-        byte[] compiledBytes = new FclProgramCodec().toJson(compiled)
-                .getBytes(StandardCharsets.UTF_8);
+        byte[] compiledBytes = new FclProgramCodec().toBytes(compiled);
         ObjectHash sourceHash = ObjectHash.sha256(new BinaryContent(sourceBytes));
         ObjectHash compiledHash = ObjectHash.sha256(new BinaryContent(compiledBytes));
 
@@ -157,7 +157,7 @@ class RuntimeCrashRecoveryIT {
             connection.setAutoCommit(false);
             insertObject(connection, sourceHash, sourceBytes, "text/x-fcl", ownerId);
             insertObject(connection, compiledHash, compiledBytes,
-                    "application/vnd.cilexec.fcl-program+json; version=2", ownerId);
+                    ProgramService.COMPILED_MEDIA_TYPE, ownerId);
             try (PreparedStatement statement = connection.prepareStatement(
                     "INSERT INTO program.program(program_id,owner_id,program_hash,language_version,"
                             + "runtime_format_version,source_object_hash,compiled_object_hash,"

@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JdbcPackageRepositoryTest {
@@ -40,6 +41,22 @@ class JdbcPackageRepositoryTest {
         assertTrue(capture.parameters.get(10).toString().contains("\"entrypointName\""));
         assertTrue(capture.parameters.get(11).toString().contains("\"exportName\""));
         assertTrue(capture.parameters.get(12).toString().contains("\"capabilityKey\""));
+    }
+
+    @Test
+    void clearsOnlyTheRequestedPackageDataDirectory() {
+        JdbcCapture capture = new JdbcCapture();
+        JdbcPackageRepository repository = new JdbcPackageRepository(capture.connection());
+        ObjectHash fileHash = hash("sqlite bytes");
+
+        long removed = repository.clearDataDirectory(java.util.UUID.randomUUID(), fileHash,
+                "cache");
+
+        assertEquals(2L, removed);
+        assertEquals("SELECT package.data_clear_path(?,?)", capture.sql);
+        assertArrayEquals(java.util.HexFormat.of().parseHex(fileHash.value()),
+                (byte[]) capture.parameters.get(1));
+        assertEquals("cache", capture.parameters.get(2));
     }
 
     private static PackageIndex packageIndex() {
@@ -100,6 +117,7 @@ class JdbcPackageRepositoryTest {
                             return current;
                         }
                         if (method.getName().equals("getBoolean")) return true;
+                        if (method.getName().equals("getString")) return "{\"entriesRemoved\":2}";
                         return defaultValue(method.getReturnType());
                     });
         }

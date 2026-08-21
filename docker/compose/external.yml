@@ -9,7 +9,7 @@ x-cilexec-image: &cilexec-image
     dockerfile: Dockerfile
     target: ${CILEXEC_DOCKER_TARGET:-runtime}
     args:
-      BUILD_VERSION: ${CILEXEC_BUILD_VERSION:-0.0.2}
+      BUILD_VERSION: ${CILEXEC_BUILD_VERSION:-development}
       BUILD_REVISION: ${CILEXEC_BUILD_REVISION:-development}
       BUILD_SOURCE: ${CILEXEC_BUILD_SOURCE:-https://github.com/SuHeling1212/cilexec}
 

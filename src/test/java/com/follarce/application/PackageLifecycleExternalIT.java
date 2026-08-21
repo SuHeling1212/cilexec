@@ -575,8 +575,12 @@ class PackageLifecycleExternalIT {
         VfsService vfs = new VfsService(transactions, clock);
         VfsNode root = root(transactions, owner);
 
-        String moduleSource = "func save() { return packageData.write(\"note.txt\", \"hello\") }\n"
-                + "func readNote() { return packageData.read(\"note.txt\") }\n"
+        String moduleSource = "func save() { packageData.mkdir(\"cache\")\n"
+                + "packageData.write(\"cache/note.txt\", \"hello\")\n"
+                + "packageData.write(\"cache/next.txt\", \"world\")\nreturn true }\n"
+                + "func readNote() { return packageData.read(\"cache/note.txt\") }\n"
+                + "func clearCache() { return packageData.clear(\"cache\") }\n"
+                + "func cacheExists() { return packageData.exists(\"cache\") }\n"
                 + "func run() { return save() }\n";
         com.follarce.package_manager.PackageManifest manifest =
                 new com.follarce.package_manager.PackageManifest("cilexec", "datanote", "0.0.1",
@@ -588,7 +592,11 @@ class PackageLifecycleExternalIT {
                         List.of(new com.follarce.package_manager.PackageManifest.Export(
                                 "save", "main", "save"),
                                 new com.follarce.package_manager.PackageManifest.Export(
-                                        "readNote", "main", "readNote")),
+                                "readNote", "main", "readNote"),
+                                new com.follarce.package_manager.PackageManifest.Export(
+                                "clearCache", "main", "clearCache"),
+                                new com.follarce.package_manager.PackageManifest.Export(
+                                "cacheExists", "main", "cacheExists")),
                         List.of(new com.follarce.package_manager.PackageManifest.Capability(
                                 "package.data", true, "persist private test note")));
         byte[] database = new com.follarce.package_manager.PackageBuilder().build(manifest,
@@ -610,15 +618,25 @@ class PackageLifecycleExternalIT {
         assertEquals(true, saved.scope().get("value"));
         assertEquals("hello", new String(transactions.inUserTransaction(owner.userId(),
                 Isolation.READ_COMMITTED, transaction -> transaction.packages()
-                        .readDataEntry(owner.userId(), fileHash, "note.txt")),
+                        .readDataEntry(owner.userId(), fileHash, "cache/note.txt")),
                 StandardCharsets.UTF_8));
 
         // A different process reads the same private data through the linked package.
         FclContinuation readBack = runLinked(transactions, owner.userId(),
-                "import \"" + fileSha256 + "\" as \"note\"\nvalue = note.readNote()\n",
+                "import \"" + fileSha256 + "\" as \"note\"\n"
+                        + "cleared = note.clearCache()\nexists = note.cacheExists()\n",
                 packageHash, moduleSource, List.of(
-                        new FclProgramLinker.Export("readNote", List.of("note.readNote"))));
-        assertEquals("hello", readBack.scope().get("value"));
+                        new FclProgramLinker.Export("clearCache", List.of("note.clearCache")),
+                        new FclProgramLinker.Export("cacheExists", List.of("note.cacheExists"))));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> cleared = (Map<String, Object>) readBack.scope().get("cleared");
+        assertEquals(2L, cleared.get("entriesRemoved"));
+        assertEquals(true, readBack.scope().get("exists"),
+                "clear keeps the requested directory itself");
+        boolean cacheIsEmpty = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.packages().listDataEntries(owner.userId(), fileHash,
+                        "cache").isEmpty());
+        assertTrue(cacheIsEmpty);
 
         // Top-level user code has no package identity and must be rejected.
         CilProcess rejectProcess = new ProcessService(transactions).create(owner.userId(),

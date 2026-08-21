@@ -6,7 +6,7 @@
 
     <groupId>com.follarce</groupId>
     <artifactId>cilexec</artifactId>
-    <version>0.0.2</version>
+    <version>${revision}</version>
     <name>CilExec</name>
     <description>Database-driven CilExec FCL runtime</description>
 
@@ -37,9 +37,6 @@
         <spotbugs.plugin.version>4.10.3.0</spotbugs.plugin.version>
         <cyclonedx.plugin.version>2.9.3</cyclonedx.plugin.version>
         <project.build.outputTimestamp>2026-07-22T00:00:00Z</project.build.outputTimestamp>
-        <fcl.runtime.format.version>2</fcl.runtime.format.version>
-        <database.schema.minimum>1</database.schema.minimum>
-        <database.schema.maximum>2</database.schema.maximum>
         <!-- Docker Engine 29 rejects docker-java's legacy default API. -->
         <docker.api.version>1.44</docker.api.version>
         <!-- CI/Docker may override with -Dbuild.revision=<git SHA>. -->
@@ -369,9 +366,9 @@
                                         <Implementation-Title>CilExec</Implementation-Title>
                                         <Implementation-Version>${project.version}</Implementation-Version>
                                         <Build-Revision>${build.revision}</Build-Revision>
-                                        <FCL-Runtime-Format>${fcl.runtime.format.version}</FCL-Runtime-Format>
-                                        <Database-Schema-Min>${database.schema.minimum}</Database-Schema-Min>
-                                        <Database-Schema-Max>${database.schema.maximum}</Database-Schema-Max>
+                                        <FCL-Runtime-Format>${project.version}</FCL-Runtime-Format>
+                                        <Database-Schema-Min>${project.version}</Database-Schema-Min>
+                                        <Database-Schema-Max>${project.version}</Database-Schema-Max>
                                     </manifestEntries>
                                 </transformer>
                             </transformers>

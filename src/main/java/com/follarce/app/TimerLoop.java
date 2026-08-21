@@ -43,9 +43,8 @@ public final class TimerLoop implements AutoCloseable {
     }
 
     /**
-     * The maintenance batch is {@code fireDue + cleanup}; wire the cleanup supplier to
-     * purge fired/expired durable rows (e.g. {@code timers::deleteFiredExpired}) so the
-     * fired-timer retention runs inside the same maintenance cycle.
+     * The maintenance batch may perform a caller-provided explicit cleanup action. Runtime
+     * startup supplies no cleanup action, so durable timer history is never time-deleted.
      */
     public TimerLoop(IntSupplier fireDue, IntSupplier cleanup,
                      Supplier<Optional<Instant>> nextWakeAt,

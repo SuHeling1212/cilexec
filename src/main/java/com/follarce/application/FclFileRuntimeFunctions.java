@@ -173,10 +173,7 @@ final class FclFileRuntimeFunctions extends FclRuntimeFunctions {
                     return createDirectory(string(args.getFirst(), "file.createDir path"),
                             owner(args, 1));
                 })
-                .register("file", "removeFile", args -> remove(args, VfsNode.Type.FILE,
-                        "file.removeFile"))
-                .register("file", "removeDir", args -> remove(args, VfsNode.Type.DIRECTORY,
-                        "file.removeDir"))
+                .register("file", "remove", args -> remove(args, "file.remove"))
                 .register("file", "rename", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "file.rename expects path, name, and optional target user");

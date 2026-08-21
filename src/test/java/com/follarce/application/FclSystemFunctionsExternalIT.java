@@ -120,8 +120,8 @@ class FclSystemFunctionsExternalIT {
                 linkedContent = file.read("/note-link.txt")
                 chain = file.link("/note-chain.txt", "/note-link.txt")
                 chainedContent = file.read("/note-chain.txt")
-                removedLink = file.removeFile("/note-link.txt")
-                removedChain = file.removeFile("/note-chain.txt")
+                removedLink = file.remove("/note-link.txt")
+                removedChain = file.remove("/note-chain.txt")
                 swapPool.create("shared")
                 swapPool.add("message:ready", "shared", "type:sync")
                 received = swapPool.get("shared", "message")
@@ -227,10 +227,10 @@ class FclSystemFunctionsExternalIT {
                 createdFile = file.createFile("/managed/new.txt", "body", "%s")
                 renamed = file.rename("/managed/new.txt", "renamed.txt", "%s")
                 nodes = file.listdir("/", "%s")
-                deleted = file.removeFile("/managed/renamed.txt", "%s")
+                deleted = file.remove("/managed/renamed.txt", "%s")
                 users = user.getListOfUsers()
                 valid = user.validateUser("%s")
-                removed = user.removeUser("%s")
+                removed = user.remove("%s")
                 processes = process.getList()
                 paused = process.pause(%s)
                 continued = process.continue(%s)
@@ -272,9 +272,10 @@ class FclSystemFunctionsExternalIT {
         Map<String, Object> finishedWaiting =
                 (Map<String, Object>) adminRuntime.scope().get("finishedWaiting");
         assertEquals("TERMINATED", finishedWaiting.get("status"));
-        @SuppressWarnings("unchecked")
-        Map<String, Object> removed = (Map<String, Object>) adminRuntime.scope().get("removed");
-        assertEquals("DISABLED", removed.get("status"));
+        assertEquals(true, adminRuntime.scope().get("removed"));
+        boolean removableUserDeleted = transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser(removable.userId()).isEmpty());
+        assertTrue(removableUserDeleted);
         @SuppressWarnings("unchecked")
         Map<String, Object> created = (Map<String, Object>) adminRuntime.scope().get("created");
         assertEquals("ACTIVE", created.get("status"));
@@ -424,8 +425,8 @@ class FclSystemFunctionsExternalIT {
         assertEquals(null, consumerRuntime.scope().get("second"));
         assertEquals(true, consumerRuntime.scope().get("plainAdded"));
         assertEquals("hello", consumerRuntime.scope().get("firstPlain"));
-        assertEquals(null, consumerRuntime.scope().get("secondPlain"));
-        assertEquals(true, consumerRuntime.scope().get("reAdded"));
+        assertEquals("hello", consumerRuntime.scope().get("secondPlain"));
+        assertEquals(false, consumerRuntime.scope().get("reAdded"));
 
         String lockerSource = """
                 lock = swapPool.lock("bus", "message", 30000)
@@ -471,11 +472,11 @@ class FclSystemFunctionsExternalIT {
 
         assertExactlyOneConcurrentConsumerGetsTheSyncValue(transactions, owner.userId(),
                 rescheduledLocker, "bus", "message", "approved");
-        assertExactlyOneConcurrentConsumerGetsThePlainValue(transactions, owner.userId(),
+        assertEveryConcurrentConsumerGetsThePlainValue(transactions, owner.userId(),
                 "bus", "plain-race", "hello");
     }
 
-    private static void assertExactlyOneConcurrentConsumerGetsThePlainValue(
+    private static void assertEveryConcurrentConsumerGetsThePlainValue(
             JdbcTransactionExecutor transactions, UUID ownerId, String pool, String variable,
             String expected) throws Exception {
         FclContinuationCodec codec = new FclContinuationCodec();
@@ -484,8 +485,7 @@ class FclSystemFunctionsExternalIT {
                 transaction -> transaction.ipc().addSwapValue(ownerId, pool, variable,
                         new com.follarce.domain.process.Continuation.PersistedValue("string",
                                 codec.valueToJson(expected)), "ALWAYS", Optional.empty(), now)));
-        assertExactlyOneConcurrentConsumerGets(transactions, ownerId, pool, variable, expected,
-                codec);
+        assertEveryConcurrentConsumerGets(transactions, ownerId, pool, variable, expected, codec);
     }
 
     private static void assertExactlyOneConcurrentConsumerGetsTheSyncValue(
@@ -525,6 +525,31 @@ class FclSystemFunctionsExternalIT {
             Optional<com.follarce.domain.process.Continuation.PersistedValue> delivered =
                     firstValue.isPresent() ? firstValue : secondValue;
             assertEquals(expected, codec.valueFromJson(delivered.orElseThrow().canonicalPayload()));
+        }
+    }
+
+    private static void assertEveryConcurrentConsumerGets(
+            JdbcTransactionExecutor transactions, UUID ownerId, String pool, String variable,
+            String expected, FclContinuationCodec codec) throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService workers = Executors.newFixedThreadPool(2)) {
+            Future<Optional<com.follarce.domain.process.Continuation.PersistedValue>> first =
+                    workers.submit(() -> consumeAfterStart(transactions, ownerId, pool, variable,
+                            ready, start));
+            Future<Optional<com.follarce.domain.process.Continuation.PersistedValue>> second =
+                    workers.submit(() -> consumeAfterStart(transactions, ownerId, pool, variable,
+                            ready, start));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            Optional<com.follarce.domain.process.Continuation.PersistedValue> firstValue =
+                    first.get(10, TimeUnit.SECONDS);
+            Optional<com.follarce.domain.process.Continuation.PersistedValue> secondValue =
+                    second.get(10, TimeUnit.SECONDS);
+            assertTrue(firstValue.isPresent());
+            assertTrue(secondValue.isPresent());
+            assertEquals(expected, codec.valueFromJson(firstValue.orElseThrow().canonicalPayload()));
+            assertEquals(expected, codec.valueFromJson(secondValue.orElseThrow().canonicalPayload()));
         }
     }
 
@@ -739,7 +764,7 @@ class FclSystemFunctionsExternalIT {
      * A terminal REPL root forks children. The children must not inherit the terminal
      * lifecycle: a child reaching the end of its bytecode (natural end) or calling
      * {@code util.exit()} must reach TERMINATED, {@code process.waitPID} must return, and
-     * {@code process.kill}/{@code process.gc} must be able to clean the child up — while
+     * {@code process.kill}/{@code process.removeFinished} must be able to clean the child up — while
      * the terminal root itself keeps pausing between submissions.
      */
     static void executeForkChildLifecycle(JdbcTransactionExecutor transactions) throws Exception {
@@ -861,16 +886,16 @@ class FclSystemFunctionsExternalIT {
                     "killing a sleeping fork child must succeed");
 
             TerminalReplService.Submission fourth = repl.submit(owner.userId(), sessionId,
-                    "gced = process.gc(child)\n");
+                    "removed = process.removeFinished(child)\n");
             FclContinuation root4 = awaitForkPaused(transactions, scheduler, owner, rootUid,
-                    "gced", fatal);
-            assertEquals(true, root4.scope().get("gced"),
-                    "a terminated fork child must be garbage collectable");
+                    "removed", fatal);
+            assertEquals(true, root4.scope().get("removed"),
+                    "a terminated fork child must be removable");
             boolean deletedRow = transactions.inUserTransaction(owner.userId(),
                             Isolation.READ_COMMITTED, transaction -> transaction.processes()
                                     .findByPid(childPid).isEmpty());
             assertTrue(deletedRow,
-                    "process.gc must delete the terminated fork child row");
+                    "process.removeFinished must delete the terminated fork child row");
             assertEquals(CilProcess.Status.PAUSED,
                     transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
                             transaction -> transaction.processes().findByUid(rootUid)

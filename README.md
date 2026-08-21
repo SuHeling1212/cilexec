@@ -20,6 +20,10 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
 - **Crash-safe continuations** — the full interpreter state (variables, call stack, program
   counter) is serialized after every committed execution slice; `state_version` +
   `execution_epoch` fencing prevents stale workers from committing.
+- **Immutable executable artifacts** — new programs retain readable FCL source and a separate
+  versioned FCLB instruction artifact; recovery validates both and runs the original compiled
+  instruction table without recompiling source. Unreferenced artifacts are automatically retained
+  for 90 accumulated successful Runtime days.
 - **Multi-tenant by design** — every user maps to a stable PostgreSQL `NOLOGIN`, `NOINHERIT`
   tenant role with forced
   RLS; `SYSTEM_ADMIN` is an application-level superuser that never receives cluster or host
@@ -184,8 +188,10 @@ mvn clean verify      # mandatory PostgreSQL/crash-recovery ITs + quality gates 
 ## Documentation
 
 - [FCL function & terminal reference](docs/fcl-function-reference.md)
-- [FCL v0.0.2 object-oriented guide](docs/fcl-object-oriented-guide.md)
-- [FCL v0.0.2 object-oriented guide (中文)](docs/fcl-object-oriented-guide.zh-CN.md)
+- [FCL v0.0.3 object-oriented guide](docs/fcl-object-oriented-guide.md)
+- [FCL v0.0.3 object-oriented guide (中文)](docs/fcl-object-oriented-guide.zh-CN.md)
+- [FCLB executable artifacts and V003 migration](docs/fcl-executable-artifact.md)
+- [Release version source](docs/versioning.md)
 - [Architecture baseline](docs/architecture-baseline.md)
 - [Java source extensions](docs/java-extension-development.md)
 - [Package & market](docs/package-market.md)

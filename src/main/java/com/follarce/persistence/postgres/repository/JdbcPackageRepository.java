@@ -503,6 +503,24 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
     }
 
     @Override
+    public long clearDataDirectory(UUID ownerId, ObjectHash databaseFileHash, String path) {
+        String sql = "SELECT package.data_clear_path(?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setBytes(1, JdbcValues.hash(databaseFileHash));
+            statement.setString(2, path);
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Package data path clear returned no result");
+                }
+                Map<String, Object> result = json.read(rows.getString(1), MAP_TYPE);
+                return number(result.get("entriesRemoved"), "entriesRemoved");
+            }
+        } catch (SQLException exception) {
+            throw failure("package.clearDataDirectory", exception);
+        }
+    }
+
+    @Override
     public long findDataQuota(UUID ownerId, ObjectHash databaseFileHash) {
         return findDataUsage(ownerId, databaseFileHash).quota();
     }
@@ -537,7 +555,7 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
                 }
             }
         } catch (SQLException exception) {
-            throw failure("package.clearDataQuota", exception);
+            throw failure("package.removeDataQuota", exception);
         }
     }
 

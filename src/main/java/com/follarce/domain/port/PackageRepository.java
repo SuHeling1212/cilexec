@@ -133,6 +133,11 @@ public interface PackageRepository {
         throw new UnsupportedOperationException("Package data clearing is not implemented");
     }
 
+    /** Clears the descendants of one package-private directory while retaining the directory. */
+    default long clearDataDirectory(UUID ownerId, ObjectHash databaseFileHash, String path) {
+        throw new UnsupportedOperationException("Package data directory clearing is not implemented");
+    }
+
     default long findDataQuota(UUID ownerId, ObjectHash databaseFileHash) {
         throw new UnsupportedOperationException("Package data quota is not implemented");
     }

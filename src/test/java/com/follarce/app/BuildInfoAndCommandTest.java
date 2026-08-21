@@ -1,11 +1,15 @@
 package com.follarce.app;
 
+import com.follarce.application.ProgramService;
+import com.follarce.fcl.FclProgramCodec;
+import com.follarce.version.ReleaseVersion;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class BuildInfoAndCommandTest {
@@ -13,8 +17,22 @@ class BuildInfoAndCommandTest {
     void embeddedBuildAcceptsTheLatestDatabaseMigration() {
         BuildInfo info = BuildInfo.load();
 
-        assertEquals(1, info.minimumSchema());
-        assertEquals(2, info.maximumSchema());
+        assertEquals(3, info.minimumSchema());
+        assertEquals(3, info.maximumSchema());
+    }
+
+    @Test
+    void oneReleaseVersionDrivesTheLanguageRuntimeAndDatabaseIdentities() {
+        BuildInfo info = BuildInfo.load();
+        int schema = ReleaseVersion.schemaNumber(ReleaseVersion.current());
+
+        assertEquals(info.applicationVersion(), ReleaseVersion.current());
+        assertEquals(schema, info.fclRuntimeFormat());
+        assertEquals(schema, info.minimumSchema());
+        assertEquals(schema, info.maximumSchema());
+        assertEquals(schema, FclProgramCodec.FORMAT_VERSION);
+        assertEquals("fcl-" + ReleaseVersion.current(), ProgramService.LANGUAGE_VERSION);
+        assertDoesNotThrow(() -> Class.forName("db.migration.V%03d".formatted(schema)));
     }
 
     @Test

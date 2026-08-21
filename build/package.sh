@@ -4,12 +4,14 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_dir"
 
-version="${1:-$(date +%Y%m%d)}"
+default_version="$("$project_dir/tools/Version.sh")"
+version="${1:-$default_version}"
 if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "Error: version must contain only letters, digits, dots, underscores, and hyphens." >&2
     exit 2
 fi
 image="${CILEXEC_IMAGE:-cilexec:local}"
+export CILEXEC_BUILD_VERSION="${CILEXEC_BUILD_VERSION:-$version}"
 target_platform="${CILEXEC_TARGET_PLATFORM:-}"
 docker_target="${CILEXEC_DOCKER_TARGET:-runtime}"
 skip_image_build="${CILEXEC_SKIP_IMAGE_BUILD:-false}"
@@ -276,7 +278,7 @@ if [[ "$loaded_image" != "cilexec:local" ]]; then
     docker tag "$loaded_image" cilexec:local
 fi
 
-chmod +x tools/Install.sh tools/Uninstall.sh tools/Shell.sh tools/Headless.sh \
+chmod +x tools/Version.sh tools/Install.sh tools/Uninstall.sh tools/Shell.sh tools/Headless.sh \
     tools/HostMove.sh docker/*.sh
 
 echo
@@ -298,6 +300,7 @@ fi
 printf '%s\n' "$image" > "$temp_dir/.cilexec-image-name"
 printf '%s\n' "$image_platform" > "$temp_dir/.cilexec-image-platform"
 mkdir "$temp_dir/tools"
+cp tools/Version.sh "$temp_dir/tools/"
 cp tools/Install.sh "$temp_dir/tools/"
 cp tools/Uninstall.sh "$temp_dir/tools/"
 cp tools/Shell.sh "$temp_dir/tools/"
@@ -308,6 +311,8 @@ cp README.md "$temp_dir/"
 cp compose.yml "$temp_dir/"
 cp Dockerfile "$temp_dir/"
 cp .dockerignore "$temp_dir/"
+mkdir "$temp_dir/.mvn"
+cp .mvn/maven.config "$temp_dir/.mvn/"
 if [[ -e docker/secrets/.rotation.lock ]]; then
     echo "Error: refusing to package database credentials from an active or stale rotation lock." >&2
     exit 1

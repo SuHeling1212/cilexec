@@ -140,7 +140,8 @@ public final class PackageCapabilityPolicy {
             return java.util.Optional.of("system.admin");
         }
         if (call.equals("socket.bind") || call.equals("socket.accept")
-                || call.equals("user.removeUser") || call.equals("user.validateUser")
+                || call.equals("user.disable") || call.equals("user.remove")
+                || call.equals("user.validateUser")
                 || call.equals("user.getListOfUsers")) {
             return java.util.Optional.of("system.admin");
         }
@@ -186,8 +187,8 @@ public final class PackageCapabilityPolicy {
         }
         if (Set.of("readFile", "readChunk", "readMetaData", "listdir", "exists",
                 "fileSize").contains(call)) return java.util.Optional.of("vfs.read");
-        if (Set.of("writeFile", "appendFile", "createFile", "createDir", "removeFile",
-                "removeDir", "rename").contains(call)) return java.util.Optional.of("vfs.write");
+        if (Set.of("writeFile", "appendFile", "createFile", "createDir", "remove",
+                "rename").contains(call)) return java.util.Optional.of("vfs.write");
         return java.util.Optional.empty();
     }
 

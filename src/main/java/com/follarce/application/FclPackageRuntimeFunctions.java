@@ -126,10 +126,10 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
                 .register("package", "dataRead", args -> packageDataRead(args))
                 .register("package", "dataExport", args -> packageDataExport(args))
                 .register("package", "dataImport", args -> packageDataImport(args))
-                .register("package", "dataClear", args -> packageDataClear(args))
+                .register("package", "clearData", args -> packageDataClear(args))
                 .register("package", "dataQuota", args -> packageDataQuota(args))
                 .register("package", "setDataQuota", args -> packageSetDataQuota(args))
-                .register("package", "clearDataQuota", args -> packageClearDataQuota(args))
+                .register("package", "removeDataQuota", args -> packageClearDataQuota(args))
                 .register("package", "recover", args -> {
                     arity(args, 0, "package.recover");
                     Authorization.requireAdministrator(transaction, process.ownerId());
@@ -234,6 +234,13 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
             return transaction.packages().removeDataEntry(process.ownerId(), fileHash,
                     string(args.getFirst(), "packageData.remove path"));
         }, "packageRemove");
+        registry.registerContextual("packageData", "clear", (args, invocation) -> {
+            arity(args, 1, "packageData.clear");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            long removed = transaction.packages().clearDataDirectory(process.ownerId(), fileHash,
+                    string(args.getFirst(), "packageData.clear path"));
+            return Map.of("entriesRemoved", removed);
+        }, "packageClear");
         registry.registerContextual("packageData", "rename", (args, invocation) -> {
             arity(args, 2, "packageData.rename");
             ObjectHash fileHash = requirePackageDataFile(invocation);
@@ -374,15 +381,6 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
                 return (Map<String, Object>) map;
             }
 
-            @Override @SuppressWarnings("unchecked")
-            public Map<String, Object> uninstall(String packageId) {
-                Object removed = uninstallPackage(List.of(packageId));
-                if (!(removed instanceof Map<?, ?> map)) {
-                    throw new FclRuntimeException("Package uninstaller returned an invalid result");
-                }
-                return (Map<String, Object>) map;
-            }
-
             @Override
             public List<Map<String, Object>> marketInstallations() {
                 return transaction.packages().findInstallations(process.ownerId()).stream()
@@ -503,37 +501,19 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
     }
 
     protected Object uninstallPackage(List<Object> args) {
-        if (args.isEmpty() || args.size() > 2) throw new FclRuntimeException(
-                "package.uninstall expects a package SHA-256 and optional options map");
+        arity(args, 1, "package.uninstall");
         String packageId = string(args.getFirst(), "package.uninstall package");
         if (!packageId.matches("(?i)[0-9a-f]{64}")) {
             throw new FclRuntimeException(
                     "package.uninstall requires a 64-character package SHA-256");
         }
-        boolean force = false;
-        if (args.size() == 2) {
-            if (!(args.get(1) instanceof Map<?, ?> options)) {
-                throw new FclRuntimeException("package.uninstall options must be a map");
-            }
-            Object requested = options.get("force");
-            if (requested != null) {
-                if (!(requested instanceof Boolean)) {
-                    throw new FclRuntimeException("package.uninstall force must be boolean");
-                }
-                force = (Boolean) requested;
-            }
-        }
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-        if (force) {
-            Authorization.require(transaction, process.ownerId(), Capability.PROCESS_CONTROL_OWN);
-        }
         ObjectHash fileHash = new ObjectHash(packageId.toLowerCase(Locale.ROOT));
         PackageUninstallResult result = transaction.packages().uninstall(
-                process.ownerId(), fileHash, force, process.identity().processUid());
+                process.ownerId(), fileHash, false, process.identity().processUid());
         audit("package.uninstall", process.identity().processUid(), Map.of(
                 "packageFileSha256", fileHash.value(),
-                "force", Boolean.toString(force),
                 "removed", Boolean.toString(result.removed()),
                 "packagesRemoved", Integer.toString(result.packagesRemoved()),
                 "dependenciesRemoved", Integer.toString(result.dependenciesRemoved()),
@@ -644,10 +624,10 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
     }
 
     protected Object packageDataClear(List<Object> args) {
-        ObjectHash fileHash = requireInstalledFileHash(args, "package.dataClear");
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.clearData");
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
         long removed = transaction.packages().clearDataEntries(process.ownerId(), fileHash);
-        audit("package.dataClear", process.identity().processUid(), Map.of(
+        audit("package.clearData", process.identity().processUid(), Map.of(
                 "packageFileSha256", fileHash.value(), "entries", Long.toString(removed)));
         return Map.of("entriesRemoved", removed);
     }
@@ -673,11 +653,11 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
     }
 
     protected Object packageClearDataQuota(List<Object> args) {
-        arity(args, 2, "package.clearDataQuota");
+        arity(args, 2, "package.removeDataQuota");
         UUID owner = owner(args, 1);
-        ObjectHash fileHash = requireInstalledFileHash(args, "package.clearDataQuota");
+        ObjectHash fileHash = requireInstalledFileHash(args, "package.removeDataQuota");
         transaction.packages().clearDataQuota(process.ownerId(), owner, fileHash);
-        audit("package.clearDataQuota", process.identity().processUid(), Map.of(
+        audit("package.removeDataQuota", process.identity().processUid(), Map.of(
                 "targetUser", owner.toString(), "packageFileSha256", fileHash.value()));
         return true;
     }
@@ -770,8 +750,7 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
         StoredObject sourceObject = StoredObject.create(new BinaryContent(
                 source.getBytes(StandardCharsets.UTF_8)), ProgramService.SOURCE_MEDIA_TYPE, now);
         StoredObject compiledObject = StoredObject.create(new BinaryContent(
-                new FclProgramCodec().toJson(compiled).getBytes(StandardCharsets.UTF_8)),
-                ProgramService.COMPILED_MEDIA_TYPE, now);
+                new FclProgramCodec().toBytes(compiled)), ProgramService.COMPILED_MEDIA_TYPE, now);
         transaction.vfs().saveObject(sourceObject);
         transaction.vfs().saveObject(compiledObject);
         int statements = Math.toIntExact(compiled.instructions().stream()
