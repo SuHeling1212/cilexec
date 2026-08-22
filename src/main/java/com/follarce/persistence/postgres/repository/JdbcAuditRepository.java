@@ -1,7 +1,6 @@
 package com.follarce.persistence.postgres.repository;
 
 import com.follarce.domain.audit.AuditEvent;
-import com.follarce.domain.audit.AuditRetentionPolicy;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.persistence.postgres.mapper.JsonCodec;
 import com.google.gson.JsonElement;
@@ -40,8 +39,6 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
             statement.setObject(8, com.follarce.persistence.postgres.mapper.JdbcValues.json(json.write(event.details())));
             statement.setTimestamp(9, java.sql.Timestamp.from(event.createdAt()));
             requireOne("audit.append", statement.executeUpdate());
-            // Wakes the timer loop so retention purges are scheduled; append is
-            // service-level only, never the statement hot path.
             notifyWork("cilexec_timer_work", "audit.append.notify");
         } catch (SQLException exception) {
             throw failure("audit.append", exception);
@@ -67,43 +64,13 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
     }
 
     @Override
-    public void saveRetentionPolicy(AuditRetentionPolicy policy) {
-        String sql = "INSERT INTO audit.retention_policy(event_type,retain_for,enabled,updated_at) "
-                + "VALUES (?,CAST(? AS interval),?,?) ON CONFLICT (event_type) DO UPDATE SET "
-                + "retain_for=EXCLUDED.retain_for,enabled=EXCLUDED.enabled,"
-                + "updated_at=EXCLUDED.updated_at";
+    public int purgeBeforeByAdministrator(UUID administratorId, java.time.Instant before,
+                                          Integer limit) {
+        String sql = "SELECT audit.admin_purge_before(?,?,?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, policy.eventType());
-            statement.setString(2, policy.retainForSeconds() + " seconds");
-            statement.setBoolean(3, policy.enabled());
-            statement.setTimestamp(4, java.sql.Timestamp.from(policy.updatedAt()));
-            requireOne("audit.saveRetentionPolicy", statement.executeUpdate());
-            notifyWork("cilexec_timer_work", "audit.retention.notify");
-        } catch (SQLException exception) {
-            throw failure("audit.saveRetentionPolicy", exception);
-        }
-    }
-
-    @Override
-    public Optional<AuditRetentionPolicy> findRetentionPolicy(String eventType) {
-        String sql = "SELECT event_type,EXTRACT(EPOCH FROM retain_for)::bigint "
-                + "AS retain_for_seconds,enabled,updated_at "
-                + "FROM audit.retention_policy WHERE event_type=?";
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, eventType);
-            try (ResultSet rows = statement.executeQuery()) {
-                return rows.next() ? Optional.of(mapPolicy(rows)) : Optional.empty();
-            }
-        } catch (SQLException exception) {
-            throw failure("audit.findRetentionPolicy", exception);
-        }
-    }
-
-    @Override
-    public int purgeExpired(int limit) {
-        try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT audit.purge_expired_events(?)")) {
-            statement.setInt(1, limit);
+            statement.setObject(1, administratorId);
+            statement.setTimestamp(2, java.sql.Timestamp.from(before));
+            if (limit != null) statement.setInt(3, limit); else statement.setNull(3, java.sql.Types.INTEGER);
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) {
                     throw new IllegalStateException("Audit purge returned no result");
@@ -111,21 +78,7 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
                 return rows.getInt(1);
             }
         } catch (SQLException exception) {
-            throw failure("audit.purgeExpired", exception);
-        }
-    }
-
-    @Override
-    public Optional<java.time.Instant> nextRetentionExpiry() {
-        String sql = "SELECT min(candidate.created_at + policy.retain_for) "
-                + "FROM audit.event candidate JOIN audit.retention_policy policy "
-                + "ON policy.event_type=candidate.action WHERE policy.enabled";
-        try (PreparedStatement statement = connection.prepareStatement(sql);
-             ResultSet rows = statement.executeQuery()) {
-            if (!rows.next() || rows.getTimestamp(1) == null) return Optional.empty();
-            return Optional.of(rows.getTimestamp(1).toInstant());
-        } catch (SQLException exception) {
-            throw failure("audit.nextRetentionExpiry", exception);
+            throw failure("audit.purgeBeforeByAdministrator", exception);
         }
     }
 
@@ -141,15 +94,6 @@ public final class JdbcAuditRepository extends JdbcRepositorySupport implements 
                 AuditEvent.Result.valueOf(rows.getString("result")),
                 details,
                 rows.getTimestamp("created_at").toInstant()
-        );
-    }
-
-    private static AuditRetentionPolicy mapPolicy(ResultSet rows) throws SQLException {
-        return new AuditRetentionPolicy(
-                rows.getString("event_type"),
-                rows.getLong("retain_for_seconds"),
-                rows.getBoolean("enabled"),
-                rows.getTimestamp("updated_at").toInstant()
         );
     }
 

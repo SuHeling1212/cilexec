@@ -378,4 +378,15 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
             throw failure("terminal.consumeInterrupt", exception);
         }
     }
+
+    @Override
+    public boolean removeClosedSession(UUID sessionId) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "DELETE FROM terminal.session WHERE session_id=? AND status='CLOSED'")) {
+            statement.setObject(1, sessionId);
+            return statement.executeUpdate() == 1;
+        } catch (SQLException exception) {
+            throw failure("terminal.removeClosedSession", exception);
+        }
+    }
 }

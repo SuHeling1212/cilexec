@@ -66,7 +66,7 @@ The system has **no in-memory semantic state required for crash recovery**. Ever
 | `com.follarce.auth` | PostgreSQL principal lifecycle (`AuthService`), password/username policy |
 | `com.follarce.terminal` | Durable host control plane: `TerminalServer`, console, command parser, output routing |
 | `com.follarce.health` | `HealthServer` — liveness/readiness bound to `127.0.0.1` |
-| `com.follarce.audit` | Structured audit event retention (`AuditRetentionService`) |
+| `com.follarce.audit` | Structured audit event append/query; history is removed only by explicit `audit.purge` |
 | `com.follarce.config` | `CilExecConfig` — environment/defaults-driven configuration with pool invariants |
 | `com.follarce.extension` | Immutable compile-time extension catalog (`JavaExtensionCatalog`, `SourceExtensionIndex`); no runtime/classpath discovery |
 | `com.follarce.extension.api` | Stable source-extension contracts: `CilExecExtension`, `ExtensionRegistrar`, functions, effect handlers, state, transactions |
@@ -92,7 +92,7 @@ Java 26 virtual threads are used throughout the core Runtime. The scheduler runs
 (defaults: 10 scheduler workers, 6 effect workers, for the whole server, not per user) that
 claim durable leases in PostgreSQL; idle workers block in memory instead of polling the
 database, and transaction-commit notifications (`PostgresWorkListener`) wake them on queue,
-effect, timer, lease, or retention changes. Runnable processes beyond the worker count remain
+effect, timer, or lease changes. Runnable processes beyond the worker count remain
 in the durable FIFO queue.
 
 ### Permission System

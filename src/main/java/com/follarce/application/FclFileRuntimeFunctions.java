@@ -120,11 +120,11 @@ final class FclFileRuntimeFunctions extends FclRuntimeFunctions {
                     return resolve(routed.path(), routed.ownerId())
                             .isPresent();
                 })
-                .register("file", "listdir", args -> {
+                .register("file", "list", args -> {
                     if (args.size() > 2) throw new FclRuntimeException(
-                            "file.listdir expects optional path and target user");
+                            "file.list expects optional path and target user");
                     String requested = args.isEmpty() ? "/"
-                            : string(args.getFirst(), "file.listdir path");
+                            : string(args.getFirst(), "file.list path");
                     UUID owner = owner(args, 1);
                     String absolute = normalize(requested);
                     if (owner.equals(process.ownerId()) && absolute.equals("/Users")
@@ -135,7 +135,7 @@ final class FclFileRuntimeFunctions extends FclRuntimeFunctions {
                     RoutedPath routed = route(requested, owner);
                     requireFileAccess(routed.ownerId(), Capability.VFS_READ);
                     VfsNode directory = requireNode(routed.path(), routed.ownerId());
-                    requireType(directory, VfsNode.Type.DIRECTORY, "file.listdir");
+                    requireType(directory, VfsNode.Type.DIRECTORY, "file.list");
                     return transaction.vfs().findChildren(routed.ownerId(),
                                     Optional.of(directory.nodeId())).stream()
                             .map(this::nodeMap).toList();
@@ -174,6 +174,12 @@ final class FclFileRuntimeFunctions extends FclRuntimeFunctions {
                             owner(args, 1));
                 })
                 .register("file", "remove", args -> remove(args, "file.remove"))
+                .register("file", "clear", args -> {
+                    if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                            "file.clear expects path and optional target user");
+                    return clearDirectoryContents(string(args.getFirst(),
+                            "file.clear path"), owner(args, 1), "file.clear");
+                })
                 .register("file", "rename", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "file.rename expects path, name, and optional target user");

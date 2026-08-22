@@ -63,4 +63,12 @@ public interface TerminalRepository {
 
     /** Atomically consumes the durable Ctrl+C flag at a statement safe point. */
     boolean consumeInterrupt(UUID processUid);
+
+    /**
+     * Removes one CLOSED session together with its inputs and attachments; OPEN sessions
+     * are never removed. Returns whether a row was removed.
+     */
+    default boolean removeClosedSession(UUID sessionId) {
+        throw new UnsupportedOperationException("Terminal session removal is not implemented");
+    }
 }

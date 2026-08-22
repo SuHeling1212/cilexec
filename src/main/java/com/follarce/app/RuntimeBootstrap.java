@@ -265,8 +265,7 @@ public final class RuntimeBootstrap {
             return runtimeTransactions.inTransaction(Isolation.READ_COMMITTED, transaction ->
                     Stream.of(transaction.timers().nextScheduledWakeAt(),
                                     transaction.scheduler().nextLeaseExpiry(),
-                                    transaction.scheduler().nextReadyAt(),
-                                    transaction.audit().nextRetentionExpiry())
+                                    transaction.scheduler().nextReadyAt())
                             .flatMap(Optional::stream)
                             .min(Instant::compareTo));
         }

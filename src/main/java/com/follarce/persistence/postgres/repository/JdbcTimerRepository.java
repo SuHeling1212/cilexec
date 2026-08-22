@@ -64,6 +64,22 @@ public final class JdbcTimerRepository extends JdbcRepositorySupport implements 
     }
 
     @Override
+    public int purgeFinishedBefore(Instant before, Integer limit) {
+        String sql = "DELETE FROM process.timer WHERE timer_id IN (SELECT timer_id "
+                + "FROM process.timer WHERE status IN ('FIRED','CANCELLED') "
+                + "AND COALESCE(fired_at,cancelled_at,created_at)<? "
+                + "ORDER BY COALESCE(fired_at,cancelled_at,created_at),timer_id"
+                + (limit == null ? ")" : " LIMIT ?)");
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, java.sql.Timestamp.from(before));
+            if (limit != null) statement.setInt(2, limit);
+            return statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("timer.purgeFinishedBefore", exception);
+        }
+    }
+
+    @Override
     public Optional<ProcessTimer> findById(UUID timerId) {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT * FROM process.timer WHERE timer_id=?")) {

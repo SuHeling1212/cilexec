@@ -1,7 +1,6 @@
 package com.follarce.effect;
 
 import com.follarce.domain.audit.AuditEvent;
-import com.follarce.domain.audit.AuditRetentionPolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.effect.EffectAttempt;
@@ -277,10 +276,5 @@ class EffectServiceTest {
         @Override public void append(AuditEvent event) { events.add(event); }
         @Override public List<AuditEvent> findByResource(String resourceType, String resourceId,
                                                         int limit) { return List.copyOf(events); }
-        @Override public void saveRetentionPolicy(AuditRetentionPolicy policy) { }
-        @Override public Optional<AuditRetentionPolicy> findRetentionPolicy(String eventType) {
-            return Optional.empty();
-        }
-        @Override public int purgeExpired(int limit) { return 0; }
     }
 }

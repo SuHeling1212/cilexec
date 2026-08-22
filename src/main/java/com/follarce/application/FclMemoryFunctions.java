@@ -23,7 +23,7 @@ final class FclMemoryFunctions {
             MemoryListOptions options = memoryListOptions(args);
             return Map.of("variables", memoryVariables(invocation.continuation(), options.includeParents()),
                     "functions", memoryFunctions(invocation, options.includeRuntime(), registry, extensions));
-        }, "ls");
+        });
         registry.registerContextual("memory", "destroy", (args, invocation) -> destroy(args, invocation));
     }
 

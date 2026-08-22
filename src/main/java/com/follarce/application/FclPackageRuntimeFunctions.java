@@ -510,6 +510,23 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
         ObjectHash fileHash = new ObjectHash(packageId.toLowerCase(Locale.ROOT));
+        // Report the exact dependent installations instead of relying on the database's
+        // count-only rejection, so the caller can resolve every reference explicitly.
+        List<String> dependents = transaction.packages()
+                .findInstallations(process.ownerId()).stream()
+                .filter(installation -> !installation.rootFileHash().equals(fileHash))
+                .filter(installation -> installation.members().stream()
+                        .anyMatch(member -> member.fileHash().equals(fileHash)))
+                .map(installation -> installation.rootCoordinate().namespace() + "/"
+                        + installation.rootCoordinate().name() + "/"
+                        + installation.rootCoordinate().version())
+                .sorted()
+                .toList();
+        if (!dependents.isEmpty()) {
+            throw new FclRuntimeException("cannot uninstall: installed packages depend on it: "
+                    + String.join(", ", dependents)
+                    + "; uninstall the dependent packages first");
+        }
         PackageUninstallResult result = transaction.packages().uninstall(
                 process.ownerId(), fileHash, false, process.identity().processUid());
         audit("package.uninstall", process.identity().processUid(), Map.of(

@@ -4,16 +4,22 @@ import com.follarce.domain.port.ProgramRepository;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
+import com.follarce.persistence.postgres.mapper.JsonCodec;
+import com.google.gson.reflect.TypeToken;
+import java.lang.reflect.Type;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 public final class JdbcProgramRepository extends JdbcRepositorySupport implements ProgramRepository {
     private static final String COLUMNS = "program_id, program_hash, language_version, runtime_format_version, "
             + "source_object_hash, compiled_object_hash, statement_count, created_at";
+    private static final Type MAP_TYPE = new TypeToken<Map<String, Object>>() { }.getType();
+    private final JsonCodec json = new JsonCodec();
 
     public JdbcProgramRepository(Connection connection) {
         super(connection);
@@ -79,6 +85,26 @@ public final class JdbcProgramRepository extends JdbcRepositorySupport implement
                     statement.setString(2, languageVersion);
                     statement.setInt(3, runtimeFormatVersion);
                 });
+    }
+
+    @Override
+    public Map<String, Object> removeByAdministrator(UUID administratorId, UUID programId,
+                                                     UUID auditEventId, java.time.Instant at) {
+        String sql = "SELECT program.admin_remove_program(?,?,?,?)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, administratorId);
+            statement.setObject(2, programId);
+            statement.setObject(3, auditEventId);
+            statement.setTimestamp(4, java.sql.Timestamp.from(at));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) {
+                    throw new IllegalStateException("Program remover returned no result");
+                }
+                return json.read(rows.getString(1), MAP_TYPE);
+            }
+        } catch (SQLException exception) {
+            throw failure("program.removeByAdministrator", exception);
+        }
     }
 
     private Optional<Program> find(String operation, String sql, Binder binder) {

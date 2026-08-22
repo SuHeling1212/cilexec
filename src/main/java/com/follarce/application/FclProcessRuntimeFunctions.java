@@ -90,17 +90,16 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                             .flatMap(transaction.processes()::findByUid)
                             .map(parent -> parent.identity().pid()).orElse(0L);
                 })
-                .register("process", "getListOfChildProcess", args -> {
-                    arity(args, 0, "process.getListOfChildProcess");
+                .register("process", "listChildren", args -> {
+                    arity(args, 0, "process.listChildren");
                     return transaction.processes().findChildren(process.identity().processUid())
                             .stream().map(child -> child.identity().pid()).toList();
                 })
-                .register("process", "getList", args -> {
-                    arity(args, 0, "process.getList");
+                .register("process", "list", args -> {
+                    arity(args, 0, "process.list");
                     return transaction.processes().findAll().stream()
                             .map(FclRuntimeFunctions::processMap).toList();
                 })
-                .aliasQualified("process.getList", "process", "getListOfProcess")
                 .registerContextual("process", "kill", (args, invocation) -> {
                     arity(args, 1, "process.kill");
                     long pid = integer(args.getFirst(), "process.kill pid");
@@ -240,11 +239,13 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                 .register("swapPool", "exists", args -> transaction.ipc().swapPoolExists(
                         process.ownerId(), path(args, 0, 1, "swapPool.exists")))
                 .register("swapPool", "list", args -> {
-                    arity(args, 0, "swapPool.list");
-                    return transaction.ipc().findSwapPools(process.ownerId());
+                    if (args.isEmpty()) {
+                        return transaction.ipc().findSwapPools(process.ownerId());
+                    }
+                    arity(args, 1, "swapPool.list");
+                    return transaction.ipc().findSwapVariables(
+                            process.ownerId(), path(args, 0, 1, "swapPool.list"));
                 })
-                .register("swapPool", "ls", args -> transaction.ipc().findSwapVariables(
-                        process.ownerId(), path(args, 0, 1, "swapPool.ls")))
                 .register("swapPool", "add", args -> addSwapValue(args))
                 .register("swapPool", "get", args -> {
                     arity(args, 2, "swapPool.get");
@@ -522,20 +523,9 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
     }
 
     protected void registerSystem() {
-        registry.register("system", "ls", args -> {
-                    if (args.isEmpty()) return new ArrayList<>(registry.qualifiedNames());
-                    arity(args, 1, "system.ls");
-                    String requested = string(args.getFirst(), "system.ls path");
-                    if (normalize(requested).equals("/Users") && isLocalAdministrator()) {
-                        return transaction.auth().findUsersByAdministrator(process.ownerId())
-                                .stream().map(this::virtualUserNode).toList();
-                    }
-                    RoutedPath routed = route(requested, process.ownerId());
-                    VfsNode directory = requireNode(routed.path(), routed.ownerId());
-                    requireType(directory, VfsNode.Type.DIRECTORY, "system.ls");
-                    return transaction.vfs().findChildren(routed.ownerId(),
-                                    Optional.of(directory.nodeId())).stream()
-                            .map(this::nodeMap).toList();
+        registry.register("system", "list", args -> {
+                    arity(args, 0, "system.list");
+                    return new ArrayList<>(registry.qualifiedNames());
                 })
                 .aliasQualified("process.kill", "system", "kill")
                 .register("system", "resolveEffect", args -> unavailable("system.resolveEffect",

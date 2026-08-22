@@ -179,10 +179,10 @@ uses a capability that was not declared. The audit covers the following mapping:
 | `market.configure`, `market.update`, `market.download`, `market.install` | `package.manage` |
 | `packageData.*` private data functions | `package.data` |
 | `process.exec`, `process.kill`, `process.pause`, `process.continue`, `process.getList` | `process.control` |
-| `user.validateUser`, `user.getListOfUsers`, `user.disable`, `user.remove` | `system.admin` |
+| `user.validateUser`, `user.list`, `user.disable`, `user.remove` | `system.admin` |
 
 Query-only market functions (`market.origin`, `market.search`, `market.info`, `market.list`,
-`market.help`, `market.run`) require no capability. `system.ls` and `system.extensions` are
+`market.help`, `market.run`) require no capability. `system.list` and `system.extensions` are
 read-only and do **not** require `system.admin`; the remaining `system.*` management calls
 do. Bare spellings (`input`, `readFile`, `fork`, `webget`, ...) are mapped by the same
 rules. A capability declaration must list every capability key the package source uses;

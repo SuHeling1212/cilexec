@@ -22,8 +22,9 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
   `execution_epoch` fencing prevents stale workers from committing.
 - **Immutable executable artifacts** — new programs retain readable FCL source and a separate
   versioned FCLB instruction artifact; recovery validates both and runs the original compiled
-  instruction table without recompiling source. Unreferenced artifacts are automatically retained
-  for 90 accumulated successful Runtime days.
+  instruction table without recompiling source. Nothing is deleted on a schedule: programs,
+  timers, terminal sessions, and audit history are removed only by explicit administrator
+  operations (`program.remove`, `timer.purge`, `terminal.remove`, `audit.purge`).
 - **Multi-tenant by design** — every user maps to a stable PostgreSQL `NOLOGIN`, `NOINHERIT`
   tenant role with forced
   RLS; `SYSTEM_ADMIN` is an application-level superuser that never receives cluster or host

@@ -71,18 +71,23 @@ database uniqueness rule still stores one program identity.
 
 There is no automatic downgrade. Restoring a pre-upgrade backup is the rollback procedure.
 
-## Automatic retention
+## Explicit program removal
 
-FCLB is a durable recovery artifact, not an unbounded cache. CilExec measures retention using
-the database-authoritative **accumulated successful Runtime uptime**: time while the Runtime is
-stopped, starting, recovering, or unavailable does not count.
+FCLB is a durable recovery artifact, and CilExec never deletes programs on a schedule. A
+Program row, its source object, and its FCLB object persist until an administrator explicitly
+removes them:
 
-After 90 accumulated Runtime days, the maintenance loop automatically removes a Program only
-when no process of any state references it and no other Program imports it as a module. Its source
-and FCLB then become unreachable; the existing object-store collector reclaims their bytes after
-its independent one-hour safety window. A Program still referenced by a running, paused, waiting,
-failed, or terminated-but-retained process remains intact. `process.removeFinished()` remains the explicit way
-to remove ended process state when it is no longer needed.
+```fcl
+program.remove(programId)
+```
+
+The call refuses to remove a Program that is still referenced: if any process of any state
+uses it, or any other Program imports it as a module, it returns a reference report
+(`removed=false` with the blocking PIDs and importing Program IDs) instead of deleting.
+When removal succeeds, the source and FCLB objects become unreachable; the administrator-run
+`storage.purgeUnreferenced([limit])` collector reclaims their bytes after its independent
+one-hour safety window. `process.removeFinished()` remains the explicit way to remove ended
+process state when it is no longer needed.
 
 ## Command-line artifact creation
 

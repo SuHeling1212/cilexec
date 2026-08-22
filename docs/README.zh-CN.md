@@ -26,8 +26,8 @@ reconstructed from the database. There is no `.proc` snapshot format and no
 - [fcl-object-oriented-guide.zh-CN.md](fcl-object-oriented-guide.zh-CN.md) — 面向零基础读者的
   FCL v0.0.3 面向对象教程：类、对象、构造方法、值语义、封装、继承、删除与持久化恢复。
 - [fcl-executable-artifact.md](fcl-executable-artifact.md) / [fcl-executable-artifact.zh-CN.md](fcl-executable-artifact.zh-CN.md)
-  — V003 的 FCLB 可执行产物、恢复校验和 V002 升级说明。
-  — 按累计成功 Runtime 运行时间执行的 90 天 Program/FCLB 与终端会话自动回收规则。
+  — V003 的 FCLB 可执行产物、恢复校验、V002 升级说明，以及仅由显式操作执行的
+  `program.remove` 等资源删除规则。
 - [java-extension-development.md](java-extension-development.md) — how to add source-only
   Java extensions: functions, effect handlers, persistence and effect rules, recovery
   policies, and the release checklist.

@@ -17,7 +17,6 @@ import com.follarce.domain.port.TransactionExecutor;
 import com.follarce.domain.port.TransactionWork;
 import com.follarce.domain.port.VfsRepository;
 import com.follarce.domain.audit.AuditEvent;
-import com.follarce.domain.audit.AuditRetentionPolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.effect.EffectAttempt;
@@ -643,15 +642,6 @@ class ProgramServiceTest {
                 String resourceType, String resourceId, int limit) {
             return events.stream().filter(event -> event.resourceType().equals(resourceType)
                     && event.resourceId().equals(resourceId)).limit(limit).toList();
-        }
-        @Override public void saveRetentionPolicy(AuditRetentionPolicy policy) {
-            throw new UnsupportedOperationException();
-        }
-        @Override public Optional<AuditRetentionPolicy> findRetentionPolicy(String eventType) {
-            return Optional.empty();
-        }
-        @Override public int purgeExpired(int limit) {
-            throw new UnsupportedOperationException();
         }
     }
 }

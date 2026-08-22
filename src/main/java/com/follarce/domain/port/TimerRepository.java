@@ -24,4 +24,12 @@ public interface TimerRepository {
     default int cancelForProcess(UUID processUid) {
         return 0;
     }
+
+    /**
+     * Deletes FIRED and CANCELLED timers whose last activity precedes {@code before}; an
+     * explicit administrator purge. {@code limit} (nullable) bounds rows per invocation.
+     */
+    default int purgeFinishedBefore(Instant before, Integer limit) {
+        throw new UnsupportedOperationException("Finished-timer purge is not implemented");
+    }
 }

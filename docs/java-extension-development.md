@@ -255,7 +255,7 @@ When using a container, rebuild explicitly:
 ```
 
 `system.extensions()` returns the extension IDs, versions, and descriptions sealed into the
-current build; `system.ls()` returns the actual function names, including extensions.
+current build; `system.list()` returns the actual function names, including extensions.
 Bump the extension version when behavior or the persistent format changes, and record it
 together with the CilExec image digest.
 

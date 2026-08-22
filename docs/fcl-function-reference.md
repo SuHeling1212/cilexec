@@ -288,9 +288,9 @@ human-readable package coordinate.
 | Paths | Relative paths are based on the `:pwd` result; a leading `/` is an absolute VFS path. |
 | Administrators | The initial `local` account has `SYSTEM_ADMIN`. Functions authorize as the currently logged-in user. |
 | External operations | Input, printing, HTTP, sockets, and system commands suspend the FCL process and resume it automatically when done. |
-| Symbol view | `memory.list([includeParents])` (alias `memory.ls`) returns a snapshot `{variables, functions}` of current-process visible variables and callable functions. Variables are only from the current scope unless `includeParents` is true, in which case lexical root values are included with local shadowing. Pass `{"includeRuntime":true}` (and optionally `"includeParents":true`) to include immutable built-ins, aliases, and extensions. Functions list `name`, `kind`, `origin`, and `mutable` (`false`). |
+| Symbol view | `memory.list([includeParents])` returns a snapshot `{variables, functions}` of current-process visible variables and callable functions. Variables are only from the current scope unless `includeParents` is true, in which case lexical root values are included with local shadowing. Pass `{"includeRuntime":true}` (and optionally `"includeParents":true`) to include immutable built-ins, aliases, and extensions. Functions list `name`, `kind`, `origin`, and `mutable` (`false`). |
 | Deleting values | `memory.destroy(target)` is the only deletion API. It removes a current-scope variable, or a specified array/Map element. Object values are copied on assignment, so deleting `a` never affects `b = a`. A missing symbol or map key returns `false`. String literals are not accepted as target names. It never deletes parent variables, functions, VFS files, packages, built-ins, Java extensions, or reserved runtime state (`cilexec.*`, inbox keys). |
-| Listing real names | `system.ls()` returns every qualified function name and alias callable in this Runtime. |
+| Listing real names | `system.list()` returns every qualified function name and alias callable in this Runtime. |
 | Java extensions | `system.extensions()` returns the fixed list of extensions sealed into the system at build time. |
 
 Common capability names: `PROCESS_CREATE`, `PROCESS_CONTROL_OWN`, `PROCESS_CONTROL_ANY`,
@@ -330,7 +330,7 @@ capabilities within their own scope at registration; administrators have all of 
 | `util.input([prompt])` | Optionally show a prompt and wait for one line of user input. Equivalent to `io.input`. |
 | `util.sleep(milliseconds)` | Suspend the current process for the given milliseconds, then resume. |
 | `util.exit([result])` | End the current FCL process normally, optionally returning a result value. |
-| `storage.purgeUnreferenced()` | Administrator-only immediate garbage collection of unreferenced object-store entries that have been unreachable from every durable root for at least one hour. It never deletes VFS files, packages, processes, or Program rows itself. Nothing is deleted on a time schedule. |
+| `storage.purgeUnreferenced([limit])` | Administrator-only immediate garbage collection of unreferenced object-store entries that have been unreachable from every durable root for at least one hour. The optional `limit` (1–10000, default 1000) bounds rows per invocation. It never deletes VFS files, packages, processes, or Program rows itself. Nothing is deleted on a time schedule. |
 
 ## Paths & Aliases: `path`
 
@@ -460,13 +460,14 @@ durable `PWD`, which `:cd` changes; paths beginning with `/` remain absolute.
 | `file.readChunk(path, offset, maximumBytes [, targetUser])` | Read a UTF-8 range; `offset` must be non-negative and each call reads at most 4 MiB. |
 | `file.size(path [, targetUser])` | Return the logical file size in bytes. |
 | `file.exists(path [, targetUser])` | Check whether a path exists. |
-| `file.listdir([path [, targetUser]])` | Return an array of metadata for the directory's children; without a path, list the VFS root `/`. |
+| `file.list([path [, targetUser]])` | Return an array of metadata for the directory's children; without a path, list the VFS root `/`. Local administrators additionally see the virtual `/Users` directory. |
 | `file.readMetaData(path [, targetUser])` | Return node metadata such as `nodeId`, `ownerId`, `type`, `objectHash`. |
 | `file.write(path, content [, targetUser])` | Create or overwrite a text file. |
 | `file.append(path, content [, targetUser])` | Append text. Own-user append uses chunked storage without loading the old file; administrator cross-user append currently loads the old content and therefore refuses an existing file over 16 MiB. |
 | `file.createFile(path [, content [, targetUser]])` | Create the file only if it does not exist. To specify only a target user, pass an empty string for the content position. |
 | `file.createDir(path [, targetUser])` | Create a directory. |
 | `file.remove(path [, targetUser])` | Delete a file, symbolic link, or empty directory. Roots, mounts, versioned files, and non-empty directories are rejected. |
+| `file.clear(path [, targetUser])` | Keep the directory and recursively delete everything inside it. The target must be an existing non-root directory; a versioned file or mount anywhere inside aborts the whole call and nothing is removed. Returns the number of entries removed. |
 | `file.rename(path, newName [, targetUser])` | Rename within the same directory; `newName` cannot contain `/`. |
 | `file.link(linkPath, targetPath)` | Create a symbolic-link node whose content is the target path; only within the current user's scope. `file.read`, `file.readChunk`, and `file.size` follow links to the target file (fewer than 16 links; cycles error out). |
 | `file.lock(path, leaseMilliseconds)` | Acquire a file lease lock; on success returns `{fencingToken, leaseUntil}`, on failure `null`. |
@@ -485,8 +486,8 @@ control other users' processes.
 | Call | Effect |
 | --- | --- |
 | `process.getPID()` / `process.getPPID()` | Return the current PID / parent PID; the PPID is `0` when there is no parent. |
-| `process.getListOfChildProcess()` | Return an array of the current process's child PIDs. |
-| `process.getList()` | Return an array of visible process metadata. Alias: `process.getListOfProcess()`. |
+| `process.listChildren()` | Return an array of the current process's child PIDs. |
+| `process.list()` | Return an array of visible process metadata. |
 | `process.kill(pid)` | Terminate the given process; killing yourself is equivalent to `util.exit()`. Alias: `system.kill(pid)`. |
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
@@ -503,7 +504,7 @@ control other users' processes.
 | `user.getCurrentUser()` | Return the current user's UUID. |
 | `user.isLocal()` | Check whether the current user has `SYSTEM_ADMIN`. |
 | `user.validateUser(usernameOrUuid)` | Verify that a user exists and is visible to the current user; ordinary users only validate themselves. |
-| `user.getListOfUsers()` | Return basic information for all users; requires administrator identity. |
+| `user.list()` | Return basic information for all users; requires administrator identity. |
 | `user.create(username, password [, administratorCredentials])` | Create a new user. Without the third argument the account receives the ordinary user capabilities (any user may self-register, matching terminal registration). To create an administrator pass an array `[administratorUsername, administratorPassword]`: the named administrator must be ACTIVE, match the password, and currently hold effective `SYSTEM_ADMIN` (direct or group derived, expiry aware) - the database verifies all of this atomically with the creation, so a revoked or expired capability can never mint a fresh administrator. An audit event records the administrator actor (or the self-registering user). The new user's VFS root is provisioned on first login. |
 | `user.disable(userUuid)` | Disable a user account without deleting its data; requires administrator identity. |
 | `user.remove(userUuid)` | Permanently remove a user account and every record owned by that user in one database transaction; requires administrator identity. The calling administrator cannot remove itself. |
@@ -587,7 +588,7 @@ The host market's default index is
 | `package.info(coordinateOrDatabaseFileSha256)` | Look up a package with its `kind`, dependencies, entrypoint, exports, and capability list. The argument can be `namespace/name/version` or the complete SHA-256 of the installed `.db` file; `(namespace, name, version)` as three arguments also works. |
 | `package.list()` | Return the releases effectively installed for the current user. |
 | `package.install(vfsPath)` | Install from a `.db` file in the VFS; the package identity is the SHA-256 of its bytes. Creates the current user's installation root, the exact dependency closure, and a private data space. |
-| `package.uninstall(databaseFileSha256)` | Atomically remove the package for the current user. Active process bindings and dependent installations block removal; stop or remove those processes and uninstall dependents first. It removes the package's private data and unreferenced package payloads, but never ordinary user files. Returns a summary map. |
+| `package.uninstall(databaseFileSha256)` | Atomically remove the package for the current user. There is no force option: dependent installations are reported as a coordinate list and active process bindings are reported with their PIDs, so the caller can run `process.removeFinished(pid)` and `package.uninstall(dependentHash)` first. It removes the package's private data and unreferenced package payloads, but never ordinary user files. Returns a summary map. |
 | `package.build(manifestPath, outputPath)` | Read the `package.json` and declared files in the VFS and build a `.db` in the VFS. |
 | `package.run(databaseFileSha256 [, entrypoint])` | Create a child process running a package entrypoint. This call uses the installed `.db` file `sha256`; the default entrypoint is `run`, and PID and other information are returned. |
 | `package.verify(coordinateOrDatabaseFileSha256)` | Verify that the package database object still matches the file hash recorded at install time. The three-part coordinate also works as arguments. |
@@ -701,12 +702,11 @@ and locking.
 | --- | --- |
 | `swapPool.create(path)` / `swapPool.remove(path)` | Create / remove a swap pool. |
 | `swapPool.exists(path)` | Check whether a swap pool exists. |
-| `swapPool.list()` | List all of the current user's swap pools. |
-| `swapPool.ls(path)` | List the variables in a pool. |
+| `swapPool.list([pool])` | Without arguments, list all of the current user's swap pools; with a pool path, list the variables in that pool. |
 | `swapPool.add("name:value", pool [, option...])` | Add a variable. Optional `"type:sync"` or `"type:times(n)"` control how it is retained. |
 | `swapPool.get(pool, variable)` | Read a variable value; `null` when not currently readable. A default `ALWAYS` value stays readable until explicit removal. `type:sync` clears its changed flag (a later `add`/`signal` makes it readable again), while `type:times(n)` decrements the remaining reads and becomes unreadable at zero. Neither mode deletes the variable automatically. |
 | `swapPool.update(pool, variable, value [, fencingToken])` | Update a variable; pass the fencing token when locked. |
-| `swapPool.removeVar(pool, variable [, fencingToken])` | Remove a variable. |
+| `swapPool.remove(pool [, variable [, fencingToken]])` | Remove one pool, or one variable inside a pool. A variable removal accepts the fencing token when the variable is locked. |
 | `swapPool.clear(pool)` | Clear the pool. |
 | `swapPool.lock(pool, variable, leaseMilliseconds)` | Acquire a variable lock; on success returns `{fencingToken, leaseUntil}`. |
 | `swapPool.renewLock(pool, variable, fencingToken, leaseMilliseconds)` | Renew a variable lock. |
@@ -747,8 +747,7 @@ unconsumed reservation and the message can be delivered again.
 
 | Call | Effect |
 | --- | --- |
-| `system.ls()` | Return every function name and alias registered in the current Runtime. |
-| `system.ls(path)` | List node metadata for the given directory of the current user; use `:ls` for a more readable directory listing in the terminal. |
+| `system.list()` | Return every function name and alias registered in the current Runtime. Directory listings belong to `file.list`. |
 | `system.extensions()` | Return the `id`, `version`, and `description` of the Java extensions sealed in at source-build time. Extensions cannot be added, removed, or replaced at runtime. |
 | `system.kill(pid)` | Alias of `process.kill(pid)`. |
 | `system.exec(command)` | Administrator: execute a command from the host allow-list. `command` can be a string or an array of strings; it does not go through a shell, and `CILEXEC_FCL_EXEC_ALLOWLIST` must be set — no program is allowed by default. |
@@ -756,15 +755,39 @@ unconsumed reservation and the message can be delivered again.
 | `system.resolveEffect(...)` | **Currently unavailable.** External effects are handled by the Runtime control plane. |
 | `system.reset(...)` | **Currently unavailable.** Runtime reset is not exposed to FCL. |
 
+## Programs: `program`
+
+| Call | Effect |
+| --- | --- |
+| `program.remove(programId)` | Administrator: explicitly remove one immutable Program together with its source and FCLB objects' reachability. If any process of any state still references the Program, or any other Program imports it as a module, nothing is deleted and the call returns `{removed: false, processCount, importedByCount, processes, importedBy}` so the caller can resolve the references first (for example with `process.removeFinished`). On success it returns `{removed: true, ...}`; the bytes become unreachable and are reclaimed later by `storage.purgeUnreferenced`. |
+
+## Terminal Sessions: `terminal`
+
+| Call | Effect |
+| --- | --- |
+| `terminal.remove(sessionId)` | Administrator: permanently remove one CLOSED terminal session together with its committed input rows and attachments. An OPEN session is never removed. Returns `true` when the session was removed. |
+
+## Timers: `timer`
+
+| Call | Effect |
+| --- | --- |
+| `timer.purge(before [, limit])` | Administrator: delete FIRED and CANCELLED timer history whose last activity is older than the ISO-8601 instant `before`; returns the number removed. The optional `limit` (1–100000) bounds rows per invocation. SCHEDULED and CLAIMED timers are never touched, and nothing is purged automatically. |
+
+## Audit: `audit`
+
+| Call | Effect |
+| --- | --- |
+| `audit.purge(before [, limit])` | Administrator: explicitly delete audit events created before the ISO-8601 instant `before`; returns the number removed. The optional `limit` (1–100000) bounds rows per invocation. This is the only way audit history shrinks — there is no background retention task — and the purge itself is recorded in the audit trail. |
+
 ## Quick Lookup & Troubleshooting
 
 ```fcl
-system.ls()                         // see the functions actually loaded
+system.list()                        // see the functions actually loaded
 env.get("PWD")                     // current working directory (Java-managed, read-only)
 user.getCurrentUser()               // current user UUID
 user.isLocal()                      // whether the current user is an administrator
-process.getList()                   // visible processes
-file.listdir(".")                   // metadata of the current directory
+process.list()                       // visible processes
+file.list(".")                      // metadata of the current directory
 package.list()                      // registered packages
 ```
 

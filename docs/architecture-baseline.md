@@ -246,7 +246,6 @@ src/main/java/com/follarce/
 │                                  statement dispatch (ProcessStatementExecutor),
 │                                  ProgramService, ProcessService, TerminalReplService
 ├── auth/                          AuthService, Authorization, PasswordPolicy, UsernamePolicy
-├── audit/                         AuditRetentionService
 ├── config/                        CilExecConfig, database pool settings
 ├── domain/                        persistence-independent model and ports
 │   └── (process, program, vfs, scheduler, ipc, effect, timer, auth, audit)
@@ -1189,7 +1188,7 @@ wakes the waiting process
 
 `ScheduledExecutorService`, `Thread.sleep`, or virtual-thread waits only reduce polling cost; they are never the timer truth. After a container restart, all unfired due timers are scanned from the database.
 
-**Row lifecycle.** FIRED timer rows are deleted periodically by the maintenance loop (rows older than a short retention window), and the unfired timers of a process are deleted when that process terminates — so a dead process never leaves wake-up debris behind.
+**Row lifecycle.** Nothing is deleted on a schedule. When a process terminates, is killed, or fails, its outstanding timers are marked `CANCELLED` (rows retained); FIRED and CANCELLED history is removed only by the explicit administrator call `timer.purge(before[, limit])`.
 
 ---
 

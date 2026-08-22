@@ -148,6 +148,7 @@ public class FclRuntimeFunctions {
         new FclFileRuntimeFunctions(this).registerFiles();
         new FclProcessRuntimeFunctions(this).registerProcesses();
         registerUsers();
+        registerResourceControl();
         new FclNetworkRuntimeFunctions(this).registerNetworkAndSockets();
         FclPackageRuntimeFunctions packages = new FclPackageRuntimeFunctions(this);
         packages.registerPackages();
@@ -423,17 +424,100 @@ public class FclRuntimeFunctions {
                     return result;
                 })
                 .register("storage", "purgeUnreferenced", args -> {
-                    arity(args, 0, "storage.purgeUnreferenced");
+                    if (args.size() > 1) throw new FclRuntimeException(
+                            "storage.purgeUnreferenced expects zero arguments or one limit");
                     Authorization.requireAdministrator(transaction, process.ownerId());
+                    int limit = args.isEmpty() ? 1000
+                            : positiveLimit(args.getFirst(), 10000,
+                            "storage.purgeUnreferenced limit");
                     long deleted = transaction.vfs().garbageCollectObjects(
-                            process.ownerId(), 1000);
+                            process.ownerId(), limit);
                     transaction.audit().append(new AuditEvent(UUID.randomUUID(),
                             AuditEvent.ActorType.USER, process.ownerId().toString(),
                             "storage.purgeUnreferenced", "object_store", process.ownerId().toString(),
                             AuditEvent.Result.SUCCEEDED,
-                            Map.of("limit", "1000", "deleted", Long.toString(deleted)), now));
+                            Map.of("limit", Integer.toString(limit),
+                                    "deleted", Long.toString(deleted)), now));
                     return deleted;
                 });
+    }
+
+    /**
+     * Explicit resource-history control for administrators. Every function here removes
+     * durable rows on demand; nothing in this group ever runs automatically.
+     */
+    protected void registerResourceControl() {
+        registry.register("program", "remove", args -> {
+                    arity(args, 1, "program.remove");
+                    Authorization.requireAdministrator(transaction, process.ownerId());
+                    UUID programId = uuid(args.getFirst(), "program.remove program");
+                    Map<String, Object> report = transaction.programs().removeByAdministrator(
+                            process.ownerId(), programId, UUID.randomUUID(), now);
+                    audit("program.remove", programId, Map.of(
+                            "removed", Boolean.toString(Boolean.TRUE.equals(report.get("removed"))),
+                            "processCount", numberText(report.get("processCount")),
+                            "importedByCount", numberText(report.get("importedByCount"))));
+                    return report;
+                })
+                .register("terminal", "remove", args -> {
+                    arity(args, 1, "terminal.remove");
+                    Authorization.requireAdministrator(transaction, process.ownerId());
+                    UUID sessionId = uuid(args.getFirst(), "terminal.remove session");
+                    com.follarce.domain.terminal.TerminalSession session =
+                            transaction.terminal().findSession(sessionId).orElseThrow(
+                                    () -> new FclRuntimeException(
+                                            "Unknown terminal session: " + sessionId));
+                    if (session.status() != com.follarce.domain.terminal.TerminalSession.Status.CLOSED) {
+                        throw new FclRuntimeException(
+                                "terminal.remove requires a closed session; session "
+                                        + sessionId + " is still open");
+                    }
+                    boolean removed = transaction.terminal().removeClosedSession(sessionId);
+                    audit("terminal.remove", sessionId, Map.of(
+                            "owner", session.ownerId().toString(),
+                            "removed", Boolean.toString(removed)));
+                    return removed;
+                })
+                .register("timer", "purge", args -> {
+                    if (args.isEmpty() || args.size() > 2) throw new FclRuntimeException(
+                            "timer.purge expects a cutoff instant and an optional limit");
+                    Authorization.requireAdministrator(transaction, process.ownerId());
+                    Instant before = instant(args.getFirst(), "timer.purge before");
+                    Integer limit = args.size() == 2 ? positiveLimit(args.get(1), 100000,
+                            "timer.purge limit") : null;
+                    int purged = transaction.timers().purgeFinishedBefore(before, limit);
+                    audit("timer.purge", process.identity().processUid(), Map.of(
+                            "before", before.toString(),
+                            "limit", limit == null ? "all" : Integer.toString(limit),
+                            "purged", Integer.toString(purged)));
+                    return purged;
+                })
+                .register("audit", "purge", args -> {
+                    if (args.isEmpty() || args.size() > 2) throw new FclRuntimeException(
+                            "audit.purge expects a cutoff instant and an optional limit");
+                    Authorization.requireAdministrator(transaction, process.ownerId());
+                    Instant before = instant(args.getFirst(), "audit.purge before");
+                    Integer limit = args.size() == 2 ? positiveLimit(args.get(1), 100000,
+                            "audit.purge limit") : null;
+                    int purged = transaction.audit().purgeBeforeByAdministrator(
+                            process.ownerId(), before, limit);
+                    audit("audit.purge", process.identity().processUid(), Map.of(
+                            "before", before.toString(),
+                            "limit", limit == null ? "all" : Integer.toString(limit),
+                            "purged", Integer.toString(purged)));
+                    return purged;
+                });
+    }
+
+    private static int positiveLimit(Object value, int maximum, String field) {
+        long limit = integer(value, field);
+        if (limit < 1 || limit > maximum) throw new FclRuntimeException(
+                field + " must be between 1 and " + maximum);
+        return (int) limit;
+    }
+
+    private static String numberText(Object value) {
+        return value == null ? "0" : Long.toString(((Number) value).longValue());
     }
 
     /**
@@ -537,8 +621,8 @@ public class FclRuntimeFunctions {
                                 .stream().anyMatch(user -> user.username().equalsIgnoreCase(value));
                     }
                 })
-                .register("user", "getListOfUsers", args -> {
-                    arity(args, 0, "user.getListOfUsers");
+                .register("user", "list", args -> {
+                    arity(args, 0, "user.list");
                     return transaction.auth().findUsersByAdministrator(process.ownerId()).stream()
                             .map(FclRuntimeFunctions::userMap).toList();
                 })
@@ -1159,6 +1243,42 @@ public class FclRuntimeFunctions {
         if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                 function + " expects path and optional target user");
         return deletePath(string(args.getFirst(), function + " path"), null, owner(args, 1));
+    }
+
+    /**
+     * Empties a directory's entire contents recursively and keeps the directory itself.
+     * Roots are refused, mounts and versioned files abort the whole clear, and the
+     * surrounding transaction rolls back so a failed call removes nothing.
+     */
+    protected long clearDirectoryContents(String source, UUID requestedOwner, String function) {
+        RoutedPath routed = route(source, requestedOwner);
+        requireFileAccess(routed.ownerId(), Capability.VFS_WRITE);
+        VfsNode directory = requireNode(routed.path(), routed.ownerId());
+        requireType(directory, VfsNode.Type.DIRECTORY, function);
+        if (directory.parentNodeId().isEmpty()) throw new FclRuntimeException(
+                function + " cannot clear a root directory: " + normalize(routed.path()));
+        long removed = clearChildren(directory);
+        audit("vfs.clear", directory.nodeId(), Map.of(
+                "path", normalize(routed.path()), "removed", Long.toString(removed)));
+        return removed;
+    }
+
+    private long clearChildren(VfsNode directory) {
+        long removed = 0;
+        for (VfsNode child : List.copyOf(transaction.vfs()
+                .findChildren(directory.ownerId(), Optional.of(directory.nodeId())))) {
+            if (child.type() == VfsNode.Type.DIRECTORY) removed += clearChildren(child);
+            boolean deleted = child.ownerId().equals(process.ownerId())
+                    ? transaction.vfs().deleteNode(child.nodeId(), child.ownerId())
+                    : transaction.vfs().deleteByAdministrator(process.ownerId(),
+                            child.ownerId(), child.nodeId(), UUID.randomUUID(), now);
+            if (!deleted) throw new FclRuntimeException("file.clear cannot remove "
+                    + child.type().name().toLowerCase(java.util.Locale.ROOT)
+                    + " " + child.name() + ": it is versioned, mounted, non-empty, "
+                    + "or concurrently changed");
+            removed++;
+        }
+        return removed;
     }
 
     protected UUID owner(List<Object> args, int index) {

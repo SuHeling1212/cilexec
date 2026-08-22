@@ -1,7 +1,6 @@
 package com.follarce.vfs;
 
 import com.follarce.domain.audit.AuditEvent;
-import com.follarce.domain.audit.AuditRetentionPolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.AuditRepository;
@@ -195,15 +194,6 @@ class VfsServiceTest {
             @Override public List<AuditEvent> findByResource(String type, String id, int limit) {
                 return auditEvents.stream().filter(event -> event.resourceType().equals(type)
                         && event.resourceId().equals(id)).limit(limit).toList();
-            }
-            @Override public void saveRetentionPolicy(AuditRetentionPolicy policy) {
-                throw new UnsupportedOperationException();
-            }
-            @Override public Optional<AuditRetentionPolicy> findRetentionPolicy(String type) {
-                return Optional.empty();
-            }
-            @Override public int purgeExpired(int limit) {
-                throw new UnsupportedOperationException();
             }
         }; }
         @Override public ProgramRepository programs() { return null; }

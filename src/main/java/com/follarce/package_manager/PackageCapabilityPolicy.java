@@ -135,14 +135,16 @@ public final class PackageCapabilityPolicy {
     }
 
     private static java.util.Optional<String> capability(String call) {
-        if (call.startsWith("system.") && !call.equals("system.ls")
+        if (call.startsWith("system.") && !call.equals("system.list")
                 && !call.equals("system.extensions")) {
             return java.util.Optional.of("system.admin");
         }
         if (call.equals("socket.bind") || call.equals("socket.accept")
                 || call.equals("user.disable") || call.equals("user.remove")
-                || call.equals("user.validateUser")
-                || call.equals("user.getListOfUsers")) {
+                || call.equals("user.validateUser") || call.equals("program.remove")
+                || call.equals("terminal.remove") || call.equals("timer.purge")
+                || call.equals("audit.purge") || call.equals("storage.purgeUnreferenced")
+                || call.equals("user.list")) {
             return java.util.Optional.of("system.admin");
         }
         if (call.startsWith("network.")) return java.util.Optional.of("network.http");
@@ -164,7 +166,7 @@ public final class PackageCapabilityPolicy {
             return java.util.Optional.of("process.create");
         }
         if (Set.of("process.exec", "process.kill", "process.pause", "process.continue",
-                "process.getList", "process.getListOfProcess", "process.getListOfChildProcess",
+                "process.list", "process.listChildren",
                 "process.getPPID").contains(call)) {
             return java.util.Optional.of("process.control");
         }
@@ -183,12 +185,12 @@ public final class PackageCapabilityPolicy {
         if (call.startsWith("file.")) {
             String name = call.substring("file.".length());
             return java.util.Optional.of(Set.of("read", "readChunk", "readMetaData",
-                    "listdir", "exists", "size").contains(name) ? "vfs.read" : "vfs.write");
+                    "list", "exists", "size").contains(name) ? "vfs.read" : "vfs.write");
         }
-        if (Set.of("readFile", "readChunk", "readMetaData", "listdir", "exists",
-                "fileSize").contains(call)) return java.util.Optional.of("vfs.read");
+        if (Set.of("readFile", "readChunk", "readMetaData", "list",
+                "exists", "fileSize").contains(call)) return java.util.Optional.of("vfs.read");
         if (Set.of("writeFile", "appendFile", "createFile", "createDir", "remove",
-                "rename").contains(call)) return java.util.Optional.of("vfs.write");
+                "rename", "clear").contains(call)) return java.util.Optional.of("vfs.write");
         return java.util.Optional.empty();
     }
 

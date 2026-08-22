@@ -122,6 +122,13 @@ class FclSystemFunctionsExternalIT {
                 chainedContent = file.read("/note-chain.txt")
                 removedLink = file.remove("/note-link.txt")
                 removedChain = file.remove("/note-chain.txt")
+                file.createDir("/clearme")
+                file.createDir("/clearme/nested")
+                file.write("/clearme/top.txt", "top")
+                file.write("/clearme/nested/deep.txt", "deep")
+                clearedCount = file.clear("/clearme")
+                clearedStillExists = file.exists("/clearme")
+                clearedDirEmpty = file.list("/clearme")
                 swapPool.create("shared")
                 swapPool.add("message:ready", "shared", "type:sync")
                 received = swapPool.get("shared", "message")
@@ -129,8 +136,8 @@ class FclSystemFunctionsExternalIT {
                 environmentUserId = env.get("USER_ID")
                 validatesOwnUsername = user.validateUser(environmentUser)
                 pid = process.getPID()
-                ownProcesses = process.getList()
-                functions = system.ls()
+                ownProcesses = process.list()
+                functions = system.list()
                 builtPackage = package.build("/pkg/package.json", "/hello.db")
                 installedPackage = package.install("/hello.db")
                 packageCheck = package.verify("demo/hello/1.0.0")
@@ -146,6 +153,12 @@ class FclSystemFunctionsExternalIT {
         assertEquals("hello", ownerRuntime.scope().get("chainedContent"));
         assertEquals(true, ownerRuntime.scope().get("removedLink"));
         assertEquals(true, ownerRuntime.scope().get("removedChain"));
+        assertEquals(3L, ownerRuntime.scope().get("clearedCount"));
+        assertEquals(true, ownerRuntime.scope().get("clearedStillExists"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> clearedDirEmpty =
+                (List<Map<String, Object>>) ownerRuntime.scope().get("clearedDirEmpty");
+        assertTrue(clearedDirEmpty.isEmpty());
         assertEquals("ready", ownerRuntime.scope().get("received"));
         assertEquals(owner.username(), ownerRuntime.scope().get("environmentUser"));
         assertEquals(owner.userId().toString(), ownerRuntime.scope().get("environmentUserId"));
@@ -226,12 +239,12 @@ class FclSystemFunctionsExternalIT {
                 managed = file.createDir("/managed", "%s")
                 createdFile = file.createFile("/managed/new.txt", "body", "%s")
                 renamed = file.rename("/managed/new.txt", "renamed.txt", "%s")
-                nodes = file.listdir("/", "%s")
+                nodes = file.list("/", "%s")
                 deleted = file.remove("/managed/renamed.txt", "%s")
-                users = user.getListOfUsers()
+                users = user.list()
                 valid = user.validateUser("%s")
                 removed = user.remove("%s")
-                processes = process.getList()
+                processes = process.list()
                 paused = process.pause(%s)
                 continued = process.continue(%s)
                 killed = process.kill(%s)
@@ -305,7 +318,7 @@ class FclSystemFunctionsExternalIT {
         String localSource = """
                 mountedContent = file.read("/Users/%s/private.txt")
                 mountedWrite = file.write("/Users/%s/from-local.txt", "mounted")
-                homes = file.listdir("/Users")
+                homes = file.list("/Users")
                 """.formatted(owner.username(), owner.username());
         var localProgram = new ProgramService(transactions).create(local.userId(), localSource);
         CilProcess localProcess = new ProcessService(transactions).create(local.userId(),

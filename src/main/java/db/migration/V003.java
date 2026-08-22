@@ -236,6 +236,174 @@ public final class V003 extends BaseJavaMigration {
                     """);
             statement.execute("GRANT EXECUTE ON FUNCTION auth.admin_remove_user_as(name, text, uuid, uuid, uuid, timestamptz) TO PUBLIC");
             statement.execute("GRANT EXECUTE ON FUNCTION auth.admin_remove_user(uuid, uuid, uuid, timestamptz) TO PUBLIC");
+            statement.execute("""
+                    CREATE FUNCTION program.admin_remove_program_as(
+                        p_database_role name,
+                        p_claim text,
+                        p_administrator_id uuid,
+                        p_program_id uuid,
+                        p_event_id uuid,
+                        p_at timestamptz
+                    )
+                    RETURNS jsonb
+                    LANGUAGE plpgsql
+                    SECURITY DEFINER
+                    SET search_path = pg_catalog, auth, audit, process, program
+                    AS $function$
+                    DECLARE
+                        actor uuid;
+                        blocking_processes jsonb;
+                        imported_by jsonb;
+                        process_count integer;
+                        importer_count integer;
+                    BEGIN
+                        actor := auth.require_system_administrator_as(
+                            p_database_role, p_claim, p_administrator_id);
+                        IF p_program_id IS NULL THEN
+                            RAISE EXCEPTION 'a program identity is required'
+                                USING ERRCODE = '22000';
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM program.program WHERE program_id = p_program_id
+                        ) THEN
+                            RAISE EXCEPTION 'program does not exist' USING ERRCODE = '22000';
+                        END IF;
+                        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                                       'pid', listed.pid, 'status', listed.status) ORDER BY listed.pid),
+                               '[]'::jsonb)
+                        INTO blocking_processes
+                        FROM (SELECT pid, status FROM process.process
+                              WHERE program_id = p_program_id
+                              ORDER BY pid LIMIT 25) AS listed;
+                        SELECT count(*) INTO process_count
+                        FROM process.process WHERE program_id = p_program_id;
+                        SELECT COALESCE(jsonb_agg(DISTINCT listed.importer ORDER BY listed.importer),
+                               '[]'::jsonb)
+                        INTO imported_by
+                        FROM (SELECT importer.program_id::text AS importer
+                              FROM program.module_binding importer
+                              WHERE importer.module_program_id = p_program_id
+                              LIMIT 25) AS listed;
+                        SELECT count(DISTINCT importer.program_id) INTO importer_count
+                        FROM program.module_binding importer
+                        WHERE importer.module_program_id = p_program_id;
+                        IF process_count > 0 OR importer_count > 0 THEN
+                            RETURN jsonb_build_object('removed', false,
+                                'processCount', process_count,
+                                'importedByCount', importer_count,
+                                'processes', blocking_processes,
+                                'importedBy', imported_by);
+                        END IF;
+                        -- Program rows are append-only; explicit administrator removal is the
+                        -- one deliberate exception and never runs as a background task.
+                        PERFORM set_config('app.cilexec_gc', 'on', true);
+                        DELETE FROM program.module_binding WHERE program_id = p_program_id;
+                        DELETE FROM program.statement WHERE program_id = p_program_id;
+                        DELETE FROM program.program WHERE program_id = p_program_id;
+                        INSERT INTO audit.event(
+                            event_id, owner_id, actor_type, actor_id, action, resource_type,
+                            resource_id, result, details_json, created_at
+                        ) VALUES (
+                            p_event_id, NULL, 'ADMINISTRATOR', actor::text, 'program.remove',
+                            'program', p_program_id::text, 'SUCCEEDED', '{}'::jsonb, p_at
+                        );
+                        RETURN jsonb_build_object('removed', true,
+                            'processCount', 0, 'importedByCount', 0,
+                            'processes', '[]'::jsonb, 'importedBy', '[]'::jsonb);
+                    EXCEPTION WHEN OTHERS THEN
+                        RAISE EXCEPTION 'program removal failed: %', SQLERRM
+                            USING ERRCODE = SQLSTATE;
+                    END
+                    $function$
+                    """);
+            statement.execute("""
+                    CREATE FUNCTION program.admin_remove_program(
+                        p_administrator_id uuid, p_program_id uuid, p_event_id uuid, p_at timestamptz
+                    ) RETURNS jsonb
+                    LANGUAGE sql SECURITY INVOKER
+                    SET search_path = pg_catalog, program
+                    AS $function$
+                        SELECT program.admin_remove_program_as(
+                            current_user::name,
+                            NULLIF(current_setting('app.cilexec_user_id', true), ''),
+                            p_administrator_id, p_program_id, p_event_id, p_at
+                        )
+                    $function$
+                    """);
+            statement.execute("""
+                    CREATE FUNCTION audit.admin_purge_before_as(
+                        p_database_role name,
+                        p_claim text,
+                        p_administrator_id uuid,
+                        p_before timestamptz,
+                        p_limit integer
+                    )
+                    RETURNS integer
+                    LANGUAGE plpgsql
+                    SECURITY DEFINER
+                    SET search_path = pg_catalog, auth, audit
+                    AS $function$
+                    DECLARE
+                        deleted_count integer;
+                    BEGIN
+                        PERFORM auth.require_system_administrator_as(
+                            p_database_role, p_claim, p_administrator_id);
+                        IF p_before IS NULL OR p_before >= clock_timestamp() THEN
+                            RAISE EXCEPTION 'audit purge requires a cutoff strictly in the past'
+                                USING ERRCODE = '22000';
+                        END IF;
+                        IF p_limit IS NOT NULL AND (p_limit < 1 OR p_limit > 100000) THEN
+                            RAISE EXCEPTION 'audit purge limit must be between 1 and 100000'
+                                USING ERRCODE = '22023';
+                        END IF;
+                        PERFORM set_config('app.cilexec_gc', 'on', true);
+                        WITH doomed AS MATERIALIZED (
+                            SELECT candidate.event_id
+                            FROM audit.event AS candidate
+                            WHERE candidate.created_at < p_before
+                            ORDER BY candidate.created_at, candidate.event_id
+                            LIMIT p_limit
+                            FOR UPDATE OF candidate SKIP LOCKED
+                        )
+                        DELETE FROM audit.event AS target
+                        USING doomed
+                        WHERE target.event_id = doomed.event_id;
+                        GET DIAGNOSTICS deleted_count = ROW_COUNT;
+                        RETURN deleted_count;
+                    END
+                    $function$
+                    """);
+            statement.execute("""
+                    CREATE FUNCTION audit.admin_purge_before(
+                        p_administrator_id uuid, p_before timestamptz, p_limit integer
+                    ) RETURNS integer
+                    LANGUAGE sql SECURITY INVOKER
+                    SET search_path = pg_catalog, audit
+                    AS $function$
+                        SELECT audit.admin_purge_before_as(
+                            current_user::name,
+                            NULLIF(current_setting('app.cilexec_user_id', true), ''),
+                            p_administrator_id, p_before, p_limit
+                        )
+                    $function$
+                    """);
+            statement.execute("REVOKE ALL ON FUNCTION program.admin_remove_program_as(name, text, uuid, uuid, uuid, timestamp with time zone) FROM PUBLIC");
+            statement.execute("REVOKE ALL ON FUNCTION program.admin_remove_program(uuid, uuid, uuid, timestamp with time zone) FROM PUBLIC");
+            statement.execute("""
+                    INSERT INTO meta.security_definer_public_allowlist(function_signature, rationale)
+                    VALUES (
+                        'program.admin_remove_program_as(name,text,uuid,uuid,uuid,timestamp with time zone)'::regprocedure::text,
+                        'verified explicit administrator removal of an unreachable program'
+                    ),
+                    (
+                        'audit.admin_purge_before_as(name,text,uuid,timestamp with time zone,integer)'::regprocedure::text,
+                        'verified explicit administrator audit history purge'
+                    )
+                    """);
+            statement.execute("GRANT EXECUTE ON FUNCTION program.admin_remove_program_as(name, text, uuid, uuid, uuid, timestamp with time zone) TO PUBLIC");
+            statement.execute("GRANT EXECUTE ON FUNCTION program.admin_remove_program(uuid, uuid, uuid, timestamp with time zone) TO PUBLIC");
+            statement.execute("GRANT EXECUTE ON FUNCTION audit.admin_purge_before_as(name, text, uuid, timestamp with time zone, integer) TO PUBLIC");
+            statement.execute("GRANT EXECUTE ON FUNCTION audit.admin_purge_before(uuid, timestamp with time zone, integer) TO PUBLIC");
             statement.execute("RESET ROLE");
         }
     }
