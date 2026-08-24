@@ -49,7 +49,6 @@ import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
-import com.follarce.package_manager.PackageCoordinateConflictException;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;

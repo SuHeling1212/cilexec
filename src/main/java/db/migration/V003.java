@@ -4,18 +4,180 @@ import org.flywaydb.core.api.migration.BaseJavaMigration;
 import org.flywaydb.core.api.migration.Context;
 
 /**
- * V003 / CilExec 0.0.3: durable FCLB executable artifacts and explicit package-data clearing.
+ * V003 / CilExec 0.0.3: durable FCLB executable artifacts and explicit resource deletion.
  *
  * <p>V003 changes the Program write format from V002's JSON source envelope to the versioned
  * {@code FCLB} instruction artifact. V002 artifacts and continuations remain readable; newly
  * compiled Programs are V003. It deliberately adds no time-based data retention: persistent
- * user data is removed only by an explicit user operation.
+ * user data and history are removed only by explicit user operations.
  */
 public final class V003 extends BaseJavaMigration {
     @Override
     public void migrate(Context context) throws Exception {
         try (var statement = context.getConnection().createStatement()) {
+            // This function must remain owned by cilexec_migrator: only that internal role
+            // has CREATEROLE, and the ordinary disable path must stay reversible.  The
+            // removal-only GUC is set solely by auth.admin_remove_user_as below.
+            statement.execute("""
+                    CREATE OR REPLACE FUNCTION auth.disable_principal(p_user_id uuid)
+                    RETURNS name
+                    LANGUAGE plpgsql
+                    SECURITY DEFINER
+                    SET search_path = pg_catalog, auth
+                    AS $function$
+                    DECLARE
+                        mapped_role name;
+                        schema_name name;
+                    BEGIN
+                        SELECT postgres_role_name INTO STRICT mapped_role
+                        FROM auth.user_account
+                        WHERE user_id = p_user_id;
+                        IF mapped_role::text <> 'cilexec_user_' || replace(p_user_id::text, '-', '') THEN
+                            RAISE EXCEPTION 'invalid stable PostgreSQL role mapping for user %', p_user_id;
+                        END IF;
+                        IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = mapped_role) THEN
+                            EXECUTE format('ALTER ROLE %I NOLOGIN', mapped_role);
+                            IF current_setting('app.cilexec_remove_principal', true) = 'on' THEN
+                                EXECUTE format('REVOKE %I FROM cilexec_runtime', mapped_role);
+                                FOREACH schema_name IN ARRAY ARRAY[
+                                    'meta', 'auth', 'object_store', 'vfs', 'program', 'process',
+                                    'scheduler', 'ipc', 'effect', 'package', 'terminal', 'audit',
+                                    'diagnostic'
+                                ]::name[] LOOP
+                                    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I',
+                                        schema_name, mapped_role);
+                                    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM %I',
+                                        schema_name, mapped_role);
+                                    EXECUTE format('REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA %I FROM %I',
+                                        schema_name, mapped_role);
+                                    EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I',
+                                        schema_name, mapped_role);
+                                END LOOP;
+                                EXECUTE format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM %I',
+                                    current_database(), mapped_role);
+                                EXECUTE format('DROP ROLE %I', mapped_role);
+                            END IF;
+                        END IF;
+                        DELETE FROM auth.user_credential WHERE user_id = p_user_id;
+                        RETURN mapped_role;
+                    END
+                    $function$
+                    """);
             statement.execute("SET ROLE cilexec_owner");
+            // A volatile calculation has no durable process state of its own, but a durable
+            // caller may persist a minimal wait marker while it receives the in-memory result.
+            statement.execute("ALTER TABLE process.wait_state "
+                    + "DROP CONSTRAINT wait_state_wait_kind_check");
+            statement.execute("ALTER TABLE process.wait_state "
+                    + "ADD CONSTRAINT wait_state_wait_kind_check "
+                    + "CHECK (wait_kind IN ('IPC', 'TIMER', 'EFFECT', 'VOLATILE', "
+                    + "'INPUT', 'CHILD', 'PROCESS'))");
+            // V001 contains a now-retired automatic retention mechanism.  V003 uses only
+            // explicit audit.purge calls, so remove both its callable entry point and state.
+            statement.execute("DROP FUNCTION audit.purge_expired_events(integer)");
+            statement.execute("DROP TABLE audit.retention_policy");
+            statement.execute("DELETE FROM meta.table_security_classification "
+                    + "WHERE schema_name = 'audit'::name AND table_name = 'retention_policy'::name");
+            statement.execute("""
+                    CREATE OR REPLACE FUNCTION package.data_list_as(
+                        p_database_role name, p_claim text, p_file_sha256 bytea, p_path text
+                    ) RETURNS jsonb
+                    LANGUAGE plpgsql STABLE SECURITY DEFINER
+                    SET search_path = pg_catalog, auth, package
+                    AS $function$
+                    DECLARE
+                        actor uuid;
+                        space package.data_space%ROWTYPE;
+                        prefix text;
+                    BEGIN
+                        actor := auth.resolve_cilexec_user_id(p_database_role, p_claim);
+                        IF actor IS NULL THEN
+                            RAISE EXCEPTION 'a verified CilExec user identity is required' USING ERRCODE = '42501';
+                        END IF;
+                        SELECT * INTO space FROM package.data_space
+                        WHERE owner_id = actor AND database_file_hash = p_file_sha256;
+                        IF NOT FOUND THEN
+                            RAISE EXCEPTION 'package data space is missing; the package is not installed'
+                                USING ERRCODE = '55006';
+                        END IF;
+                        IF p_path IS NULL OR p_path = '' OR p_path = '.' THEN
+                            prefix := '';
+                        ELSE
+                            IF left(p_path, 1) = '/' OR right(p_path, 1) = '/'
+                               OR p_path ~ '(^|/)(\\.|\\.\\.)(/|$)'
+                               OR position(chr(92) IN p_path) <> 0 THEN
+                                RAISE EXCEPTION 'invalid package data path' USING ERRCODE = '22000';
+                            END IF;
+                            prefix := p_path || '/';
+                        END IF;
+                        RETURN (
+                            SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                                'name', CASE WHEN prefix = '' THEN entry.relative_path
+                                             ELSE substr(entry.relative_path, char_length(prefix) + 1) END,
+                                'type', entry.entry_type, 'size', entry.byte_size,
+                                'version', entry.state_version
+                            ) ORDER BY entry.relative_path), '[]'::jsonb)
+                            FROM package.data_entry AS entry
+                            WHERE entry.space_id = space.space_id
+                              AND (prefix = '' OR left(entry.relative_path, char_length(prefix)) = prefix)
+                              AND CASE WHEN prefix = '' THEN strpos(entry.relative_path, '/') = 0
+                                       ELSE strpos(substr(entry.relative_path, char_length(prefix) + 1), '/') = 0
+                                  END
+                        );
+                    END
+                    $function$
+                    """);
+            statement.execute("""
+                    CREATE OR REPLACE FUNCTION package.data_remove_as(
+                        p_database_role name, p_claim text, p_file_sha256 bytea, p_path text
+                    ) RETURNS jsonb
+                    LANGUAGE plpgsql SECURITY DEFINER
+                    SET search_path = pg_catalog, auth, package
+                    AS $function$
+                    DECLARE
+                        actor uuid;
+                        space package.data_space%ROWTYPE;
+                        existing package.data_entry%ROWTYPE;
+                        children integer;
+                        freed bigint;
+                    BEGIN
+                        actor := auth.resolve_cilexec_user_id(p_database_role, p_claim);
+                        IF actor IS NULL THEN
+                            RAISE EXCEPTION 'a verified CilExec user identity is required' USING ERRCODE = '42501';
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM auth.effective_capabilities_as(p_database_role, p_claim, actor) AS capability
+                            WHERE capability.capability_key = 'package_bind'
+                        ) THEN
+                            RAISE EXCEPTION 'package_bind capability is required' USING ERRCODE = '42501';
+                        END IF;
+                        SELECT * INTO space FROM package.data_space
+                        WHERE owner_id = actor AND database_file_hash = p_file_sha256 FOR UPDATE;
+                        IF NOT FOUND THEN
+                            RAISE EXCEPTION 'package data space is missing; the package is not installed'
+                                USING ERRCODE = '55006';
+                        END IF;
+                        SELECT * INTO existing FROM package.data_entry
+                        WHERE space_id = space.space_id AND relative_path = p_path FOR UPDATE;
+                        IF NOT FOUND THEN
+                            RETURN jsonb_build_object('removed', false);
+                        END IF;
+                        SELECT count(*) INTO children FROM package.data_entry AS entry
+                        WHERE entry.space_id = space.space_id
+                          AND left(entry.relative_path, char_length(p_path) + 1) = p_path || '/';
+                        IF children > 0 THEN
+                            RAISE EXCEPTION 'package data path is not empty' USING ERRCODE = '55006';
+                        END IF;
+                        freed := existing.byte_size;
+                        DELETE FROM package.data_entry
+                        WHERE space_id = space.space_id AND relative_path = p_path;
+                        UPDATE package.data_space
+                        SET logical_bytes = GREATEST(0, logical_bytes - freed), updated_at = clock_timestamp()
+                        WHERE space_id = space.space_id;
+                        RETURN jsonb_build_object('removed', true, 'freed', freed);
+                    END
+                    $function$
+                    """);
             statement.execute("""
                     CREATE FUNCTION package.data_clear_path_as(
                         p_database_role name,
@@ -76,10 +238,10 @@ public final class V003 extends BaseJavaMigration {
                         SELECT COALESCE(sum(byte_size), 0) INTO freed_bytes
                         FROM package.data_entry
                         WHERE space_id = space.space_id
-                          AND relative_path LIKE p_path || '/%';
+                          AND left(relative_path, char_length(p_path) + 1) = p_path || '/';
                         DELETE FROM package.data_entry
                         WHERE space_id = space.space_id
-                          AND relative_path LIKE p_path || '/%';
+                          AND left(relative_path, char_length(p_path) + 1) = p_path || '/';
                         GET DIAGNOSTICS removed_entries = ROW_COUNT;
                         UPDATE package.data_space
                         SET logical_bytes = GREATEST(0, logical_bytes - freed_bytes),
@@ -150,6 +312,7 @@ public final class V003 extends BaseJavaMigration {
                         -- it is an explicit full-account erase, never a background retention task.
                         stage := 'disable principal';
                         PERFORM set_config('app.cilexec_gc', 'on', true);
+                        PERFORM set_config('app.cilexec_remove_principal', 'on', true);
                         PERFORM auth.admin_disable_user_as(
                             p_database_role, p_claim, actor, p_user_id, p_event_id, p_at);
                         stage := 'transfer grants';

@@ -16,7 +16,7 @@
 - **日志化外部副作用** —— FCL 发起的 HTTP、socket 和白名单命令通过持久效果行执行。中断时外部结果可能进入 `UNKNOWN`，再按远端查询、幂等重试或人工处理。定时器使用独立的持久定时器行。
 - **持久化 IPC 与定时器** —— 直连/频道/主题/广播消息和定时器可跨重启唤醒暂停的进程。
 - **可验证导出** —— 基于单个只读快照的 PostgreSQL → SQLite 逻辑导出，端到端哈希校验。
-- **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；另有无头协议供宿主脚本调用。
+- **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；进程提交后通过事件通知唤醒终端，不再按 25 毫秒轮询。全屏 FCL 程序可用 `term.render` 在状态提交后直接发布可丢弃的重绘帧，普通 `io.print` 仍走可恢复的效果日志；另有无头协议供宿主脚本调用。
 - **仅前向 Schema 升级** —— 0.0.1 的 V001 是发布基线；后续持久格式变更使用不可修改的 V002+，降级通过恢复备份完成。
 
 ## 快速开始
@@ -155,6 +155,7 @@ mvn clean verify      # 强制 PostgreSQL/崩溃恢复集成测试、质量门�
 - [架构基线](docs/architecture-baseline.md)
 - [Java 源码扩展](docs/java-extension-development.md)
 - [包与市场](docs/package-market.md)
+- [可恢复的 FCL 贪吃蛇](docs/snake-game.zh-CN.md)
 - [无头模式](docs/headless-mode.md)
 - [宿主文件导入](docs/host-vfs-import.md)
 - [终端与运维](docs/terminal-and-admin-plan.md)

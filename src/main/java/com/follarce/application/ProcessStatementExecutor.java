@@ -30,6 +30,8 @@ import com.follarce.fcl.FclStepResult;
 import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.scheduler.ClaimedProcessHandler;
+import com.follarce.terminal.ProcessStateNotifier;
+import com.follarce.terminal.TerminalOutputRouter;
 import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
@@ -72,6 +74,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private final JavaExtensionCatalog extensions;
     private final Runnable schedulerWake;
     private final Runnable effectWake;
+    private final VolatileProcessService volatileProcesses;
+    private final ProcessStateNotifier processStateNotifier;
     private final BoundedCache<ObjectHash, FclProgram> programCache = new BoundedCache<>(128);
     private final BoundedCache<ObjectHash, CachedPackage> packageCache = new BoundedCache<>(64);
     private final FclProgramLinker programLinker = new FclProgramLinker();
@@ -79,19 +83,30 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions) {
         this(transactions, SourceExtensionIndex.catalog(), null, new FclProgramCodec(),
-                new FclContinuationCodec(), Clock.systemUTC(), () -> { }, () -> { });
+                new FclContinuationCodec(), Clock.systemUTC(), () -> { }, () -> { },
+                new ProcessStateNotifier());
     }
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions,
                                     Runnable schedulerWake, Runnable effectWake) {
         this(transactions, SourceExtensionIndex.catalog(), null, new FclProgramCodec(),
-                new FclContinuationCodec(), Clock.systemUTC(), schedulerWake, effectWake);
+                new FclContinuationCodec(), Clock.systemUTC(), schedulerWake, effectWake,
+                new ProcessStateNotifier());
+    }
+
+    public ProcessStatementExecutor(UserTransactionExecutor transactions,
+                                    Runnable schedulerWake, Runnable effectWake,
+                                    ProcessStateNotifier processStateNotifier) {
+        this(transactions, SourceExtensionIndex.catalog(), null, new FclProgramCodec(),
+                new FclContinuationCodec(), Clock.systemUTC(), schedulerWake, effectWake,
+                processStateNotifier);
     }
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions,
                                     JavaExtensionCatalog extensions) {
         this(transactions, extensions, null, new FclProgramCodec(),
-                new FclContinuationCodec(), Clock.systemUTC(), () -> { }, () -> { });
+                new FclContinuationCodec(), Clock.systemUTC(), () -> { }, () -> { },
+                new ProcessStateNotifier());
     }
 
     public ProcessStatementExecutor(UserTransactionExecutor transactions, FclRuntime runtime,
@@ -99,7 +114,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                                     FclContinuationCodec continuationCodec,
                                     Clock clock) {
         this(transactions, SourceExtensionIndex.catalog(), runtime, programCodec,
-                continuationCodec, clock, () -> { }, () -> { });
+                continuationCodec, clock, () -> { }, () -> { }, new ProcessStateNotifier());
     }
 
     ProcessStatementExecutor(UserTransactionExecutor transactions,
@@ -108,7 +123,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                              FclContinuationCodec continuationCodec,
                              Clock clock) {
         this(transactions, extensions, runtime, programCodec, continuationCodec, clock,
-                () -> { }, () -> { });
+                () -> { }, () -> { }, new ProcessStateNotifier());
     }
 
     ProcessStatementExecutor(UserTransactionExecutor transactions,
@@ -116,6 +131,16 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                              FclProgramCodec programCodec,
                              FclContinuationCodec continuationCodec,
                              Clock clock, Runnable schedulerWake, Runnable effectWake) {
+        this(transactions, extensions, runtime, programCodec, continuationCodec, clock,
+                schedulerWake, effectWake, new ProcessStateNotifier());
+    }
+
+    ProcessStatementExecutor(UserTransactionExecutor transactions,
+                             JavaExtensionCatalog extensions, FclRuntime runtime,
+                             FclProgramCodec programCodec,
+                             FclContinuationCodec continuationCodec,
+                             Clock clock, Runnable schedulerWake, Runnable effectWake,
+                             ProcessStateNotifier processStateNotifier) {
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.extensions = Objects.requireNonNull(extensions, "extensions");
         this.fixedRuntime = runtime;
@@ -126,6 +151,9 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.schedulerWake = Objects.requireNonNull(schedulerWake, "schedulerWake");
         this.effectWake = Objects.requireNonNull(effectWake, "effectWake");
+        this.processStateNotifier = Objects.requireNonNull(processStateNotifier,
+                "processStateNotifier");
+        this.volatileProcesses = new VolatileProcessService(this::settleVolatileProcess);
     }
 
     @Override
@@ -178,9 +206,21 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 return PostCommitSignal.NONE;
             }
 
+            List<VolatileProcessRequest> volatileRequests = new ArrayList<>();
+            List<TerminalFrame> terminalFrames = new ArrayList<>();
+            int[] terminalFrameCharacters = {0};
             FclRuntime statementRuntime = fixedRuntime != null ? fixedRuntime
                     : new FclRuntime(FclRuntimeFunctions.create(transaction, current, program,
-                    continuation, now, extensions));
+                    continuation, now, extensions, volatileRequests::add, frame -> {
+                        if (terminalFrames.size() >= 256
+                                || terminalFrameCharacters[0] + frame.text().length()
+                                > 4 * 1024 * 1024) {
+                            throw new FclRuntimeException(
+                                    "Terminal frame batch exceeds the per-slice limit");
+                        }
+                        terminalFrameCharacters[0] += frame.text().length();
+                        terminalFrames.add(frame);
+                    }));
             FclStepResult step = null;
             Program committedProgram = program;
             Continuation previousForPersistence = current.continuation();
@@ -199,6 +239,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     committedProgram = replacement.program();
                     continuation = replacement.continuation();
                     previousForPersistence = initialContinuation(committedProgram);
+                    transaction.packages().removeProcessBindings(current.identity().processUid());
                     break;
                 }
                 try {
@@ -239,14 +280,93 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             // re-queued; wait/terminal/failure states are removed by repository policy.
             transaction.scheduler().release(claim.processUid(), claim.executionEpoch());
             return new PostCommitSignal(target == CilProcess.Status.READY,
-                    target == CilProcess.Status.WAITING_EFFECT);
+                    target == CilProcess.Status.WAITING_EFFECT,
+                    volatileRequests, terminalFrames);
             });
+        // Preserve frame order across adjacent slices: publish this committed slice before a
+        // scheduler wake can let the same process commit and publish its next frame.
+        signal.terminalFrames().forEach(frame ->
+                TerminalOutputRouter.publishFrame(frame.routeId(), frame.text()));
+        processStateNotifier.signal(claim.ownerId(), claim.processUid());
         if (signal.scheduler()) schedulerWake.run();
         if (signal.effect()) effectWake.run();
+        signal.volatileProcesses().forEach(volatileProcesses::launch);
     }
 
-    private record PostCommitSignal(boolean scheduler, boolean effect) {
-        private static final PostCommitSignal NONE = new PostCommitSignal(false, false);
+    /** Stops all non-durable processes.  They are intentionally never recovered. */
+    public void closeVolatileProcesses() {
+        volatileProcesses.close();
+    }
+
+    /** Delivers an in-memory volatile result into the durable caller's next interpreter step. */
+    private void settleVolatileProcess(VolatileProcessCompletion completion) {
+        boolean woke = transactions.inUserTransaction(completion.request().ownerId(),
+                Isolation.READ_COMMITTED, transaction -> {
+                    Optional<CilProcess> loaded = transaction.processes()
+                            .findByUid(completion.request().parentProcessUid());
+                    if (loaded.isEmpty() || !waitingForVolatile(loaded.orElseThrow(),
+                            completion.request().taskId())) {
+                        return false;
+                    }
+                    CilProcess current = loaded.orElseThrow();
+                    Map<String, Object> handoff = new LinkedHashMap<>();
+                    handoff.put("taskId", completion.request().taskId().toString());
+                    handoff.put("ok", completion.successful());
+                    if (completion.successful()) {
+                        handoff.put("value", completion.value());
+                    } else {
+                        handoff.put("failure", completion.failure());
+                    }
+                    Map<String, Continuation.PersistedValue> variables = new LinkedHashMap<>(
+                            current.continuation().globalVariables());
+                    variables.put(com.follarce.domain.process.ProcessInbox.VOLATILE_RESULT,
+                            new Continuation.PersistedValue(continuationCodec.valueType(handoff),
+                                    continuationCodec.valueToJson(handoff)));
+                    Continuation source = current.continuation();
+                    Continuation resumed = new Continuation(source.programId(), source.programHash(),
+                            source.programCounter(), source.callStack(), source.scopeStack(),
+                            source.exceptionStack(), source.controlStack(), Optional.empty(),
+                            Map.copyOf(variables), source.packageBindings(),
+                            source.languageVersion(), source.runtimeFormatVersion());
+                    CilProcess.Status target = current.status() == CilProcess.Status.PAUSED
+                            ? CilProcess.Status.PAUSED : CilProcess.Status.READY;
+                    CilProcess ready = current.commitStatement(resumed, target,
+                            current.stateVersion(), current.executionEpoch(), clock.instant());
+                    ProcessRepository.UpdateResult updated = transaction.processes().update(ready,
+                            current.stateVersion(), current.executionEpoch());
+                    if (updated != ProcessRepository.UpdateResult.UPDATED) return false;
+                    if (ready.status() == CilProcess.Status.READY) {
+                        transaction.scheduler().enqueue(
+                                new com.follarce.domain.scheduler.SchedulerQueueEntry(
+                                        ready.identity().processUid(), ready.updatedAt(),
+                                        ready.updatedAt(),
+                                        com.follarce.domain.scheduler.SchedulerQueueEntry.Status.READY));
+                    }
+                    return true;
+                });
+        if (woke) schedulerWake.run();
+    }
+
+    private static boolean waitingForVolatile(CilProcess process, UUID taskId) {
+        return (process.status() == CilProcess.Status.WAITING_EFFECT
+                || process.status() == CilProcess.Status.PAUSED)
+                && process.continuation().waitState()
+                .filter(wait -> wait.kind() == Continuation.WaitKind.VOLATILE)
+                .flatMap(Continuation.WaitState::targetId)
+                .map(taskId::equals)
+                .orElse(false);
+    }
+
+    private record PostCommitSignal(boolean scheduler, boolean effect,
+                                    List<VolatileProcessRequest> volatileProcesses,
+                                    List<TerminalFrame> terminalFrames) {
+        private static final PostCommitSignal NONE = new PostCommitSignal(false, false,
+                List.of(), List.of());
+
+        private PostCommitSignal {
+            volatileProcesses = List.copyOf(volatileProcesses);
+            terminalFrames = List.copyOf(terminalFrames);
+        }
     }
 
     private static boolean sliceBoundary(FclStepResult step,
@@ -919,29 +1039,53 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         }
         Program target = transaction.programs().findById(programId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown exec program"));
+        List<Object> arguments = execArguments(wait);
         FclContinuation replacement = new FclContinuation(target.runtimeFormatVersion());
+        // The CWD is a process property, matching POSIX exec rather than the FCL image.
+        copyProcessProperty(continuation, replacement, FclPath.SCOPE_KEY);
+        copyTerminalOutputRoute(continuation, replacement);
         if (TerminalReplService.isTerminalProcess(continuation)) {
-            // A terminal PID is a durable REPL context, not a disposable command
-            // process. exec replaces only its program and execution frames; the
-            // outermost user scope must remain available to the target and to the
-            // next terminal submission.
-            continuation.globalScope().values().forEach(replacement.scope()::put);
-            ProcessInbox.keys().forEach(name -> {
-                if (replacement.scope().contains(name)) replacement.scope().remove(name);
-            });
-            String library = TerminalReplService.librarySource(replacement);
-            String executedSource = loadProgram(transaction, target).source();
-            // process.exec compiles the inherited REPL library before the target source so the
-            // target can call existing helpers. Only retain declarations introduced by the file.
-            if (!library.isEmpty() && executedSource.startsWith(library)) {
-                executedSource = executedSource.substring(library.length());
-            }
-            String updated = TerminalReplService.appendFunctionDeclarations(library, executedSource);
-            if (!updated.isBlank()) {
-                replacement.globalScope().put(TerminalReplService.LIBRARY_SCOPE_KEY, updated);
-            }
+            // The terminal transport and CWD are process properties, not FCL program state.
+            // All visible language bindings, including the old REPL library, are discarded.
+            copyProcessProperty(continuation, replacement,
+                    TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
+            copyProcessProperty(continuation, replacement,
+                    TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
         }
+        replacement.scope().put(FclProcessRuntimeFunctions.STARTUP_ARGUMENTS_SCOPE_KEY,
+                arguments);
         return new ExecutionReplacement(target, replacement);
+    }
+
+    private static List<Object> execArguments(FclContinuation.WaitState wait) {
+        Object raw = wait.payload().get("arguments");
+        if (raw == null) return List.of();
+        if (!(raw instanceof List<?> values)) {
+            throw new IllegalStateException("Invalid process.exec argument payload");
+        }
+        List<Object> copied = new ArrayList<>(values.size());
+        values.forEach(value -> copied.add(VolatileProcessRequest.copyValue(value)));
+        return java.util.Collections.unmodifiableList(copied);
+    }
+
+    private static void copyProcessProperty(FclContinuation source, FclContinuation target,
+                                            String name) {
+        if (source.globalScope().contains(name)) {
+            target.scope().put(name, source.globalScope().get(name));
+        }
+    }
+
+    private static void copyTerminalOutputRoute(FclContinuation source,
+                                                FclContinuation target) {
+        FclScope global = source.globalScope();
+        if (global.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)) {
+            target.scope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
+                    global.get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY));
+        } else if (global.contains(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)) {
+            // Existing persisted terminal contexts predate the dedicated output-route marker.
+            target.scope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
+                    global.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY));
+        }
     }
 
     private static Continuation initialContinuation(Program program) {

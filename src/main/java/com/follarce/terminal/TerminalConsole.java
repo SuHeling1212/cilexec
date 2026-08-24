@@ -48,6 +48,7 @@ public final class TerminalConsole implements Runnable {
         output.println("CilExec FCL terminal; :help shows terminal commands, other input runs as FCL");
         RuntimeException previousFailure = null;
         int consecutiveControlFailures = 0;
+        boolean fullScreenInputActive = false;
         try {
             // EOF (readLine/readKey returning null) is the authoritative disconnect signal;
             // the pump thread's wake-up interrupt targets only the database polling loop.
@@ -56,11 +57,13 @@ public final class TerminalConsole implements Runnable {
                     TerminalControl.AttachedInputMode inputMode = control.attachedInputMode();
                     if (inputMode == TerminalControl.AttachedInputMode.KEY
                             || inputMode == TerminalControl.AttachedInputMode.KEY_BATCH) {
+                        fullScreenInputActive = true;
                         String event = input.readKeyEvent(output,
                                 inputMode == TerminalControl.AttachedInputMode.KEY_BATCH);
                         if (event == null) return Outcome.END_OF_INPUT;
                         if (event.contains("\"key\":\"CTRL_C\"")) {
                             leaveFullScreen();
+                            fullScreenInputActive = false;
                             control.interruptForeground();
                             continue;
                         }
@@ -76,9 +79,18 @@ public final class TerminalConsole implements Runnable {
                         }
                         if (result != null && result.startsWith("error")) {
                             leaveFullScreen();
+                            fullScreenInputActive = false;
                             output.println(result);
                         }
                         continue;
+                    }
+                    // An attached full-screen process can also be stopped from another
+                    // terminal, fail while handling a large paste, or be killed by recovery.
+                    // Its FCL finally block is then unreachable.  The owning terminal is the
+                    // last reliable place to restore its primary screen and disable reporting.
+                    if (fullScreenInputActive) {
+                        leaveFullScreen();
+                        fullScreenInputActive = false;
                     }
                     if (inputMode == TerminalControl.AttachedInputMode.NONE) {
                         TerminalOutputTracker.finishLine(output);
@@ -174,7 +186,8 @@ public final class TerminalConsole implements Runnable {
             }
         } finally {
             try {
-                input.finishKeyMode();
+                if (fullScreenInputActive) leaveFullScreen();
+                else input.finishKeyMode();
             } catch (IOException ignored) {
                 // The session is already ending; preserve the original outcome.
             }

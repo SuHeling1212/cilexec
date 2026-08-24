@@ -37,6 +37,15 @@ After every file change, inspect the relevant user and developer documentation a
 when the behavior, configuration, interface, or workflow has changed. Include documentation
 updates in the same change and state the documentation check in the final report.
 
+### Explicit Upgrade Authority
+
+Do not upgrade the CilExec release version, introduce or apply a database migration, rebuild or
+replace a running Runtime image, publish a package/release, or otherwise deploy to the user's
+machine unless the user has explicitly requested that exact upgrade or deployment in the current
+conversation. Implementing or testing a feature does not grant deployment authority. Before any
+such action, state the exact target version and affected persistent state, then wait for the
+user's explicit approval. This rule applies even when the local data is disposable.
+
 ## High-Level Architecture
 
 Cilexec is a **process management & scripting engine** that runs FCL (Follarce CilExec Language) scripts on a **PostgreSQL-backed runtime**. Programs, full continuations, process identities, FIFO scheduler leases, IPC, timers, VFS nodes, package bindings, external-effect journals, terminal input, and audit events are all committed to PostgreSQL. There is no `.proc` snapshot format and no `cilexec_root/` host-directory state store.

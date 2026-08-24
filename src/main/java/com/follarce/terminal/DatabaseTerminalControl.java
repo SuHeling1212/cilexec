@@ -16,12 +16,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.Predicate;
 
 /** Database-backed terminal control plane plus a durable, full-function FCL REPL. */
 public final class DatabaseTerminalControl implements TerminalControl {
-    private static final Duration POLL_INTERVAL = Duration.ofMillis(25);
+    private static final Duration DURABLE_FALLBACK_INTERVAL = Duration.ofSeconds(1);
 
     private final JdbcTransactionExecutor transactions;
     private final UserAccount user;
@@ -29,6 +28,7 @@ public final class DatabaseTerminalControl implements TerminalControl {
     private final TerminalReplService repl;
     private final Runnable shutdown;
     private final Predicate<char[]> passwordVerifier;
+    private final ProcessStateNotifier processStateNotifier;
     private UUID sessionId;
 
     public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
@@ -40,7 +40,15 @@ public final class DatabaseTerminalControl implements TerminalControl {
                                     Runnable shutdown, Predicate<char[]> passwordVerifier,
                                     Runnable schedulerWake, Runnable interruptWake) {
         this(transactions, user, shutdown, passwordVerifier, schedulerWake, interruptWake,
-                Optional.empty(), Optional.empty());
+                new ProcessStateNotifier(), Optional.empty(), Optional.empty());
+    }
+
+    public DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
+                                    Runnable shutdown, Predicate<char[]> passwordVerifier,
+                                    Runnable schedulerWake, Runnable interruptWake,
+                                    ProcessStateNotifier processStateNotifier) {
+        this(transactions, user, shutdown, passwordVerifier, schedulerWake, interruptWake,
+                processStateNotifier, Optional.empty(), Optional.empty());
     }
 
     /** Creates a control surface backed by the durable context for one host terminal. */
@@ -49,7 +57,8 @@ public final class DatabaseTerminalControl implements TerminalControl {
             Runnable shutdown, Predicate<char[]> passwordVerifier,
             Runnable schedulerWake, Runnable interruptWake) {
         return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
-                schedulerWake, interruptWake, Optional.empty(), Optional.of(contextId));
+                schedulerWake, interruptWake, new ProcessStateNotifier(), Optional.empty(),
+                Optional.of(contextId));
     }
 
     /** Creates a control surface for one durable interactive terminal context. */
@@ -58,12 +67,36 @@ public final class DatabaseTerminalControl implements TerminalControl {
             Runnable shutdown, Predicate<char[]> passwordVerifier,
             Runnable schedulerWake, Runnable interruptWake) {
         return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
-                schedulerWake, interruptWake, Optional.of(contextId), Optional.empty());
+                schedulerWake, interruptWake, new ProcessStateNotifier(), Optional.of(contextId),
+                Optional.empty());
+    }
+
+    /** Production factory sharing the Runtime's post-commit process notifier. */
+    public static DatabaseTerminalControl interactive(
+            JdbcTransactionExecutor transactions, UserAccount user, String contextId,
+            Runnable shutdown, Predicate<char[]> passwordVerifier,
+            Runnable schedulerWake, Runnable interruptWake,
+            ProcessStateNotifier processStateNotifier) {
+        return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
+                schedulerWake, interruptWake, processStateNotifier, Optional.of(contextId),
+                Optional.empty());
+    }
+
+    /** Headless counterpart using the Runtime's post-commit process notifier. */
+    public static DatabaseTerminalControl headless(
+            JdbcTransactionExecutor transactions, UserAccount user, String contextId,
+            Runnable shutdown, Predicate<char[]> passwordVerifier,
+            Runnable schedulerWake, Runnable interruptWake,
+            ProcessStateNotifier processStateNotifier) {
+        return new DatabaseTerminalControl(transactions, user, shutdown, passwordVerifier,
+                schedulerWake, interruptWake, processStateNotifier, Optional.empty(),
+                Optional.of(contextId));
     }
 
     private DatabaseTerminalControl(JdbcTransactionExecutor transactions, UserAccount user,
                                      Runnable shutdown, Predicate<char[]> passwordVerifier,
                                      Runnable schedulerWake, Runnable interruptWake,
+                                     ProcessStateNotifier processStateNotifier,
                                      Optional<String> interactiveContext,
                                      Optional<String> headlessContext) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
@@ -71,6 +104,8 @@ public final class DatabaseTerminalControl implements TerminalControl {
         this.shutdown = java.util.Objects.requireNonNull(shutdown, "shutdown");
         this.passwordVerifier = java.util.Objects.requireNonNull(passwordVerifier,
                 "passwordVerifier");
+        this.processStateNotifier = java.util.Objects.requireNonNull(processStateNotifier,
+                "processStateNotifier");
         this.terminals = new TerminalService(transactions, Clock.systemUTC(), schedulerWake,
                 interruptWake);
         this.repl = new TerminalReplService(transactions, schedulerWake);
@@ -336,19 +371,22 @@ public final class DatabaseTerminalControl implements TerminalControl {
     }
 
     private String await(long pid) {
+        UUID processUid = findProcess(pid).identity().processUid();
         while (true) {
+            long observed = processStateNotifier.version(user.userId(), processUid);
             TerminalReplService.Snapshot latest = repl.active(user.userId(), sessionId)
                     .filter(value -> value.pid() == pid)
                     .orElseGet(() -> snapshot(pid));
             if (terminal(latest.status()) || latest.status() == CilProcess.Status.PAUSED) {
+                processStateNotifier.forget(user.userId(), processUid);
                 return renderFinished(latest);
             }
             if (latest.status() == CilProcess.Status.WAITING_INPUT) {
                 return "";
             }
-            LockSupport.parkNanos(POLL_INTERVAL.toNanos());
+            processStateNotifier.awaitChange(user.userId(), processUid, observed,
+                    DURABLE_FALLBACK_INTERVAL);
             if (Thread.currentThread().isInterrupted()) {
-                Thread.currentThread().interrupt();
                 return "PID " + pid + " continues in background (terminal interrupted)";
             }
         }

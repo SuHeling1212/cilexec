@@ -185,6 +185,27 @@ class TerminalConsoleTest {
     }
 
     @Test
+    void restoresFullScreenTerminalModesWhenAnAttachedProcessEndsExternally() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        AtomicInteger modeChecks = new AtomicInteger();
+        RecordingControl control = new RecordingControl() {
+            @Override public AttachedInputMode attachedInputMode() {
+                return modeChecks.getAndIncrement() == 0
+                        ? AttachedInputMode.KEY : AttachedInputMode.NONE;
+            }
+        };
+
+        new TerminalConsole(new BufferedReader(new InputStreamReader(
+                new ByteArrayInputStream("x:exit\n".getBytes(StandardCharsets.UTF_8)),
+                StandardCharsets.UTF_8)), new PrintWriter(output, true, StandardCharsets.UTF_8),
+                control).run();
+
+        String transcript = output.toString(StandardCharsets.UTF_8);
+        assertTrue(transcript.contains("\u001b[?1049l\u001b[?1002l\u001b[?1006l"
+                + "\u001b[?2004l\u001b[?1004l\u001b[?25h\u001b[2J\u001b[H"), transcript);
+    }
+
+    @Test
     void resetsAndInterruptsWhenKeyDeliveryFailsBeforeTheFclErrorIsReturned() {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         RecordingControl control = new RecordingControl() {

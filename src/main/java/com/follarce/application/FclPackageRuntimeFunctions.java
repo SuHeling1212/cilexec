@@ -199,6 +199,25 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
                     content, TEXT, expected);
             return true;
         }, "packageWrite");
+        registry.registerContextual("packageData", "seedResource", (args, invocation) -> {
+            arity(args, 2, "packageData.seedResource");
+            ObjectHash fileHash = requirePackageDataFile(invocation);
+            String resourcePath = string(args.getFirst(), "packageData.seedResource resource");
+            String destination = string(args.get(1), "packageData.seedResource destination");
+            if (packageDataEntryExists(fileHash, destination)) return false;
+            String identity = invocation.packageIdentity();
+            PackageRelease release = transaction.packages().findRelease(
+                            new PackageRelease.Hash(new ObjectHash(identity)))
+                    .orElseThrow(() -> new FclRuntimeException("Linked package release is missing"));
+            StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
+                    .orElseThrow(() -> new FclRuntimeException(
+                            "Package database object is missing"));
+            byte[] resource = new SqlitePackageReader().readResource(database.content().bytes(),
+                    resourcePath);
+            transaction.packages().writeDataEntry(process.ownerId(), fileHash, destination,
+                    resource, TEXT, -1);
+            return true;
+        }, "packageSeedResource");
         registry.registerContextual("packageData", "append", (args, invocation) -> {
             arity(args, 2, "packageData.append");
             ObjectHash fileHash = requirePackageDataFile(invocation);
@@ -278,21 +297,7 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
 
     /** Resolves the current package's private data space from linked provenance. */
     protected ObjectHash requirePackageDataFile(FclFunctionRegistry.Invocation invocation) {
-        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
-        String identity = invocation.packageIdentity();
-        if (identity == null) {
-            throw new FclRuntimeException(
-                    "packageData functions can only be called from installed package code");
-        }
-        PackageRelease release = transaction.packages().findRelease(
-                        new PackageRelease.Hash(new ObjectHash(identity)))
-                .orElseThrow(() -> new FclRuntimeException(
-                        "Linked package release is missing"));
-        if (transaction.packages().findInstalledReleaseByDatabaseFileHash(
-                process.ownerId(), release.databaseFileHash()).isEmpty()) {
-            throw new FclRuntimeException("Linked package is not installed for the current user");
-        }
-        return release.databaseFileHash();
+        return currentPackageDataFile(invocation);
     }
 
     protected boolean packageDataEntryExists(ObjectHash fileHash, String path) {

@@ -155,6 +155,7 @@ public record Continuation(
         IPC(true),
         TIMER(true),
         EFFECT(true),
+        VOLATILE(true),
         INPUT(false),
         CHILD(false),
         PROCESS(false);

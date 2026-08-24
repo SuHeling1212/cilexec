@@ -1,0 +1,279 @@
+// Snake: a durable terminal game written entirely in FCL.
+
+func sn_min(a, b) {
+    if a < b { return a }
+    return b
+}
+
+func sn_max(a, b) {
+    if a > b { return a }
+    return b
+}
+
+func sn_fit(value, width) {
+    clean = term.truncate(value, width)
+    used = term.displayWidth(clean)
+    if used < width { return clean + text.repeat(" ", width - used) }
+    return clean
+}
+
+class SnakeGame {
+    width = 30
+    height = 14
+    snake = []
+    direction = "RIGHT"
+    nextDirection = "RIGHT"
+    foodX = 0
+    foodY = 0
+    score = 0
+    tickMs = 150
+    paused = false
+    over = false
+    won = false
+
+    init(boardWidth, boardHeight) {
+        this.width = sn_max(12, boardWidth)
+        this.height = sn_max(6, boardHeight)
+        centerX = math.floor(this.width / 2)
+        centerY = math.floor(this.height / 2)
+        this.snake = [
+            {x: centerX, y: centerY},
+            {x: centerX - 1, y: centerY},
+            {x: centerX - 2, y: centerY}
+        ]
+        this.direction = "RIGHT"
+        this.nextDirection = "RIGHT"
+        this.foodX = 0
+        this.foodY = 0
+        this.score = 0
+        this.tickMs = 150
+        this.paused = false
+        this.over = false
+        this.won = false
+        this.spawnFood()
+    }
+
+    func segmentAt(x, y) {
+        index = 0
+        while index < #this.snake {
+            part = this.snake[index]
+            if part["x"] == x and part["y"] == y { return index }
+            index++
+        }
+        return -1
+    }
+
+    func hitsBody(x, y, ignoreTail) {
+        limit = #this.snake
+        if ignoreTail { limit-- }
+        index = 0
+        while index < limit {
+            part = this.snake[index]
+            if part["x"] == x and part["y"] == y { return true }
+            index++
+        }
+        return false
+    }
+
+    func spawnFood() {
+        if #this.snake >= this.width * this.height {
+            this.won = true
+            this.over = true
+            return null
+        }
+        attempts = 0
+        while attempts < 512 {
+            candidateX = math.random(0, this.width)
+            candidateY = math.random(0, this.height)
+            if this.segmentAt(candidateX, candidateY) < 0 {
+                this.foodX = candidateX
+                this.foodY = candidateY
+                return null
+            }
+            attempts++
+        }
+        // A deterministic fallback guarantees termination on an almost-full board.
+        candidateY = 0
+        while candidateY < this.height {
+            candidateX = 0
+            while candidateX < this.width {
+                if this.segmentAt(candidateX, candidateY) < 0 {
+                    this.foodX = candidateX
+                    this.foodY = candidateY
+                    return null
+                }
+                candidateX++
+            }
+            candidateY++
+        }
+        this.won = true
+        this.over = true
+        return null
+    }
+
+    func turn(candidate) {
+        // Accept at most one turn before the next movement tick.
+        if this.nextDirection != this.direction { return false }
+        if candidate == "UP" and this.direction == "DOWN" { return false }
+        if candidate == "DOWN" and this.direction == "UP" { return false }
+        if candidate == "LEFT" and this.direction == "RIGHT" { return false }
+        if candidate == "RIGHT" and this.direction == "LEFT" { return false }
+        this.nextDirection = candidate
+        return true
+    }
+
+    func step() {
+        if this.paused or this.over { return false }
+        this.direction = this.nextDirection
+        head = this.snake[0]
+        nextX = head["x"]
+        nextY = head["y"]
+        if this.direction == "UP" { nextY-- }
+        if this.direction == "DOWN" { nextY++ }
+        if this.direction == "LEFT" { nextX-- }
+        if this.direction == "RIGHT" { nextX++ }
+
+        // The board is a torus: crossing one edge continues at the opposite edge.
+        if nextX < 0 { nextX = this.width - 1 }
+        if nextX >= this.width { nextX = 0 }
+        if nextY < 0 { nextY = this.height - 1 }
+        if nextY >= this.height { nextY = 0 }
+        eating = nextX == this.foodX and nextY == this.foodY
+        if this.hitsBody(nextX, nextY, !eating) {
+            this.over = true
+            return false
+        }
+
+        this.snake = array.insert(this.snake, 0, {x: nextX, y: nextY})
+        if eating {
+            this.score++
+            this.tickMs = sn_max(60, 150 - this.score * 4)
+            this.spawnFood()
+        } else {
+            this.snake = array.removeAt(this.snake, #this.snake - 1)
+        }
+        return true
+    }
+}
+
+func sn_direction(key) {
+    if key == "UP" or key == "w" or key == "W" { return "UP" }
+    if key == "DOWN" or key == "s" or key == "S" { return "DOWN" }
+    if key == "LEFT" or key == "a" or key == "A" { return "LEFT" }
+    if key == "RIGHT" or key == "d" or key == "D" { return "RIGHT" }
+    return ""
+}
+
+func sn_draw(game, terminalWidth, terminalHeight, clearFirst) {
+    requiredWidth = game.width + 2
+    requiredHeight = game.height + 4
+    frame = term.hideCursor()
+    if clearFirst { frame = frame + term.clear() }
+    frame = frame + term.cursorTo(1, 1)
+    if terminalWidth < requiredWidth or terminalHeight < requiredHeight {
+        frame = frame + "Snake needs at least " + util.toString(requiredWidth)
+        frame = frame + "x" + util.toString(requiredHeight) + ".\r\n"
+        frame = frame + "Current terminal: " + util.toString(terminalWidth)
+        frame = frame + "x" + util.toString(terminalHeight) + ".\r\n"
+        return frame + "Resize the terminal, or press Q to quit."
+    }
+
+    title = " Snake  Score: " + util.toString(game.score)
+    if game.paused { title = title + "  [PAUSED]" }
+    frame = frame + sn_fit(title, requiredWidth) + "\r\n"
+    frame = frame + "+" + text.repeat("-", game.width) + "+\r\n"
+    y = 0
+    while y < game.height {
+        line = "|"
+        x = 0
+        while x < game.width {
+            segment = game.segmentAt(x, y)
+            if segment == 0 {
+                line = line + term.green("@")
+            } else {
+                if segment > 0 {
+                    line = line + term.green("o")
+                } else {
+                    if x == game.foodX and y == game.foodY {
+                        line = line + term.red("*")
+                    } else {
+                        line = line + " "
+                    }
+                }
+            }
+            x++
+        }
+        frame = frame + line + "|\r\n"
+        y++
+    }
+    frame = frame + "+" + text.repeat("-", game.width) + "+\r\n"
+    footer = "Arrows/WASD move  P pause  Q quit"
+    if game.over {
+        if game.won {
+            footer = "You filled the board!  R restart  Q quit"
+        } else {
+            footer = "Game over!  R restart  Q quit"
+        }
+    }
+    return frame + sn_fit(footer, requiredWidth)
+}
+
+func play() {
+    size = term.getSize()
+    boardWidth = sn_min(40, sn_max(12, size["width"] - 2))
+    boardHeight = sn_min(20, sn_max(6, size["height"] - 4))
+    game = new SnakeGame(boardWidth, boardHeight)
+    lastWidth = size["width"]
+    lastHeight = size["height"]
+    running = true
+
+    term.render(term.alternate(true) + term.hideCursor() + term.clear())
+    term.render(sn_draw(game, lastWidth, lastHeight, false))
+    while running {
+        waitMs = game.tickMs
+        if game.paused or game.over { waitMs = 500 }
+        event = io.readKey(waitMs, false)
+        repaint = false
+
+        if event["kind"] == "timeout" {
+            if !game.paused and !game.over {
+                game.step()
+                repaint = true
+            }
+        } else {
+            if event["kind"] == "key" {
+                key = event["key"]
+                direction = sn_direction(key)
+                if #direction > 0 { game.turn(direction) }
+                if key == "p" or key == "P" {
+                    game.paused = !game.paused
+                    repaint = true
+                }
+                if game.over {
+                    if key == "r" or key == "R" {
+                        game = new SnakeGame(game.width, game.height)
+                        repaint = true
+                    }
+                }
+                if key == "q" or key == "Q" { running = false }
+            }
+        }
+
+        nextSize = term.getSize()
+        resized = nextSize["width"] != lastWidth or nextSize["height"] != lastHeight
+        if resized {
+            lastWidth = nextSize["width"]
+            lastHeight = nextSize["height"]
+            repaint = true
+        }
+        if running and repaint {
+            term.render(sn_draw(game, lastWidth, lastHeight, resized))
+        }
+    }
+    term.render(term.alternate(false) + term.showCursor())
+    return game.score
+}
+
+func run() {
+    return play()
+}

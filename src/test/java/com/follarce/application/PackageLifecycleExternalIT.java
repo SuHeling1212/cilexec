@@ -575,12 +575,15 @@ class PackageLifecycleExternalIT {
         VfsService vfs = new VfsService(transactions, clock);
         VfsNode root = root(transactions, owner);
 
-        String moduleSource = "func save() { packageData.mkdir(\"cache\")\n"
-                + "packageData.write(\"cache/note.txt\", \"hello\")\n"
-                + "packageData.write(\"cache/next.txt\", \"world\")\nreturn true }\n"
-                + "func readNote() { return packageData.read(\"cache/note.txt\") }\n"
-                + "func clearCache() { return packageData.clear(\"cache\") }\n"
-                + "func cacheExists() { return packageData.exists(\"cache\") }\n"
+        String moduleSource = "func save() { packageData.mkdir(\"cache_%\")\n"
+                + "packageData.write(\"cache_%/note.txt\", \"hello\")\n"
+                + "packageData.write(\"cache_%/next.txt\", \"world\")\n"
+                + "packageData.mkdir(\"cacheX\")\n"
+                + "packageData.write(\"cacheX/keep.txt\", \"keep\")\nreturn true }\n"
+                + "func readNote() { return packageData.read(\"cache_%/note.txt\") }\n"
+                + "func clearCache() { return packageData.clear(\"cache_%\") }\n"
+                + "func cacheExists() { return packageData.exists(\"cache_%\") }\n"
+                + "func readOtherCache() { return packageData.read(\"cacheX/keep.txt\") }\n"
                 + "func run() { return save() }\n";
         com.follarce.package_manager.PackageManifest manifest =
                 new com.follarce.package_manager.PackageManifest("cilexec", "datanote", "0.0.1",
@@ -618,7 +621,7 @@ class PackageLifecycleExternalIT {
         assertEquals(true, saved.scope().get("value"));
         assertEquals("hello", new String(transactions.inUserTransaction(owner.userId(),
                 Isolation.READ_COMMITTED, transaction -> transaction.packages()
-                        .readDataEntry(owner.userId(), fileHash, "cache/note.txt")),
+                        .readDataEntry(owner.userId(), fileHash, "cache_%/note.txt")),
                 StandardCharsets.UTF_8));
 
         // A different process reads the same private data through the linked package.
@@ -627,7 +630,8 @@ class PackageLifecycleExternalIT {
                         + "cleared = note.clearCache()\nexists = note.cacheExists()\n",
                 packageHash, moduleSource, List.of(
                         new FclProgramLinker.Export("clearCache", List.of("note.clearCache")),
-                        new FclProgramLinker.Export("cacheExists", List.of("note.cacheExists"))));
+                        new FclProgramLinker.Export("cacheExists", List.of("note.cacheExists")),
+                        new FclProgramLinker.Export("readOtherCache", List.of("note.readOtherCache"))));
         @SuppressWarnings("unchecked")
         Map<String, Object> cleared = (Map<String, Object>) readBack.scope().get("cleared");
         assertEquals(2L, cleared.get("entriesRemoved"));
@@ -635,8 +639,13 @@ class PackageLifecycleExternalIT {
                 "clear keeps the requested directory itself");
         boolean cacheIsEmpty = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
                 transaction -> transaction.packages().listDataEntries(owner.userId(), fileHash,
-                        "cache").isEmpty());
+                        "cache_%").isEmpty());
         assertTrue(cacheIsEmpty);
+        assertEquals("keep", new String(transactions.inUserTransaction(owner.userId(),
+                Isolation.READ_COMMITTED, transaction -> transaction.packages()
+                        .readDataEntry(owner.userId(), fileHash, "cacheX/keep.txt")),
+                StandardCharsets.UTF_8),
+                "A percent or underscore in a cleared directory name is literal, never a wildcard");
 
         // Top-level user code has no package identity and must be rejected.
         CilProcess rejectProcess = new ProcessService(transactions).create(owner.userId(),

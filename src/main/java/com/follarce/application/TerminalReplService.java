@@ -35,6 +35,12 @@ public final class TerminalReplService {
     static final String LIBRARY_SCOPE_KEY = "cilexec.repl.library";
     static final String TERMINAL_PROCESS_SCOPE_KEY = "cilexec.repl.terminalProcess";
     public static final String TERMINAL_SESSION_SCOPE_KEY = "cilexec.repl.terminalSession";
+    /**
+     * Route used solely for visible output. Unlike the REPL lifecycle markers, this route is
+     * inherited by ordinary descendants so a program started from a terminal continues to
+     * write to that terminal.
+     */
+    public static final String TERMINAL_OUTPUT_ROUTE_SCOPE_KEY = "cilexec.terminal.outputRoute";
     private final UserTransactionExecutor transactions;
     private final ProgramService programs;
     private final FclCompiler compiler;
@@ -118,6 +124,7 @@ public final class TerminalReplService {
             FclContinuation runtime = nextSubmission(previous);
             runtime.scope().put(TERMINAL_PROCESS_SCOPE_KEY, true);
             runtime.scope().put(TERMINAL_SESSION_SCOPE_KEY, sessionId.toString());
+            runtime.scope().put(TERMINAL_OUTPUT_ROUTE_SCOPE_KEY, sessionId.toString());
             runtime.scope().put(FclPath.SCOPE_KEY,
                     transaction.terminal().workingDirectory(sessionId));
             if (!prepared.library().isEmpty()) {

@@ -566,6 +566,10 @@ class ProgramServiceTest {
                     .sorted(java.util.Comparator.comparing(ProcessPackageBinding::importName))
                     .toList();
         }
+        @Override public void removeProcessBindings(UUID processUid) {
+            processBindings.entrySet().removeIf(entry -> entry.getValue().processUid()
+                    .equals(processUid));
+        }
         @Override public boolean publishInstallation(UUID installationId, UUID ownerId,
                                                      ObjectHash rootFileHash, String source,
                                                      List<com.follarce.domain.packageinfo.PackageInstallation.Member> members,

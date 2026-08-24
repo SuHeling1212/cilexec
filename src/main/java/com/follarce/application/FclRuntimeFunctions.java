@@ -49,7 +49,6 @@ import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
-import com.follarce.package_manager.PackageCoordinateConflictException;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;
@@ -75,6 +74,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.function.Consumer;
 
 /** Explicit application adapter that exposes durable CilExec services to one FCL statement. */
 public class FclRuntimeFunctions {
@@ -100,22 +100,38 @@ public class FclRuntimeFunctions {
     protected final JavaExtensionCatalog extensions;
     protected final FclContinuationCodec codec = new FclContinuationCodec();
     protected final FclFunctionRegistry registry;
+    /** Requests are held only for the enclosing transaction and launched after its commit. */
+    protected final Consumer<VolatileProcessRequest> volatileProcessRequests;
+    /** Terminal frames are disposable delivery hints emitted only after state commit. */
+    protected final Consumer<TerminalFrame> terminalFrames;
 
     protected FclRuntimeFunctions(TransactionContext transaction, CilProcess process, Program program,
                                 FclContinuation continuation, Instant now,
                                 JavaExtensionCatalog extensions) {
         this(transaction, process, program, continuation, now, extensions,
-                FclBuiltins.pureRegistry());
+                FclBuiltins.pureRegistry(), FclRuntimeFunctions::volatileUnavailable,
+                FclRuntimeFunctions::terminalRenderUnavailable);
     }
 
     protected FclRuntimeFunctions(FclRuntimeFunctions source) {
         this(source.transaction, source.process, source.program, source.continuation, source.now,
-                source.extensions, source.registry);
+                source.extensions, source.registry, source.volatileProcessRequests,
+                source.terminalFrames);
     }
 
     protected FclRuntimeFunctions(TransactionContext transaction, CilProcess process, Program program,
                                 FclContinuation continuation, Instant now,
                                 JavaExtensionCatalog extensions, FclFunctionRegistry registry) {
+        this(transaction, process, program, continuation, now, extensions, registry,
+                FclRuntimeFunctions::volatileUnavailable,
+                FclRuntimeFunctions::terminalRenderUnavailable);
+    }
+
+    protected FclRuntimeFunctions(TransactionContext transaction, CilProcess process, Program program,
+                                FclContinuation continuation, Instant now,
+                                JavaExtensionCatalog extensions, FclFunctionRegistry registry,
+                                Consumer<VolatileProcessRequest> volatileProcessRequests,
+                                Consumer<TerminalFrame> terminalFrames) {
         this.transaction = java.util.Objects.requireNonNull(transaction, "transaction");
         this.process = java.util.Objects.requireNonNull(process, "process");
         this.program = java.util.Objects.requireNonNull(program, "program");
@@ -123,6 +139,9 @@ public class FclRuntimeFunctions {
         this.now = java.util.Objects.requireNonNull(now, "now");
         this.extensions = java.util.Objects.requireNonNull(extensions, "extensions");
         this.registry = java.util.Objects.requireNonNull(registry, "registry");
+        this.volatileProcessRequests = java.util.Objects.requireNonNull(volatileProcessRequests,
+                "volatileProcessRequests");
+        this.terminalFrames = java.util.Objects.requireNonNull(terminalFrames, "terminalFrames");
     }
 
     static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
@@ -134,10 +153,39 @@ public class FclRuntimeFunctions {
     static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
                                       Program program, FclContinuation continuation, Instant now,
                                       JavaExtensionCatalog extensions) {
+        return create(transaction, process, program, continuation, now, extensions,
+                FclRuntimeFunctions::volatileUnavailable,
+                FclRuntimeFunctions::terminalRenderUnavailable);
+    }
+
+    static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
+                                      Program program, FclContinuation continuation, Instant now,
+                                      JavaExtensionCatalog extensions,
+                                      Consumer<VolatileProcessRequest> volatileProcessRequests) {
+        return create(transaction, process, program, continuation, now, extensions,
+                volatileProcessRequests, FclRuntimeFunctions::terminalRenderUnavailable);
+    }
+
+    static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
+                                      Program program, FclContinuation continuation, Instant now,
+                                      JavaExtensionCatalog extensions,
+                                      Consumer<VolatileProcessRequest> volatileProcessRequests,
+                                      Consumer<TerminalFrame> terminalFrames) {
         FclRuntimeFunctions functions = new FclRuntimeFunctions(transaction, process, program,
-                continuation, now, extensions);
+                continuation, now, extensions, FclBuiltins.pureRegistry(),
+                volatileProcessRequests, terminalFrames);
         functions.register();
         return functions.registry;
+    }
+
+    private static void volatileUnavailable(VolatileProcessRequest request) {
+        throw new FclRuntimeException(
+                "process.run is only available while executing a durable process");
+    }
+
+    private static void terminalRenderUnavailable(TerminalFrame frame) {
+        throw new FclRuntimeException(
+                "term.render is only available while executing a durable process");
     }
 
     protected void register() {
@@ -159,6 +207,29 @@ public class FclRuntimeFunctions {
         processes.registerIpc();
         processes.registerSystem();
         extensions.installFunctions(registry, transaction, process, continuation, now);
+    }
+
+    /**
+     * Resolves the database file that owns the private package-data space for the linked
+     * package currently executing this function.  Both {@code packageData.*} and the
+     * package-private {@code process.run} source URI use this check, so a package can never
+     * make volatile work execute source from another package's private space.
+     */
+    protected ObjectHash currentPackageDataFile(FclFunctionRegistry.Invocation invocation) {
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+        String identity = invocation.packageIdentity();
+        if (identity == null) {
+            throw new FclRuntimeException(
+                    "package-private operations can only be called from installed package code");
+        }
+        PackageRelease release = transaction.packages().findRelease(
+                        new PackageRelease.Hash(new ObjectHash(identity)))
+                .orElseThrow(() -> new FclRuntimeException("Linked package release is missing"));
+        if (transaction.packages().findInstalledReleaseByDatabaseFileHash(
+                process.ownerId(), release.databaseFileHash()).isEmpty()) {
+            throw new FclRuntimeException("Linked package is not installed for the current user");
+        }
+        return release.databaseFileHash();
     }
 
     protected void registerPathState() {
@@ -345,6 +416,32 @@ public class FclRuntimeFunctions {
                     arity(args, 1, "term.sanitize");
                     return com.follarce.terminal.TerminalSanitizer.sanitize(
                             display(args.getFirst()));
+                })
+                .registerContextual("term", "render", (args, invocation) -> {
+                    arity(args, 1, "term.render");
+                    String text = string(args.getFirst(), "term.render frame");
+                    if (text.length() > 4 * 1024 * 1024) {
+                        throw new FclRuntimeException(
+                                "term.render frame exceeds 4194304 characters");
+                    }
+                    FclScope global = invocation.continuation().globalScope();
+                    if (!global.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)) {
+                        throw new FclRuntimeException(
+                                "term.render requires a process started from a terminal");
+                    }
+                    String route = string(global.get(
+                            TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY),
+                            "term.render terminal route");
+                    UUID routeId;
+                    try {
+                        routeId = UUID.fromString(route);
+                    } catch (IllegalArgumentException invalid) {
+                        throw new FclRuntimeException("term.render terminal route is invalid",
+                                invalid);
+                    }
+                    TerminalModeState.capture(global, text);
+                    terminalFrames.accept(new TerminalFrame(routeId, text));
+                    return null;
                 });
 
         FclFunctionRegistry.ContextFunction print = (args, invocation) -> {
@@ -579,8 +676,9 @@ public class FclRuntimeFunctions {
 
     protected Map<String, Object> outputPayload(String text, boolean newline) {
         FclScope global = continuation.globalScope();
-        Object route = global.contains(
-                TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
+        Object route = global.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)
+                ? global.get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)
+                : global.contains(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
                 ? global.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
                 : process.identity().processUid().toString();
         if (route instanceof String) TerminalModeState.capture(global, text);
@@ -1480,14 +1578,15 @@ public class FclRuntimeFunctions {
     }
 
     /**
-     * A fork child inherits its parent's full execution context but must not inherit
-     * the terminal process's lifecycle markers: only the interactive terminal root
-     * pauses when its appended bytecode runs out and waits for the next submission.
-     * Without this the child would be treated as a terminal process and never reach
-     * TERMINATED after a natural end or {@code util.exit()}.
+     * A fork child inherits its parent's execution context and terminal output route, but not
+     * the terminal process's lifecycle markers: only the interactive terminal root pauses when
+     * its appended bytecode runs out and waits for the next submission. Without this the child
+     * would be treated as a terminal process and never reach TERMINATED after a natural end or
+     * {@code util.exit()}.
      */
     protected static void stripTerminalLifecycle(FclContinuation runtime) {
         FclScope root = runtime.globalScope();
+        preserveTerminalOutputRoute(root);
         removeIfPresent(root, TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
         removeIfPresent(root, TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
         removeIfPresent(root, TerminalReplService.LIBRARY_SCOPE_KEY);
@@ -1495,6 +1594,14 @@ public class FclRuntimeFunctions {
             removeIfPresent(frame.callerScope(), TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
             removeIfPresent(frame.callerScope(), TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
             removeIfPresent(frame.callerScope(), TerminalReplService.LIBRARY_SCOPE_KEY);
+        }
+    }
+
+    private static void preserveTerminalOutputRoute(FclScope root) {
+        if (!root.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)
+                && root.contains(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)) {
+            root.put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
+                    root.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY));
         }
     }
 
@@ -1520,21 +1627,30 @@ public class FclRuntimeFunctions {
     }
 
     protected void audit(String action, UUID resourceId, Map<String, String> details) {
-        String resourceType;
-        if (action.startsWith("effect")) {
-            resourceType = "effect.effect";
-        } else if (action.startsWith("process")) {
-            resourceType = "process.process";
-        } else if (action.startsWith("network.")) {
-            resourceType = "network.request";
-        } else if (action.startsWith("package.")) {
-            resourceType = "package.binding";
-        } else {
-            resourceType = "vfs.node";
-        }
         transaction.audit().append(new AuditEvent(UUID.randomUUID(), AuditEvent.ActorType.USER,
-                process.ownerId().toString(), action, resourceType,
+                process.ownerId().toString(), action, auditResourceType(action),
                 resourceId.toString(), AuditEvent.Result.SUCCEEDED, details, now));
+    }
+
+    static String auditResourceType(String action) {
+        if (action.startsWith("effect")) {
+            return "effect.effect";
+        } else if (action.startsWith("process")) {
+            return "process.process";
+        } else if (action.startsWith("network.")) {
+            return "network.request";
+        } else if (action.startsWith("package.")) {
+            return "package.binding";
+        } else if (action.startsWith("program.")) {
+            return "program.program";
+        } else if (action.startsWith("terminal.")) {
+            return "terminal.session";
+        } else if (action.startsWith("timer.")) {
+            return "process.timer";
+        } else if (action.startsWith("audit.")) {
+            return "audit.event";
+        }
+        return "vfs.node";
     }
 
     protected static void requireUpdated(ProcessRepository.UpdateResult result, String operation) {

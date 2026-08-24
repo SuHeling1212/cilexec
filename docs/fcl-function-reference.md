@@ -278,6 +278,25 @@ initialized bindings in the current process; the source file may later change, b
 captured binding changes only when that process imports it again. Neither form accepts a
 human-readable package coordinate.
 
+The editor itself is implemented with the current FCL object syntax (`class`, `new`, fields,
+methods, and postfix updates). Ordinary one-line typing, deletion, and cursor movement update
+only the changed terminal rows instead of clearing and rebuilding the entire screen. Resizing,
+scrolling, multi-line edits, search prompts, and exit prompts still use a complete redraw so the
+display remains correct. For a very large document (over 10,000 lines) or a full frame above
+12,000 terminal cells, its normal-mode full-frame string construction runs in a package-private
+`process.run` worker. The terminal process still owns input and output; the worker only returns
+the completed ANSI string. The worker source is seeded once from the immutable package resource
+into that exact installed editor version's private data and is recreated if that cache is cleared.
+Editor frames use `term.render`, so they are published directly after the same transaction that
+commits the editor state instead of creating an `io.output` effect and requiring a second process
+resume. Printable input is grouped for at most 8 ms, and an already-buffered held Backspace key is
+reported as one repeat event; CilEdit applies the common same-line deletion with one string update.
+
+The bundled Snake example is another FCL application package at `cilexec/snake/0.0.3`. It uses
+an ordinary persistent FCL object as the complete game state and `term.render` for disposable
+frames, so a crash resumes from the last committed movement rather than persisting terminal
+escape sequences. See [`snake-game.md`](snake-game.md) for installation and controls.
+
 ## General Data & Permission Rules
 
 | Item | Description |
@@ -401,6 +420,7 @@ These functions return ANSI control text, usually combined with `io.print()` /
 | `term.truncate(value, width)` | Truncate text safely by terminal display columns without splitting Unicode code points. |
 | `term.getSize()` | Return the current terminal character size, for example `{"width":120,"height":40}`. Alias: `term.size()`. The size is sampled on every layout/render pass; without `io.readKey(timeout)` idle refresh, a resize becomes visible on the next key press. |
 | `term.sanitize(value)` | Return text with terminal control characters replaced by `?` and tabs expanded to four spaces. |
+| `term.render(frame)` | Queue one ANSI terminal frame for the terminal that started this process. The frame is published only after the enclosing FCL state transaction commits and does not suspend through the external-effect worker. It is a disposable TUI repaint, not a durable output journal: use `io.print`/`io.println` when the output itself must retain external-effect recovery semantics. Calls from processes without a terminal output route fail. |
 | `term.alternate(active)` | Return the enter/leave alternate-screen-buffer sequence so a full-screen program does not pollute the terminal scrollback. |
 | `term.mouse(active)` | Return the enable/disable mouse-reporting sequences (press + wheel events in SGR format). |
 | `term.paste(active)` | Return the enable/disable bracketed-paste sequences. |
@@ -443,7 +463,7 @@ intermediate state.
 | `io.println(value)` | Print with a newline. Alias: `util.println(value)`. |
 | `io.input([prompt])` | Wait for one full line of input. Alias: `util.input([prompt])`. While a process waits for input, the terminal prompt becomes `pid:?`. |
 | `io.readChar()` | Wait for input and return the first character; empty input returns an empty string. |
-| `io.readKey([timeoutMs[, coalesceText]])` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"focus","focus":true}` for focus events; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. When `coalesceText` is `true`, up to 64 printable characters arriving within 20 milliseconds of the first are returned as one paste event; the deadline never resets and control events keep their order. The 20 ms deadline bounds only the wait for further bytes; text already buffered when the batch is checked is always included, so a slow decode cannot truncate the paste. |
+| `io.readKey([timeoutMs[, coalesceText]])` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"paste_rejected","limit":262144}` when one bracketed paste exceeds 256 KiB (the full terminal sequence is consumed and none of it is inserted); `{"kind":"focus","focus":true}` for focus events; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. When `coalesceText` is `true`, up to 64 printable characters arriving within 8 milliseconds of the first are returned as one paste event; an already-buffered Backspace run is returned as `{"kind":"repeat","key":"BACKSPACE","count":n}`. The deadline never resets and control events keep their order. It bounds only the wait for further bytes; text already buffered when the batch is checked is always included. |
 | `io.readFile(path [, targetUser])` | Alias of `file.read`. |
 | `io.writeFile(path, content [, targetUser])` | Alias of `file.write`. |
 
@@ -491,11 +511,57 @@ control other users' processes.
 | `process.kill(pid)` | Terminate the given process; killing yourself is equivalent to `util.exit()`. Alias: `system.kill(pid)`. |
 | `process.pause(pid)` | Pause another controllable process. |
 | `process.continue(pid)` | Resume a paused controllable process. |
-| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. The child does not inherit the terminal lifecycle: it runs to the end of its program (or a `util.exit()`) and then reaches `TERMINATED`, so `process.waitPID`, `process.kill`, and `process.removeFinished` behave exactly like for an ordinary background process. Only the interactive terminal root itself pauses between submissions. |
-| `process.exec(path)` | Compile the FCL file at the given path in the current user's VFS and execute it in the current PID; the PID, process UID, owner, and parent-child relationships stay unchanged, and the old program's instructions after `exec` do not run. The path may be absolute or relative; a relative path resolves against the process working directory (`cilexec.path.cwd`, updated by `:cd`) exactly like C resolves against the process CWD. Terminal processes keep global variables, package bindings, working directory, and successfully declared top-level functions when they return to the terminal; ordinary background processes terminate when the target program ends. |
+| `process.fork()` | Copy the current FCL execution context; the parent receives the child PID and the child resumes with `0`. The child does not inherit the terminal lifecycle: it runs to the end of its program (or a `util.exit()`) and then reaches `TERMINATED`, so `process.waitPID`, `process.kill`, and `process.removeFinished` behave exactly like for an ordinary background process. A child of a terminal-started process does inherit that terminal's output route, so its `io.print*` output remains visible there; only the interactive terminal root itself pauses between submissions and receives input. |
+| `process.run(path, arguments)` | Start a new **volatile** calculation from an FCL source file in the current user's VFS. `arguments` is a required array, copied into the new context. The caller waits for the calculation's top-level `return`; the returned FCL value becomes the call result. Installed package code may also pass a URI returned by `packageData.root()`; it can execute only a source file in that same package's private data space. |
+| `process.exec(path [, arguments])` | Replace the current FCL program image while retaining its PID, process UID, owner, parent relationship, working directory, and terminal transport. The target begins with a clean FCL context: all old variables, objects, functions, classes, call/control state, package pins, and REPL library declarations are discarded. `arguments` defaults to `[]` and become the target program's startup arguments. |
+| `process.args()` / `process.arg(index)` | Return a copy of this program's startup-argument array / one argument. `process.arg` rejects an out-of-range index. Ordinary initial processes have `[]`; `exec` and `run` establish new arguments. |
 | `process.wait()` | Wait for a still-running child process; if there is no active child, return an empty array. |
 | `process.waitPID(pid)` | Wait for the accessible given PID and return `{pid, status}` when it ends. |
 | `process.removeFinished([pid])` | Explicitly remove a terminal process that has ended (`TERMINATED` or `FAILED`) and its persisted state (continuation, variables, events, timers, package pins). Without a PID it removes every finished terminal process and returns the count removed; with a PID it removes only that process and returns `true`. Running, suspended, and waiting processes are never removed. Administrator (`SYSTEM_ADMIN`) only. |
+
+### Volatile calculation processes
+
+Use a volatile process for disposable, CPU-heavy work whose result does not need to survive
+and does not need to be returned to the caller:
+
+```fcl
+// /calculate.fcl
+limit = process.arg(0)
+total = 0
+index = 0
+while index < limit {
+    total = total + index
+    index++
+}
+return total
+
+result = process.run("/calculate.fcl", [1000000])
+```
+
+The source file itself remains an ordinary VFS file, but the process created by
+`process.run` has **no database identity or saved runtime data**: it has no PID, no program
+row, no continuation, no variables, no scheduler entry, and no audit event. It never has a
+result record: its top-level `return` is passed in memory directly to the waiting caller.
+It never appears in `process.list()`, cannot be waited for, paused, killed, or cleaned up with
+the normal `process.*` lifecycle functions. Runtime shutdown, restart, or a forced kill simply
+discards it. A caller waiting for its result resumes with `VolatileProcessLost`; CilExec never
+automatically reruns the calculation. The caller stores only a minimal volatile-wait marker;
+if it assigns the returned value to an ordinary FCL name, that value is naturally persisted as
+the caller's own data after it resumes.
+
+Volatile source may use FCL language features and only the side-effect-free built-ins
+(`math`, `array`, `text`, `path`, `util`, formatting-only `term` helpers, and the read-only
+`process.args`/`process.arg`). It cannot import packages or modules, read input, print output,
+access files or package data, create processes, use IPC/timers/networking, or request effects.
+These limits guarantee that the volatile process does not save or externally change any CilExec
+data.
+
+A package-private worker is useful when an application first generates a pure helper source in
+its private data space and then repeatedly calls `process.run(packageData.root() + "worker.fcl",
+arguments)`. The Runtime verifies that the URI belongs to the calling installed package and uses
+a bounded in-memory cache keyed by the helper source bytes. The cache is only an optimisation:
+after restart the helper is read and compiled again, while the private source remains ordinary
+package data and is removed with that package's private space on uninstallation.
 
 ## Users: `user`
 
@@ -507,7 +573,7 @@ control other users' processes.
 | `user.list()` | Return basic information for all users; requires administrator identity. |
 | `user.create(username, password [, administratorCredentials])` | Create a new user. Without the third argument the account receives the ordinary user capabilities (any user may self-register, matching terminal registration). To create an administrator pass an array `[administratorUsername, administratorPassword]`: the named administrator must be ACTIVE, match the password, and currently hold effective `SYSTEM_ADMIN` (direct or group derived, expiry aware) - the database verifies all of this atomically with the creation, so a revoked or expired capability can never mint a fresh administrator. An audit event records the administrator actor (or the self-registering user). The new user's VFS root is provisioned on first login. |
 | `user.disable(userUuid)` | Disable a user account without deleting its data; requires administrator identity. |
-| `user.remove(userUuid)` | Permanently remove a user account and every record owned by that user in one database transaction; requires administrator identity. The calling administrator cannot remove itself. |
+| `user.remove(userUuid)` | Permanently remove a user account, every record owned by that user, and its no-login PostgreSQL tenant role in one database transaction; requires administrator identity. The calling administrator cannot remove itself. |
 | `user.switchUser(...)` | **Currently unavailable.** A persisted process cannot change identity in place; use `:logout` and log in again. |
 
 ## Networking & One-shot Sockets: `network`, `socket`
@@ -631,11 +697,12 @@ versions never share data automatically.
 | `packageData.read(path)` | Read one private file as text. |
 | `packageData.readChunk(path, offset, maximumBytes)` | Bounded random-access read. |
 | `packageData.write(path, value)` | Create or CAS-replace a private file. |
+| `packageData.seedResource(resourcePath, destinationPath)` | Copy one declared immutable package text resource into a missing private-data file. Returns `true` when it created the file and `false` when that destination already exists. This is intended for versioned, package-private helper sources such as pure `process.run` workers. |
 | `packageData.append(path, value)` | CAS-append text to a private file. |
 | `packageData.mkdir(path)` | Create a private directory entry. |
-| `packageData.list(path)` | List direct children of a private directory. |
-| `packageData.remove(path)` | Remove a file or empty directory entry. |
-| `packageData.clear(path)` | Delete every entry inside an existing private directory, but keep that directory. For example, `packageData.clear("cache")` clears the package's cache. |
+| `packageData.list(path)` | List direct children of a private directory. The supplied path is literal: `%` and `_` are ordinary filename characters, never patterns. |
+| `packageData.remove(path)` | Remove a file or empty directory entry. Paths are literal, including `%` and `_`. |
+| `packageData.clear(path)` | Delete every entry inside an existing private directory, but keep that directory. The path is literal, so `packageData.clear("cache_%")` cannot affect `cacheX`. |
 | `packageData.rename(source, destination)` | Rename inside the same private space. |
 | `packageData.size(path)` | Return a private file's byte size. |
 | `packageData.usage()` | Return `{logicalBytes, quota, files}` for the private space. |

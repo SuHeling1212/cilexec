@@ -8,9 +8,10 @@ public final class ProcessInbox {
     public static final String EFFECT_RESULT = "effect.result";
     public static final String TERMINAL_INPUT = "terminal.input";
     public static final String IPC_RESULT = "ipc.result";
+    public static final String VOLATILE_RESULT = "volatile.result";
 
     private static final Set<String> KEYS = Set.of(
-            TIMER_RESULT, EFFECT_RESULT, TERMINAL_INPUT, IPC_RESULT);
+            TIMER_RESULT, EFFECT_RESULT, TERMINAL_INPUT, IPC_RESULT, VOLATILE_RESULT);
 
     private ProcessInbox() {
     }

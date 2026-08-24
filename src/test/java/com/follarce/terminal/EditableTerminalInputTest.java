@@ -66,7 +66,7 @@ class EditableTerminalInputTest {
     }
 
     @Test
-    void coalescesPrintableTextThatArrivesWithinTwentyMilliseconds() throws Exception {
+    void coalescesPrintableTextThatArrivesWithinEightMilliseconds() throws Exception {
         TerminalInput input = TerminalInput.remoteRaw(
                 new DelayedSecondByteInputStream('a', 'b', 5), () -> 80);
         PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
@@ -77,7 +77,7 @@ class EditableTerminalInputTest {
     }
 
     @Test
-    void textBatchWaitHasABoundedTwentyMillisecondDeadline() throws Exception {
+    void textBatchWaitHasABoundedEightMillisecondDeadline() throws Exception {
         TerminalInput input = TerminalInput.remoteRaw(
                 new ByteArrayInputStream(new byte[]{'x'}), () -> 80);
         PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
@@ -89,9 +89,23 @@ class EditableTerminalInputTest {
                 input.readKeyEvent(output, true));
         long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
 
-        assertTrue(elapsedMillis >= 10, "batch mode must briefly wait for transport bytes");
+        assertTrue(elapsedMillis >= 4, "batch mode must briefly wait for transport bytes");
         assertTrue(elapsedMillis < 250, "batch mode must not wait indefinitely: "
                 + elapsedMillis + " ms");
+    }
+
+    @Test
+    void coalescesBufferedBackspaceRepeatsWithoutConsumingTheNextKey() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(
+                new byte[]{127, 127, 8, 'x'}), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"repeat\",\"key\":\"BACKSPACE\",\"count\":3}",
+                input.readKeyEvent(output, true));
+        assertEquals("{\"kind\":\"key\",\"key\":\"x\",\"shift\":false,"
+                        + "\"ctrl\":false,\"alt\":false,\"text\":\"x\"}",
+                input.readKeyEvent(output, true));
     }
 
     @Test
@@ -110,9 +124,9 @@ class EditableTerminalInputTest {
     }
 
     @Test
-    void laterTextDoesNotResetTheTwentyMillisecondDeadline() throws Exception {
+    void laterTextDoesNotResetTheEightMillisecondDeadline() throws Exception {
         TerminalInput input = TerminalInput.remoteRaw(new DelayedSecondByteInputStream(
-                new int[]{'a', 'b', 'c'}, new long[]{0, 15, 25}), () -> 80);
+                new int[]{'a', 'b', 'c'}, new long[]{0, 5, 12}), () -> 80);
         PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
                 StandardCharsets.UTF_8);
 
@@ -215,7 +229,7 @@ class EditableTerminalInputTest {
     @Test
     void decodesMouseFocusPasteAndUnknownEscapeEvents() throws Exception {
         byte[] source = ("\u001b[<0;5;3M\u001b[<65;7;9m\u001b[I"
-                + "\u001b[200~pasted \r\ntext\u001b[201~\u001b[1;9A")
+                + "\u001b[200~pasted 中🙂\r\ntext\u001b[201~\u001b[1;9A")
                 .getBytes(StandardCharsets.UTF_8);
         TerminalInput.EditableTerminalInput input = new TerminalInput.EditableTerminalInput(
                 new ByteArrayInputStream(source), null);
@@ -228,10 +242,26 @@ class EditableTerminalInputTest {
                 + "\"scroll\":-1,\"x\":7,\"y\":9,\"shift\":false,\"alt\":false,\"ctrl\":false}",
                 input.readKeyEvent(output));
         assertEquals("{\"kind\":\"focus\",\"focus\":true}", input.readKeyEvent(output));
-        assertEquals("{\"kind\":\"paste\",\"text\":\"pasted \\ntext\"}",
+        assertEquals("{\"kind\":\"paste\",\"text\":\"pasted 中🙂\\ntext\"}",
                 input.readKeyEvent(output));
         assertEquals("{\"kind\":\"key\",\"key\":\"UP\",\"shift\":false,\"ctrl\":false,"
                 + "\"alt\":true,\"text\":\"\"}", input.readKeyEvent(output));
+    }
+
+    @Test
+    void rejectsOversizedBracketedPasteAndConsumesItsTrailingMarker() throws Exception {
+        String source = "\u001b[200~" + "x".repeat(TerminalInput.MAX_BRACKETED_PASTE_CHARACTERS + 1)
+                + "\u001b[201~z";
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(
+                source.getBytes(StandardCharsets.UTF_8)), () -> 80);
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"paste_rejected\",\"limit\":262144}",
+                input.readKeyEvent(output));
+        assertEquals("{\"kind\":\"key\",\"key\":\"z\",\"shift\":false,"
+                        + "\"ctrl\":false,\"alt\":false,\"text\":\"z\"}",
+                input.readKeyEvent(output));
     }
 
     @Test

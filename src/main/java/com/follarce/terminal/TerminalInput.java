@@ -17,6 +17,12 @@ import java.util.function.Predicate;
 /** One input source that can disable password echo when attached to a real TTY. */
 public interface TerminalInput {
     int MAX_SUBMISSION_CHARACTERS = 256 * 1024;
+    /**
+     * A bracketed paste is one terminal event and is persisted before its receiver runs.
+     * Keep its maximum equal to a normal submitted command, so a damaged/accidental multi-MiB
+     * paste cannot monopolize the terminal reader or create an unbounded durable input row.
+     */
+    int MAX_BRACKETED_PASTE_CHARACTERS = MAX_SUBMISSION_CHARACTERS;
 
     /**
      * Raised when a submission exceeds the character limit. Unlike a transport failure,
@@ -169,7 +175,7 @@ public interface TerminalInput {
         private static final int HISTORY_LIMIT = TerminalService.COMMAND_HISTORY_LIMIT;
         private static final int MAX_TEXT_BATCH_CODE_POINTS = 64;
         private static final int PUSHBACK_CAPACITY = 4;
-        private static final long MAX_TEXT_BATCH_WAIT_NANOS = 20_000_000L;
+        private static final long MAX_TEXT_BATCH_WAIT_NANOS = 8_000_000L;
         private static final long TEXT_BATCH_POLL_NANOS = 1_000_000L;
         private static final long ESCAPE_SEQUENCE_WAIT_NANOS = 30_000_000L;
         /**
@@ -187,6 +193,7 @@ public interface TerminalInput {
         private final List<String> history = new ArrayList<>();
         private final StringBuilder pasteBuffer = new StringBuilder();
         private boolean inPaste;
+        private boolean rejectedPaste;
         private RawMode keyMode;
         private boolean kittyProtocolActive;
 
@@ -314,8 +321,9 @@ public interface TerminalInput {
             return event;
         }
 
-        /** Coalesces printable text for at most 20 ms from the first code point. */
+        /** Coalesces printable text for at most 8 ms from the first code point. */
         private String decodeTextBatch(int first) throws IOException {
+            if (first == 127 || first == 8) return decodeBufferedBackspaces(first);
             String firstText = decodePrintableText(first);
             if (firstText == null) return decodeEvent(first);
             StringBuilder text = new StringBuilder(firstText);
@@ -336,6 +344,22 @@ public interface TerminalInput {
             }
             if (codePoints == 1) return keyEvent(firstText, false, false, false, firstText);
             return "{\"kind\":\"paste\",\"text\":\"" + jsonEscape(text.toString()) + "\"}";
+        }
+
+        /** Collapses an already-buffered key-repeat backlog into one durable input event. */
+        private String decodeBufferedBackspaces(int first) throws IOException {
+            int count = 1;
+            while (count < MAX_TEXT_BATCH_CODE_POINTS && stream.available() > 0) {
+                int next = stream.read();
+                if (next != 127 && next != 8) {
+                    unread(next);
+                    break;
+                }
+                count++;
+            }
+            if (count == 1) return keyEvent("BACKSPACE", false, false, false);
+            return "{\"kind\":\"repeat\",\"key\":\"BACKSPACE\",\"count\":"
+                    + count + "}";
         }
 
         private boolean awaitTextBatchInput(long deadline) throws IOException {
@@ -366,22 +390,25 @@ public interface TerminalInput {
                             if (digit == '0') {
                                 int tail = stream.read();
                                 if (tail == '1' && stream.read() == '~') {
-                                    inPaste = false;
-                                    String text = pasteBuffer.toString().replace("\r\n", "\n");
-                                    pasteBuffer.setLength(0);
-                                    return "{\"kind\":\"paste\",\"text\":\""
-                                            + jsonEscape(text) + "\"}";
+                                    return finishBracketedPaste();
                                 }
+                                appendPaste("\u001b[2" + (char) digit + (char) tail);
+                            } else {
+                                appendPaste("\u001b[2" + (char) digit);
                             }
-                            pasteBuffer.append((char) code).append((char) digit);
                         } else {
-                            pasteBuffer.append((char) code);
+                            appendPaste("\u001b[" + (char) code);
                         }
                     } else if (bracket >= 0) {
-                        pasteBuffer.append((char) bracket);
+                        appendPaste("\u001b" + (char) bracket);
                     }
                 } else if (first >= 0) {
-                    pasteBuffer.appendCodePoint(first);
+                    String text = decodePrintableText(first);
+                    if (text != null) {
+                        appendPaste(text);
+                    } else {
+                        appendPasteCodePoint(first);
+                    }
                 } else {
                     return null;
                 }
@@ -433,6 +460,40 @@ public interface TerminalInput {
                 return rawEvent(escapeSequence(first, prefix, -1));
             }
             return decodePlainEvent(first);
+        }
+
+        /**
+         * Completes a bracketed paste without ever retaining an over-limit partial result.
+         * The complete terminal sequence is still consumed, keeping its trailing bytes from
+         * becoming shell commands or raw mouse text after the editor returns.
+         */
+        private String finishBracketedPaste() {
+            inPaste = false;
+            if (rejectedPaste) {
+                rejectedPaste = false;
+                pasteBuffer.setLength(0);
+                return "{\"kind\":\"paste_rejected\",\"limit\":"
+                        + MAX_BRACKETED_PASTE_CHARACTERS + "}";
+            }
+            String text = pasteBuffer.toString().replace("\r\n", "\n");
+            pasteBuffer.setLength(0);
+            return "{\"kind\":\"paste\",\"text\":\"" + jsonEscape(text) + "\"}";
+        }
+
+        private void appendPasteCodePoint(int codePoint) {
+            if (codePoint >= 0) appendPaste(new String(Character.toChars(codePoint)));
+        }
+
+        private void appendPaste(String value) {
+            if (rejectedPaste || value.isEmpty()) return;
+            if (value.length() > MAX_BRACKETED_PASTE_CHARACTERS - pasteBuffer.length()) {
+                // Reject rather than truncate: an incomplete source or document is worse than
+                // a clear message, and clearing releases the potentially very large buffer.
+                rejectedPaste = true;
+                pasteBuffer.setLength(0);
+                return;
+            }
+            pasteBuffer.append(value);
         }
 
         /** Distinguishes a standalone Escape key from the start of an ANSI sequence. */

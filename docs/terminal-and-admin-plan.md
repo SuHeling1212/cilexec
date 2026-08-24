@@ -170,7 +170,14 @@ works while FCL is executing. The session supports:
   with `:`, and `::text` sends raw input beginning with `:`;
 - key-mode input (`io.readKey`) forwards structured raw key, mouse, paste, focus, timeout,
   and unknown-sequence events to FCL. REPL history and cursor editing apply only to normal
-  editable line mode.
+  editable line mode. With text coalescing enabled, printable input waits at most 8 ms for a
+  batch; an already-buffered held Backspace key is sent as one ordered repeat event.
+- the terminal control plane waits for post-commit process-state notifications rather than
+  querying PostgreSQL every 25 ms. PostgreSQL remains authoritative and is rechecked after a
+  one-second fallback deadline if no notification arrives.
+- full-screen packages can use `term.render(frame)` for disposable redraws. It publishes only
+  after the editor's durable state commit and bypasses the external-effect worker; ordinary
+  `io.print` and `io.println` retain their journaled external-effect behavior.
 
 ### 3.4 Colon Commands
 

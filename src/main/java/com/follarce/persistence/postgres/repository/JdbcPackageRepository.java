@@ -165,6 +165,17 @@ public final class JdbcPackageRepository extends JdbcRepositorySupport implement
         }
     }
 
+    @Override
+    public void removeProcessBindings(UUID processUid) {
+        String sql = "DELETE FROM process.package_binding WHERE process_uid=?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, processUid);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("package.removeProcessBindings", exception);
+        }
+    }
+
     private static ProcessPackageBinding mapProcessBinding(ResultSet rows) throws SQLException {
         return new ProcessPackageBinding(rows.getObject("process_uid", UUID.class),
                 rows.getString("import_name"),

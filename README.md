@@ -20,6 +20,10 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
 - **Crash-safe continuations** — the full interpreter state (variables, call stack, program
   counter) is serialized after every committed execution slice; `state_version` +
   `execution_epoch` fencing prevents stale workers from committing.
+- **Responsive durable terminal** — post-commit process notifications replace the former
+  25 ms terminal polling loop. Full-screen FCL applications may use `term.render` to publish
+  disposable repaint frames after state commit, while ordinary `io.print` retains its
+  recoverable effect-journal path.
 - **Immutable executable artifacts** — new programs retain readable FCL source and a separate
   versioned FCLB instruction artifact; recovery validates both and runs the original compiled
   instruction table without recompiling source. Nothing is deleted on a schedule: programs,
@@ -196,6 +200,7 @@ mvn clean verify      # mandatory PostgreSQL/crash-recovery ITs + quality gates 
 - [Architecture baseline](docs/architecture-baseline.md)
 - [Java source extensions](docs/java-extension-development.md)
 - [Package & market](docs/package-market.md)
+- [Durable FCL Snake game](docs/snake-game.md)
 - [Headless mode](docs/headless-mode.md)
 - [Host-to-VFS import](docs/host-vfs-import.md)
 - [Terminal & administration](docs/terminal-and-admin-plan.md)

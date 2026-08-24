@@ -58,6 +58,17 @@ public final class TerminalOutputRouter {
         return delivered;
     }
 
+    /** Best-effort non-blocking path for disposable full-screen repaint frames. */
+    public static boolean publishFrame(UUID routeId, String text) {
+        Set<SessionOutput> outputs = OUTPUTS.get(routeId);
+        if (outputs == null || outputs.isEmpty()) return false;
+        boolean delivered = false;
+        for (SessionOutput output : outputs) {
+            if (output.offerNow(text, false)) delivered = true;
+        }
+        return delivered;
+    }
+
     private record Entry(String text, boolean newline) {}
 
     /** Bounded asynchronous writer; a stalled socket stalls only this virtual thread. */
@@ -83,6 +94,10 @@ public final class TerminalOutputRouter {
                 Thread.currentThread().interrupt();
                 return false;
             }
+        }
+
+        private boolean offerNow(String text, boolean newline) {
+            return !closed && !failed && queue.offer(new Entry(text, newline));
         }
 
         private void writeLoop() {

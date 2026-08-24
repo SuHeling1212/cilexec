@@ -177,4 +177,63 @@ class ResourceControlExternalIT {
         assertEquals(Boolean.FALSE, blocked.get("removed"));
         assertNotNull(blocked.get("processes"));
     }
+
+    @Test
+    void permanentlyRemovesTheTenantRoleOnlyForExplicitUserRemoval() throws Exception {
+        JdbcTransactionExecutor transactions = transactions();
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        AuthService auth = new AuthService(transactions, CLOCK);
+        UserAccount administrator = auth.create("role-admin-" + suffix,
+                "admin-password-123".toCharArray(), Set.of(Capability.SYSTEM_ADMIN));
+        UserAccount disabled = auth.create("role-disabled-" + suffix,
+                "disabled-password-123".toCharArray(), Set.of(Capability.PROCESS_CREATE));
+        UserAccount removed = auth.create("role-target-" + suffix,
+                "target-password-123".toCharArray(), Set.of(Capability.PROCESS_CREATE));
+        String disabledRole = "cilexec_user_" + disabled.userId().toString().replace("-", "");
+        String tenantRole = "cilexec_user_" + removed.userId().toString().replace("-", "");
+
+        transactions.inUserTransaction(administrator.userId(), Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().disableUserByAdministrator(administrator.userId(),
+                        disabled.userId(), UUID.randomUUID(), CLOCK.instant()));
+
+        Boolean result = transactions.inUserTransaction(administrator.userId(),
+                Isolation.READ_COMMITTED, transaction -> transaction.auth().removeUserByAdministrator(
+                        administrator.userId(), removed.userId(), UUID.randomUUID(), CLOCK.instant()));
+        assertTrue(result);
+        Boolean userGone = transactions.inTransaction(Isolation.READ_COMMITTED,
+                transaction -> transaction.auth().findUser(removed.userId()).isEmpty());
+        assertTrue(userGone);
+
+        try (Connection connection = adminConnection();
+             var statement = connection.prepareStatement(
+                     "SELECT count(*) FROM pg_catalog.pg_roles WHERE rolname = ?")) {
+            statement.setString(1, disabledRole);
+            try (var rows = statement.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(1, rows.getInt(1),
+                        "user.disable is reversible and must keep the tenant role");
+            }
+            statement.setString(1, tenantRole);
+            try (var rows = statement.executeQuery()) {
+                assertTrue(rows.next());
+                assertEquals(0, rows.getInt(1),
+                        "an explicitly removed user must not leave a PostgreSQL tenant role behind");
+            }
+        }
+    }
+
+    @Test
+    void removesTheRetiredAutomaticAuditRetentionChannel() throws Exception {
+        try (Connection connection = adminConnection(); Statement statement = connection.createStatement()) {
+            try (var rows = statement.executeQuery("""
+                    SELECT to_regprocedure('audit.purge_expired_events(integer)') IS NULL,
+                           to_regclass('audit.retention_policy') IS NULL
+                    """)) {
+                assertTrue(rows.next());
+                assertTrue(rows.getBoolean(1));
+                assertTrue(rows.getBoolean(2));
+            }
+            statement.execute("SELECT meta.assert_security_invariants()");
+        }
+    }
 }

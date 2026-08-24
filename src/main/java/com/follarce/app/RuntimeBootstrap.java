@@ -28,6 +28,7 @@ import com.follarce.terminal.TerminalAccessService;
 import com.follarce.terminal.TerminalBootstrap;
 import com.follarce.terminal.TerminalSettings;
 import com.follarce.terminal.TerminalServer;
+import com.follarce.terminal.ProcessStateNotifier;
 import com.zaxxer.hikari.HikariDataSource;
 
 import java.time.Clock;
@@ -95,6 +96,7 @@ public final class RuntimeBootstrap {
         private final RecoveryCoordinator recovery;
         private final TerminalSettings terminalSettings;
         private final AtomicBoolean resourcesClosed = new AtomicBoolean();
+        private final ProcessStateNotifier processStateNotifier = new ProcessStateNotifier();
 
         private volatile Consumer<Throwable> fence;
         private volatile ControlLock control;
@@ -127,7 +129,7 @@ public final class RuntimeBootstrap {
             runtimeTransactions = new JdbcTransactionExecutor(runtimeDataSource);
             processHandler = handlerFactory == null
                     ? new ProcessStatementExecutor(runtimeTransactions,
-                    this::wakeScheduler, this::wakeEffects)
+                    this::wakeScheduler, this::wakeEffects, processStateNotifier)
                     : handlerFactory.apply(runtimeTransactions);
             metadata = new RuntimeMetadataStore(runtimeDataSource);
             recovery = new RecoveryCoordinator(runtimeDataSource);
@@ -299,20 +301,20 @@ public final class RuntimeBootstrap {
                             this::wakeScheduler, () -> {
                                 SchedulerService current = scheduler;
                                 if (current != null) current.wakeInterrupt();
-                            })
+                            }, processStateNotifier)
                             : DatabaseTerminalControl.interactive(runtimeTransactions, account, contextId,
                             runtimeShutdown, password -> access.login(account.username(), password).isPresent(),
                             this::wakeScheduler, () -> {
                                 SchedulerService current = scheduler;
                                 if (current != null) current.wakeInterrupt();
-                            }),
+                            }, processStateNotifier),
                     (account, contextId) -> DatabaseTerminalControl.headless(
                             runtimeTransactions, account, contextId, runtimeShutdown,
                             password -> access.login(account.username(), password).isPresent(),
                             this::wakeScheduler, () -> {
                                 SchedulerService current = scheduler;
                                 if (current != null) current.wakeInterrupt();
-                            }),
+                            }, processStateNotifier),
                     terminalSettings.username());
             terminalServer.start();
             health.terminalServer(true);
@@ -322,6 +324,9 @@ public final class RuntimeBootstrap {
         public synchronized void stopScheduler() {
             health.schedulerLoop(false);
             health.workListener(false);
+            if (processHandler instanceof ProcessStatementExecutor durableExecutor) {
+                durableExecutor.closeVolatileProcesses();
+            }
             if (workListener != null) {
                 workListener.close();
                 workListener = null;

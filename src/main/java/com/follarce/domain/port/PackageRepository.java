@@ -41,6 +41,11 @@ public interface PackageRepository {
         return List.of();
     }
 
+    /** Drops only the imported-package pins of a process whose FCL image is being replaced. */
+    default void removeProcessBindings(UUID processUid) {
+        throw new UnsupportedOperationException("Process package binding removal is not implemented");
+    }
+
     // ------------------------------------------------------------------
     // Per-user installation ledger
     // ------------------------------------------------------------------

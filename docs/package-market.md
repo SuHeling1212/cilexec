@@ -232,18 +232,19 @@ then regenerates and rechecks `SHA256SUMS`. Only after all staged artifacts vali
 the release artifacts in `dist` replaced. Use `--skip-tests` when CI has already run the
 full test suite; use `--verify-only` to only recheck the existing artifacts.
 
-The editor source lives in `dist/editor/`. To build a single `.db` use the standalone
-single-file builder:
+The editor source lives in `dist/editor/`. To build a single `.db`, use the package
+builder bundled into the Runtime JAR so package validation uses the authoritative current
+FCL compiler:
 
 ```bash
-python3 tools/PackageBuild.py dist/editor editor.db
+java --enable-native-access=ALL-UNNAMED -jar target/cilexec-app.jar \
+  package build dist/editor editor.db
 ```
 
-The builder depends on neither the CilExec JAR, Docker, nor a database service and produces
-an immutable `editor.db`; it requires Python 3 with the standard `sqlite3` module and does
-not publish anything. Let the release flow generate the official repository path and
-catalog. When the content at the same coordinate changes, the package version must be
-incremented.
+The command requires neither Docker nor a database service and produces an immutable
+`editor.db`; it does not publish anything. Let the release flow generate the official
+repository path and catalog. When the content at the same coordinate changes, the package
+version must be incremented.
 
 Every dependency is an exact distribution-file SHA-256:
 

@@ -360,7 +360,8 @@ public final class JdbcProcessRepository extends JdbcRepositorySupport
                     || kind == Continuation.WaitKind.CHILD
                     || kind == Continuation.WaitKind.PROCESS;
             case WAITING_TIMER -> kind == Continuation.WaitKind.TIMER;
-            case WAITING_EFFECT -> kind == Continuation.WaitKind.EFFECT;
+            case WAITING_EFFECT -> kind == Continuation.WaitKind.EFFECT
+                    || kind == Continuation.WaitKind.VOLATILE;
             case WAITING_INPUT -> kind == Continuation.WaitKind.INPUT;
             default -> false;
         };

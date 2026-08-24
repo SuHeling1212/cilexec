@@ -1,0 +1,36 @@
+{
+  "namespace": "cilexec",
+  "name": "snake",
+  "version": "0.0.3",
+  "languageVersion": "fcl-0.0.3",
+  "kind": "application",
+  "modules": [
+    {
+      "name": "main",
+      "path": "main.fcl"
+    }
+  ],
+  "resources": [],
+  "dependencies": [],
+  "entrypoints": [
+    {
+      "name": "run",
+      "module": "main",
+      "function": "run"
+    }
+  ],
+  "exports": [
+    {
+      "name": "play",
+      "module": "main",
+      "symbol": "play"
+    }
+  ],
+  "capabilities": [
+    {
+      "key": "terminal.raw_input",
+      "required": true,
+      "rationale": "Read direction, pause, restart, and quit keys"
+    }
+  ]
+}

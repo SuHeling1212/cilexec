@@ -3,8 +3,10 @@ package com.follarce.persistence.postgres.repository;
 import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
+import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.vfs.ObjectHash;
+import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.persistence.postgres.error.PersistenceFailure;
 import com.follarce.persistence.postgres.error.SqlStateClassifier;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
@@ -29,6 +31,7 @@ public final class RecoveryCoordinator {
 
     private final DataSource dataSource;
     private final JsonCodec json = new JsonCodec();
+    private final FclContinuationCodec fclValues = new FclContinuationCodec();
 
     public RecoveryCoordinator(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -107,6 +110,10 @@ public final class RecoveryCoordinator {
                     case RUNNING -> process.transitionTo(CilProcess.Status.READY, transitionAt);
                     case TERMINATING -> process.transitionTo(CilProcess.Status.TERMINATED,
                             transitionAt);
+                    case WAITING_EFFECT -> isWaitingForVolatileProcess(process)
+                            ? volatileProcessLost(process, transitionAt) : null;
+                    case PAUSED -> isWaitingForVolatileProcess(process)
+                            ? volatileProcessLost(process, transitionAt) : null;
                     default -> null;
                 };
                 if (recoveredProcess == null) continue;
@@ -135,6 +142,31 @@ public final class RecoveryCoordinator {
             }
         }
         return new ProcessRecoveryResult(recovered, failed);
+    }
+
+    private CilProcess volatileProcessLost(CilProcess process, Instant at) {
+        Map<String, Object> handoff = Map.of("ok", false, "failure", "VolatileProcessLost");
+        Map<String, Continuation.PersistedValue> variables = new java.util.LinkedHashMap<>(
+                process.continuation().globalVariables());
+        variables.put(ProcessInbox.VOLATILE_RESULT, new Continuation.PersistedValue(
+                fclValues.valueType(handoff), fclValues.valueToJson(handoff)));
+        Continuation source = process.continuation();
+        Continuation resumed = new Continuation(source.programId(), source.programHash(),
+                source.programCounter(), source.callStack(), source.scopeStack(),
+                source.exceptionStack(), source.controlStack(), Optional.empty(),
+                Map.copyOf(variables), source.packageBindings(), source.languageVersion(),
+                source.runtimeFormatVersion());
+        CilProcess.Status target = process.status() == CilProcess.Status.PAUSED
+                ? CilProcess.Status.PAUSED : CilProcess.Status.READY;
+        return process.commitStatement(resumed, target, process.stateVersion(),
+                process.executionEpoch(), at);
+    }
+
+    private static boolean isWaitingForVolatileProcess(CilProcess process) {
+        return process.continuation().waitState()
+                .map(Continuation.WaitState::kind)
+                .map(kind -> kind == Continuation.WaitKind.VOLATILE)
+                .orElse(false);
     }
 
     private static List<UUID> lockRecoverableProcesses(Connection connection)

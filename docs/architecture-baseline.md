@@ -550,6 +550,20 @@ log files
 container IDs
 ```
 
+### Explicit volatile calculation exception
+
+`process.run(path, arguments)` deliberately creates a computation outside the durable process
+model. It is not a recoverable CilExec process: the Runtime retains only an in-memory compiled
+program, arguments, and continuation while it runs, and discards them on completion, shutdown,
+or crash. It creates no process/program/continuation/scheduler/audit rows and has no PID or
+observable lifecycle. Its top-level result is handed directly to the waiting durable caller;
+the caller stores only a minimal volatile-wait marker and, on a restart before delivery, resumes
+with `VolatileProcessLost` rather than rerunning the calculation. The volatile registry exposes
+only pure FCL built-ins plus read-only startup arguments, so it cannot write to PostgreSQL, VFS,
+package data, IPC, timers, effects, terminals, or the network. This explicit opt-in is solely
+for disposable CPU-bound work; every ordinary CilExec process remains fully durable and
+recoverable.
+
 ---
 
 ## 5. PostgreSQL Roles, Users, and RLS
@@ -866,14 +880,17 @@ Within a resource class, rows are locked in stable primary-key order. Process-li
 
 ### 8.6 Fork Children and the Terminal Lifecycle
 
-`process.fork()` copies the caller's full continuation, including any REPL terminal markers
+`process.fork()` copies the caller's full continuation. The interactive REPL lifecycle markers
 (`cilexec.repl.terminalProcess`, `cilexec.repl.terminalSession`, and the accumulated library
-source key) on the root scope and every call-frame scope. The child must not keep those
-markers: they exist only to make the interactive terminal root pause between submissions
-and to recompile the accumulated library when the root accepts the next submission.
+source key) on the root scope and every call-frame scope must not survive in the child: they
+exist only to make the interactive terminal root pause between submissions and to recompile
+the accumulated library when the root accepts the next submission. The separate
+`cilexec.terminal.outputRoute` marker does survive: it is not lifecycle state, and carries the
+terminal selected for visible output through every descendant process.
 
-Before the child is persisted, the fork implementation strips the terminal markers from the
-child's root scope and every call-frame scope. A fork child therefore:
+Before the child is persisted, the fork implementation strips the lifecycle markers from the
+child's root scope and every call-frame scope, while retaining its output route. A fork child
+therefore:
 
 - reaches `TERMINATED` when it runs to the end of its program or calls `util.exit()`
   (never lingering in `PAUSED` waiting for appended bytecode);
@@ -881,6 +898,8 @@ child's root scope and every call-frame scope. A fork child therefore:
 - can be cleaned up with `process.kill`/`process.removeFinished` exactly like a background process;
 - never re-enters the terminal REPL submission loop, because the marker the REPL checks is
   gone.
+- sends `io.print` and `io.println` to the terminal that started its ancestor; an `exec` in the
+  child keeps the same route, so this remains true across arbitrary descendant depth.
 
 Only the terminal root itself keeps the markers and pauses after each submission. The
 stripped keys exist only on the child's copied scopes, so the parent's own continuation is
@@ -1517,6 +1536,20 @@ set process.interrupt_requested
 ```
 
 Durable working directories, FCL process context, and per-user command history are persisted per session and survive reconnects and Runtime restarts.
+
+**Interactive state notification.** A host terminal waiting for its attached process observes a
+Runtime-local process-state version, reads the authoritative database snapshot, and blocks on a
+condition until a successful execution-slice commit signals that version. The version check closes
+the query/wait lost-wake race. A one-second durable database recheck is the fallback for a missed
+or out-of-band signal; the notifier contains no semantic state and is never needed for recovery.
+
+**TUI frame path.** `term.render(frame)` is restricted to processes carrying a terminal output
+route. It records terminal private-mode changes in the continuation and accumulates a bounded
+frame batch inside the current execution transaction. Only after that transaction commits does
+the Runtime publish the frames through the bounded terminal output router. Frames are disposable
+screen repaint hints and are not effect-journal rows; general `io.print`/`io.println` output keeps
+the durable `io.output` effect path. A rollback publishes no frame, and a Runtime crash never
+loses committed FCL/editor state even though an unjournaled repaint may need to be regenerated.
 
 **Disconnect awareness.** Interactive terminal sessions use an input pump: end-of-stream wakes
 the blocked session loop and interrupts foreground work. A 60-second socket timeout is only a

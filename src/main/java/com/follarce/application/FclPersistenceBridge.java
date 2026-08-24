@@ -339,6 +339,7 @@ final class FclPersistenceBridge {
                 case "ipc" -> Continuation.WaitKind.IPC;
                 case "timer" -> Continuation.WaitKind.TIMER;
                 case "effect" -> Continuation.WaitKind.EFFECT;
+                case "volatile" -> Continuation.WaitKind.VOLATILE;
                 default -> null;
             };
             return waitKind == null ? Optional.empty()
@@ -356,6 +357,7 @@ final class FclPersistenceBridge {
             case IPC -> "ipc:" + requiredTarget(wait);
             case TIMER -> "timer:" + requiredTarget(wait);
             case EFFECT -> "effect:" + requiredTarget(wait);
+            case VOLATILE -> "volatile:" + requiredTarget(wait);
             case CHILD -> "child:" + wait.targetPid().map(Object::toString).orElse("unknown");
             case PROCESS -> "process:" + wait.targetPid().map(Object::toString).orElse("unknown");
         };

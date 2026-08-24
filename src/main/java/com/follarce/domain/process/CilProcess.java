@@ -151,7 +151,7 @@ public record CilProcess(
         return switch (waitState.orElseThrow().kind()) {
             case IPC, CHILD, PROCESS -> Status.WAITING_IPC;
             case TIMER -> Status.WAITING_TIMER;
-            case EFFECT -> Status.WAITING_EFFECT;
+            case EFFECT, VOLATILE -> Status.WAITING_EFFECT;
             case INPUT -> Status.WAITING_INPUT;
         };
     }

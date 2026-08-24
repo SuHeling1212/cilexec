@@ -35,6 +35,7 @@ class MarketEditorPackageTest {
         String module = new String(new SqlitePackageReader().readResource(database, "main.fcl"),
                 StandardCharsets.UTF_8);
         java.util.List<Map<String, Object>> events = java.util.List.of(
+                Map.of("kind", "repeat", "key", "BACKSPACE", "count", 3L),
                 Map.of("kind", "mouse", "button", "WHEEL", "action", "SCROLL", "scroll", 1L,
                         "x", 5L, "y", 3L),
                 Map.of("kind", "mouse", "button", "LEFT", "action", "PRESS",
@@ -57,7 +58,7 @@ class MarketEditorPackageTest {
                     return true;
                 })
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> null)
+                .register("term", "render", arguments -> null)
                 .register("io", "readKey", arguments ->
                         events.get(eventIndex.getAndIncrement()));
         FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
@@ -102,7 +103,7 @@ class MarketEditorPackageTest {
                 .register("file", "read", arguments -> "")
                 .register("file", "write", arguments -> true)
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> {
+                .register("term", "render", arguments -> {
                     if (((String) arguments.getFirst()).contains("CilEdit")) {
                         renderedFrames.incrementAndGet();
                     }
@@ -159,7 +160,7 @@ class MarketEditorPackageTest {
                     return true;
                 })
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> {
+                .register("term", "render", arguments -> {
                     frames.add((String) arguments.getFirst());
                     return null;
                 })
@@ -204,8 +205,17 @@ class MarketEditorPackageTest {
                 StandardCharsets.UTF_8);
         assertTrue(module.contains("func open(editorPath)"));
         assertTrue(module.contains("func run()"));
+        assertTrue(module.contains("class EditorState"));
+        assertTrue(module.contains("func bodyHeight()"));
+        assertTrue(module.contains("state.left++"));
+        assertTrue(module.contains("packageData.seedResource(\"render-worker.fcl\", workerPath)"));
+        assertTrue(module.contains("process.run(packageData.root() + workerPath"));
         assertTrue(module.contains("array.removeAt(lines, row)"));
         assertFalse(module.contains("while index < #lines"));
+        String worker = new String(reader.readResource(database, "render-worker.fcl"),
+                StandardCharsets.UTF_8);
+        assertTrue(worker.contains("state = process.arg(0)"));
+        assertTrue(worker.contains("return screen + wr_cursor(state)"));
     }
 
     @Test
@@ -234,7 +244,7 @@ class MarketEditorPackageTest {
                     return true;
                 })
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> {
+                .register("term", "render", arguments -> {
                     frames.add((String) arguments.getFirst());
                     return null;
                 })
@@ -261,15 +271,19 @@ class MarketEditorPackageTest {
         assertFalse(continuation.failed());
         assertEquals("ab\nc", saved.get());
         assertEquals(keys.size(), keyIndex.get());
-        assertTrue(firstInputStep.get() > 0 && firstInputStep.get() <= 150,
+        assertTrue(firstInputStep.get() > 0 && firstInputStep.get() <= 180,
                 "editor first frame must reach input without excessive FCL steps: "
                         + firstInputStep.get());
-        assertTrue(frames.get(2).contains("\u001b[2J"),
-                "ordinary character input must redraw the full terminal");
+        assertFalse(frames.get(2).contains("\u001b[2J"),
+                "ordinary character input must update only the changed row");
+        assertTrue(frames.get(2).contains("a"),
+                "the incremental row update must include the typed character");
+        assertTrue(frames.get(2).length() * 3 < frames.get(1).length(),
+                "typing one character must send far less than a full-screen frame");
         assertTrue(frames.get(3).contains("ab"),
-                "the full redraw must show the current buffer state");
-        assertTrue(frames.get(3).contains("[Modified]"),
-                "the full redraw must show the dirty marker");
+                "the incremental redraw must show the current buffer state");
+        assertTrue(frames.get(2).contains("[Modified]"),
+                "the incremental redraw must update the dirty marker in the title");
     }
 
     @Test
@@ -295,7 +309,7 @@ class MarketEditorPackageTest {
                     return true;
                 })
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> null)
+                .register("term", "render", arguments -> null)
                 .register("io", "readKey", arguments -> {
                     String key = keys.get(keyIndex.getAndIncrement());
                     return java.util.Map.of("kind", "key", "key", key,
@@ -339,7 +353,7 @@ class MarketEditorPackageTest {
                 .register("file", "read", arguments -> "中a")
                 .register("file", "write", arguments -> true)
                 .register("env", "get", arguments -> "/")
-                .register("io", "print", arguments -> {
+                .register("term", "render", arguments -> {
                     frames.add((String) arguments.getFirst());
                     return null;
                 })

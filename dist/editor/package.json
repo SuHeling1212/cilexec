@@ -10,7 +10,9 @@
       "path": "main.fcl"
     }
   ],
-  "resources": [],
+  "resources": [
+    "render-worker.fcl"
+  ],
   "dependencies": [],
   "entrypoints": [
     {
@@ -41,6 +43,11 @@
       "key": "terminal.raw_input",
       "required": true,
       "rationale": "Read interactive editor keys"
+    },
+    {
+      "key": "package.data",
+      "required": true,
+      "rationale": "Cache the package-private pure rendering worker"
     }
   ]
 }

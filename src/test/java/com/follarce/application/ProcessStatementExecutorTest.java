@@ -28,12 +28,16 @@ import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageManifest;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
+import com.follarce.terminal.TerminalOutputRouter;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -369,10 +373,10 @@ class ProcessStatementExecutorTest {
 
     @Test
     void execCompilesAVfsPathAndPreservesTheExistingProcessIdentity() {
-        Fixture fixture = new Fixture("process.exec(\"/next.fcl\")\noldTail = 99\n",
+        Fixture fixture = new Fixture("process.exec(\"/next.fcl\", [41])\noldTail = 99\n",
                 com.follarce.extension.SourceExtensionIndex.catalog());
         StoredObject source = StoredObject.create(new BinaryContent(
-                "func afterExec() { return retained + 2 }\nreplacement = plusOne(retained)\n".getBytes(
+                "func afterExec() { return process.arg(0) + 2 }\nreplacement = process.arg(0) + 1\n".getBytes(
                         java.nio.charset.StandardCharsets.UTF_8)),
                 ProgramService.SOURCE_MEDIA_TYPE, NOW);
         fixture.persistence.vfs.saveObject(source);
@@ -387,8 +391,11 @@ class ProcessStatementExecutorTest {
                 java.util.Set.of(), false, NOW, NOW));
         FclContinuation terminalRuntime = new FclContinuation();
         terminalRuntime.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
+        String terminalRoute = UUID.randomUUID().toString();
         terminalRuntime.scope().put(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY,
-                UUID.randomUUID().toString());
+                terminalRoute);
+        terminalRuntime.scope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
+                terminalRoute);
         terminalRuntime.scope().put(com.follarce.fcl.FclPath.SCOPE_KEY, "/");
         terminalRuntime.scope().put("retained", 41L);
         terminalRuntime.scope().put(TerminalReplService.LIBRARY_SCOPE_KEY,
@@ -417,8 +424,12 @@ class ProcessStatementExecutorTest {
                 .restore(replaced.continuation());
         assertEquals(true, replacementState.scope()
                 .get(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY));
+        assertEquals(terminalRoute, replacementState.scope()
+                .get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY));
         assertEquals("/", replacementState.scope().get(com.follarce.fcl.FclPath.SCOPE_KEY));
-        assertEquals(41L, replacementState.scope().get("retained"));
+        assertEquals(List.of(41L), replacementState.scope()
+                .get(FclProcessRuntimeFunctions.STARTUP_ARGUMENTS_SCOPE_KEY));
+        assertFalse(replacementState.scope().contains("retained"));
         assertFalse(replacementState.scope().contains(ProcessInbox.EFFECT_RESULT));
         assertFalse(replacementState.scope().contains("oldTail"));
 
@@ -437,12 +448,31 @@ class ProcessStatementExecutorTest {
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(fixture.persistence.processes.current.continuation());
         assertEquals(42L, restored.scope().get("replacement"));
-        assertEquals(41L, restored.scope().get("retained"));
+        assertFalse(restored.scope().contains("retained"));
         assertFalse(restored.scope().contains("oldTail"));
-        assertTrue(TerminalReplService.librarySource(restored).contains("func afterExec"));
+        assertFalse(TerminalReplService.librarySource(restored).contains("func afterExec"));
         assertEquals(originalIdentity, fixture.persistence.processes.current.identity());
         assertEquals(CilProcess.Status.PAUSED,
                 fixture.persistence.processes.current.status());
+    }
+
+    @Test
+    void forkChildrenKeepTerminalOutputRouteButNotTerminalLifecycle() {
+        FclContinuation descendant = new FclContinuation();
+        String terminalRoute = UUID.randomUUID().toString();
+        descendant.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
+        descendant.scope().put(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY, terminalRoute);
+        descendant.scope().put(TerminalReplService.LIBRARY_SCOPE_KEY, "func old() { }");
+
+        FclRuntimeFunctions.stripTerminalLifecycle(descendant);
+        FclRuntimeFunctions.stripTerminalLifecycle(descendant);
+
+        assertFalse(TerminalReplService.isTerminalProcess(descendant));
+        assertFalse(descendant.scope().contains(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY));
+        assertFalse(descendant.scope().contains(TerminalReplService.LIBRARY_SCOPE_KEY));
+        assertEquals(terminalRoute, descendant.scope()
+                .get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY),
+                "every fork depth keeps the original terminal output route");
     }
 
     @Test
@@ -488,6 +518,50 @@ class ProcessStatementExecutorTest {
         FclContinuation replacementState = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(replaced.continuation());
         assertFalse(replacementState.scope().contains("oldTail"));
+    }
+
+    @Test
+    void runDeliversAnInMemoryVolatileReturnValueWithoutCreatingAChildProcess() throws Exception {
+        Fixture fixture = new Fixture("answer = process.run(\"/sum.fcl\", [40, 2])\n",
+                com.follarce.extension.SourceExtensionIndex.catalog());
+        StoredObject source = StoredObject.create(new BinaryContent(
+                "return process.arg(0) + process.arg(1)\n".getBytes(
+                        java.nio.charset.StandardCharsets.UTF_8)),
+                ProgramService.SOURCE_MEDIA_TYPE, NOW);
+        fixture.persistence.vfs.saveObject(source);
+        com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
+                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        fixture.persistence.vfs.insertNode(root);
+        fixture.persistence.vfs.insertNode(new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.of(root.nodeId()), fixture.ownerId, "sum.fcl",
+                com.follarce.domain.vfs.VfsNode.Type.FILE, Optional.of(source.objectHash()),
+                java.util.Set.of(), false, NOW, NOW));
+        int programsBefore = fixture.persistence.programs.byId.size();
+        int auditsBefore = fixture.persistence.audit.events.size();
+
+        fixture.executor.executeSlice(fixture.claim);
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (fixture.persistence.processes.current.status() == CilProcess.Status.WAITING_EFFECT
+                && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+
+        assertEquals(CilProcess.Status.READY, fixture.persistence.processes.current.status());
+        CilProcess ready = fixture.persistence.processes.current;
+        CilProcess claimed = ready.claim(ready.executionEpoch() + 1, NOW);
+        fixture.persistence.processes.current = claimed;
+        fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+        fixture.persistence.scheduler.lease = fixture.claim;
+        runToCompletion(fixture);
+
+        FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(42L, restored.scope().get("answer"));
+        assertEquals(fixture.processUid, fixture.persistence.processes.current.identity().processUid());
+        assertEquals(programsBefore, fixture.persistence.programs.byId.size());
+        assertEquals(auditsBefore, fixture.persistence.audit.events.size());
     }
 
     @Test
@@ -606,6 +680,64 @@ class ProcessStatementExecutorTest {
                 fixture.persistence.processes.current.status());
         assertEquals(0, schedulerWakes.get());
         assertEquals(1, effectWakes.get());
+    }
+
+    @Test
+    void publishesTerminalFrameAfterSliceCommitWithoutCreatingAnEffect() throws Exception {
+        UUID routeId = UUID.randomUUID();
+        Fixture fixture = terminalFrameFixture("term.render(\"frame\")\n", routeId);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        PrintWriter output = new PrintWriter(bytes, true, StandardCharsets.UTF_8);
+        TerminalOutputRouter.attach(routeId, output);
+        try {
+            fixture.executor.executeSlice(fixture.claim);
+            long deadline = System.nanoTime() + Duration.ofSeconds(1).toNanos();
+            while (!bytes.toString(StandardCharsets.UTF_8).contains("frame")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+
+            assertEquals(CilProcess.Status.TERMINATED,
+                    fixture.persistence.processes.current.status());
+            assertTrue(fixture.persistence.effects.requests.isEmpty());
+            assertEquals("frame", bytes.toString(StandardCharsets.UTF_8));
+        } finally {
+            TerminalOutputRouter.detachAll(output);
+        }
+    }
+
+    @Test
+    void discardsQueuedTerminalFrameWhenLaterWorkInTheSliceFails() throws Exception {
+        UUID routeId = UUID.randomUUID();
+        Fixture fixture = terminalFrameFixture("term.render(\"must-not-appear\")\nmissing()\n",
+                routeId);
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        PrintWriter output = new PrintWriter(bytes, true, StandardCharsets.UTF_8);
+        TerminalOutputRouter.attach(routeId, output);
+        try {
+            fixture.executor.executeSlice(fixture.claim);
+
+            assertEquals(CilProcess.Status.FAILED,
+                    fixture.persistence.processes.current.status());
+            assertEquals("", bytes.toString(StandardCharsets.UTF_8));
+        } finally {
+            TerminalOutputRouter.detachAll(output);
+        }
+    }
+
+    private static Fixture terminalFrameFixture(String source, UUID routeId) {
+        Fixture fixture = new Fixture(source,
+                com.follarce.extension.SourceExtensionIndex.catalog());
+        FclContinuation runtime = new FclContinuation();
+        runtime.globalScope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
+                routeId.toString());
+        Continuation persisted = new FclPersistenceBridge(new FclContinuationCodec()).persist(
+                fixture.processUid, fixture.program, initial(fixture.program), runtime);
+        fixture.persistence.processes.current = new CilProcess(
+                fixture.persistence.processes.current.identity(), fixture.ownerId,
+                CilProcess.Status.RUNNING, 7, 5, persisted, Optional.empty(),
+                NOW.minusSeconds(60), NOW);
+        return fixture;
     }
 
     @Test
