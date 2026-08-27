@@ -16,6 +16,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -27,15 +28,100 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SchedulerServiceTest {
     @Test
-    void idleWorkersDoNotRepeatedlyClaimUntilNotified() throws Exception {
+    void reconciliationClaimsDurableWorkWhenEveryWakeHintIsLost() throws Exception {
+        UUID processUid = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        AtomicBoolean ready = new AtomicBoolean();
+        AtomicBoolean claimed = new AtomicBoolean();
+        CountDownLatch initialEmptyRead = new CountDownLatch(1);
+        CountDownLatch executed = new CountDownLatch(1);
+        SchedulerRepository scheduler = new SchedulerRepository() {
+            @Override public void enqueue(SchedulerQueueEntry entry) { }
+
+            @Override public Optional<SchedulerClaim> claimNext(
+                    UUID runnerId, UUID bootId, Instant now, Duration leaseDuration) {
+                initialEmptyRead.countDown();
+                if (!ready.get() || !claimed.compareAndSet(false, true)) {
+                    return Optional.empty();
+                }
+                return Optional.of(new SchedulerClaim(processUid, ownerId, runnerId, bootId, 1,
+                        now, now, now.plus(leaseDuration)));
+            }
+
+            @Override public boolean heartbeat(SchedulerClaim claim) { return false; }
+            @Override public void release(UUID ignoredProcessUid, long executionEpoch) { }
+            @Override public int releaseExpired(Instant now) { return 0; }
+        };
+        TransactionContext context = contextWith(scheduler);
+        TransactionExecutor transactions = new TransactionExecutor() {
+            @Override public <T> T inTransaction(Isolation isolation,
+                                                  TransactionWork<T> work) {
+                return work.execute(context);
+            }
+        };
+
+        try (SchedulerService service = new SchedulerService(transactions, claim -> {
+            assertEquals(processUid, claim.processUid());
+            executed.countDown();
+        }, UUID.randomUUID(), 3, Duration.ofSeconds(5), Duration.ofMillis(1),
+                failure -> { })) {
+            service.start();
+            assertTrue(initialEmptyRead.await(1, TimeUnit.SECONDS));
+
+            // Models a committed READY row whose disposable Java callback and PostgreSQL
+            // LISTEN/NOTIFY hint were both missed. The durable queue must still make progress.
+            ready.set(true);
+            assertTrue(executed.await(1, TimeUnit.SECONDS),
+                    "a lost wake hint must not strand durable READY work");
+        }
+    }
+
+    @Test
+    void wakeGateDoesNotLoseSignalBetweenDurableReadAndWait() throws Exception {
+        SchedulerService.WakeGate gate = new SchedulerService.WakeGate();
+        long observed = gate.version();
+
+        // Models a PostgreSQL commit notification arriving after claimNext started but before
+        // the worker has entered its in-memory wait.
+        gate.signal();
+
+        CountDownLatch returned = new CountDownLatch(1);
+        Thread waiter = Thread.ofVirtual().start(() -> {
+            gate.awaitChange(observed);
+            returned.countDown();
+        });
+        assertTrue(returned.await(1, TimeUnit.SECONDS),
+                "a notification that precedes await must still force an immediate recheck");
+        waiter.join(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void wakeGateBlocksWithoutNotificationAndThenWakesOneWaiter() throws Exception {
+        SchedulerService.WakeGate gate = new SchedulerService.WakeGate();
+        long observed = gate.version();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch returned = new CountDownLatch(1);
+        Thread waiter = Thread.ofVirtual().start(() -> {
+            entered.countDown();
+            gate.awaitChange(observed);
+            returned.countDown();
+        });
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        assertFalse(returned.await(150, TimeUnit.MILLISECONDS));
+        gate.signal();
+        assertTrue(returned.await(1, TimeUnit.SECONDS));
+        waiter.join(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void boundedReconciliationWakesOnlyOneNormalWorkerPerInterval() throws Exception {
         int workerCount = 3;
         AtomicInteger claims = new AtomicInteger();
         CountDownLatch initialClaims = new CountDownLatch(workerCount);
-        CountDownLatch notifiedClaim = new CountDownLatch(workerCount + 1);
         SchedulerRepository scheduler = emptyScheduler(() -> {
             claims.incrementAndGet();
             initialClaims.countDown();
-            notifiedClaim.countDown();
         });
         TransactionContext context = contextWith(scheduler);
         TransactionExecutor transactions = new TransactionExecutor() {
@@ -50,12 +136,22 @@ class SchedulerServiceTest {
                 Duration.ofMillis(1), failure -> { })) {
             service.start();
             assertTrue(initialClaims.await(1, TimeUnit.SECONDS));
-            assertFalse(notifiedClaim.await(150, TimeUnit.MILLISECONDS));
-            assertEquals(workerCount, claims.get());
+
+            Thread.sleep(SchedulerService.DURABLE_RECONCILIATION_INTERVAL.toMillis() * 3);
+            int reconciledClaims = claims.get();
+            assertTrue(reconciledClaims >= workerCount + 2,
+                    "the durable reconciler must periodically recheck PostgreSQL");
+            assertTrue(reconciledClaims <= workerCount + 5,
+                    "only one worker may poll when every queue is idle: " + reconciledClaims);
 
             service.wake();
-            assertTrue(notifiedClaim.await(1, TimeUnit.SECONDS));
-            assertEquals(workerCount + 1, claims.get());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (claims.get() == reconciledClaims && System.nanoTime() < deadline) {
+                java.util.concurrent.locks.LockSupport.parkNanos(
+                        TimeUnit.MILLISECONDS.toNanos(1));
+            }
+            assertTrue(claims.get() > reconciledClaims,
+                    "an explicit notification must still wake a worker immediately");
         }
     }
 

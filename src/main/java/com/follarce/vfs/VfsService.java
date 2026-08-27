@@ -11,7 +11,7 @@ import com.follarce.domain.vfs.StoredObject;
 import com.follarce.domain.vfs.VfsMount;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.domain.vfs.VfsFileLimits;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -23,15 +23,15 @@ import java.util.UUID;
 
 /** Atomic VFS use cases backed by immutable content-addressed objects. */
 public final class VfsService {
-    private final UserTransactionExecutor transactions;
+    private final UserTransactionRunner transactions;
     private final Clock clock;
     private final Set<String> hostSourceKeys;
 
-    public VfsService(UserTransactionExecutor transactions, Clock clock) {
+    public VfsService(UserTransactionRunner transactions, Clock clock) {
         this(transactions, clock, Set.of());
     }
 
-    public VfsService(UserTransactionExecutor transactions, Clock clock,
+    public VfsService(UserTransactionRunner transactions, Clock clock,
                       Set<String> hostSourceKeys) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.clock = java.util.Objects.requireNonNull(clock, "clock");

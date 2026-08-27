@@ -9,7 +9,7 @@ import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.timer.ProcessTimer;
 import com.follarce.fcl.FclContinuationCodec;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -26,11 +26,11 @@ public final class TimerService {
     public static final String TERMINAL_TIMEOUT_EVENT = "{\"kind\":\"timeout\"}";
     private static final FclContinuationCodec CONTINUATION_CODEC = new FclContinuationCodec();
     private final TransactionExecutor runtimeTransactions;
-    private final UserTransactionExecutor userTransactions;
+    private final UserTransactionRunner userTransactions;
     private final Clock clock;
 
     public TimerService(TransactionExecutor runtimeTransactions,
-                        UserTransactionExecutor userTransactions,
+                        UserTransactionRunner userTransactions,
                         Clock clock) {
         this.runtimeTransactions = java.util.Objects.requireNonNull(runtimeTransactions,
                 "runtimeTransactions");

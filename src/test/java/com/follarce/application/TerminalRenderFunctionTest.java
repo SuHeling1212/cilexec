@@ -29,18 +29,18 @@ class TerminalRenderFunctionTest {
         UUID routeId = UUID.randomUUID();
         continuation.globalScope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
                 routeId.toString());
-        List<TerminalFrame> frames = new ArrayList<>();
+        List<ProcessOutput> outputs = new ArrayList<>();
         FclRuntime runtime = new FclRuntime(FclRuntimeFunctions.create(persistence, process,
                 program, continuation, Instant.now(),
                 com.follarce.extension.SourceExtensionIndex.catalog(), ignored -> { },
-                frames::add));
+                outputs::add));
 
         FclStepResult result = runtime.executeOne(new FclCompiler().compile(source), continuation);
 
         assertEquals(FclStepResult.Status.ADVANCED, result.status());
         assertEquals(FclStepResult.Status.COMPLETED,
                 runtime.executeOne(new FclCompiler().compile(source), continuation).status());
-        assertEquals(List.of(new TerminalFrame(routeId, "frame")), frames);
+        assertEquals(List.of(ProcessOutput.interactionFrame(routeId, "frame")), outputs);
         assertTrue(persistence.effects.requests.isEmpty());
         assertTrue(continuation.waitState().kind()
                 == FclContinuation.WaitKind.NONE);

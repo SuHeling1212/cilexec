@@ -10,7 +10,7 @@ import com.follarce.domain.port.PackageRepository;
 import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 
@@ -21,11 +21,11 @@ import java.util.UUID;
 
 /** Imports immutable package databases; package identity is the SHA-256, never a name. */
 public final class PackageManager {
-    private final UserTransactionExecutor transactions;
+    private final UserTransactionRunner transactions;
     private final SqlitePackageReader packageReader;
     private final Clock clock;
 
-    public PackageManager(UserTransactionExecutor transactions,
+    public PackageManager(UserTransactionRunner transactions,
                           SqlitePackageReader packageReader,
                           Clock clock) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");

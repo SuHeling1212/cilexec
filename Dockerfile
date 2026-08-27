@@ -31,9 +31,10 @@ COPY src ./src
 # from the runtime image while making the source available to Maven's test phase.
 COPY docs/examples/fcl-oop-smoke-test.fcl ./docs/examples/fcl-oop-smoke-test.fcl
 COPY docker/postgres/init/00-cilexec-bootstrap.sh ./docker/postgres/init/00-cilexec-bootstrap.sh
-# Editor source is a distributable FCL package fixture used by package tests;
-# the old market/sources tree no longer exists.
+# Distributable FCL package sources are fixtures used by package tests;
+# keep every tested package available inside the Maven build stage.
 COPY dist/editor ./dist/editor
+COPY dist/snake ./dist/snake
 RUN --mount=type=cache,target=/root/.m2 \
     mvn --batch-mode --no-transfer-progress \
         -Djava.net.preferIPv4Stack=true \

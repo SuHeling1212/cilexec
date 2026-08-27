@@ -1,21 +1,15 @@
 package com.follarce.terminal;
 
+import com.follarce.application.InteractionViewport;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 
 /** Per-user terminal sizes supplied by lightweight clients, with a local-console fallback. */
 public final class TerminalDimensions {
-    private static final int DEFAULT_WIDTH = 80;
-    private static final int DEFAULT_HEIGHT = 24;
-    private static final AtomicReference<Size> CURRENT = new AtomicReference<>(environment());
-    private static final ConcurrentHashMap<UUID, Size> BY_USER = new ConcurrentHashMap<>();
     private static final AtomicLong LAST_REFRESH_NANOS = new AtomicLong(Long.MIN_VALUE);
     private static final long REFRESH_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
@@ -23,17 +17,15 @@ public final class TerminalDimensions {
     }
 
     public static Size current() {
-        return CURRENT.get();
+        return from(InteractionViewport.current());
     }
 
     public static Size current(UUID ownerId) {
-        return BY_USER.getOrDefault(java.util.Objects.requireNonNull(ownerId, "ownerId"),
-                current());
+        return from(InteractionViewport.current(ownerId));
     }
 
     public static void update(UUID ownerId, Size size) {
-        BY_USER.put(java.util.Objects.requireNonNull(ownerId, "ownerId"),
-                java.util.Objects.requireNonNull(size, "size"));
+        InteractionViewport.update(ownerId, toViewport(size));
     }
 
     /** Refreshes from the attached TTY; unsupported or detached terminals retain the last size. */
@@ -44,7 +36,7 @@ public final class TerminalDimensions {
             return current();
         }
         if (!LAST_REFRESH_NANOS.compareAndSet(previous, now)) return current();
-        queryTty().ifPresent(CURRENT::set);
+        queryTty().ifPresent(size -> InteractionViewport.updateDefault(toViewport(size)));
         return current();
     }
 
@@ -84,16 +76,12 @@ public final class TerminalDimensions {
         }
     }
 
-    private static Size environment() {
-        Map<String, String> environment = System.getenv();
-        try {
-            int width = Integer.parseInt(environment.getOrDefault("COLUMNS", ""));
-            int height = Integer.parseInt(environment.getOrDefault("LINES", ""));
-            if (width > 0 && height > 0) return new Size(width, height);
-        } catch (NumberFormatException ignored) {
-            // Detached processes use a stable conventional terminal size.
-        }
-        return new Size(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    private static Size from(InteractionViewport.Size size) {
+        return new Size(size.width(), size.height());
+    }
+
+    private static InteractionViewport.Size toViewport(Size size) {
+        return new InteractionViewport.Size(size.width(), size.height());
     }
 
     public record Size(int width, int height) {

@@ -12,7 +12,7 @@ import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.vfs.ObjectHash;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 import com.google.gson.JsonObject;
 
 import java.time.Clock;
@@ -24,11 +24,11 @@ import java.util.UUID;
 
 /** Creates an effect journal row and process wait state in one statement transaction. */
 public final class EffectService {
-    private final UserTransactionExecutor transactions;
+    private final UserTransactionRunner transactions;
     private final EffectHandlerRegistry handlers;
     private final Clock clock;
 
-    public EffectService(UserTransactionExecutor transactions,
+    public EffectService(UserTransactionRunner transactions,
                          EffectHandlerRegistry handlers,
                          Clock clock) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");

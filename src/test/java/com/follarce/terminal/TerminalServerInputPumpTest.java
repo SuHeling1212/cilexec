@@ -9,8 +9,35 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TerminalServerInputPumpTest {
+    @Test
+    void resizeFramesWakeRawKeyModeOnceAndAreCoalesced() throws Exception {
+        java.io.PipedInputStream socket = new java.io.PipedInputStream();
+        java.io.PipedOutputStream writer = new java.io.PipedOutputStream(socket);
+        TerminalServer.DimensionInputStream input = new TerminalServer.DimensionInputStream(
+                socket, Duration.ofMinutes(5).toNanos());
+        try {
+            input.beginKeyMode();
+            writer.write(new byte[]{0, 'S', ' ', '4', '0', ' ', '1', '2', '0', '\n'});
+            writer.write(new byte[]{0, 'S', ' ', '4', '1', ' ', '1', '2', '1', '\n'});
+            writer.write('x');
+            writer.flush();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (input.available() < 2 && System.nanoTime() < deadline) Thread.yield();
+
+            assertTrue(input.available() >= 2);
+            assertEquals(0, input.read());
+            assertEquals('x', input.read());
+            assertEquals(0, input.available(), "pending resize frames must collapse to one event");
+        } finally {
+            input.close();
+            writer.close();
+            socket.close();
+        }
+    }
+
     @Test
     void closingAConnectionWithAFullInputQueueStopsThePumpThread() throws Exception {
         // The source never ends and never blocks, so the pump fills the 64 KiB queue

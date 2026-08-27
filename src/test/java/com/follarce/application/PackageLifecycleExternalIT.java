@@ -398,7 +398,8 @@ class PackageLifecycleExternalIT {
 
         assertThrows(PersistenceFailure.class, () -> transactions.<Void>inUserTransaction(
                 owner.userId(), Isolation.READ_COMMITTED, transaction -> {
-                    transaction.setLocalSetting("app.cilexec_test_fail",
+                    ((com.follarce.persistence.postgres.transaction.JdbcTransactionContext) transaction)
+                            .setLocalSetting("app.cilexec_test_fail",
                             "uninstall_after_data");
                     transaction.packages().uninstall(owner.userId(), fileHash, false,
                             UUID.randomUUID());

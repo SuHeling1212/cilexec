@@ -5,6 +5,7 @@ import com.follarce.auth.Authorization;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.process.CilProcess;
+import com.follarce.domain.process.ProcessInterrupt;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.port.ProcessRepository;
@@ -210,7 +211,7 @@ public final class TerminalService {
             if (process.isEmpty() || !process.orElseThrow().ownerId().equals(ownerId)
                     || process.get().isTerminal()) return false;
             CilProcess current = process.orElseThrow();
-            transaction.terminal().requestInterrupt(new TerminalSession.Interrupt(
+            transaction.interrupts().requestInterrupt(new ProcessInterrupt(
                     current.identity().processUid(), now, Optional.empty()));
             if (current.status() == CilProcess.Status.READY || isBlocked(current.status())) {
                 CilProcess runnable = current;
@@ -244,7 +245,7 @@ public final class TerminalService {
             Optional<CilProcess> process = transaction.processes().findByPid(pid);
             if (process.isEmpty() || !process.orElseThrow().ownerId().equals(ownerId)) return false;
             CilProcess current = process.orElseThrow();
-            transaction.terminal().requestInterrupt(new TerminalSession.Interrupt(
+            transaction.interrupts().requestInterrupt(new ProcessInterrupt(
                     current.identity().processUid(), now, Optional.empty()));
             if (isBlocked(current.status())) {
                 CilProcess ready = current.commitStatement(current.continuation().withoutWait(),

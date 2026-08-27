@@ -11,7 +11,7 @@ import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +21,9 @@ import java.util.UUID;
 
 /** Process lifecycle use cases, each completed in one explicit database transaction. */
 public final class ProcessService {
-    private final UserTransactionExecutor transactions;
+    private final UserTransactionRunner transactions;
 
-    public ProcessService(UserTransactionExecutor transactions) {
+    public ProcessService(UserTransactionRunner transactions) {
         this.transactions = transactions;
     }
 

@@ -286,7 +286,7 @@ class TerminalReplServiceTest {
         ProcessStatementExecutor executor = new ProcessStatementExecutor(persistence, null,
                 new FclProgramCodec(), new FclContinuationCodec(), CLOCK);
 
-        repl.submit(owner, sessionId, "io.readKey(250, true)");
+        repl.submit(owner, sessionId, "io.readKey(true)");
         CilProcess current = persistence.processes.current;
         CilProcess claimed = current.claim(current.executionEpoch() + 1, NOW);
         persistence.processes.current = claimed;

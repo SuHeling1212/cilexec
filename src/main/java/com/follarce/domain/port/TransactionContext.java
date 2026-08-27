@@ -27,17 +27,13 @@ public interface TransactionContext extends AutoCloseable {
 
     TerminalRepository terminal();
 
-    default EnvironmentRepository environment() {
-        throw new UnsupportedOperationException("Environment repository is not implemented");
+    /** Narrow process-signal view; the legacy terminal aggregate remains for compatibility. */
+    default ProcessInterruptPort interrupts() {
+        return terminal();
     }
 
-    /**
-     * Sets a transaction-local PostgreSQL GUC on the current connection.
-     * Primarily a test hook for fault injection; production callers use it
-     * only through narrow, reviewed entry points.
-     */
-    default void setLocalSetting(String name, String value) {
-        throw new UnsupportedOperationException("Local settings are not implemented");
+    default EnvironmentRepository environment() {
+        throw new UnsupportedOperationException("Environment repository is not implemented");
     }
 
     void commit();

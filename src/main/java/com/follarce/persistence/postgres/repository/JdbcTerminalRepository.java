@@ -1,6 +1,7 @@
 package com.follarce.persistence.postgres.repository;
 
 import com.follarce.domain.port.TerminalRepository;
+import com.follarce.domain.process.ProcessInterrupt;
 import com.follarce.domain.terminal.TerminalSession;
 import com.follarce.persistence.postgres.mapper.JdbcValues;
 import java.sql.Connection;
@@ -351,7 +352,7 @@ public final class JdbcTerminalRepository extends JdbcRepositorySupport implemen
     }
 
     @Override
-    public void requestInterrupt(TerminalSession.Interrupt interrupt) {
+    public void requestInterrupt(ProcessInterrupt interrupt) {
         String sql = "UPDATE process.process SET interrupt_requested=?,updated_at=? WHERE process_uid=?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setBoolean(1, interrupt.handledAt().isEmpty());

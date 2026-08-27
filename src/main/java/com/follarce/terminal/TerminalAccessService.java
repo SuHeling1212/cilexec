@@ -1,6 +1,7 @@
 package com.follarce.terminal;
 
 import com.follarce.auth.AuthService;
+import com.follarce.auth.AccountCapabilityProfiles;
 import com.follarce.auth.UsernamePolicy;
 import com.follarce.config.JdbcUrlPolicy;
 import com.follarce.domain.audit.AuditEvent;
@@ -30,20 +31,10 @@ public final class TerminalAccessService implements TerminalAccess {
     private static final String UNKNOWN_PRINCIPAL = "<unknown>";
     private static final String DUMMY_CREDENTIAL = com.follarce.auth.PasswordPolicy.hash(
             "invalid-terminal-credential".toCharArray());
-    public static final Set<Capability> USER_CAPABILITIES = Set.of(
-            Capability.PROCESS_CREATE,
-            Capability.PROCESS_CONTROL_OWN,
-            Capability.VFS_READ,
-            Capability.VFS_WRITE,
-            Capability.TERMINAL_ATTACH,
-            Capability.AUDIT_READ);
-
-    public static final Set<Capability> ADMIN_CAPABILITIES;
-    static {
-        java.util.EnumSet<Capability> caps = java.util.EnumSet.copyOf(USER_CAPABILITIES);
-        caps.add(Capability.SYSTEM_ADMIN);
-        ADMIN_CAPABILITIES = Set.copyOf(caps);
-    }
+    /** @deprecated Use {@link AccountCapabilityProfiles#USER}. */
+    @Deprecated public static final Set<Capability> USER_CAPABILITIES = AccountCapabilityProfiles.USER;
+    /** @deprecated Use {@link AccountCapabilityProfiles#ADMIN}. */
+    @Deprecated public static final Set<Capability> ADMIN_CAPABILITIES = AccountCapabilityProfiles.ADMIN;
 
     private final TransactionExecutor transactions;
     private final UserTransactionExecutor userTransactions;

@@ -1,5 +1,7 @@
 package com.follarce.terminal;
 
+import com.follarce.application.InteractionSubmissionLimits;
+
 import java.io.BufferedReader;
 import java.io.Console;
 import java.io.IOException;
@@ -16,13 +18,20 @@ import java.util.function.Predicate;
 
 /** One input source that can disable password echo when attached to a real TTY. */
 public interface TerminalInput {
-    int MAX_SUBMISSION_CHARACTERS = 256 * 1024;
+    int MAX_SUBMISSION_CHARACTERS = InteractionSubmissionLimits.MAX_SUBMISSION_CHARACTERS;
     /**
      * A bracketed paste is one terminal event and is persisted before its receiver runs.
      * Keep its maximum equal to a normal submitted command, so a damaged/accidental multi-MiB
      * paste cannot monopolize the terminal reader or create an unbounded durable input row.
      */
     int MAX_BRACKETED_PASTE_CHARACTERS = MAX_SUBMISSION_CHARACTERS;
+
+    /** Optional transport hook for out-of-band events that only belong to raw-key mode. */
+    interface KeyModeTransport {
+        void beginKeyMode();
+
+        void endKeyMode();
+    }
 
     /**
      * Raised when a submission exceeds the character limit. Unlike a transport failure,
@@ -190,11 +199,13 @@ public interface TerminalInput {
         private final InputStream stream;
         private final Console console;
         private final IntSupplier terminalWidth;
+        private final KeyModeTransport keyModeTransport;
         private final List<String> history = new ArrayList<>();
         private final StringBuilder pasteBuffer = new StringBuilder();
         private boolean inPaste;
         private boolean rejectedPaste;
         private RawMode keyMode;
+        private boolean remoteKeyMode;
         private boolean kittyProtocolActive;
 
         EditableTerminalInput(InputStream stream, Console console) {
@@ -205,6 +216,8 @@ public interface TerminalInput {
             // Shift+Enter lookahead can restore four bytes. Wrap even an existing pushback
             // stream so its original capacity cannot make that restoration fail.
             InputStream source = java.util.Objects.requireNonNull(stream, "stream");
+            this.keyModeTransport = source instanceof KeyModeTransport transport
+                    ? transport : null;
             this.stream = new PushbackInputStream(source, PUSHBACK_CAPACITY);
             this.console = console;
             this.terminalWidth = java.util.Objects.requireNonNull(terminalWidth,
@@ -300,7 +313,7 @@ public interface TerminalInput {
 
         @Override
         public String readKey(PrintWriter output) throws IOException {
-            if (console != null && keyMode == null) keyMode = RawMode.enable();
+            beginKeyMode();
             String key = decodeByteKey(stream.read());
             if (console != null) TerminalDimensions.refresh();
             return key;
@@ -313,9 +326,9 @@ public interface TerminalInput {
 
         @Override
         public String readKeyEvent(PrintWriter output, boolean coalesceText) throws IOException {
-            if (console != null && keyMode == null) keyMode = RawMode.enable();
+            beginKeyMode();
             int first = stream.read();
-            String event = coalesceText && !inPaste
+            String event = first == 0 ? decodeEvent(first) : coalesceText && !inPaste
                     ? decodeTextBatch(first) : decodeEvent(first);
             if (console != null) TerminalDimensions.refresh();
             return event;
@@ -381,6 +394,7 @@ public interface TerminalInput {
         /** Decodes one input event, buffering bracketed-paste content across reads. */
         private String decodeEvent(int first) throws IOException {
             while (inPaste) {
+                if (first == 0) return "{\"kind\":\"resize\"}";
                 if (first == 27) {
                     int bracket = stream.read();
                     if (bracket == '[') {
@@ -414,6 +428,11 @@ public interface TerminalInput {
                 }
                 first = stream.read();
             }
+
+            // A zero byte never reaches this stream as user input: the remote protocol uses it
+            // as the control-frame prefix. DimensionInputStream consumes those frames and emits
+            // one coalesced zero-byte sentinel when the terminal size actually changes.
+            if (first == 0) return "{\"kind\":\"resize\"}";
 
             if (first == 27) {
                 int prefix = readEscapeContinuation();
@@ -707,11 +726,28 @@ public interface TerminalInput {
 
         @Override
         public void finishKeyMode() throws IOException {
-            if (console == null) return;
+            if (console == null) {
+                if (remoteKeyMode) {
+                    remoteKeyMode = false;
+                    if (keyModeTransport != null) keyModeTransport.endKeyMode();
+                }
+                return;
+            }
             if (keyMode == null) return;
             RawMode current = keyMode;
             keyMode = null;
             current.close();
+        }
+
+        private void beginKeyMode() throws IOException {
+            if (console != null) {
+                if (keyMode == null) keyMode = RawMode.enable();
+                return;
+            }
+            if (!remoteKeyMode) {
+                remoteKeyMode = true;
+                if (keyModeTransport != null) keyModeTransport.beginKeyMode();
+            }
         }
 
         @Override

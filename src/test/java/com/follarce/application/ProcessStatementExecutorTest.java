@@ -29,6 +29,7 @@ import com.follarce.package_manager.PackageManifest;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.terminal.TerminalOutputRouter;
+import com.follarce.terminal.TerminalProcessOutputPublisher;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -727,7 +728,8 @@ class ProcessStatementExecutorTest {
 
     private static Fixture terminalFrameFixture(String source, UUID routeId) {
         Fixture fixture = new Fixture(source,
-                com.follarce.extension.SourceExtensionIndex.catalog());
+                com.follarce.extension.SourceExtensionIndex.catalog(), () -> { }, () -> { },
+                new TerminalProcessOutputPublisher());
         FclContinuation runtime = new FclContinuation();
         runtime.globalScope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
                 routeId.toString());
@@ -1305,13 +1307,21 @@ class ProcessStatementExecutorTest {
 
         Fixture(String source, JavaExtensionCatalog extensions,
                 Runnable schedulerWake, Runnable effectWake) {
+            this(source, extensions, schedulerWake, effectWake,
+                    ProcessOutputPublisher.discarding());
+        }
+
+        Fixture(String source, JavaExtensionCatalog extensions,
+                Runnable schedulerWake, Runnable effectWake,
+                ProcessOutputPublisher processOutputPublisher) {
             executor = extensions == null
                     ? new ProcessStatementExecutor(persistence,
                     new FclRuntime(FclBuiltins.pureRegistry()), new FclProgramCodec(),
                     new FclContinuationCodec(), CLOCK)
                     : new ProcessStatementExecutor(persistence, extensions, null,
                     new FclProgramCodec(), new FclContinuationCodec(), CLOCK,
-                    schedulerWake, effectWake);
+                    schedulerWake, effectWake, ProcessChangeNotifier.discarding(),
+                    processOutputPublisher);
             program = new ProgramService(persistence, new FclCompiler(),
                     new FclProgramCodec(), CLOCK, UUID::randomUUID).create(ownerId, source);
             persistence.runtimeTransactions = 0;

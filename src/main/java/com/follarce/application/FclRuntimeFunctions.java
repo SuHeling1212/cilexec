@@ -18,6 +18,7 @@ import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.ipc.IpcTopic;
 import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.port.EnvironmentRepository;
+import com.follarce.domain.port.DurableStorageFailure;
 import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
@@ -53,8 +54,7 @@ import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;
 import com.follarce.market.client.MarketRuntimeFunctions;
-import com.follarce.terminal.TerminalAccessService;
-import com.follarce.terminal.TerminalDimensions;
+import com.follarce.auth.AccountCapabilityProfiles;
 import com.follarce.timer.TimerService;
 
 import java.nio.charset.StandardCharsets;
@@ -102,8 +102,8 @@ public class FclRuntimeFunctions {
     protected final FclFunctionRegistry registry;
     /** Requests are held only for the enclosing transaction and launched after its commit. */
     protected final Consumer<VolatileProcessRequest> volatileProcessRequests;
-    /** Terminal frames are disposable delivery hints emitted only after state commit. */
-    protected final Consumer<TerminalFrame> terminalFrames;
+    /** Process output is a disposable delivery hint emitted only after state commit. */
+    protected final Consumer<ProcessOutput> processOutputs;
 
     protected FclRuntimeFunctions(TransactionContext transaction, CilProcess process, Program program,
                                 FclContinuation continuation, Instant now,
@@ -116,7 +116,7 @@ public class FclRuntimeFunctions {
     protected FclRuntimeFunctions(FclRuntimeFunctions source) {
         this(source.transaction, source.process, source.program, source.continuation, source.now,
                 source.extensions, source.registry, source.volatileProcessRequests,
-                source.terminalFrames);
+                source.processOutputs);
     }
 
     protected FclRuntimeFunctions(TransactionContext transaction, CilProcess process, Program program,
@@ -131,7 +131,7 @@ public class FclRuntimeFunctions {
                                 FclContinuation continuation, Instant now,
                                 JavaExtensionCatalog extensions, FclFunctionRegistry registry,
                                 Consumer<VolatileProcessRequest> volatileProcessRequests,
-                                Consumer<TerminalFrame> terminalFrames) {
+                                Consumer<ProcessOutput> processOutputs) {
         this.transaction = java.util.Objects.requireNonNull(transaction, "transaction");
         this.process = java.util.Objects.requireNonNull(process, "process");
         this.program = java.util.Objects.requireNonNull(program, "program");
@@ -141,7 +141,7 @@ public class FclRuntimeFunctions {
         this.registry = java.util.Objects.requireNonNull(registry, "registry");
         this.volatileProcessRequests = java.util.Objects.requireNonNull(volatileProcessRequests,
                 "volatileProcessRequests");
-        this.terminalFrames = java.util.Objects.requireNonNull(terminalFrames, "terminalFrames");
+        this.processOutputs = java.util.Objects.requireNonNull(processOutputs, "processOutputs");
     }
 
     static FclFunctionRegistry create(TransactionContext transaction, CilProcess process,
@@ -170,10 +170,10 @@ public class FclRuntimeFunctions {
                                       Program program, FclContinuation continuation, Instant now,
                                       JavaExtensionCatalog extensions,
                                       Consumer<VolatileProcessRequest> volatileProcessRequests,
-                                      Consumer<TerminalFrame> terminalFrames) {
+                                      Consumer<ProcessOutput> processOutputs) {
         FclRuntimeFunctions functions = new FclRuntimeFunctions(transaction, process, program,
                 continuation, now, extensions, FclBuiltins.pureRegistry(),
-                volatileProcessRequests, terminalFrames);
+                volatileProcessRequests, processOutputs);
         functions.register();
         return functions.registry;
     }
@@ -183,7 +183,7 @@ public class FclRuntimeFunctions {
                 "process.run is only available while executing a durable process");
     }
 
-    private static void terminalRenderUnavailable(TerminalFrame frame) {
+    private static void terminalRenderUnavailable(ProcessOutput output) {
         throw new FclRuntimeException(
                 "term.render is only available while executing a durable process");
     }
@@ -408,14 +408,13 @@ public class FclRuntimeFunctions {
                 })
                 .register("term", "getSize", args -> {
                     arity(args, 0, "term.getSize");
-                    TerminalDimensions.Size size = TerminalDimensions.current(process.ownerId());
+                    InteractionViewport.Size size = InteractionViewport.current(process.ownerId());
                     return Map.of("width", (long) size.width(),
                             "height", (long) size.height());
                 }, "size")
                 .register("term", "sanitize", args -> {
                     arity(args, 1, "term.sanitize");
-                    return com.follarce.terminal.TerminalSanitizer.sanitize(
-                            display(args.getFirst()));
+                    return ConsoleTextSanitizer.sanitize(display(args.getFirst()));
                 })
                 .registerContextual("term", "render", (args, invocation) -> {
                     arity(args, 1, "term.render");
@@ -425,12 +424,12 @@ public class FclRuntimeFunctions {
                                 "term.render frame exceeds 4194304 characters");
                     }
                     FclScope global = invocation.continuation().globalScope();
-                    if (!global.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)) {
+                    if (!global.contains(InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY)) {
                         throw new FclRuntimeException(
                                 "term.render requires a process started from a terminal");
                     }
                     String route = string(global.get(
-                            TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY),
+                            InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY),
                             "term.render terminal route");
                     UUID routeId;
                     try {
@@ -440,7 +439,7 @@ public class FclRuntimeFunctions {
                                 invalid);
                     }
                     TerminalModeState.capture(global, text);
-                    terminalFrames.accept(new TerminalFrame(routeId, text));
+                    processOutputs.accept(ProcessOutput.interactionFrame(routeId, text));
                     return null;
                 });
 
@@ -478,14 +477,22 @@ public class FclRuntimeFunctions {
                                 "io.readKey expects optional timeout and coalesceText arguments");
                     }
                     long timeout = -1;
+                    boolean coalesceText = false;
                     if (!args.isEmpty()) {
-                        timeout = integer(args.getFirst(), "io.readKey timeout milliseconds");
-                        if (timeout < 0 || timeout > 86_400_000L) {
-                            throw new FclRuntimeException(
-                                    "io.readKey timeout must be between 0 and 86400000 milliseconds");
+                        if (args.getFirst() instanceof Boolean value) {
+                            if (args.size() != 1) {
+                                throw new FclRuntimeException(
+                                        "io.readKey boolean coalesceText form expects one argument");
+                            }
+                            coalesceText = value;
+                        } else {
+                            timeout = integer(args.getFirst(), "io.readKey timeout milliseconds");
+                            if (timeout < 0 || timeout > 86_400_000L) {
+                                throw new FclRuntimeException(
+                                        "io.readKey timeout must be between 0 and 86400000 milliseconds");
+                            }
                         }
                     }
-                    boolean coalesceText = false;
                     if (args.size() == 2) {
                         if (!(args.get(1) instanceof Boolean value)) {
                             throw new FclRuntimeException(
@@ -676,10 +683,10 @@ public class FclRuntimeFunctions {
 
     protected Map<String, Object> outputPayload(String text, boolean newline) {
         FclScope global = continuation.globalScope();
-        Object route = global.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)
-                ? global.get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)
-                : global.contains(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
-                ? global.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)
+        Object route = global.contains(InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY)
+                ? global.get(InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY)
+                : global.contains(InteractiveProcessState.SESSION_SCOPE_KEY)
+                ? global.get(InteractiveProcessState.SESSION_SCOPE_KEY)
                 : process.identity().processUid().toString();
         if (route instanceof String) TerminalModeState.capture(global, text);
         return Map.of("text", text, "newline", newline, "routeId", display(route));
@@ -731,7 +738,7 @@ public class FclRuntimeFunctions {
                     }
                     String username = string(args.get(0), "user.create username");
                     String password = string(args.get(1), "user.create password");
-                    Set<Capability> capabilities = TerminalAccessService.USER_CAPABILITIES;
+                    Set<Capability> capabilities = AccountCapabilityProfiles.USER;
                     String administratorUsername = null;
                     String administratorPassword = null;
                     if (args.size() > 2) {
@@ -749,7 +756,7 @@ public class FclRuntimeFunctions {
                                 "user.create administrator username");
                         administratorPassword = string(credentials.get(1),
                                 "user.create administrator password");
-                        capabilities = TerminalAccessService.ADMIN_CAPABILITIES;
+                        capabilities = AccountCapabilityProfiles.ADMIN;
                     }
                     String normalized = UsernamePolicy.normalize(username);
                     char[] secret = password.toCharArray();
@@ -1231,10 +1238,8 @@ public class FclRuntimeFunctions {
 
     protected VfsNode existingChildAfterConflict(String source, UUID owner, ParentAndName parent,
                                                RuntimeException conflict) {
-        if (!(conflict instanceof com.follarce.persistence.postgres.error.PersistenceFailure
-                failure)
-                || failure.kind()
-                != com.follarce.persistence.postgres.error.PersistenceFailure.Kind.UNIQUE_CONFLICT) {
+        if (!(conflict instanceof DurableStorageFailure failure)
+                || !failure.isUniqueConflict()) {
             throw conflict;
         }
         return existingChild(owner, parent)
@@ -1587,21 +1592,21 @@ public class FclRuntimeFunctions {
     protected static void stripTerminalLifecycle(FclContinuation runtime) {
         FclScope root = runtime.globalScope();
         preserveTerminalOutputRoute(root);
-        removeIfPresent(root, TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
-        removeIfPresent(root, TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
-        removeIfPresent(root, TerminalReplService.LIBRARY_SCOPE_KEY);
+        removeIfPresent(root, InteractiveProcessState.PROCESS_SCOPE_KEY);
+        removeIfPresent(root, InteractiveProcessState.SESSION_SCOPE_KEY);
+        removeIfPresent(root, InteractiveProcessState.LIBRARY_SCOPE_KEY);
         for (FclContinuation.CallFrame frame : runtime.callStack()) {
-            removeIfPresent(frame.callerScope(), TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY);
-            removeIfPresent(frame.callerScope(), TerminalReplService.TERMINAL_SESSION_SCOPE_KEY);
-            removeIfPresent(frame.callerScope(), TerminalReplService.LIBRARY_SCOPE_KEY);
+            removeIfPresent(frame.callerScope(), InteractiveProcessState.PROCESS_SCOPE_KEY);
+            removeIfPresent(frame.callerScope(), InteractiveProcessState.SESSION_SCOPE_KEY);
+            removeIfPresent(frame.callerScope(), InteractiveProcessState.LIBRARY_SCOPE_KEY);
         }
     }
 
     private static void preserveTerminalOutputRoute(FclScope root) {
-        if (!root.contains(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY)
-                && root.contains(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY)) {
-            root.put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY,
-                    root.get(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY));
+        if (!root.contains(InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY)
+                && root.contains(InteractiveProcessState.SESSION_SCOPE_KEY)) {
+            root.put(InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY,
+                    root.get(InteractiveProcessState.SESSION_SCOPE_KEY));
         }
     }
 
@@ -1779,22 +1784,11 @@ public class FclRuntimeFunctions {
     protected Object external(FclFunctionRegistry.Invocation invocation, String effectType,
                             Map<String, Object> payload, EffectRequest.Policy policy,
                             boolean returnValue) {
-        FclContinuation continuation = invocation.continuation();
-        if (continuation.scope().contains(ProcessInbox.EFFECT_RESULT)) {
-            Object delivered = continuation.scope().remove(ProcessInbox.EFFECT_RESULT);
-            if (!(delivered instanceof Map<?, ?> result)
-                || !Boolean.TRUE.equals(result.get("ok"))) {
-                throw new FclRuntimeException("External effect failed: " + display(delivered));
-            }
-            return returnValue ? result.get("value") : null;
-        }
-        Authorization.require(transaction, process.ownerId(), Capability.EFFECT_REQUEST);
-        UUID effectId = UUID.randomUUID();
-        transaction.effects().save(EffectRequest.prepare(effectId,
-                process.identity().processUid(), effectType, typed(payload), policy, now));
-        continuation.waitFor("effect:" + effectId, Map.of("effectType", effectType));
-        audit("effect.request", effectId, Map.of("effectType", effectType));
-        throw FclSuspension.suspend();
+        return new EffectInvocationService(transaction, process.ownerId(),
+                process.identity().processUid(), now, codec).await(invocation.continuation(),
+                new EffectInvocationService.Call(effectType, payload, policy, returnValue,
+                        Map.of("effectType", effectType), "effect.request",
+                        Map.of("effectType", effectType)), FclRuntimeFunctions::display);
     }
 
     protected Object download(List<Object> args, FclFunctionRegistry.Invocation invocation) {

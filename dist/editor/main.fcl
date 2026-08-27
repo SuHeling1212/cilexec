@@ -563,21 +563,30 @@ func open(editorPath) {
     term.render(term.alternate(true) + term.mouse(true) + term.paste(true) + term.hideCursor())
     term.render(ed_render(editorState))
     while editorState.running {
-        editorEvent = io.readKey(250, true)
-        if editorEvent["kind"] == "timeout" {
-            nextSize = term.getSize()
-            if nextSize["width"] != editorWidth or nextSize["height"] != editorHeight {
-                editorWidth = nextSize["width"]
-                editorHeight = nextSize["height"]
-                editorState.width = editorWidth
-                editorState.height = editorHeight
+        // Block until real input or a transport resize event. The old 250 ms timeout created a
+        // durable timer and several state transactions four times per second even while idle.
+        editorEvent = io.readKey(true)
+        nextSize = term.getSize()
+        resized = nextSize["width"] != editorWidth or nextSize["height"] != editorHeight
+        if resized {
+            editorWidth = nextSize["width"]
+            editorHeight = nextSize["height"]
+            editorState.width = editorWidth
+            editorState.height = editorHeight
+        }
+        if editorEvent["kind"] == "resize" {
+            if resized {
                 term.render(ed_render(editorState))
             }
         } else {
             editorBefore = ed_snapshot(editorState)
             editorState = ed_key(editorState, editorEvent)
             if editorState.running {
-                term.render(ed_render_delta(editorState, editorBefore))
+                if resized {
+                    term.render(ed_render(editorState))
+                } else {
+                    term.render(ed_render_delta(editorState, editorBefore))
+                }
             }
         }
     }

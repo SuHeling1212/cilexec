@@ -99,9 +99,11 @@ counter) is serialized to PostgreSQL rows after every committed slice.
 
 Java 26 virtual threads are used throughout the core Runtime. The scheduler runs bounded worker pools
 (defaults: 10 scheduler workers, 6 effect workers, for the whole server, not per user) that
-claim durable leases in PostgreSQL; idle workers block in memory instead of polling the
-database, and transaction-commit notifications (`PostgresWorkListener`) wake them on queue,
-effect, timer, or lease changes. Runnable processes beyond the worker count remain
+claim durable leases in PostgreSQL. Transaction-commit notifications (`PostgresWorkListener`)
+wake idle workers on queue, effect, timer, or lease changes. A dedicated stateless reconciliation
+thread also wakes one normal scheduler worker and the interrupt worker at a bounded low rate, so a
+lost disposable notification cannot strand READY work or be prolonged by a busy execution worker.
+All other idle scheduler workers block in memory. Runnable processes beyond the worker count remain
 in the durable FIFO queue.
 
 ### Permission System

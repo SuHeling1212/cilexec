@@ -249,6 +249,15 @@ class EditableTerminalInputTest {
     }
 
     @Test
+    void decodesTransportResizeSentinelAsStructuredEvent() throws Exception {
+        TerminalInput input = TerminalInput.remoteRaw(new ByteArrayInputStream(new byte[]{0}));
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8);
+
+        assertEquals("{\"kind\":\"resize\"}", input.readKeyEvent(output, true));
+    }
+
+    @Test
     void rejectsOversizedBracketedPasteAndConsumesItsTrailingMarker() throws Exception {
         String source = "\u001b[200~" + "x".repeat(TerminalInput.MAX_BRACKETED_PASTE_CHARACTERS + 1)
                 + "\u001b[201~z";

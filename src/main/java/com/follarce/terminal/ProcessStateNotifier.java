@@ -1,5 +1,6 @@
 package com.follarce.terminal;
 
+import com.follarce.application.ProcessChangeNotifier;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -12,7 +13,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>The database remains authoritative. Missing a signal can delay only the next fallback
  * read; it can never change process state or recovery semantics.
  */
-public final class ProcessStateNotifier {
+public final class ProcessStateNotifier implements ProcessChangeNotifier {
     private final ConcurrentHashMap<Key, State> states = new ConcurrentHashMap<>();
 
     /** Returns a monotonic version used to close the query/wait lost-wake race. */
@@ -27,6 +28,7 @@ public final class ProcessStateNotifier {
     }
 
     /** Wakes every terminal currently waiting for this process after a successful commit. */
+    @Override
     public void signal(UUID ownerId, UUID processUid) {
         // Most processes have no attached host waiter. A post-commit signal must not turn
         // every process ever executed into an entry in this disposable optimization map.

@@ -53,8 +53,6 @@ import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;
 import com.follarce.market.client.MarketRuntimeFunctions;
-import com.follarce.terminal.TerminalAccessService;
-import com.follarce.terminal.TerminalDimensions;
 import com.follarce.timer.TimerService;
 
 import java.nio.charset.StandardCharsets;

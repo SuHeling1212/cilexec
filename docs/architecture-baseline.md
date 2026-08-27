@@ -367,7 +367,31 @@ Rules:
 6. repositories never expose `Connection` to FCL function implementations;
 7. external side effects are never executed inside the transaction.
 
-### 3.5 SQL and Mapping Rules
+### 3.5 Core Interaction and Adapter Boundaries
+
+The FCL Kernel and scheduler do not import terminal transport implementations. Host adapters
+communicate through process-level contracts: durable interrupt requests, disposable process-change
+wake hints, interactive viewport metadata, and disposable process-output hints. A missed wake or
+output hint may delay observation or lose a non-reliable repaint, but it cannot make committed
+process state unreachable; PostgreSQL reconciliation remains authoritative.
+
+Interactive continuation keys remain persisted-format compatibility data even though their Java
+constants are owned by `InteractiveProcessState`. Their literal `cilexec.repl.*` and
+`cilexec.terminal.outputRoute` values must not change without an explicit continuation migration.
+`ProcessOutput` is intentionally non-durable; output requiring reliable replay must use durable
+process state, an effect, or a durable outbox before a post-commit publisher observes it.
+
+`UserTransactionRunner` is the application-facing tenant-transaction contract. PostgreSQL RLS
+role setup, GUC test hooks, SQLSTATE classification, and JDBC exception types remain inside the
+PostgreSQL adapter. `TransactionContext` deliberately has no SQL/GUC escape hatch: adapter-only
+fault injection may use its concrete JDBC context in integration tests, but cannot become a Kernel
+dependency. `DurableStorageFailure` is the narrow classification exposed to Kernel code for a
+duplicate race or a runtime-stopping storage condition. `ProcessInterrupt` is likewise a durable
+process-control signal rather than a terminal-owned event. `EffectInvocationService` owns the
+common effect request/resume protocol but never commits a transaction or publishes post-commit
+work itself.
+
+### 3.6 SQL and Mapping Rules
 
 Named SQL files or Java text blocks are both acceptable, but every statement must have a stable name that tests can target, for example:
 
@@ -397,7 +421,7 @@ other exceptions → PersistenceFailure
 
 The SQLSTATE mapping is maintained in one place, not scattered across repositories. Connection-pool timeouts (`SQLTimeoutException`) are classified as transient and retryable; they must never fence the Runtime by themselves.
 
-### 3.6 JVM Concurrency Model
+### 3.7 JVM Concurrency Model
 
 Java virtual threads remain in use, but database concurrency must be bounded.
 
@@ -440,7 +464,7 @@ timed wake-up tasks
 
 They may accelerate execution but never determine recovery outcomes.
 
-### 3.7 Build Artifacts
+### 3.8 Build Artifacts
 
 The Maven build produces at least:
 
@@ -455,7 +479,7 @@ FCL runtime format version
 
 The first release may use an executable fat JAR to simplify container assembly. If `jlink` is adopted later, full integration tests must prove that the PostgreSQL JDBC, SQLite JDBC, TLS, logging, and character-set modules were not trimmed away.
 
-### 3.8 Docker Multi-Stage Build
+### 3.9 Docker Multi-Stage Build
 
 ```text
 build stage
@@ -1029,6 +1053,15 @@ and continue with the next eligible FIFO candidate.
 ### 10.1 Workers
 
 The worker count is configurable and small by default. Execution workers and the database pool size are configured separately.
+Before an empty durable queue read, each worker records a monotonic Runtime-local notification
+version and then waits only if that version is still unchanged. A commit notification that arrives
+while the query is running or between the query and the wait therefore forces an immediate recheck
+instead of being lost. A dedicated stateless reconciliation thread also wakes one normal worker
+and the interrupt worker every 100 milliseconds. The reconciliation thread does not read the
+database or execute processes; it guarantees a bounded PostgreSQL recheck even if both the local
+callback and `LISTEN/NOTIFY` hint are lost. Other idle workers remain blocked, avoiding a
+worker-count-sized polling herd. Notification versions and reconciliation wakes are disposable;
+queue rows and leases remain the complete recovery authority.
 
 ### 10.2 Lease
 

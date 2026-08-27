@@ -78,7 +78,7 @@ public final class JdbcTransactionContext implements TransactionContext {
     @Override public TerminalRepository terminal() { return terminal; }
     @Override public EnvironmentRepository environment() { return environment; }
 
-    @Override
+    /** Adapter-only fault-injection hook; deliberately not part of {@link TransactionContext}. */
     public void setLocalSetting(String name, String value) {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT set_config(?,?,true)")) {

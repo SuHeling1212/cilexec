@@ -1,6 +1,6 @@
 package com.follarce.timer;
 
-import com.follarce.persistence.postgres.error.PersistenceFailure;
+import com.follarce.domain.port.DurableStorageFailure;
 
 import java.time.Duration;
 import java.util.UUID;
@@ -64,9 +64,7 @@ public final class TimerWorkerService implements AutoCloseable {
 
     private static boolean isFatal(Throwable failure) {
         return failure instanceof Error
-                || failure instanceof PersistenceFailure persistence
-                && (persistence.kind() == PersistenceFailure.Kind.DATABASE_UNAVAILABLE
-                || persistence.kind() == PersistenceFailure.Kind.RUNTIME_FENCED);
+                || failure instanceof DurableStorageFailure storage && storage.stopsRuntime();
     }
 
     @Override

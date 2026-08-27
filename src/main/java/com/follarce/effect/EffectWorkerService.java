@@ -11,7 +11,7 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
-import com.follarce.persistence.postgres.error.PersistenceFailure;
+import com.follarce.domain.port.DurableStorageFailure;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -623,9 +623,7 @@ public final class EffectWorkerService implements AutoCloseable {
 
     private static boolean isFatal(Throwable failure) {
         return failure instanceof Error
-                || failure instanceof PersistenceFailure persistence
-                && (persistence.kind() == PersistenceFailure.Kind.DATABASE_UNAVAILABLE
-                || persistence.kind() == PersistenceFailure.Kind.RUNTIME_FENCED);
+                || failure instanceof DurableStorageFailure storage && storage.stopsRuntime();
     }
 
     private static void requireUpdated(ProcessRepository.UpdateResult result) {

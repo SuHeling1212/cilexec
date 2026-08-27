@@ -412,7 +412,7 @@ public final class FclBuiltins {
                 })
                 .register("term", "displayWidth", args -> {
                     arity(args, 1, "displayWidth");
-                    return (long) com.follarce.terminal.TerminalColumns.width(
+                    return (long) DisplayColumns.width(
                             stringAt(args, 0, "displayWidth"));
                 })
                 .register("term", "truncate", args -> {
@@ -421,7 +421,7 @@ public final class FclBuiltins {
                     long width = integral(args.get(1), "truncate width");
                     if (width < 0 || width > 1_000_000) throw new FclRuntimeException(
                             "truncate width must be between 0 and 1000000");
-                    return com.follarce.terminal.TerminalColumns.truncate(value, (int) width);
+                    return DisplayColumns.truncate(value, (int) width);
                 })
                 .register("term", "cursorTo", args -> {
                     arity(args, 2, "cursorTo");

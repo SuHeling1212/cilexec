@@ -9,7 +9,7 @@ import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramCodec;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 import com.follarce.version.ReleaseVersion;
 
 import java.nio.charset.StandardCharsets;
@@ -29,19 +29,19 @@ public final class ProgramService {
     public static final String COMPILED_MEDIA_TYPE =
             "application/vnd.cilexec.fcl-program; version=3";
 
-    private final UserTransactionExecutor transactions;
+    private final UserTransactionRunner transactions;
     private final FclCompiler compiler;
     private final FclProgramCodec programCodec;
     private final FclSourceIncludes includes = new FclSourceIncludes();
     private final Clock clock;
     private final Supplier<UUID> identifiers;
 
-    public ProgramService(UserTransactionExecutor transactions) {
+    public ProgramService(UserTransactionRunner transactions) {
         this(transactions, new FclCompiler(), new FclProgramCodec(), Clock.systemUTC(),
                 UUID::randomUUID);
     }
 
-    public ProgramService(UserTransactionExecutor transactions, FclCompiler compiler,
+    public ProgramService(UserTransactionRunner transactions, FclCompiler compiler,
                           FclProgramCodec programCodec, Clock clock,
                           Supplier<UUID> identifiers) {
         this.transactions = Objects.requireNonNull(transactions, "transactions");

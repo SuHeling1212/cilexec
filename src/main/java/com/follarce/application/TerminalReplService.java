@@ -20,7 +20,7 @@ import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclScope;
 import com.follarce.fcl.TerminalModeState;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -32,16 +32,16 @@ import java.util.UUID;
 
 /** Runs terminal-session submissions through a durable attached process and preserves its REPL context. */
 public final class TerminalReplService {
-    static final String LIBRARY_SCOPE_KEY = "cilexec.repl.library";
-    static final String TERMINAL_PROCESS_SCOPE_KEY = "cilexec.repl.terminalProcess";
-    public static final String TERMINAL_SESSION_SCOPE_KEY = "cilexec.repl.terminalSession";
+    static final String LIBRARY_SCOPE_KEY = InteractiveProcessState.LIBRARY_SCOPE_KEY;
+    static final String TERMINAL_PROCESS_SCOPE_KEY = InteractiveProcessState.PROCESS_SCOPE_KEY;
+    public static final String TERMINAL_SESSION_SCOPE_KEY = InteractiveProcessState.SESSION_SCOPE_KEY;
     /**
      * Route used solely for visible output. Unlike the REPL lifecycle markers, this route is
      * inherited by ordinary descendants so a program started from a terminal continues to
      * write to that terminal.
      */
-    public static final String TERMINAL_OUTPUT_ROUTE_SCOPE_KEY = "cilexec.terminal.outputRoute";
-    private final UserTransactionExecutor transactions;
+    public static final String TERMINAL_OUTPUT_ROUTE_SCOPE_KEY = InteractiveProcessState.OUTPUT_ROUTE_SCOPE_KEY;
+    private final UserTransactionRunner transactions;
     private final ProgramService programs;
     private final FclCompiler compiler;
     private final FclPersistenceBridge bridge;
@@ -51,21 +51,21 @@ public final class TerminalReplService {
     private final Clock clock;
     private final Runnable workAvailable;
 
-    public TerminalReplService(UserTransactionExecutor transactions) {
+    public TerminalReplService(UserTransactionRunner transactions) {
         this(transactions, () -> { });
     }
 
-    public TerminalReplService(UserTransactionExecutor transactions, Runnable workAvailable) {
+    public TerminalReplService(UserTransactionRunner transactions, Runnable workAvailable) {
         this(transactions, new ProgramService(transactions), new FclCompiler(),
                 new FclContinuationCodec(), Clock.systemUTC(), workAvailable);
     }
 
-    TerminalReplService(UserTransactionExecutor transactions, ProgramService programs,
+    TerminalReplService(UserTransactionRunner transactions, ProgramService programs,
                         FclCompiler compiler, FclContinuationCodec codec, Clock clock) {
         this(transactions, programs, compiler, codec, clock, () -> { });
     }
 
-    TerminalReplService(UserTransactionExecutor transactions, ProgramService programs,
+    TerminalReplService(UserTransactionRunner transactions, ProgramService programs,
                         FclCompiler compiler, FclContinuationCodec codec, Clock clock,
                         Runnable workAvailable) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
@@ -81,7 +81,7 @@ public final class TerminalReplService {
         java.util.Objects.requireNonNull(ownerId, "ownerId");
         java.util.Objects.requireNonNull(sessionId, "sessionId");
         if (submittedSource == null
-                || submittedSource.length() > com.follarce.terminal.TerminalInput.MAX_SUBMISSION_CHARACTERS) {
+                || submittedSource.length() > InteractionSubmissionLimits.MAX_SUBMISSION_CHARACTERS) {
             throw new IllegalArgumentException("FCL submission exceeds 256 Ki characters");
         }
         String workingDirectory = workingDirectory(ownerId, sessionId);
@@ -427,11 +427,7 @@ public final class TerminalReplService {
     }
 
     static boolean isTerminalProcess(FclContinuation continuation) {
-        FclContinuation runtime = java.util.Objects.requireNonNull(continuation,
-                "continuation");
-        if (runtime.scope().contains(TERMINAL_PROCESS_SCOPE_KEY)) return true;
-        return runtime.callStack().stream().anyMatch(frame ->
-                frame.callerScope().contains(TERMINAL_PROCESS_SCOPE_KEY));
+        return InteractiveProcessState.isInteractive(continuation);
     }
 
     static String librarySource(FclContinuation continuation) {

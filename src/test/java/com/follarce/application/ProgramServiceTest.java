@@ -524,7 +524,7 @@ class ProgramServiceTest {
                 UUID processUid, Instant at) {
             return Optional.empty();
         }
-        @Override public void requestInterrupt(TerminalSession.Interrupt requested) {
+        @Override public void requestInterrupt(com.follarce.domain.process.ProcessInterrupt requested) {
             interrupt = requested.handledAt().isEmpty();
         }
         @Override public boolean consumeInterrupt(UUID processUid) {

@@ -29,6 +29,7 @@ import com.follarce.terminal.TerminalBootstrap;
 import com.follarce.terminal.TerminalSettings;
 import com.follarce.terminal.TerminalServer;
 import com.follarce.terminal.ProcessStateNotifier;
+import com.follarce.terminal.TerminalProcessOutputPublisher;
 import com.zaxxer.hikari.HikariDataSource;
 
 import java.time.Clock;
@@ -129,7 +130,8 @@ public final class RuntimeBootstrap {
             runtimeTransactions = new JdbcTransactionExecutor(runtimeDataSource);
             processHandler = handlerFactory == null
                     ? new ProcessStatementExecutor(runtimeTransactions,
-                    this::wakeScheduler, this::wakeEffects, processStateNotifier)
+                    this::wakeScheduler, this::wakeEffects, processStateNotifier,
+                    new TerminalProcessOutputPublisher())
                     : handlerFactory.apply(runtimeTransactions);
             metadata = new RuntimeMetadataStore(runtimeDataSource);
             recovery = new RecoveryCoordinator(runtimeDataSource);

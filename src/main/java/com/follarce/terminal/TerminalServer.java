@@ -454,13 +454,17 @@ public final class TerminalServer implements AutoCloseable {
     }
 
     /** Receives control frames independently, so Ctrl-C works while FCL is executing. */
-    static final class DimensionInputStream extends FilterInputStream {
+    static final class DimensionInputStream extends FilterInputStream
+            implements TerminalInput.KeyModeTransport {
         private static final int END_OF_STREAM = -1;
+        private static final int RESIZE_EVENT = 0;
         private volatile java.util.UUID ownerId;
         private volatile TerminalDimensions.Size size = new TerminalDimensions.Size(80, 24);
         private volatile BooleanSupplier interrupt = () -> false;
         private final AtomicBoolean disconnected = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final AtomicBoolean keyMode = new AtomicBoolean();
+        private final AtomicBoolean resizeQueued = new AtomicBoolean();
         private final long idleDisconnectNanos;
         private volatile LongSupplier idleCheck = () -> Long.MAX_VALUE;
         private volatile Runnable disconnectListener = () -> { };
@@ -521,6 +525,7 @@ public final class TerminalServer implements AutoCloseable {
             while (true) {
                 try {
                     int value = input.take();
+                    if (value == RESIZE_EVENT) resizeQueued.set(false);
                     if (value == END_OF_STREAM && !input.offer(END_OF_STREAM)) {
                         throw new IOException("Terminal end-of-stream marker was lost");
                     }
@@ -635,12 +640,28 @@ public final class TerminalServer implements AutoCloseable {
                 int width = Integer.parseInt(fields[2]);
                 if (height > 4_096 || width > 4_096) return;
                 TerminalDimensions.Size replacement = new TerminalDimensions.Size(width, height);
+                boolean changed = !replacement.equals(size);
                 size = replacement;
                 java.util.UUID bound = ownerId;
                 if (bound != null) TerminalDimensions.update(bound, replacement);
+                if (changed && keyMode.get() && resizeQueued.compareAndSet(false, true)
+                        && !input.offer(RESIZE_EVENT)) {
+                    resizeQueued.set(false);
+                }
             } catch (IllegalArgumentException ignored) {
                 // Malformed resize frames are ignored without exposing them to FCL input.
             }
+        }
+
+        @Override
+        public void beginKeyMode() {
+            keyMode.set(true);
+        }
+
+        @Override
+        public void endKeyMode() {
+            keyMode.set(false);
+            if (resizeQueued.getAndSet(false)) input.remove(RESIZE_EVENT);
         }
 
         /** Queues one byte without blocking the pump forever when the queue is full. */

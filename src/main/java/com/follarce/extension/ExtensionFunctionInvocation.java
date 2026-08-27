@@ -1,13 +1,9 @@
 package com.follarce.extension;
 
-import com.follarce.auth.Authorization;
-import com.follarce.domain.audit.AuditEvent;
-import com.follarce.domain.auth.Capability;
+import com.follarce.application.EffectInvocationService;
 import com.follarce.domain.effect.EffectRequest;
 import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
-import com.follarce.domain.process.Continuation;
-import com.follarce.domain.process.ProcessInbox;
 import com.follarce.extension.api.ExtensionEffectPolicy;
 import com.follarce.extension.api.ExtensionFunctionContext;
 import com.follarce.extension.api.ExtensionState;
@@ -15,9 +11,7 @@ import com.follarce.extension.api.ExtensionTransaction;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclFunctionRegistry;
-import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclScope;
-import com.follarce.fcl.FclSuspension;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -43,7 +37,6 @@ final class ExtensionFunctionInvocation implements ExtensionFunctionContext {
     private final Instant now;
     private final ExtensionState state;
     private final ExtensionTransaction transaction;
-    private final FclContinuationCodec codec = new FclContinuationCodec();
 
     ExtensionFunctionInvocation(String extensionId, String qualifiedFunctionName,
                                 List<Object> arguments,
@@ -87,28 +80,13 @@ final class ExtensionFunctionInvocation implements ExtensionFunctionContext {
     @Override
     public Object awaitEffect(String effectType, Object request, ExtensionEffectPolicy policy) {
         Objects.requireNonNull(policy, "policy");
-        FclContinuation continuation = invocation.continuation();
-        if (continuation.scope().contains(ProcessInbox.EFFECT_RESULT)) {
-            Object delivered = continuation.scope().remove(ProcessInbox.EFFECT_RESULT);
-            if (!(delivered instanceof Map<?, ?> result)
-                    || !Boolean.TRUE.equals(result.get("ok"))) {
-                throw new FclRuntimeException("External effect failed: " + delivered);
-            }
-            return result.get("value");
-        }
-        Authorization.require(transactionContext, ownerId(), Capability.EFFECT_REQUEST);
-        UUID effectId = UUID.randomUUID();
-        Continuation.PersistedValue payload = new Continuation.PersistedValue(
-                codec.valueType(request), codec.valueToJson(request));
-        transactionContext.effects().save(EffectRequest.prepare(effectId, processUid(),
-                effectType, payload, toPolicy(policy), now));
-        continuation.waitFor("effect:" + effectId, Map.of("effectType", effectType,
-                "extensionId", extensionId));
-        transactionContext.audit().append(new AuditEvent(UUID.randomUUID(),
-                AuditEvent.ActorType.USER, ownerId().toString(), "extension.effect.request",
-                "effect.effect", effectId.toString(), AuditEvent.Result.SUCCEEDED,
-                Map.of("extensionId", extensionId, "effectType", effectType), now));
-        throw FclSuspension.suspend();
+        return new EffectInvocationService(transactionContext, ownerId(), processUid(), now,
+                new FclContinuationCodec()).await(invocation.continuation(),
+                new EffectInvocationService.Call(effectType, request, toPolicy(policy), true,
+                        Map.of("effectType", effectType, "extensionId", extensionId),
+                        "extension.effect.request",
+                        Map.of("extensionId", extensionId, "effectType", effectType)),
+                String::valueOf);
     }
 
     private static EffectRequest.Policy toPolicy(ExtensionEffectPolicy policy) {

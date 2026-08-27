@@ -14,7 +14,7 @@ import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.scheduler.SchedulerQueueEntry;
 import com.follarce.domain.vfs.ObjectHash;
-import com.follarce.persistence.postgres.transaction.UserTransactionExecutor;
+import com.follarce.domain.port.UserTransactionRunner;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -38,10 +38,10 @@ public final class IpcService {
     private static final int MAX_EXPIRY_SCAN = 100;
     /** Defensive cap on consecutive full batches of expired/contended deliveries. */
     private static final int MAX_EXPIRY_ROUNDS = 10;
-    private final com.follarce.persistence.postgres.transaction.UserTransactionExecutor transactions;
+    private final UserTransactionRunner transactions;
     private final Clock clock;
 
-    public IpcService(com.follarce.persistence.postgres.transaction.UserTransactionExecutor transactions,
+    public IpcService(UserTransactionRunner transactions,
                       Clock clock) {
         this.transactions = java.util.Objects.requireNonNull(transactions, "transactions");
         this.clock = java.util.Objects.requireNonNull(clock, "clock");

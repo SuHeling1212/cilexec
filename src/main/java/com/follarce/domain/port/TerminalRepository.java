@@ -7,7 +7,7 @@ import java.util.UUID;
 import java.time.Instant;
 import java.util.List;
 
-public interface TerminalRepository {
+public interface TerminalRepository extends ProcessInterruptPort {
     void saveSession(TerminalSession session);
 
     /** Saves a non-interactive API session without allowing it to become the host shell session. */
@@ -58,11 +58,6 @@ public interface TerminalRepository {
 
     /** Claims the oldest complete, unaccepted input attached to this process. */
     Optional<TerminalSession.Input> acceptPendingInput(UUID processUid, java.time.Instant at);
-
-    void requestInterrupt(TerminalSession.Interrupt interrupt);
-
-    /** Atomically consumes the durable Ctrl+C flag at a statement safe point. */
-    boolean consumeInterrupt(UUID processUid);
 
     /**
      * Removes one CLOSED session together with its inputs and attachments; OPEN sessions

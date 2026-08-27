@@ -42,6 +42,7 @@ class MarketEditorPackageTest {
                         "x", 5L, "y", 3L),
                 Map.of("kind", "paste", "text", "inserted"),
                 Map.of("kind", "focus", "focus", true),
+                Map.of("kind", "resize"),
                 Map.of("kind", "raw", "sequence", "ESC?"),
                 Map.of("kind", "key", "key", "CTRL_X", "text", ""),
                 Map.of("kind", "key", "key", "y", "text", "y"));
@@ -80,22 +81,20 @@ class MarketEditorPackageTest {
     }
 
     @Test
-    void idleTimeoutOnlyRepaintsWhenTerminalSizeChanges() throws Exception {
+    void resizeEventRepaintsWithoutPersistentInputTimeouts() throws Exception {
         Path output = temporaryDirectory.resolve("editor.db");
         new PackageBuilder().build(Path.of("dist/editor"), output);
         byte[] database = java.nio.file.Files.readAllBytes(output);
         String module = new String(new SqlitePackageReader().readResource(database, "main.fcl"),
                 StandardCharsets.UTF_8);
         List<Map<String, Object>> events = List.of(
-                Map.of("kind", "timeout"),
-                Map.of("kind", "timeout"),
+                Map.of("kind", "resize"),
                 Map.of("kind", "key", "key", "CTRL_X", "text", ""));
         AtomicInteger eventIndex = new AtomicInteger();
         AtomicInteger renderedFrames = new AtomicInteger();
         AtomicReference<Map<String, Object>> size = new AtomicReference<>(
                 Map.of("width", 80L, "height", 24L));
-        List<Object> timeouts = new java.util.ArrayList<>();
-        List<Object> coalescing = new java.util.ArrayList<>();
+        List<List<Object>> readArguments = new java.util.ArrayList<>();
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> size.get(), "size")
                 .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
@@ -110,10 +109,9 @@ class MarketEditorPackageTest {
                     return null;
                 })
                 .register("io", "readKey", arguments -> {
-                    timeouts.add(arguments.getFirst());
-                    coalescing.add(arguments.get(1));
+                    readArguments.add(List.copyOf(arguments));
                     int index = eventIndex.getAndIncrement();
-                    if (index == 1) size.set(Map.of("width", 100L, "height", 30L));
+                    if (index == 0) size.set(Map.of("width", 100L, "height", 30L));
                     return events.get(index);
                 });
         FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
@@ -128,8 +126,7 @@ class MarketEditorPackageTest {
         }
 
         assertTrue(continuation.halted());
-        assertEquals(List.of(250L, 250L, 250L), timeouts);
-        assertEquals(List.of(true, true, true), coalescing);
+        assertEquals(List.of(List.of(true), List.of(true)), readArguments);
         assertEquals(2, renderedFrames.get(),
                 "the initial frame and changed-size frame are the only required repaints");
     }
@@ -210,6 +207,8 @@ class MarketEditorPackageTest {
         assertTrue(module.contains("state.left++"));
         assertTrue(module.contains("packageData.seedResource(\"render-worker.fcl\", workerPath)"));
         assertTrue(module.contains("process.run(packageData.root() + workerPath"));
+        assertTrue(module.contains("io.readKey(true)"));
+        assertFalse(module.contains("io.readKey(250"));
         assertTrue(module.contains("array.removeAt(lines, row)"));
         assertFalse(module.contains("while index < #lines"));
         String worker = new String(reader.readResource(database, "render-worker.fcl"),

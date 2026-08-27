@@ -45,9 +45,9 @@ class PortContractTest {
         Set<String> methods = names(TransactionContext.class);
 
         Set<String> expected = Set.of(
-                "programs", "processes", "scheduler", "ipc", "timers", "vfs",
+                "programs", "processes", "scheduler", "ipc", "timers", "vfs", "interrupts",
                 "packages", "effects", "auth", "audit", "terminal", "environment",
-                "commit", "rollback", "close", "setLocalSetting");
+                "commit", "rollback", "close");
         assertTrue(methods.containsAll(expected));
         assertEquals(expected.size(), methods.size());
     }
