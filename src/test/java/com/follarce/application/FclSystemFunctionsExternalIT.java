@@ -374,7 +374,7 @@ class FclSystemFunctionsExternalIT {
         // not be able to create another administrator either.
         transactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
             transaction.auth().replaceCapabilities(local.userId(),
-                    com.follarce.terminal.TerminalAccessService.USER_CAPABILITIES);
+                    com.follarce.auth.AccountCapabilityProfiles.USER);
             return null;
         });
         assertFailsWithDurableError(transactions, owner.userId(), """

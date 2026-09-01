@@ -149,6 +149,7 @@ class TimerLoopTest {
         assertFalse(loop.isRunning());
     }
 
+    @SuppressWarnings("unchecked")
     private static <T extends Throwable> void throwUnchecked(Throwable failure) throws T {
         throw (T) failure;
     }

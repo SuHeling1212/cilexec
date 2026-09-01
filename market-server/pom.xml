@@ -18,7 +18,8 @@
         <enforcer.version>3.5.0</enforcer.version>
         <spotbugs.plugin.version>4.10.3.0</spotbugs.plugin.version>
         <cyclonedx.version>2.9.3</cyclonedx.version>
-        <dependency.plugin.version>3.8.1</dependency.plugin.version>
+        <dependency.plugin.version>3.11.0</dependency.plugin.version>
+        <jacoco.version>0.8.15</jacoco.version>
         <project.build.outputTimestamp>2026-07-22T00:00:00Z</project.build.outputTimestamp>
         <build.revision>development</build.revision>
     </properties>
@@ -47,7 +48,13 @@
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
@@ -73,7 +80,10 @@
                 <version>3.15.0</version>
                 <configuration>
                     <release>${maven.compiler.release}</release>
-                    <compilerArgs><arg>-Xlint:all</arg></compilerArgs>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                        <arg>-Werror</arg>
+                    </compilerArgs>
                 </configuration>
             </plugin>
             <plugin>
@@ -117,7 +127,48 @@
                 <configuration>
                     <useModulePath>false</useModulePath>
                     <failIfNoTests>true</failIfNoTests>
+                    <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>coverage-check</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.68</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.50</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.cyclonedx</groupId>
@@ -141,6 +192,21 @@
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>${dependency.plugin.version}</version>
                 <executions>
+                    <execution>
+                        <id>analyze-dependency-declarations</id>
+                        <phase>verify</phase>
+                        <goals><goal>analyze-only</goal></goals>
+                        <configuration>
+                            <failOnWarning>true</failOnWarning>
+                            <ignoredUnusedDeclaredDependencies>
+                                <!-- JDBC driver and logging API/binding are loaded at runtime. -->
+                                <ignoredUnusedDeclaredDependency>org.xerial:sqlite-jdbc</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.slf4j:slf4j-api</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.slf4j:slf4j-nop</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.junit.jupiter:junit-jupiter-engine</ignoredUnusedDeclaredDependency>
+                            </ignoredUnusedDeclaredDependencies>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>write-runtime-dependency-lock</id>
                         <phase>prepare-package</phase>

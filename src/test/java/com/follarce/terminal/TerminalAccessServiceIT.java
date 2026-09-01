@@ -1,5 +1,6 @@
 package com.follarce.terminal;
 
+import com.follarce.auth.AccountCapabilityProfiles;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
@@ -76,7 +77,7 @@ class TerminalAccessServiceIT {
         UserAccount administrator = access.bootstrap(adminUsername, ADMIN_PASSWORD.clone());
         transactions.inTransaction(Isolation.SERIALIZABLE, transaction -> {
             transaction.auth().replaceCapabilities(administrator.userId(),
-                    TerminalAccessService.USER_CAPABILITIES);
+                    AccountCapabilityProfiles.USER);
             return null;
         });
 

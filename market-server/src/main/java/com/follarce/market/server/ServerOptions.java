@@ -101,5 +101,7 @@ record ServerOptions(Path repository, Path catalog, Path tokens, InetAddress bin
         }
     }
 
-    static final class HelpRequested extends RuntimeException { }
+    static final class HelpRequested extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+    }
 }

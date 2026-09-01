@@ -3,6 +3,7 @@ package com.follarce.package_manager;
 import com.follarce.domain.packageinfo.PackageRelease;
 
 /** The same immutable coordinate was already registered with a different logical hash. */
+@SuppressWarnings("serial") // Exceptions are local control flow and are never serialized.
 public final class PackageCoordinateConflictException extends RuntimeException {
     private final PackageRelease.Coordinate coordinate;
 

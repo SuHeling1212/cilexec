@@ -2,6 +2,7 @@ package com.follarce.fcl;
 
 /** A deterministic FCL evaluation failure. */
 public final class FclRuntimeException extends RuntimeException {
+    private static final long serialVersionUID = 1L;
     private final String type;
 
     public FclRuntimeException(String message) {

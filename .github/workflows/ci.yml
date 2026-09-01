@@ -81,6 +81,7 @@ jobs:
           name: market-reports
           path: |
             market-server/target/surefire-reports/
+            market-server/target/site/jacoco/
             market-server/target/runtime-sbom.json
           if-no-files-found: error
           retention-days: 14

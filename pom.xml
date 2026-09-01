@@ -28,7 +28,8 @@
         <surefire.version>3.5.3</surefire.version>
         <shade.version>3.6.1</shade.version>
         <enforcer.version>3.5.0</enforcer.version>
-        <dependency.plugin.version>3.8.1</dependency.plugin.version>
+        <dependency.plugin.version>3.11.0</dependency.plugin.version>
+        <docker.java.version>3.4.2</docker.java.version>
         <exec.plugin.version>3.6.3</exec.plugin.version>
         <resources.plugin.version>3.4.0</resources.plugin.version>
         <clean.plugin.version>3.5.0</clean.plugin.version>
@@ -128,7 +129,12 @@
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -139,6 +145,17 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.github.docker-java</groupId>
+            <artifactId>docker-java-api</artifactId>
+            <version>${docker.java.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -193,7 +210,10 @@
                     <release>${maven.compiler.release}</release>
                     <parameters>true</parameters>
                     <showWarnings>true</showWarnings>
-                    <compilerArgs><arg>-Xlint:all</arg></compilerArgs>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                        <arg>-Werror</arg>
+                    </compilerArgs>
                 </configuration>
             </plugin>
             <plugin>
@@ -224,6 +244,8 @@
                     <includes><include>**/*Test.java</include></includes>
                     <excludes><exclude>**/*IT.java</exclude></excludes>
                     <failIfNoTests>true</failIfNoTests>
+                    <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                     <forkedProcessExitTimeoutInSeconds>30</forkedProcessExitTimeoutInSeconds>
                 </configuration>
             </plugin>
@@ -240,6 +262,8 @@
                     <useModulePath>false</useModulePath>
                     <includes><include>**/*IT.java</include></includes>
                     <failIfNoTests>true</failIfNoTests>
+                    <argLine>@{argLine} --enable-native-access=ALL-UNNAMED</argLine>
+                    <forkedProcessTimeoutInSeconds>2400</forkedProcessTimeoutInSeconds>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <systemPropertyVariables>
                         <api.version>${docker.api.version}</api.version>
@@ -325,6 +349,22 @@
                 <artifactId>maven-dependency-plugin</artifactId>
                 <version>${dependency.plugin.version}</version>
                 <executions>
+                    <execution>
+                        <id>analyze-dependency-declarations</id>
+                        <phase>verify</phase>
+                        <goals><goal>analyze-only</goal></goals>
+                        <configuration>
+                            <failOnWarning>true</failOnWarning>
+                            <ignoredUnusedDeclaredDependencies>
+                                <!-- JDBC/service-provider and enforced transitive runtime modules. -->
+                                <ignoredUnusedDeclaredDependency>org.xerial:sqlite-jdbc</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.flywaydb:flyway-database-postgresql</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>com.fasterxml.jackson.core:jackson-databind</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>ch.qos.logback:logback-classic</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.junit.jupiter:junit-jupiter-engine</ignoredUnusedDeclaredDependency>
+                            </ignoredUnusedDeclaredDependencies>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>write-runtime-dependency-lock</id>
                         <phase>prepare-package</phase>

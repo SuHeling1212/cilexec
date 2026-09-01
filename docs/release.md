@@ -115,15 +115,15 @@ tag. The release also includes `cilexec-<version>-windows.zip`, whose `Cilexec.p
 supports `install`, `terminal`, `headless`, `host-move`, `shell`, and `uninstall` directly from
 PowerShell without WSL. The signed outer checksum file covers every GitHub Release asset,
 including `cilexec-image.oci.tar`. A manual run names its artifacts after the project
-version (for example `cilexec-0.0.3-linux-amd64.sh`) instead of a candidate prefix, remains
+version (for example `cilexec-0.0.4-linux-amd64.sh`) instead of a candidate prefix, remains
 non-formal and changeable, retains the unsigned installers as temporary artifacts, and does not
 publish an OCI image or deployment archive.
 
 ### Changeable tag release (first release)
 
-A manual dispatch with the `tag` input (for example `v0.0.3-SNAPSHOT`) publishes a changeable
+A manual dispatch with the `tag` input (for example `v0.0.4-SNAPSHOT`) publishes a changeable
 release with a real Git tag and a downloadable GitHub Release page. The tag base must start
-with the project version (`0.0.3-SNAPSHOT` is accepted, `0.0.4-SNAPSHOT` is not). The workflow
+with the project version (`0.0.4-SNAPSHOT` is accepted, `0.0.5-SNAPSHOT` is not). The workflow
 creates the tag, uploads the two installers, the Windows package, and the checksum file, and
 auto-generates the release notes. Nothing is signed and no OCI image is published, so the
 release remains replaceable: delete the tag and Release to republish. If a run creates its tag
@@ -154,11 +154,11 @@ Release, then verify its listed files:
 
 ```bash
 cosign verify-blob \
-  --bundle cilexec-0.0.3-SHA256SUMS.sigstore.json \
+  --bundle cilexec-0.0.4-SHA256SUMS.sigstore.json \
   --certificate-identity-regexp '^https://github.com/SuHeling1212/cilexec/.github/workflows/release.yml@refs/tags/v[0-9].*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  cilexec-0.0.3-SHA256SUMS
-sha256sum -c cilexec-0.0.3-SHA256SUMS
+  cilexec-0.0.4-SHA256SUMS
+sha256sum -c cilexec-0.0.4-SHA256SUMS
 ```
 
 The deployment archive's `.env` pins `CILEXEC_IMAGE` to the published manifest digest. Verify

@@ -1,4 +1,4 @@
-// FCL v0.0.3 object-oriented smoke test.
+// FCL v0.0.4 object-oriented smoke test.
 // Success: every check prints PASS and the script returns 0.
 // Failure: the first failed check prints FAIL and the script returns 1.
 

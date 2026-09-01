@@ -1,5 +1,6 @@
 package com.follarce.terminal;
 
+import com.follarce.auth.AccountCapabilityProfiles;
 import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
@@ -98,7 +99,7 @@ class TerminalAccessServiceTest {
 
         assertNotNull(created);
         assertEquals(List.of("bob"), persistence.createdUsernames);
-        assertEquals(List.of(TerminalAccessService.ADMIN_CAPABILITIES),
+        assertEquals(List.of(AccountCapabilityProfiles.ADMIN),
                 persistence.assignedCapabilities);
     }
 
@@ -106,7 +107,7 @@ class TerminalAccessServiceTest {
     void revokedAdministratorCannotCreateAnotherAdministrator() {
         Persistence persistence = new Persistence(false);
         persistence.administratorCapabilities =
-                Set.copyOf(TerminalAccessService.USER_CAPABILITIES);
+                AccountCapabilityProfiles.USER;
         TerminalAccessService access = service(persistence);
 
         assertThrows(IllegalArgumentException.class,
@@ -164,7 +165,7 @@ class TerminalAccessServiceTest {
                 ADMIN_PASSWORD.clone());
 
         assertNotNull(created);
-        assertEquals(List.of(TerminalAccessService.ADMIN_CAPABILITIES),
+        assertEquals(List.of(AccountCapabilityProfiles.ADMIN),
                 persistence.assignedCapabilities);
     }
 
@@ -219,7 +220,7 @@ class TerminalAccessServiceTest {
         private int credentialChecks;
         private boolean administratorActive = true;
         private Set<Capability> administratorCapabilities =
-                Set.copyOf(TerminalAccessService.ADMIN_CAPABILITIES);
+                AccountCapabilityProfiles.ADMIN;
 
         private Persistence(boolean credentialAccepted) {
             this.credentialAccepted = credentialAccepted;
@@ -232,7 +233,7 @@ class TerminalAccessServiceTest {
                 case "capabilities" -> {
                     UUID userId = (UUID) arguments[0];
                     if (userId.equals(account.userId())) {
-                        yield Set.copyOf(TerminalAccessService.USER_CAPABILITIES);
+                        yield AccountCapabilityProfiles.USER;
                     }
                     if (userId.equals(administrator.userId())) {
                         yield Set.copyOf(administratorCapabilities);
@@ -245,7 +246,10 @@ class TerminalAccessServiceTest {
                 }
                 case "provisionPrincipal" -> UserAccount.roleNameFor((UUID) arguments[0]);
                 case "replaceCapabilities" -> {
-                    assignedCapabilities.add(Set.copyOf((Set<Capability>) arguments[1]));
+                    Set<?> requested = (Set<?>) arguments[1];
+                    assignedCapabilities.add(requested.stream()
+                            .map(Capability.class::cast)
+                            .collect(java.util.stream.Collectors.toUnmodifiableSet()));
                     yield null;
                 }
                 case "loginBlockedUntil" -> {

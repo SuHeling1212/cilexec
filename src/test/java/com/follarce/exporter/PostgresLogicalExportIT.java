@@ -1,6 +1,7 @@
 package com.follarce.exporter;
 
 import com.follarce.app.BuildInfo;
+import com.follarce.version.ReleaseVersion;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -92,7 +93,8 @@ class PostgresLogicalExportIT {
 
         assertTrue(report.tableCount() > 30);
         assertTrue(report.rowCount() > 1);
-        assertEquals("3", scalar(database, "SELECT metadata_value FROM export_metadata "
+        assertEquals(Integer.toString(ReleaseVersion.schemaNumber(ReleaseVersion.current())),
+                scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='database.schema.version'"));
         assertEquals("0", scalar(database, "SELECT metadata_value FROM export_metadata "
                 + "WHERE metadata_key='source.statement.timeout'"));

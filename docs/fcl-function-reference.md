@@ -78,12 +78,12 @@ slice, which may then replay from the preceding checkpoint.
   shutdown, forced process termination, database consistency failures, and other kernel faults
   cannot be caught. Exception values and active handlers are included in every continuation
   checkpoint, so a suspended `try` retains its catch after restart. `throw`, `finally`, and
-  typed/multiple catches are not part of v0.0.3.
+  typed/multiple catches are not part of v0.0.4.
 - **Module visibility.** `public func` exports a module function (and is the default for
   an unqualified `func`); `private func` is an implementation function. Private functions
   remain callable by module functions but are not callable from imported module clients.
 
-## FCL v0.0.3 Object-Oriented Programming
+## FCL v0.0.4 Object-Oriented Programming
 
 For a complete beginner-oriented explanation, see the English
 [object-oriented guide](fcl-object-oriented-guide.md) or the Chinese
@@ -181,7 +181,7 @@ memory.destroy(user)
 // user is undefined; copy remains a complete User value
 ```
 
-The deliberately excluded v0.0.3 features are static members, interfaces, abstract classes,
+The deliberately excluded v0.0.4 features are static members, interfaces, abstract classes,
 generics, multiple inheritance, reflection, object cloning, `throw`, `finally`, and typed catch.
 
 ## Start With These Examples

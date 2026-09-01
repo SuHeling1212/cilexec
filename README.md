@@ -193,9 +193,10 @@ mvn clean verify      # mandatory PostgreSQL/crash-recovery ITs + quality gates 
 ## Documentation
 
 - [FCL function & terminal reference](docs/fcl-function-reference.md)
-- [FCL v0.0.3 object-oriented guide](docs/fcl-object-oriented-guide.md)
-- [FCL v0.0.3 object-oriented guide (中文)](docs/fcl-object-oriented-guide.zh-CN.md)
+- [FCL v0.0.4 object-oriented guide](docs/fcl-object-oriented-guide.md)
+- [FCL v0.0.4 object-oriented guide (中文)](docs/fcl-object-oriented-guide.zh-CN.md)
 - [FCLB executable artifacts and V003 migration](docs/fcl-executable-artifact.md)
+- [V004 compatibility and contract fence](docs/v004-contract-fence.md)
 - [Release version source](docs/versioning.md)
 - [Architecture baseline](docs/architecture-baseline.md)
 - [Java source extensions](docs/java-extension-development.md)

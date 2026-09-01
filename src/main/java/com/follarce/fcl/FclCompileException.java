@@ -2,6 +2,7 @@ package com.follarce.fcl;
 
 /** Raised when FCL source cannot be compiled into a program. */
 public final class FclCompileException extends RuntimeException {
+    private static final long serialVersionUID = 1L;
     private final int line;
     private final int column;
 

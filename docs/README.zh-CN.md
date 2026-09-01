@@ -18,16 +18,18 @@ reconstructed from the database. There is no `.proc` snapshot format and no
 - [architecture-baseline.md](architecture-baseline.md) — current architecture reference plus
   the preserved historical decision record for the PostgreSQL and Docker rewrite.
 - [fcl-function-reference.md](fcl-function-reference.md) — complete reference for the FCL
-  function registry, namespaces, aliases, v0.0.3 object-oriented syntax, exception handling,
+  function registry, namespaces, aliases, v0.0.4 object-oriented syntax, exception handling,
   permission scope, and terminal commands.
 - [fcl-object-oriented-guide.md](fcl-object-oriented-guide.md) — beginner-oriented English
-  guide to FCL v0.0.3 classes, objects, constructors, copy semantics, encapsulation,
+  guide to FCL v0.0.4 classes, objects, constructors, copy semantics, encapsulation,
   inheritance, deletion, and persistence recovery.
 - [fcl-object-oriented-guide.zh-CN.md](fcl-object-oriented-guide.zh-CN.md) — 面向零基础读者的
-  FCL v0.0.3 面向对象教程：类、对象、构造方法、值语义、封装、继承、删除与持久化恢复。
+  FCL v0.0.4 面向对象教程：类、对象、构造方法、值语义、封装、继承、删除与持久化恢复。
 - [fcl-executable-artifact.md](fcl-executable-artifact.md) / [fcl-executable-artifact.zh-CN.md](fcl-executable-artifact.zh-CN.md)
   — V003 的 FCLB 可执行产物、恢复校验、V002 升级说明，以及仅由显式操作执行的
   `program.remove` 等资源删除规则。
+- [v004-contract-fence.md](v004-contract-fence.md) — 尚未发布的 0.0.4 源码状态：V004
+  契约校验、V002/V003 持久格式兼容范围，以及升级/回滚边界。
 - [java-extension-development.md](java-extension-development.md) — how to add source-only
   Java extensions: functions, effect handlers, persistence and effect rules, recovery
   policies, and the release checklist.

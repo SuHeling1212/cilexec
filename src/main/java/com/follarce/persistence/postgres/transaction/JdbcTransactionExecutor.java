@@ -57,7 +57,7 @@ public final class JdbcTransactionExecutor implements TransactionExecutor, UserT
             } catch (SQLException exception) {
                 throw SqlStateClassifier.classify("transaction.acquire", exception);
             }
-            try (Connection ignored = connection) {
+            try (connection) {
                 try {
                     prepare(connection, isolation);
                     if (userId != null) {

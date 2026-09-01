@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FclCodecAndRegistryTest {
     @Test
-    void roundTripsEveryPersistedV003InstructionAndExpressionForm() {
+    void roundTripsEveryPersistedInstructionAndExpressionForm() {
         String source = """
                 import "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as "pkg"
                 include "library.fcl"
@@ -56,6 +56,40 @@ class FclCodecAndRegistryTest {
         assertEquals(original.instructions(), restored.instructions());
         assertEquals(original.functions(), restored.functions());
         assertEquals(original.classes(), restored.classes());
+    }
+
+    @Test
+    void readsAnExistingV003FclbArtifactAfterTheV004VersionFence() {
+        String source = "answer = 6 * 7\n";
+        FclProgramCodec codec = new FclProgramCodec();
+        FclProgram original = new FclCompiler().compile(source);
+        byte[] v003 = codec.toBytes(original);
+        java.nio.ByteBuffer.wrap(v003, Integer.BYTES, Integer.BYTES)
+                .putInt(FclProgramCodec.FIRST_BINARY_FORMAT_VERSION);
+
+        FclProgram restored = codec.fromBytes(v003,
+                FclProgramCodec.FIRST_BINARY_FORMAT_VERSION, source);
+
+        assertEquals(original.instructions(), restored.instructions());
+        assertTrue(FclProgramCodec.supportsFormat(2));
+        assertTrue(FclProgramCodec.supportsFormat(3));
+        assertTrue(FclProgramCodec.supportsFormat(4));
+        assertFalse(FclProgramCodec.supportsFormat(1));
+        assertFalse(FclProgramCodec.supportsFormat(5));
+    }
+
+    @Test
+    void roundTripsAnExistingV003ContinuationAfterTheV004VersionFence() {
+        FclContinuation original = new FclContinuation(
+                FclProgramCodec.FIRST_BINARY_FORMAT_VERSION);
+        original.scope().put("value", 42L);
+        FclContinuationCodec codec = new FclContinuationCodec();
+
+        FclContinuation restored = codec.fromJson(codec.toJson(original));
+
+        assertEquals(FclProgramCodec.FIRST_BINARY_FORMAT_VERSION,
+                restored.formatVersion());
+        assertEquals(42L, restored.scope().get("value"));
     }
 
     @Test

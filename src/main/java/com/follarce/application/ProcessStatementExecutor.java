@@ -1175,6 +1175,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     /** The lease or process epoch no longer authorizes this worker. */
     public static final class StaleClaimException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
         public StaleClaimException(String message) {
             super(message);
         }
@@ -1182,6 +1184,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
 
     /** A different statement changed the same state version in this execution epoch. */
     public static final class StatementConflictException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
         public StatementConflictException(String message) {
             super(message);
         }

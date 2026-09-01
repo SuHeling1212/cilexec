@@ -1,6 +1,7 @@
 package com.follarce.application;
 
 import com.follarce.auth.AuthService;
+import com.follarce.auth.AccountCapabilityProfiles;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.Isolation;
@@ -10,7 +11,6 @@ import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.persistence.postgres.PostgresTestBootstrap;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
-import com.follarce.terminal.TerminalAccessService;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -77,7 +77,7 @@ class CredentialGuardedUserCreationIT {
                 "owner-password-123".toCharArray(),
                 Set.of(Capability.PROCESS_CREATE, Capability.VFS_READ, Capability.VFS_WRITE));
         UserAccount local = auth.create("local", "local-password-123".toCharArray(),
-                TerminalAccessService.ADMIN_CAPABILITIES);
+                AccountCapabilityProfiles.ADMIN);
 
         // Any logged-in user may self-register a normal account.
         String selfSource = "created = user.create(\"cred-self-%s\", \"self-password-1\")"
@@ -112,7 +112,7 @@ class CredentialGuardedUserCreationIT {
         // Revoking SYSTEM_ADMIN must make the still-valid password insufficient.
         transactions.inTransaction(Isolation.READ_COMMITTED, transaction -> {
             transaction.auth().replaceCapabilities(local.userId(),
-                    TerminalAccessService.USER_CAPABILITIES);
+                    AccountCapabilityProfiles.USER);
             return null;
         });
         assertFails(transactions, owner,
@@ -124,7 +124,7 @@ class CredentialGuardedUserCreationIT {
     @Test
     void expiredSystemAdminCannotCreateAdministrator() throws Exception {
         UserAccount expiredAdmin = auth.create("cred-expire-" + suffix,
-                "expire-password-123".toCharArray(), TerminalAccessService.ADMIN_CAPABILITIES);
+                "expire-password-123".toCharArray(), AccountCapabilityProfiles.ADMIN);
         try (Connection connection = DriverManager.getConnection(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())) {
             try (Statement statement = connection.createStatement()) {

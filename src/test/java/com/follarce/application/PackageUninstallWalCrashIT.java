@@ -208,8 +208,10 @@ class PackageUninstallWalCrashIT {
         Instant deadline = Instant.now().plus(timeout);
         Exception last = null;
         while (Instant.now().isBefore(deadline)) {
-            try (Connection ignored = adminConnection()) {
-                return;
+            try (Connection connection = adminConnection()) {
+                if (connection.isValid(1)) {
+                    return;
+                }
             } catch (Exception failure) {
                 last = failure;
                 Thread.sleep(100);

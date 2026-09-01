@@ -12,9 +12,9 @@ import java.util.Objects;
  *
  * <p>The state deliberately contains no thread, callback, JDBC object, or host handle.
  *
- * <p>The continuation format is coupled to the executable program format. V003 is the active
- * write format; V002 remains readable so an upgraded Runtime can finish an already-persisted
- * V002 process before it is explicitly recompiled.
+ * <p>The continuation format is coupled to the executable program format. V004 is the active
+ * write format; V002 and V003 remain readable so an upgraded Runtime can finish an
+ * already-persisted process before it is explicitly recompiled.
  */
 public final class FclContinuation {
     public static final int FORMAT_VERSION = FclProgramCodec.FORMAT_VERSION;

@@ -121,7 +121,10 @@ final class TokenStore {
             Files.createDirectories(parent);
             try (FileChannel channel = FileChannel.open(lockFile,
                     StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-                 FileLock ignored = channel.lock()) {
+                 FileLock lock = channel.lock()) {
+                if (!lock.isValid()) {
+                    throw new IllegalStateException("Publish-token lock was not acquired");
+                }
                 restrict(lockFile);
                 // Re-load under the lock: another JVM may have changed the file since
                 // this instance was constructed or since its last write.

@@ -17,17 +17,19 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 
 /** Persists immutable FCL programs, compiling only when their source identity is new. */
 public final class ProgramService {
     public static final String LANGUAGE_VERSION = "fcl-" + ReleaseVersion.current();
-    /** Read compatibility only for packages published with the V002 release. */
-    public static final String LEGACY_LANGUAGE_VERSION = "fcl-0.0.2";
+    /** Read compatibility for packages published before the current source-language release. */
+    public static final Set<String> LEGACY_LANGUAGE_VERSIONS = Set.of(
+            "fcl-0.0.2", "fcl-0.0.3");
     public static final String SOURCE_MEDIA_TYPE = "text/x-fcl; charset=utf-8";
     public static final String COMPILED_MEDIA_TYPE =
-            "application/vnd.cilexec.fcl-program; version=3";
+            "application/vnd.cilexec.fcl-program; version=" + FclProgramCodec.FORMAT_VERSION;
 
     private final UserTransactionRunner transactions;
     private final FclCompiler compiler;
@@ -59,13 +61,14 @@ public final class ProgramService {
     }
 
     /**
-     * V003 did not alter source semantics, so a V002 package can be imported by a V003 program.
-     * This is deliberately narrow: future source-language changes must opt in explicitly.
+     * V003 and V004 did not invalidate the V002 source language, so their packages remain
+     * import-compatible. This allowlist is deliberately explicit: a future source-language
+     * change must opt in after compatibility has been reviewed.
      */
     public static boolean compatiblePackageLanguage(String packageLanguage, String programLanguage) {
         return packageLanguage.equals(programLanguage)
                 || (LANGUAGE_VERSION.equals(programLanguage)
-                && LEGACY_LANGUAGE_VERSION.equals(packageLanguage));
+                && LEGACY_LANGUAGE_VERSIONS.contains(packageLanguage));
     }
 
     public Program create(UUID ownerId, String source, String workingDirectory) {

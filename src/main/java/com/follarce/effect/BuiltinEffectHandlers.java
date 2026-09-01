@@ -235,7 +235,7 @@ public final class BuiltinEffectHandlers {
             }
             PinnedHttpClient.Response response = PinnedHttpClient.send(uri, "GET",
                     Optional.empty(), headers);
-            try (PinnedHttpClient.Response ignored = response) {
+            try (response) {
                 requireNoRedirect(response.statusCode());
                 requireDownloadStatus(response.statusCode());
                 byte[] body;

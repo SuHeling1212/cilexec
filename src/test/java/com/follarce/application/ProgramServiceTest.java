@@ -68,6 +68,16 @@ class ProgramServiceTest {
     private static final Instant NOW = Instant.parse("2026-07-22T03:00:00Z");
 
     @Test
+    void currentProgramsAcceptCompatibleV002AndV003PackageLanguages() {
+        assertTrue(ProgramService.compatiblePackageLanguage(
+                "fcl-0.0.2", ProgramService.LANGUAGE_VERSION));
+        assertTrue(ProgramService.compatiblePackageLanguage(
+                "fcl-0.0.3", ProgramService.LANGUAGE_VERSION));
+        assertFalse(ProgramService.compatiblePackageLanguage(
+                "fcl-0.0.1", ProgramService.LANGUAGE_VERSION));
+    }
+
+    @Test
     void storesCanonicalSourceCompiledObjectAndProgramInOneUserTransaction() {
         TestPersistence persistence = new TestPersistence();
         UUID ownerId = UUID.randomUUID();

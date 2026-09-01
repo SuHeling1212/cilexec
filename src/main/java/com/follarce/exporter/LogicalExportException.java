@@ -2,6 +2,8 @@ package com.follarce.exporter;
 
 /** Failure to create or validate a CilExec application-level logical export. */
 public final class LogicalExportException extends RuntimeException {
+    private static final long serialVersionUID = 1L;
+
     public LogicalExportException(String message) {
         super(message);
     }

@@ -67,8 +67,8 @@ class TerminalOutputRouterTest {
 
     @Test
     void publishStopsReportingDeliveryAfterTheSocketBreaks() throws Exception {
-        try (ServerSocket server = new ServerSocket(0);
-             Socket client = new Socket("127.0.0.1", server.getLocalPort())) {
+        try (ServerSocket server = new ServerSocket(0)) {
+            Socket client = new Socket("127.0.0.1", server.getLocalPort());
             Socket accepted = server.accept();
             PrintWriter output = new PrintWriter(accepted.getOutputStream(), true);
             UUID route = UUID.randomUUID();
@@ -88,6 +88,9 @@ class TerminalOutputRouterTest {
             } finally {
                 TerminalOutputRouter.detachAll(output);
                 accepted.close();
+                if (!client.isClosed()) {
+                    client.close();
+                }
             }
         }
     }

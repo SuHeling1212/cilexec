@@ -23,13 +23,15 @@ import java.util.Objects;
 /**
  * Versioned codec for immutable executable FCL programs.
  *
- * <p>V003 writes {@code FCLB}: a canonical binary instruction artifact. Source remains a
+ * <p>V003 introduced {@code FCLB}: a canonical binary instruction artifact. Source remains a
  * separate immutable VFS object for inspection and editing, but recovery executes this artifact
- * without parsing or recompiling source. V002's JSON source envelope remains readable so an
- * upgraded runtime can finish already-persisted work safely.
+ * without parsing or recompiling source. V004 retains the same binary structure with a new format
+ * identity. V002's JSON source envelope and V003 FCLB remain readable so an upgraded runtime can
+ * finish already-persisted work safely.
  */
 public final class FclProgramCodec {
     public static final int LEGACY_FORMAT_VERSION = 2;
+    public static final int FIRST_BINARY_FORMAT_VERSION = 3;
     public static final int FORMAT_VERSION = ReleaseVersion.schemaNumber(ReleaseVersion.current());
 
     private static final int MAGIC = 0x46434c42; // FCLB
@@ -92,10 +94,11 @@ public final class FclProgramCodec {
     }
 
     public static boolean supportsFormat(int version) {
-        return version == LEGACY_FORMAT_VERSION || version == FORMAT_VERSION;
+        return version == LEGACY_FORMAT_VERSION
+                || version >= FIRST_BINARY_FORMAT_VERSION && version <= FORMAT_VERSION;
     }
 
-    /** Encodes a V003 executable artifact. */
+    /** Encodes an executable artifact using the current FCLB format identity. */
     public byte[] toBytes(FclProgram program) {
         Objects.requireNonNull(program, "program");
         try {
@@ -118,7 +121,9 @@ public final class FclProgramCodec {
     public FclProgram fromBytes(byte[] encoded, int formatVersion, String source) {
         Objects.requireNonNull(encoded, "encoded");
         Objects.requireNonNull(source, "source");
-        if (formatVersion == FORMAT_VERSION) return decodeBinary(encoded, source);
+        if (formatVersion >= FIRST_BINARY_FORMAT_VERSION && formatVersion <= FORMAT_VERSION) {
+            return decodeBinary(encoded, formatVersion, source);
+        }
         if (formatVersion == LEGACY_FORMAT_VERSION) {
             FclProgram legacy = decodeLegacyJson(new String(encoded, StandardCharsets.UTF_8));
             if (!legacy.source().equals(source)) {
@@ -160,11 +165,12 @@ public final class FclProgramCodec {
         return gson.toJson(encoded);
     }
 
-    private FclProgram decodeBinary(byte[] encoded, String source) {
+    private FclProgram decodeBinary(byte[] encoded, int expectedFormat, String source) {
         try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(encoded))) {
             if (input.readInt() != MAGIC) throw new IllegalArgumentException("Invalid FCLB magic");
             int format = input.readInt();
-            if (format != FORMAT_VERSION) {
+            if (format != expectedFormat || !supportsFormat(format)
+                    || format < FIRST_BINARY_FORMAT_VERSION) {
                 throw new IllegalArgumentException("Unsupported FCLB format: " + format);
             }
             String expectedHash = readString(input);

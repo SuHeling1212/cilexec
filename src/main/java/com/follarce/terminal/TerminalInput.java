@@ -38,6 +38,8 @@ public interface TerminalInput {
      * this must not close the session: the terminal reports the error and keeps running.
      */
     final class SubmissionLimitExceeded extends IOException {
+        private static final long serialVersionUID = 1L;
+
         SubmissionLimitExceeded(String message) {
             super(message);
         }

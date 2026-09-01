@@ -10,6 +10,7 @@ final class FclExpressionEvaluator {
     record UserCall(long expressionId, String name, List<Object> arguments,
                     FclObjectValue receiver, String receiverPath, boolean construction) {}
 
+    @SuppressWarnings("serial") // Internal stackless control signal; never crosses a JVM boundary.
     static final class UserCallSignal extends RuntimeException {
         private final UserCall call;
 

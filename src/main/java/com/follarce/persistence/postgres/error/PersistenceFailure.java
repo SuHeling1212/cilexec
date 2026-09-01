@@ -4,6 +4,7 @@ import com.follarce.domain.port.DurableStorageFailure;
 
 /** Stable database error surface used outside the JDBC adapter. */
 public class PersistenceFailure extends RuntimeException implements DurableStorageFailure {
+    private static final long serialVersionUID = 1L;
     private final Kind kind;
     private final boolean retryable;
 

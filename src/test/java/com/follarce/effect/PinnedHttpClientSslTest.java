@@ -151,7 +151,7 @@ class PinnedHttpClientSslTest {
     }
 
     private static String body(PinnedHttpClient.Response response) throws IOException {
-        try (PinnedHttpClient.Response ignored = response) {
+        try (response) {
             return new String(response.body().readAllBytes(), StandardCharsets.UTF_8);
         }
     }

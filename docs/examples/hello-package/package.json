@@ -1,8 +1,8 @@
 {
   "namespace": "demo",
   "name": "hello",
-  "version": "0.0.3",
-  "languageVersion": "fcl-0.0.3",
+  "version": "0.0.4",
+  "languageVersion": "fcl-0.0.4",
   "kind": "application",
   "modules": [
     {"name": "main", "path": "main.fcl"}

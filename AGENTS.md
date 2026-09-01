@@ -144,7 +144,7 @@ or a broad host directory for this feature.
 
 - **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen modular baseline.
   Never modify an applied migration; the next schema or persisted-format change must be an
-  immutable `V002` forward migration with upgrade, backup, and rollback-by-restore tests.
+  immutable `V005` forward migration with upgrade, backup, and rollback-by-restore tests.
   Automatic downgrades remain forbidden.
 - **Database migrations:** Flyway baselines live in `src/main/resources/db/baseline/`;
   `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) now takes

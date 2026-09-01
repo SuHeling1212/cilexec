@@ -173,7 +173,7 @@ class RuntimeSignalIT {
                     + "JOIN auth.user_capability assignment USING (user_id) "
                     + "JOIN auth.capability capability USING (capability_id) "
                     + "WHERE account.username='local' AND capability.capability_key='system_admin'"));
-            assertEquals(TerminalAccessService.USER_CAPABILITIES.size(), count(
+            assertEquals(com.follarce.auth.AccountCapabilityProfiles.USER.size(), count(
                     "SELECT count(*) FROM auth.user_account account "
                     + "JOIN auth.user_capability assignment USING (user_id) "
                     + "WHERE account.username='alice'"));
