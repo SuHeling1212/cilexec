@@ -13,20 +13,38 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import static com.follarce.application.FclRuntimeFunctionSupport.arity;
+import static com.follarce.application.FclRuntimeFunctionSupport.string;
+import static com.follarce.application.FclRuntimeFunctionSupport.uuid;
+import static com.follarce.application.FclRuntimeFunctionSupport.unavailable;
+
 /** Installs identity and administrator-delegation functions for one FCL execution slice. */
-final class FclUserRuntimeFunctions extends FclRuntimeFunctions {
-    FclUserRuntimeFunctions(FclRuntimeFunctions source) {
-        super(source);
+final class FclUserRuntimeFunctions {
+    private final com.follarce.domain.port.AuthRepository auth;
+    private final UUID ownerId;
+    private final java.time.Instant now;
+    private final com.follarce.fcl.FclFunctionRegistry registry;
+
+    FclUserRuntimeFunctions(com.follarce.domain.port.AuthRepository auth, UUID ownerId,
+                            java.time.Instant now, com.follarce.fcl.FclFunctionRegistry registry) {
+        this.auth = java.util.Objects.requireNonNull(auth, "auth");
+        this.ownerId = java.util.Objects.requireNonNull(ownerId, "ownerId");
+        this.now = java.util.Objects.requireNonNull(now, "now");
+        this.registry = java.util.Objects.requireNonNull(registry, "registry");
+    }
+
+    private boolean isAdministrator() {
+        return auth.capabilities(ownerId).contains(Capability.SYSTEM_ADMIN);
     }
 
     void registerUsers() {
         registry.register("user", "getCurrentUser", args -> {
                     arity(args, 0, "user.getCurrentUser");
-                    return process.ownerId().toString();
+                    return ownerId.toString();
                 })
                 .register("user", "isLocal", args -> {
                     arity(args, 0, "user.isLocal");
-                    return transaction.auth().capabilities(process.ownerId())
+                    return auth.capabilities(ownerId)
                             .contains(Capability.SYSTEM_ADMIN);
                 })
                 .register("user", "validateUser", args -> {
@@ -34,23 +52,23 @@ final class FclUserRuntimeFunctions extends FclRuntimeFunctions {
                     String value = string(args.getFirst(), "user.validateUser identity");
                     try {
                         UUID identity = UUID.fromString(value);
-                        if (identity.equals(process.ownerId())) return true;
+                        if (identity.equals(ownerId)) return true;
                         if (!isAdministrator()) return false;
-                        return transaction.auth().findUsersByAdministrator(process.ownerId())
+                        return auth.findUsersByAdministrator(ownerId)
                                 .stream().anyMatch(user -> user.userId().equals(identity));
                     } catch (IllegalArgumentException ignored) {
-                        if (transaction.auth().findVisibleUsername(process.ownerId())
+                        if (auth.findVisibleUsername(ownerId)
                                 .map(username -> username.equalsIgnoreCase(value)).orElse(false)) {
                             return true;
                         }
                         if (!isAdministrator()) return false;
-                        return transaction.auth().findUsersByAdministrator(process.ownerId())
+                        return auth.findUsersByAdministrator(ownerId)
                                 .stream().anyMatch(user -> user.username().equalsIgnoreCase(value));
                     }
                 })
                 .register("user", "list", args -> {
                     arity(args, 0, "user.list");
-                    return transaction.auth().findUsersByAdministrator(process.ownerId()).stream()
+                    return auth.findUsersByAdministrator(ownerId).stream()
                             .map(FclUserRuntimeFunctions::userMap).toList();
                 })
                 .register("user", "create", args -> {
@@ -86,7 +104,7 @@ final class FclUserRuntimeFunctions extends FclRuntimeFunctions {
                             ? null : administratorPassword.toCharArray();
                     try {
                         PasswordPolicy.require(secret);
-                        UserAccount created = transaction.auth().createUserByCredential(
+                        UserAccount created = auth.createUserByCredential(
                                 administratorUsername, secretAdmin,
                                 UUID.randomUUID(), normalized, secret, capabilities,
                                 UUID.randomUUID(), now);
@@ -102,14 +120,14 @@ final class FclUserRuntimeFunctions extends FclRuntimeFunctions {
                 .register("user", "disable", args -> {
                     arity(args, 1, "user.disable");
                     UUID userId = uuid(args.getFirst(), "user.disable user");
-                    return userMap(transaction.auth().disableUserByAdministrator(
-                            process.ownerId(), userId, UUID.randomUUID(), now));
+                    return userMap(auth.disableUserByAdministrator(
+                            ownerId, userId, UUID.randomUUID(), now));
                 })
                 .register("user", "remove", args -> {
                     arity(args, 1, "user.remove");
                     UUID userId = uuid(args.getFirst(), "user.remove user");
-                    return transaction.auth().removeUserByAdministrator(
-                            process.ownerId(), userId, UUID.randomUUID(), now);
+                    return auth.removeUserByAdministrator(
+                            ownerId, userId, UUID.randomUUID(), now);
                 })
                 .register("user", "switchUser", args -> unavailable("user.switchUser",
                         "a durable process identity cannot be changed in place"));

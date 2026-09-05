@@ -1246,7 +1246,30 @@ class ProcessStatementExecutorTest {
         assertEquals(fixture.processUid, fixture.persistence.timers.deletedProcess);
     }
 
-    private static SchedulerClaim claim(UUID processUid, UUID ownerId, long epoch) {        return new SchedulerClaim(processUid, ownerId, UUID.randomUUID(), UUID.randomUUID(), epoch,
+    @Test
+    void cancelsAnInteractiveSubmissionWithOneFencedUpdate() {
+        Fixture fixture = new Fixture("value = 1\n");
+        FclContinuation interactive = new FclContinuation();
+        interactive.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
+        Continuation persisted = new FclPersistenceBridge(new FclContinuationCodec()).persist(
+                fixture.processUid, fixture.program, initial(fixture.program), interactive);
+        CilProcess current = fixture.persistence.processes.current;
+        fixture.persistence.processes.current = new CilProcess(current.identity(),
+                current.ownerId(), current.status(), current.stateVersion(),
+                current.executionEpoch(), persisted, current.parentProcessUid(),
+                current.createdAt(), current.updatedAt());
+        fixture.persistence.terminal.interrupt = true;
+
+        fixture.executor.executeSlice(fixture.claim);
+
+        assertEquals(CilProcess.Status.PAUSED, fixture.persistence.processes.current.status());
+        assertEquals(1, fixture.persistence.processes.updates);
+        assertEquals(1, fixture.persistence.scheduler.releases);
+        assertFalse(fixture.persistence.terminal.interrupt);
+    }
+
+    private static SchedulerClaim claim(UUID processUid, UUID ownerId, long epoch) {
+        return new SchedulerClaim(processUid, ownerId, UUID.randomUUID(), UUID.randomUUID(), epoch,
                 NOW.minusSeconds(1), NOW.minusSeconds(1), NOW.plus(Duration.ofMinutes(1)));
     }
 

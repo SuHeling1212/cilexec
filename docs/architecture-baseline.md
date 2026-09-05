@@ -11,6 +11,17 @@ Distribution: **Docker Compose, Linux AMD64 and ARM64**
 
 ## 0. Document Purpose and Constraints
 
+Runtime implementation boundaries: `ProcessStatementExecutor` owns slice orchestration and
+transaction completion through its transaction runner. `FclProgramLoader` owns immutable
+artifact loading, exact package linking, and bounded disposable caches, while
+`FclSourceModuleLinker` owns source-import expansion, initialization, and relinking. The
+runtime function facade only assembles focused registrars; shared VFS operations and generic
+statement capabilities live in separate support classes, and user-function registration
+receives explicit authentication dependencies. Terminal input contracts remain in
+`TerminalInput`, while the stateful ANSI line editor is implemented by
+`EditableTerminalInputEngine`. These boundaries do not change FCL semantics, persisted
+formats, or migration requirements.
+
 This document records the architecture that resulted from the 86-question questionnaire and
 the current implementation. Sections that describe the shipped Runtime use present tense.
 The decision register and implementation phases are retained as historical design history;
@@ -241,9 +252,9 @@ src/main/java/com/follarce/
 ├── Main.java                      stable executable entry point
 ├── app/                           startup/shutdown/commands (CilExecApplication,
 │                                  RuntimeBootstrap, RuntimeLifecycle, ApplicationCommand)
-├── application/                   database-aware FCL registries (FclRuntimeFunctions facade;
-│                                  file/process/network/package/memory registrars),
-│                                  statement dispatch (ProcessStatementExecutor),
+├── application/                   database-aware FCL registry assembly and focused
+│                                  core/file/process/network/package registrars,
+│                                  slice dispatch, artifact loading and source-module linking,
 │                                  ProgramService, ProcessService, TerminalReplService
 ├── auth/                          AuthService, Authorization, PasswordPolicy, UsernamePolicy
 ├── config/                        CilExecConfig, database pool settings

@@ -869,8 +869,9 @@ This manual was compiled from the current code registration points:
 
 - `src/main/java/com/follarce/fcl/FclBuiltins.java`: pure math, utility, path, and
   terminal styling functions.
-- `src/main/java/com/follarce/application/FclRuntimeFunctions.java`: registry composition,
-  environment, utility, user functions, and shared durable-operation helpers.
+- `src/main/java/com/follarce/application/FclRuntimeFunctions.java`: registry composition.
+- `src/main/java/com/follarce/application/FclCoreRuntimeFunctions.java` and the runtime
+  support classes: environment, utility, resource-control, VFS, and shared durable operations.
 - `src/main/java/com/follarce/application/FclFileRuntimeFunctions.java`,
   `FclProcessRuntimeFunctions.java`, `FclNetworkRuntimeFunctions.java`, and
   `FclPackageRuntimeFunctions.java`: the corresponding database-aware function domains.

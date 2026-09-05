@@ -16,6 +16,37 @@ class CoreDependencyBoundaryTest {
     private static final Path APPLICATION = Path.of("src/main/java/com/follarce/application");
 
     @Test
+    void userRegistrarDoesNotInheritTheRuntimeAdapter() {
+        org.junit.jupiter.api.Assertions.assertEquals(Object.class,
+                FclUserRuntimeFunctions.class.getSuperclass());
+        for (var field : FclUserRuntimeFunctions.class.getDeclaredFields()) {
+            assertFalse(FclRuntimeFunctions.class.isAssignableFrom(field.getType()),
+                    "User registration must not retain the full runtime adapter");
+        }
+        assertFalse(sourceContains(APPLICATION.resolve("FclUserRuntimeFunctions.java"),
+                "FclRuntimeFunctions"));
+    }
+
+    @Test
+    void focusedRegistrarsDoNotInheritTheAssemblyCoordinator() {
+        for (Class<?> registrar : List.of(FclCoreRuntimeFunctions.class,
+                FclFileRuntimeFunctions.class,
+                FclNetworkRuntimeFunctions.class, FclProcessRuntimeFunctions.class,
+                FclPackageRuntimeFunctions.class)) {
+            assertFalse(FclRuntimeFunctions.class.isAssignableFrom(registrar),
+                    () -> registrar.getSimpleName() + " must not inherit the assembly coordinator");
+        }
+    }
+
+    @Test
+    void artifactLoaderDoesNotDependOnSliceOrchestration() throws IOException {
+        assertFalse(Files.readString(APPLICATION.resolve("FclProgramLoader.java"))
+                .contains("ProcessStatementExecutor"));
+        assertFalse(Files.readString(APPLICATION.resolve("FclSourceModuleLinker.java"))
+                .contains("ProcessStatementExecutor"));
+    }
+
+    @Test
     void fclKernelRegistrarsDoNotImportTerminalAdapters() throws IOException {
         for (String name : List.of("FclRuntimeFunctions.java", "FclFileRuntimeFunctions.java",
                 "FclProcessRuntimeFunctions.java", "FclPackageRuntimeFunctions.java",

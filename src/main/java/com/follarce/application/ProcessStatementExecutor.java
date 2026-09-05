@@ -4,8 +4,6 @@ import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.port.Isolation;
 import com.follarce.domain.port.ProcessRepository;
 import com.follarce.domain.port.UserTransactionRunner;
-import com.follarce.domain.packageinfo.PackageIndex;
-import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
@@ -13,16 +11,11 @@ import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.scheduler.SchedulerClaim;
 import com.follarce.domain.vfs.ObjectHash;
-import com.follarce.domain.vfs.StoredObject;
-import com.follarce.fcl.FclBuiltins;
 import com.follarce.fcl.FclCompileException;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
-import com.follarce.fcl.FclCompiler;
-import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
-import com.follarce.fcl.FclProgramLinker;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclRuntimeException;
@@ -31,13 +24,7 @@ import com.follarce.fcl.FclStepResult;
 import com.follarce.extension.JavaExtensionCatalog;
 import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.scheduler.ClaimedProcessHandler;
-import com.follarce.persistence.sqlite.PackageDescriptor;
-import com.follarce.persistence.sqlite.SqlitePackageReader;
-import com.follarce.package_manager.PackageManager;
 
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -45,13 +32,10 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.function.Supplier;
 
 /** Executes one bounded durable scheduler slice for any FCL process. */
 public final class ProcessStatementExecutor implements ClaimedProcessHandler {
@@ -65,7 +49,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     static final String SOURCE_IMPORTS_SCOPE_KEY = "cilexec.fcl.sourceImports";
     private final UserTransactionRunner transactions;
     private final FclRuntime fixedRuntime;
-    private final FclProgramCodec programCodec;
+    private final FclProgramLoader programLoader;
     private final FclContinuationCodec continuationCodec;
     private final FclPersistenceBridge continuationBridge;
     private final Clock clock;
@@ -75,10 +59,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     private final VolatileProcessService volatileProcesses;
     private final ProcessChangeNotifier processChangeNotifier;
     private final ProcessOutputPublisher processOutputPublisher;
-    private final BoundedCache<ObjectHash, FclProgram> programCache = new BoundedCache<>(128);
-    private final BoundedCache<ObjectHash, CachedPackage> packageCache = new BoundedCache<>(64);
-    private final FclProgramLinker programLinker = new FclProgramLinker();
-    private final FclSourceIncludes sourceIncludes = new FclSourceIncludes();
+    private final FclSourceModuleLinker sourceModules;
 
     public ProcessStatementExecutor(UserTransactionRunner transactions) {
         this(transactions, SourceExtensionIndex.catalog(), null, new FclProgramCodec(),
@@ -170,7 +151,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.extensions = Objects.requireNonNull(extensions, "extensions");
         this.fixedRuntime = runtime;
-        this.programCodec = Objects.requireNonNull(programCodec, "programCodec");
+        this.programLoader = new FclProgramLoader(programCodec);
+        this.sourceModules = new FclSourceModuleLinker(runtime, extensions);
         this.continuationCodec = Objects.requireNonNull(continuationCodec, "continuationCodec");
         this.continuationBridge = new FclPersistenceBridge(
                 Objects.requireNonNull(continuationCodec, "continuationCodec"));
@@ -225,9 +207,9 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             }
             FclProgram compiled;
             try {
-                compiled = loadProgram(transaction, program);
-                compiled = linkPackages(transaction, current, compiled, program);
-                compiled = linkSourceImports(transaction, current, program, continuation, now, compiled);
+                compiled = programLoader.loadProgram(transaction, program);
+                compiled = programLoader.linkPackages(transaction, current, compiled, program);
+                compiled = sourceModules.link(transaction, current, program, continuation, now, compiled);
             } catch (IllegalArgumentException | IllegalStateException
                     | FclRuntimeException | FclCompileException failure) {
                 failDeterministic(transaction, current, claim, failure, now);
@@ -271,7 +253,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     break;
                 }
                 try {
-                    resolveDirective(transaction, current, committedProgram, continuation, now);
+                    sourceModules.resolveDirective(transaction, current, committedProgram,
+                            continuation, now);
                 } catch (IllegalArgumentException | IllegalStateException
                         | FclRuntimeException | FclCompileException failure) {
                     failDeterministic(transaction, current, claim, failure, now);
@@ -404,278 +387,6 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             return true;
         }
         return continuation.waitState().kind() != FclContinuation.WaitKind.NONE;
-    }
-
-    private FclProgram loadProgram(com.follarce.domain.port.TransactionContext transaction,
-                                   Program program) {
-        if (!FclProgramCodec.supportsFormat(program.runtimeFormatVersion())) {
-            throw new IllegalStateException("Unsupported persisted FCL program format: "
-                    + program.runtimeFormatVersion());
-        }
-        FclProgram decoded;
-        if (program.compiledObjectHash().isPresent()) {
-            ObjectHash compiledHash = program.compiledObjectHash().orElseThrow();
-            decoded = programCache.get(compiledHash, () -> {
-                StoredObject sourceObject = transaction.vfs().findObject(program.sourceObjectHash())
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Program source object is missing"));
-                String source = utf8(sourceObject, "program source");
-                StoredObject compiledObject = transaction.vfs().findObject(compiledHash)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Compiled program object is missing"));
-                return programCodec.fromBytes(compiledObject.content().bytes(),
-                        program.runtimeFormatVersion(), source);
-            });
-        } else {
-            if (program.runtimeFormatVersion() != FclProgramCodec.LEGACY_FORMAT_VERSION) {
-                throw new IllegalStateException("FCLB program has no executable artifact");
-            }
-            StoredObject sourceObject = transaction.vfs().findObject(program.sourceObjectHash())
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Program source object is missing"));
-            String source = utf8(sourceObject, "program source");
-            decoded = new FclCompiler().compile(source);
-        }
-        if (!decoded.sourceHash().equals(program.programHash().value())) {
-            throw new IllegalStateException("Loaded program hash does not match metadata");
-        }
-        return decoded;
-    }
-
-    private FclProgram linkPackages(
-            com.follarce.domain.port.TransactionContext transaction,
-            CilProcess process,
-            FclProgram base,
-            Program program
-    ) {
-        List<ImportSpec> imports = base.instructions().stream()
-                .filter(FclInstruction.Import.class::isInstance)
-                .map(FclInstruction.Import.class::cast)
-                .map(value -> new ImportSpec(normalizeImport(value.target()), value.alias(),
-                        value.wildcard()))
-                .toList();
-        if (imports.isEmpty()) return base;
-        Map<String, ProcessPackageBinding> bindings = new LinkedHashMap<>();
-        transaction.packages().findProcessBindings(process.identity().processUid())
-                .forEach(binding -> bindings.put(binding.importName(), binding));
-        Map<String, FclProgramLinker.Module> modules = new LinkedHashMap<>();
-        SqlitePackageReader reader = new SqlitePackageReader();
-        for (Map.Entry<String, ProcessPackageBinding> entry : bindings.entrySet()) {
-            List<ImportSpec> matching = imports.stream()
-                    .filter(spec -> spec.importName().equals(entry.getKey())).toList();
-            if (matching.isEmpty()) continue;
-            PackageRelease release = transaction.packages().findRelease(entry.getValue().packageHash())
-                    .orElseThrow(() -> new IllegalStateException("Pinned package release is missing"));
-            CachedPackage cached = packageCache.get(release.databaseObjectHash(), () ->
-                    loadPackage(transaction, release, reader));
-            PackageDescriptor descriptor = cached.descriptor();
-            cached.capabilityPolicy().requireUserCapabilities(
-                    transaction.auth().capabilities(process.ownerId()));
-            if (!ProgramService.compatiblePackageLanguage(descriptor.languageVersion(),
-                    program.languageVersion())) {
-                throw new IllegalStateException("Package language version does not match program: "
-                        + descriptor.coordinate());
-            }
-            String identity = release.packageHash().value().value();
-            for (PackageIndex.Module module : descriptor.moduleIndex()) {
-                String moduleSource = cached.moduleSources().get(module.objectPath());
-                if (moduleSource == null) throw new IllegalStateException(
-                        "Package module source is missing: " + module.name());
-                List<FclProgramLinker.Export> exports = publishedFunctions(descriptor, module,
-                        matching);
-                mergeModule(modules, new FclProgramLinker.Module(identity, module.name(),
-                        moduleSource, exports));
-            }
-            Set<ObjectHash> visiting = new LinkedHashSet<>();
-            visiting.add(release.databaseFileHash());
-            linkDependencies(transaction, process, program, descriptor, reader, modules,
-                    visiting, new LinkedHashSet<>());
-        }
-        return programLinker.link(base, List.copyOf(modules.values()));
-    }
-
-    private void linkDependencies(
-            com.follarce.domain.port.TransactionContext transaction,
-            CilProcess process,
-            Program program,
-            PackageDescriptor parent,
-            SqlitePackageReader reader,
-            Map<String, FclProgramLinker.Module> modules,
-            Set<ObjectHash> visiting,
-            Set<ObjectHash> linked
-    ) {
-        for (PackageIndex.Dependency dependency : parent.dependencyIndex()) {
-            ObjectHash fileHash = dependency.databaseFileHash();
-            if (linked.contains(fileHash)) continue;
-            Optional<PackageRelease> resolved = transaction.packages()
-                    .findReleaseByDatabaseFileHash(fileHash);
-            if (resolved.isEmpty()) {
-                if (dependency.optional()) continue;
-                throw new IllegalStateException("Required package dependency is missing: "
-                        + fileHash.value());
-            }
-            if (!visiting.add(fileHash)) {
-                throw new IllegalStateException("Cyclic package dependency: " + fileHash.value());
-            }
-            PackageRelease release = resolved.orElseThrow();
-            CachedPackage cached = packageCache.get(release.databaseObjectHash(), () ->
-                    loadPackage(transaction, release, reader));
-            PackageDescriptor descriptor = cached.descriptor();
-            cached.capabilityPolicy().requireUserCapabilities(
-                    transaction.auth().capabilities(process.ownerId()));
-            if (!ProgramService.compatiblePackageLanguage(descriptor.languageVersion(),
-                    program.languageVersion())) {
-                throw new IllegalStateException("Dependency language version does not match program: "
-                        + descriptor.coordinate());
-            }
-            linkDependencies(transaction, process, program, descriptor, reader, modules,
-                    visiting, linked);
-            String identity = release.packageHash().value().value();
-            for (PackageIndex.Module module : descriptor.moduleIndex()) {
-                String moduleSource = cached.moduleSources().get(module.objectPath());
-                if (moduleSource == null) throw new IllegalStateException(
-                        "Dependency module source is missing: " + module.name());
-                mergeModule(modules, new FclProgramLinker.Module(identity, module.name(),
-                        moduleSource, dependencyExports(descriptor, module, fileHash.value())));
-            }
-            visiting.remove(fileHash);
-            linked.add(fileHash);
-        }
-    }
-
-    private static CachedPackage loadPackage(
-            com.follarce.domain.port.TransactionContext transaction,
-            PackageRelease release,
-            SqlitePackageReader reader
-    ) {
-        StoredObject database = transaction.vfs().findObject(release.databaseObjectHash())
-                .orElseThrow(() -> new IllegalStateException("Pinned package database is missing"));
-        byte[] bytes = database.content().bytes();
-        PackageDescriptor descriptor = reader.inspect(bytes);
-        com.follarce.package_manager.PackageCapabilityPolicy policy =
-                com.follarce.package_manager.PackageCapabilityPolicy.inspect(bytes, descriptor);
-        Map<String, String> sources = new LinkedHashMap<>();
-        for (PackageIndex.Module module : descriptor.moduleIndex()) {
-            byte[] sourceBytes = reader.readResource(bytes, module.objectPath());
-            if (!ObjectHash.sha256(new com.follarce.domain.vfs.BinaryContent(sourceBytes))
-                    .equals(module.hash())) {
-                throw new IllegalStateException("Package module hash mismatch: " + module.name());
-            }
-            sources.put(module.objectPath(), utf8(sourceBytes,
-                    "package module " + module.name()));
-        }
-        return new CachedPackage(descriptor, policy, Map.copyOf(sources));
-    }
-
-    private record CachedPackage(
-            PackageDescriptor descriptor,
-            com.follarce.package_manager.PackageCapabilityPolicy capabilityPolicy,
-            Map<String, String> moduleSources
-    ) { }
-
-    /** Small synchronized LRU for immutable, database-derived runtime artifacts. */
-    private static final class BoundedCache<K, V> {
-        private final int maximum;
-        private final LinkedHashMap<K, V> values = new LinkedHashMap<>(16, 0.75f, true);
-
-        private BoundedCache(int maximum) {
-            this.maximum = maximum;
-        }
-
-        private V get(K key, Supplier<V> loader) {
-            synchronized (values) {
-                V existing = values.get(key);
-                if (existing != null) return existing;
-            }
-            V loaded = Objects.requireNonNull(loader.get(), "cache loader returned null");
-            synchronized (values) {
-                V raced = values.get(key);
-                if (raced != null) return raced;
-                values.put(key, loaded);
-                while (values.size() > maximum) {
-                    values.remove(values.keySet().iterator().next());
-                }
-                return loaded;
-            }
-        }
-    }
-
-    private static void mergeModule(Map<String, FclProgramLinker.Module> modules,
-                                    FclProgramLinker.Module candidate) {
-        String key = candidate.packageIdentity() + "\u0000" + candidate.moduleName();
-        FclProgramLinker.Module existing = modules.get(key);
-        if (existing == null) {
-            modules.put(key, candidate);
-            return;
-        }
-        if (!existing.source().equals(candidate.source())) {
-            throw new IllegalStateException("Identical package module identity has different source");
-        }
-        Map<String, List<String>> published = new LinkedHashMap<>();
-        for (FclProgramLinker.Export export : existing.exports()) {
-            published.put(export.symbol(), new ArrayList<>(export.publicNames()));
-        }
-        for (FclProgramLinker.Export export : candidate.exports()) {
-            published.computeIfAbsent(export.symbol(), ignored -> new ArrayList<>())
-                    .addAll(export.publicNames());
-        }
-        List<FclProgramLinker.Export> exports = published.entrySet().stream()
-                .map(entry -> new FclProgramLinker.Export(entry.getKey(),
-                        entry.getValue().stream().distinct().toList())).toList();
-        modules.put(key, new FclProgramLinker.Module(existing.packageIdentity(),
-                existing.moduleName(), existing.source(), exports));
-    }
-
-    private static List<FclProgramLinker.Export> publishedFunctions(
-            PackageDescriptor descriptor,
-            PackageIndex.Module module,
-            List<ImportSpec> imports
-    ) {
-        Map<String, List<String>> names = new LinkedHashMap<>();
-        descriptor.exports().stream().filter(value -> value.moduleName().equals(module.name()))
-                .forEach(value -> imports.forEach(spec -> names
-                        .computeIfAbsent(value.symbolName(), ignored -> new ArrayList<>())
-                        .add(publicName(spec, value.name()))));
-        descriptor.entrypoints().stream()
-                .filter(value -> value.moduleName().equals(module.name()))
-                .forEach(value -> imports.forEach(spec -> names
-                        .computeIfAbsent(value.functionName(), ignored -> new ArrayList<>())
-                        .add(publicName(spec, value.name()))));
-        return names.entrySet().stream().map(entry -> new FclProgramLinker.Export(
-                entry.getKey(), entry.getValue().stream().distinct().toList())).toList();
-    }
-
-    private static List<FclProgramLinker.Export> dependencyExports(
-            PackageDescriptor descriptor,
-            PackageIndex.Module module,
-            String fileHash
-    ) {
-        return descriptor.exports().stream()
-                .filter(value -> value.moduleName().equals(module.name()))
-                .map(value -> new FclProgramLinker.Export(value.symbolName(),
-                        List.of(fileHash + "." + value.name())))
-                .toList();
-    }
-
-    private static String publicName(ImportSpec spec, String exportedName) {
-        if (spec.wildcard()) return exportedName;
-        String namespace = spec.alias() == null ? spec.target() : spec.alias();
-        return namespace + "." + exportedName;
-    }
-
-    private static String utf8(StoredObject object, String description) {
-        return utf8(object.content().bytes(), description);
-    }
-
-    private static String utf8(byte[] bytes, String description) {
-        try {
-            return StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(bytes)).toString();
-        } catch (CharacterCodingException failure) {
-            throw new IllegalStateException(description + " is not valid UTF-8", failure);
-        }
     }
 
     private static void validateClaim(CilProcess process, SchedulerClaim claim) {
@@ -843,194 +554,31 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                 });
     }
 
-    private void resolveDirective(
-            com.follarce.domain.port.TransactionContext transaction,
-            CilProcess process,
-            Program program,
-            FclContinuation continuation,
-            Instant now
-    ) {
-        FclContinuation.WaitState wait = continuation.waitState();
-        if (wait.kind() == FclContinuation.WaitKind.NONE
-                || wait.kind() == FclContinuation.WaitKind.EXTERNAL) return;
-        String target = normalizeImport(wait.key());
-        if (wait.kind() == FclContinuation.WaitKind.INCLUDE) {
-            continuation.rejectDirective(
-                    "include requires a compiled source dependency; unresolved include: " + target);
-            return;
-        }
-        Optional<PackageRelease> release = directRelease(transaction, process, target);
-        if (!isSha256(target)) {
-            resolveSourceImport(transaction, process, program, continuation, wait, target, now);
-            continuation.clearWait();
-            return;
-        }
-        if (release.isEmpty()) {
-            continuation.rejectDirective("Unresolved package import: " + target);
-            return;
-        }
-        // Last-wins rebinding: re-importing the same alias in the same process re-pins it to
-        // the newest hash. Already-linked programs keep the module they were linked with;
-        // the pin only affects future compilation.
-        ProcessPackageBinding resolved = new ProcessPackageBinding(
-                process.identity().processUid(), importName(wait, target),
-                release.orElseThrow().packageHash(), now);
-        transaction.packages().saveProcessBinding(resolved);
-        continuation.clearWait();
-    }
 
-    private void resolveSourceImport(com.follarce.domain.port.TransactionContext transaction,
-                                     CilProcess process, Program program,
-                                     FclContinuation continuation,
-                                     FclContinuation.WaitState wait, String target, Instant now) {
-        String origin = FclPath.resolve(continuation, target);
-        String source = sourceIncludes.expandFile(transaction, process.ownerId(), target,
-                FclPath.current(continuation));
-        String binding = importName(wait, target);
-        FclProgram imported = new FclCompiler().compile(source);
-        List<FclProgramLinker.Export> exports = sourceExports(imported, wait.payload());
-        FclProgramLinker.Module module = new FclProgramLinker.Module(origin, binding, source, exports);
-        programLinker.validateLibraryModule(module);
-        Map<String, Object> imports = sourceImports(continuation);
-        Map<String, Object> value = new LinkedHashMap<>();
-        value.put("origin", origin);
-        value.put("source", source);
-        value.put("bindings", initializeSourceModule(transaction, process, program, imported, now));
-        Object alias = wait.payload().get("alias");
-        if (alias instanceof String text) value.put("alias", text);
-        imports.put(binding, value);
-        continuation.globalScope().put(SOURCE_IMPORTS_SCOPE_KEY, imports);
-    }
 
-    private FclProgram linkSourceImports(com.follarce.domain.port.TransactionContext transaction,
-                                         CilProcess process, Program program,
-                                         FclContinuation continuation, Instant now,
-                                         FclProgram base) {
-        Map<String, Object> imports = sourceImports(continuation);
-        if (imports.isEmpty()) return base;
-        List<FclProgramLinker.Module> modules = new ArrayList<>();
-        boolean updated = false;
-        for (Map.Entry<String, Object> entry : imports.entrySet()) {
-            if (!(entry.getValue() instanceof Map<?, ?> value)
-                    || !(value.get("origin") instanceof String origin)
-                    || !(value.get("source") instanceof String source)) {
-                throw new FclRuntimeException("Persisted source import is invalid: " + entry.getKey());
-            }
-            Map<String, Object> payload = new LinkedHashMap<>();
-            if (value.get("alias") instanceof String alias) payload.put("alias", alias);
-            FclProgram imported = new FclCompiler().compile(source);
-            Map<String, Object> bindings = persistedSourceBindings(value);
-            if (bindings == null) {
-                FclProgramLinker.Module module = new FclProgramLinker.Module(origin, entry.getKey(),
-                        source, sourceExports(imported, payload));
-                programLinker.validateLibraryModule(module);
-                bindings = initializeSourceModule(transaction, process, program, imported, now);
-                Map<String, Object> migrated = new LinkedHashMap<>();
-                value.forEach((key, entryValue) -> {
-                    if (key instanceof String text) migrated.put(text, entryValue);
-                });
-                migrated.put("bindings", bindings);
-                imports.put(entry.getKey(), migrated);
-                updated = true;
-            }
-            modules.add(new FclProgramLinker.Module(origin, entry.getKey(), source,
-                    sourceExports(imported, payload), bindings));
-        }
-        if (updated) continuation.globalScope().put(SOURCE_IMPORTS_SCOPE_KEY, imports);
-        return programLinker.link(base, modules);
-    }
+
+
+
 
     /**
      * Python-style source modules run once at import time. Their resulting top-level scope is
      * stored with the importing process and later used as the linked functions' isolated globals.
      */
-    private Map<String, Object> initializeSourceModule(
-            com.follarce.domain.port.TransactionContext transaction, CilProcess process,
-            Program program, FclProgram imported, Instant now
-    ) {
-        FclContinuation module = new FclContinuation();
-        FclRuntime moduleRuntime = fixedRuntime != null ? fixedRuntime
-                : new FclRuntime(FclRuntimeFunctions.create(transaction, process, program,
-                module, now, extensions));
-        int steps = 0;
-        while (!module.halted() && steps++ < MAX_STEPS_PER_SLICE) {
-            FclStepResult step = moduleRuntime.executeOne(imported, module);
-            if (step.status() == FclStepResult.Status.DIRECTIVE
-                    || step.status() == FclStepResult.Status.WAITING) {
-                throw new FclRuntimeException("Imported source module cannot suspend during "
-                        + "initialization");
-            }
-            if (step.status() == FclStepResult.Status.FAILED) {
-                throw new FclRuntimeException("Source module initialization failed: " + step.value());
-            }
-        }
-        if (!module.halted()) {
-            throw new FclRuntimeException("Source module initialization exceeds "
-                    + MAX_STEPS_PER_SLICE + " steps");
-        }
-        return module.scope().persistedValues();
-    }
 
-    private static Map<String, Object> persistedSourceBindings(Map<?, ?> sourceImport) {
-        Object value = sourceImport.get("bindings");
-        if (value == null) return null;
-        if (!(value instanceof Map<?, ?> bindings)) {
-            throw new FclRuntimeException("Persisted source import bindings are invalid");
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        bindings.forEach((name, binding) -> {
-            if (!(name instanceof String text)) throw new FclRuntimeException(
-                    "Persisted source import binding name is invalid");
-            result.put(text, binding);
-        });
-        return result;
-    }
 
-    private static List<FclProgramLinker.Export> sourceExports(FclProgram imported,
-                                                                Map<String, Object> payload) {
-        Object alias = payload.get("alias");
-        return imported.functions().entrySet().stream()
-                .filter(entry -> entry.getValue().publicBinding())
-                .map(Map.Entry::getKey)
-                .map(name -> new FclProgramLinker.Export(name,
-                        List.of(alias instanceof String prefix ? prefix + "." + name : name)))
-                .toList();
-    }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> sourceImports(FclContinuation continuation) {
-        FclScope root = continuation.globalScope();
-        if (!root.contains(SOURCE_IMPORTS_SCOPE_KEY)) return new LinkedHashMap<>();
-        Object value = root.get(SOURCE_IMPORTS_SCOPE_KEY);
-        if (!(value instanceof Map<?, ?> map)) {
-            throw new FclRuntimeException("Persisted source imports are invalid");
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        map.forEach((name, binding) -> {
-            if (!(name instanceof String text)) throw new FclRuntimeException(
-                    "Persisted source import name is invalid");
-            result.put(text, binding);
-        });
-        return result;
-    }
 
-    static Optional<PackageRelease> directRelease(
-            com.follarce.domain.port.TransactionContext transaction, CilProcess process,
-            String target) {
-        if (!isSha256(target)) return Optional.empty();
-        return transaction.packages().findInstalledReleaseByDatabaseFileHash(
-                process.ownerId(),
-                new ObjectHash(target.toLowerCase(java.util.Locale.ROOT)));
-    }
+
+
+
+
+
 
     static boolean isSha256(String target) {
-        return target != null && target.matches("(?i)[0-9a-f]{64}");
+        return FclProgramLoader.isSha256(target);
     }
 
-    private static String importName(FclContinuation.WaitState wait, String target) {
-        Object alias = wait.payload().get("alias");
-        return alias instanceof String name ? name : target;
-    }
+
 
     private static Continuation withPackageBindings(Continuation continuation,
                                                    List<ProcessPackageBinding> bindings) {
@@ -1045,10 +593,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     }
 
     static String normalizeImport(String target) {
-        String normalized = target != null && target.endsWith(".*")
-                ? target.substring(0, target.length() - 2) : target;
-        return isSha256(normalized)
-                ? normalized.toLowerCase(java.util.Locale.ROOT) : normalized;
+        return FclProgramLoader.normalizeImport(target);
     }
 
     private ExecutionReplacement resolveExecutionReplacement(
@@ -1166,12 +711,6 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
     }
 
     private record ExecutionReplacement(Program program, FclContinuation continuation) {}
-
-    private record ImportSpec(String target, String alias, boolean wildcard) {
-        private String importName() {
-            return alias == null ? target : alias;
-        }
-    }
 
     /** The lease or process epoch no longer authorizes this worker. */
     public static final class StaleClaimException extends IllegalStateException {

@@ -1,24 +1,10 @@
 package com.follarce.application;
 
 import com.follarce.auth.Authorization;
-import com.follarce.auth.PasswordPolicy;
-import com.follarce.auth.UsernamePolicy;
-import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.auth.Capability;
-import com.follarce.domain.auth.UserAccount;
-import com.follarce.domain.effect.EffectRequest;
-import com.follarce.domain.packageinfo.PackageRelease;
-import com.follarce.domain.packageinfo.PackageIndex;
-import com.follarce.domain.packageinfo.PackageInstallation;
-import com.follarce.domain.packageinfo.PackageDataUsage;
-import com.follarce.domain.packageinfo.PackageUninstallResult;
-import com.follarce.domain.packageinfo.ProcessPackageBinding;
 import com.follarce.domain.ipc.IpcChannel;
 import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.ipc.IpcTopic;
-import com.follarce.domain.port.ProcessRepository;
-import com.follarce.domain.port.EnvironmentRepository;
-import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
 import com.follarce.domain.process.ProcessInbox;
@@ -26,12 +12,9 @@ import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.timer.ProcessTimer;
 import com.follarce.domain.vfs.BinaryContent;
-import com.follarce.domain.vfs.StoredObject;
 import com.follarce.ipc.IpcService;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
-import com.follarce.domain.vfs.VfsFileLimits;
-import com.follarce.fcl.FclBuiltins;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclFunctionRegistry;
@@ -39,41 +22,21 @@ import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
-import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclScope;
-import com.follarce.fcl.FclValues;
-import com.follarce.fcl.TerminalModeState;
 import com.follarce.fcl.FclSuspension;
-import com.follarce.extension.JavaExtensionCatalog;
-import com.follarce.extension.SourceExtensionIndex;
-import com.follarce.persistence.sqlite.PackageDescriptor;
-import com.follarce.persistence.sqlite.SqlitePackageReader;
-import com.follarce.package_manager.PackageBuilder;
-import com.follarce.package_manager.PackageDataService;
-import com.follarce.package_manager.PackageDependencyPolicy;
-import com.follarce.market.client.MarketRuntimeFunctions;
-import com.follarce.timer.TimerService;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 
-final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
+final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
     static final String STARTUP_ARGUMENTS_SCOPE_KEY = "cilexec.process.arguments";
     private static final int VOLATILE_PROGRAM_CACHE_LIMIT = 64;
     /**
@@ -88,7 +51,7 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                 }
             };
 
-    FclProcessRuntimeFunctions(FclRuntimeFunctions source) { super(source); }
+    FclProcessRuntimeFunctions(FclVfsRuntimeSupport source) { super(source); }
 
     protected void registerProcesses() {
         registry.registerContextual("process", "args", (args, invocation) -> {
@@ -122,7 +85,7 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                 .register("process", "list", args -> {
                     arity(args, 0, "process.list");
                     return transaction.processes().findAll().stream()
-                            .map(FclRuntimeFunctions::processMap).toList();
+                            .map(FclCoreRuntimeFunctions::processMap).toList();
                 })
                 .registerContextual("process", "kill", (args, invocation) -> {
                     arity(args, 1, "process.kill");
@@ -660,23 +623,11 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
         throw FclSuspension.suspend();
     }
 
-    protected static long positiveMillis(Object value, String field) {
-        long millis = integer(value, field);
-        if (millis < 1) throw new FclRuntimeException(field + " must be positive");
-        return millis;
-    }
 
-    protected static Map<String, Object> lockMap(
-            com.follarce.domain.port.IpcRepository.SwapLock lock) {
-        return Map.of("fencingToken", lock.fencingToken(),
-                "leaseUntil", lock.leaseUntil().toString());
-    }
 
-    protected static Map<String, Object> fileLockMap(
-            com.follarce.domain.port.VfsRepository.FileLock lock) {
-        return Map.of("fencingToken", lock.fencingToken(),
-                "leaseUntil", lock.leaseUntil().toString());
-    }
+
+
+
 
     protected void registerSystem() {
         registry.register("system", "list", args -> {
@@ -726,66 +677,18 @@ final class FclProcessRuntimeFunctions extends FclRuntimeFunctions {
                         "runtime reset requires the administrator control plane"));
     }
 
-    protected Object terminalInput(FclFunctionRegistry.Invocation invocation, boolean oneCharacter) {
-        return terminalInput(invocation, oneCharacter, false);
-    }
 
-    protected Object terminalInput(FclFunctionRegistry.Invocation invocation, boolean oneCharacter,
-                                 boolean rawKey) {
-        FclContinuation continuation = invocation.continuation();
-        if (continuation.scope().contains(ProcessInbox.TERMINAL_INPUT)) {
-            String input = display(continuation.scope().remove(ProcessInbox.TERMINAL_INPUT));
-            return oneCharacter ? (input.isEmpty() ? ""
-                    : input.substring(0, input.offsetByCodePoints(0, 1))) : input;
-        }
-        continuation.waitFor(rawKey ? "input:key" : "input",
-                Map.of("readChar", oneCharacter, "rawKey", rawKey));
-        throw FclSuspension.suspend();
-    }
+
+
 
     /**
      * io.readKey returns one structured terminal event. A pending key event is consumed
      * immediately; otherwise the process waits in key mode, with an optional durable timer
      * delivering a timeout event when no key arrives.
      */
-    protected Object readKey(FclFunctionRegistry.Invocation invocation, long timeout,
-                           boolean coalesceText) {
-        FclContinuation continuation = invocation.continuation();
-        if (continuation.scope().contains(ProcessInbox.TERMINAL_INPUT)) {
-            return parseTerminalEvent(display(continuation.scope()
-                    .remove(ProcessInbox.TERMINAL_INPUT)));
-        }
-        if (timeout >= 0 && continuation.scope().contains(ProcessInbox.TIMER_RESULT)) {
-            Object timerResult = continuation.scope().remove(ProcessInbox.TIMER_RESULT);
-            if (TimerService.TERMINAL_INPUT_TIMEOUT.equals(display(timerResult))) {
-                return Map.of("kind", "timeout");
-            }
-            return parseTerminalEvent(display(timerResult));
-        }
-        UUID timerId = timeout >= 0 ? UUID.randomUUID() : null;
-        if (timerId != null) {
-            transaction.timers().save(new ProcessTimer(timerId,
-                    process.identity().processUid(), now.plus(Duration.ofMillis(timeout)),
-                    ProcessTimer.Status.SCHEDULED, now, Optional.empty(), Optional.empty(),
-                    Optional.empty(), Optional.of(typed(TimerService.TERMINAL_INPUT_TIMEOUT))));
-        }
-        continuation.waitFor(timerId != null ? "input:key:" + timerId : "input:key",
-                Map.of("rawKey", true, "coalesceText", coalesceText));
-        throw FclSuspension.suspend();
-    }
+
 
     /** Parses a terminal event payload into a structured FCL map. */
-    protected static Object parseTerminalEvent(String input) {
-        if (input == null || input.isBlank()) return null;
-        if (input.startsWith("{")) {
-            try {
-                return JSON.fromJson(input, Map.class);
-            } catch (RuntimeException malformed) {
-                return Map.of("kind", "raw", "sequence", input);
-            }
-        }
-        return Map.of("kind", "key", "key", input,
-                "shift", false, "ctrl", false, "alt", false, "text", "");
-    }
+
 
 }

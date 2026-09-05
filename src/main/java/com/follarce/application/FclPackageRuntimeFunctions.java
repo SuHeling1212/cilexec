@@ -1,52 +1,23 @@
 package com.follarce.application;
 
 import com.follarce.auth.Authorization;
-import com.follarce.auth.PasswordPolicy;
-import com.follarce.auth.UsernamePolicy;
-import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.auth.Capability;
-import com.follarce.domain.auth.UserAccount;
-import com.follarce.domain.effect.EffectRequest;
 import com.follarce.domain.packageinfo.PackageRelease;
 import com.follarce.domain.packageinfo.PackageIndex;
 import com.follarce.domain.packageinfo.PackageInstallation;
 import com.follarce.domain.packageinfo.PackageDataUsage;
 import com.follarce.domain.packageinfo.PackageUninstallResult;
 import com.follarce.domain.packageinfo.ProcessPackageBinding;
-import com.follarce.domain.ipc.IpcChannel;
-import com.follarce.domain.ipc.IpcMessage;
-import com.follarce.domain.ipc.IpcTopic;
-import com.follarce.domain.port.ProcessRepository;
-import com.follarce.domain.port.EnvironmentRepository;
-import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.process.Continuation;
-import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.program.Program;
-import com.follarce.domain.timer.ProcessTimer;
 import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.domain.vfs.StoredObject;
-import com.follarce.ipc.IpcService;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
-import com.follarce.domain.vfs.VfsFileLimits;
-import com.follarce.fcl.FclBuiltins;
-import com.follarce.fcl.FclContinuation;
-import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclFunctionRegistry;
-import com.follarce.fcl.FclCompiler;
-import com.follarce.fcl.FclInstruction;
-import com.follarce.fcl.FclPath;
-import com.follarce.fcl.FclProgram;
-import com.follarce.fcl.FclProgramCodec;
 import com.follarce.fcl.FclRuntimeException;
-import com.follarce.fcl.FclScope;
-import com.follarce.fcl.FclValues;
-import com.follarce.fcl.TerminalModeState;
-import com.follarce.fcl.FclSuspension;
-import com.follarce.extension.JavaExtensionCatalog;
-import com.follarce.extension.SourceExtensionIndex;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.package_manager.PackageCoordinateConflictException;
@@ -54,28 +25,20 @@ import com.follarce.package_manager.PackageBuilder;
 import com.follarce.package_manager.PackageDataService;
 import com.follarce.package_manager.PackageDependencyPolicy;
 import com.follarce.market.client.MarketRuntimeFunctions;
-import com.follarce.timer.TimerService;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 
-final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
-    FclPackageRuntimeFunctions(FclRuntimeFunctions source) { super(source); }
+final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
+    FclPackageRuntimeFunctions(FclVfsRuntimeSupport source) { super(source); }
 
     protected void registerPackages() {
         registry.register("package", "info", args -> {
@@ -765,21 +728,7 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
                 "coordinate", release.coordinate().key(), "entrypoint", entrypointName);
     }
 
-    protected Program createProgram(String source) {
-        FclProgram compiled = new FclCompiler().compile(source);
-        StoredObject sourceObject = StoredObject.create(new BinaryContent(
-                source.getBytes(StandardCharsets.UTF_8)), ProgramService.SOURCE_MEDIA_TYPE, now);
-        StoredObject compiledObject = StoredObject.create(new BinaryContent(
-                new FclProgramCodec().toBytes(compiled)), ProgramService.COMPILED_MEDIA_TYPE, now);
-        transaction.vfs().saveObject(sourceObject);
-        transaction.vfs().saveObject(compiledObject);
-        int statements = Math.toIntExact(compiled.instructions().stream()
-                .filter(instruction -> !(instruction instanceof FclInstruction.Jump)).count());
-        return transaction.programs().saveIfAbsent(new Program(UUID.randomUUID(),
-                sourceObject.objectHash(), ProgramService.LANGUAGE_VERSION,
-                FclProgramCodec.FORMAT_VERSION, sourceObject.objectHash(),
-                Optional.of(compiledObject.objectHash()), statements, now));
-    }
+
 
     protected Object pinPackage(List<Object> args) {
         if (args.size() != 1) throw new FclRuntimeException(
@@ -821,13 +770,7 @@ final class FclPackageRuntimeFunctions extends FclRuntimeFunctions {
                 .findFirst();
     }
 
-    protected static Map<String, Object> packageMap(PackageRelease release) {
-        return Map.of("coordinate", release.coordinate().key(),
-                "name", release.coordinate().name(),
-                "hash", release.packageHash().value().value(),
-                "sha256", release.databaseFileHash().value(),
-                "importedAt", release.importedAt().toString());
-    }
+
 
     protected Map<String, Object> packageDetails(PackageRelease release) {
         StoredObject object = transaction.vfs().findObject(release.databaseObjectHash())
