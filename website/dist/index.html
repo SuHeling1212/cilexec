@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07110f">
+  <meta name="description" content="CilExec：以 PostgreSQL 为唯一权威状态的持久化脚本与进程管理引擎。">
+  <title>CilExec — 让进程记住一切</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307110f'/%3E%3Cpath d='M43 19a18 18 0 1 0 0 26' fill='none' stroke='%236fffc2' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M29 27h18M29 37h12' stroke='%23d9fff0' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="page-grid" aria-hidden="true"></div>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="CilExec 首页">
+      <span class="brand-mark" aria-hidden="true">C:</span>
+      <span>CilExec</span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <a href="#architecture">架构</a>
+      <a href="#capabilities">能力</a>
+      <a href="fcl.html">FCL 语法</a>
+      <a href="#specification">规范</a>
+      <a class="nav-source" href="https://github.com/SuHeling1212/cilexec" target="_blank" rel="noreferrer">源代码 <span aria-hidden="true">↗</span></a>
+    </nav>
+    <button class="menu-toggle" type="button" aria-label="打开导航" aria-expanded="false">菜单</button>
+  </header>
+
+  <main id="top">
+    <section class="hero section-shell">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="pulse-dot"></span> Durable runtime · FCL · PostgreSQL</p>
+        <h1>让进程<br><span>记住一切。</span></h1>
+        <p class="hero-lede">CilExec 是一个持久化脚本与进程管理引擎。程序、完整 Continuation、调度租约、IPC、计时器和外部效果日志全部提交到 PostgreSQL。</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#architecture">理解它如何工作 <span aria-hidden="true">↓</span></a>
+          <a class="button button-secondary" href="https://github.com/SuHeling1212/cilexec" target="_blank" rel="noreferrer">查看 GitHub <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+
+      <div class="hero-visual" aria-label="CilExec 执行切片持久化示意图">
+        <div class="visual-topline">
+          <span>EXECUTION / SLICE_042</span>
+          <span class="live-label"><i></i> COMMITTED</span>
+        </div>
+        <div class="process-card">
+          <div class="card-label">PROCESS 0017</div>
+          <strong>invoice_worker</strong>
+          <div class="state-row"><span>program counter</span><b>0284</b></div>
+          <div class="state-row"><span>state version</span><b>1092</b></div>
+          <div class="state-row"><span>execution epoch</span><b>07</b></div>
+        </div>
+        <div class="commit-line"><span>BEGIN</span><i></i><span>EXECUTE</span><i></i><span>COMMIT</span></div>
+        <div class="db-card">
+          <div class="db-cylinder" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div><span class="card-label">AUTHORITATIVE STATE</span><strong>PostgreSQL</strong></div>
+          <span class="check" aria-label="已保存">✓</span>
+        </div>
+        <p class="visual-caption">JVM 消失，已提交的进程仍然存在。</p>
+      </div>
+    </section>
+
+    <section class="principle-strip" aria-label="核心原则">
+      <div><span>01</span><strong>Zero Memory State</strong><small>内存不是事实来源</small></div>
+      <div><span>02</span><strong>Crash-safe</strong><small>提交之后即可恢复</small></div>
+      <div><span>03</span><strong>Multi-tenant</strong><small>数据库强制隔离</small></div>
+    </section>
+
+    <section class="architecture section-shell" id="architecture">
+      <div class="section-intro">
+        <p class="eyebrow">THE EXECUTION MODEL</p>
+        <h2>一次切片，<br>一次明确提交。</h2>
+      </div>
+      <div class="pipeline" role="img" aria-label="FCL 源码经过编译器、执行切片、调度器并提交至 PostgreSQL">
+        <div class="pipeline-node"><span>01</span><strong>FCL SOURCE</strong><small>源码与版本</small></div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node"><span>02</span><strong>COMPILER</strong><small>指令与 Continuation</small></div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node active"><span>03</span><strong>EXECUTION SLICE</strong><small>有界事务</small></div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-node"><span>04</span><strong>POSTGRESQL</strong><small>唯一权威状态</small></div>
+      </div>
+    </section>
+
+    <section class="capabilities section-shell" id="capabilities">
+      <div class="section-heading-row">
+        <div>
+          <p class="eyebrow">CORE CAPABILITIES</p>
+          <h2>持久化的，<br>不只是变量。</h2>
+        </div>
+        <p>程序运行所依赖的语义状态都进入数据库。线程、缓存和 JVM 可以消失；恢复不依赖它们。</p>
+      </div>
+
+      <div class="capability-grid">
+        <article class="feature-card feature-card-wide">
+          <div class="feature-index">01 / CONTINUATION</div>
+          <h3>完整执行现场</h3>
+          <p>变量、调用栈、程序计数器与挂起原因在每次提交后持久化。进程恢复的是现场，而不是重新运行整段脚本。</p>
+          <div class="stack-visual" aria-hidden="true">
+            <span style="--offset: 0">frame / main</span>
+            <span style="--offset: 1">frame / reconcile</span>
+            <span style="--offset: 2">frame / fetch_record</span>
+          </div>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-index">02 / SCHEDULER</div>
+          <h3>有界调度</h3>
+          <p>FIFO 队列与租约都可恢复。有限数量的虚拟线程处理任意数量的持久进程。</p>
+          <div class="queue-visual" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        </article>
+
+        <article class="feature-card feature-card-accent">
+          <div class="feature-index">03 / EFFECTS</div>
+          <h3>外部效果有记录</h3>
+          <p>HTTP、Socket 与主机命令在事务外执行，却由持久日志追踪结果、重试与 UNKNOWN 状态。</p>
+          <div class="effect-state"><span>REQUESTED</span><b>→</b><span>COMPLETED</span></div>
+        </article>
+
+        <article class="feature-card">
+          <div class="feature-index">04 / MESSAGING</div>
+          <h3>IPC 与计时器</h3>
+          <p>直接消息、Channel、Topic、Broadcast 和 Timer 都能跨越 Runtime 重启继续工作。</p>
+          <div class="message-visual" aria-hidden="true"><span>A</span><i></i><span>DB</span><i></i><span>B</span></div>
+        </article>
+
+        <article class="feature-card feature-card-wide vfs-card">
+          <div class="feature-copy">
+            <div class="feature-index">05 / VFS + SECURITY</div>
+            <h3>内容寻址，租户隔离</h3>
+            <p>每位用户拥有独立 VFS。文件内容按 SHA-256 寻址，PostgreSQL 强制 RLS；管理员越权操作需要明确能力并进入审计。</p>
+          </div>
+          <div class="vfs-tree" aria-label="虚拟文件系统示意">
+            <span>/</span>
+            <span>├─ scripts/</span>
+            <span>│&nbsp;&nbsp; └─ worker.fcl</span>
+            <span>├─ packages/</span>
+            <span>└─ reports/</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="recovery-section">
+      <div class="section-shell recovery-layout">
+        <div class="recovery-copy">
+          <p class="eyebrow">CRASH RECOVERY</p>
+          <h2>故障不是特殊路径。</h2>
+          <p>一次执行切片只有两个结局：完整提交，或者完整回滚。重启后，Runtime 从 PostgreSQL 中重新认领可以继续的工作。</p>
+          <div class="recovery-rule"><span>IF COMMITTED</span><strong>从下一条指令继续</strong></div>
+          <div class="recovery-rule"><span>IF ROLLED BACK</span><strong>安全地重放本次切片</strong></div>
+        </div>
+        <div class="recovery-console" aria-label="崩溃恢复事件日志">
+          <div class="console-title"><span>recovery.log</span><i></i><i></i><i></i></div>
+          <ol>
+            <li><time>10:42:16.104</time><span>slice 1092 committed</span><b>OK</b></li>
+            <li><time>10:42:16.109</time><span>runtime connection lost</span><b class="warn">HALT</b></li>
+            <li><time>10:42:18.441</time><span>advisory lock acquired</span><b>OK</b></li>
+            <li><time>10:42:18.447</time><span>continuation format verified</span><b>OK</b></li>
+            <li><time>10:42:18.452</time><span>process 0017 → READY</span><b class="ready">RESUME</b></li>
+          </ol>
+          <div class="console-status"><span>RECOVERY COMPLETE</span><strong>2.348s</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="fcl-section section-shell" id="fcl">
+      <div class="section-heading-row">
+        <div>
+          <p class="eyebrow">FOLLARCE CILEXEC LANGUAGE</p>
+          <h2>为持久执行设计的脚本语言。</h2>
+        </div>
+        <p>FCL 保留脚本语言的直接，同时把进程、文件、消息、计时器和外部效果放进同一套运行模型。</p>
+      </div>
+
+      <div class="code-window">
+        <div class="code-tabs" role="tablist" aria-label="FCL 示例">
+          <button class="code-tab active" type="button" role="tab" aria-selected="true" data-demo="process">进程</button>
+          <button class="code-tab" type="button" role="tab" aria-selected="false" data-demo="timer">计时器</button>
+          <button class="code-tab" type="button" role="tab" aria-selected="false" data-demo="ipc">IPC</button>
+          <button class="run-button" type="button" aria-label="运行当前示例">RUN <span>▶</span></button>
+        </div>
+        <div class="code-body">
+          <pre><code id="demo-code"><span class="code-comment">// 创建一个可恢复的后台进程</span>
+worker = process.fork(<span class="code-string">"invoice-worker"</span>, {
+  invoice = queue.next()
+  result = network.webget(invoice.url)
+  file.write(<span class="code-string">"/reports/latest.json"</span>, result.body)
+})
+
+<span class="code-keyword">return</span> worker.pid</code></pre>
+          <aside class="code-output" aria-live="polite">
+            <div><span>OUTPUT</span><i class="output-state"></i></div>
+            <strong id="demo-output">ready to execute</strong>
+            <p>每个可见步骤背后都是一次有边界的状态转换。</p>
+          </aside>
+        </div>
+      </div>
+      <a class="syntax-link" href="fcl.html">浏览完整 FCL 语法参考 <span aria-hidden="true">→</span></a>
+    </section>
+
+    <section class="spec-section" id="specification">
+      <div class="section-shell spec-layout">
+        <div class="spec-kicker">OPEN BOUNDARIES</div>
+        <div class="spec-copy">
+          <h2>内核保持克制，<br>边界保持开放。</h2>
+          <p>Market 是协议规范，不绑定服务端实现语言。C、Java、Python 或任何其他语言，都可以实现相同的数据格式与交互约定。</p>
+        </div>
+        <div class="language-list" aria-label="可用于实现 Market 规范的语言示例">
+          <span>C</span><span>JAVA</span><span>PYTHON</span><span>ANY</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="closing section-shell">
+      <p class="eyebrow">CILEXEC / DURABLE BY DESIGN</p>
+      <h2>进程会停止。<br><span>状态不必丢失。</span></h2>
+      <div class="closing-row">
+        <p>探索源码、语言参考与完整的数据库驱动架构。</p>
+        <a class="button button-primary" href="https://github.com/SuHeling1212/cilexec" target="_blank" rel="noreferrer">打开项目仓库 <span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="section-shell">
+      <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true">C:</span><span>CilExec</span></a>
+      <p>Durable scripting &amp; process management.</p>
+      <p class="footer-meta">MIT LICENSE · JAVA 26 · POSTGRESQL</p>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07110f">
+  <meta name="description" content="FCL v0.0.4 完整语法参考：值、运算符、控制流、函数、类、异常、模块与持久化语义。">
+  <title>FCL 完整语法参考 — CilExec</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307110f'/%3E%3Cpath d='M43 19a18 18 0 1 0 0 26' fill='none' stroke='%236fffc2' stroke-width='7' stroke-linecap='round'/%3E%3Cpath d='M29 27h18M29 37h12' stroke='%23d9fff0' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="syntax-page">
+  <div class="page-grid" aria-hidden="true"></div>
+  <header class="site-header syntax-header">
+    <a class="brand" href="index.html" aria-label="返回 CilExec 首页">
+      <span class="brand-mark" aria-hidden="true">C:</span>
+      <span>CilExec</span>
+    </a>
+    <nav class="nav" aria-label="主导航">
+      <a href="index.html#architecture">架构</a>
+      <a href="index.html#capabilities">能力</a>
+      <a class="nav-current" href="fcl.html" aria-current="page">FCL 语法</a>
+      <a class="nav-source" href="https://github.com/SuHeling1212/cilexec" target="_blank" rel="noreferrer">源代码 <span aria-hidden="true">↗</span></a>
+    </nav>
+    <button class="menu-toggle" type="button" aria-label="打开导航" aria-expanded="false">菜单</button>
+  </header>
+
+  <main id="top">
+    <section class="syntax-hero section-shell">
+      <div>
+        <a class="back-link" href="index.html"><span aria-hidden="true">←</span> 返回项目介绍</a>
+        <p class="eyebrow"><span class="pulse-dot"></span>FCL / LANGUAGE REFERENCE / v0.0.4</p>
+        <h1>完整语法<br><span>一页查清。</span></h1>
+      </div>
+      <div class="syntax-hero-meta">
+        <p>这里集中展示 FCL 当前实现的语言语法。内置函数属于运行时 API，不与语言语法混在一起。</p>
+        <dl>
+          <div><dt>声明</dt><dd>func · class · import · include</dd></div>
+          <div><dt>控制</dt><dd>if · while · try · return</dd></div>
+          <div><dt>对象</dt><dd>new · this · super · link</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="syntax-toolbar-wrap">
+      <div class="section-shell syntax-toolbar">
+        <label class="syntax-search">
+          <span>SEARCH SYNTAX</span>
+          <input id="syntax-search" type="search" placeholder="搜索：while、继承、数组、运算符…" autocomplete="off">
+          <kbd>/</kbd>
+        </label>
+        <div class="syntax-count" aria-live="polite"><strong id="visible-count">14</strong><span>个语法章节</span></div>
+      </div>
+    </section>
+
+    <div class="syntax-layout section-shell">
+      <aside class="syntax-rail" aria-label="语法章节">
+        <div class="rail-label">ON THIS PAGE</div>
+        <nav id="syntax-nav">
+          <a class="active" href="#lexical"><span>01</span>词法规则</a>
+          <a href="#values"><span>02</span>值与集合</a>
+          <a href="#assignment"><span>03</span>赋值与复制</a>
+          <a href="#operators"><span>04</span>运算符</a>
+          <a href="#condition"><span>05</span>条件分支</a>
+          <a href="#loops"><span>06</span>循环</a>
+          <a href="#functions"><span>07</span>函数</a>
+          <a href="#classes"><span>08</span>类与对象</a>
+          <a href="#inheritance"><span>09</span>继承与重载</a>
+          <a href="#links"><span>10</span>更新、link 与删除</a>
+          <a href="#exceptions"><span>11</span>异常</a>
+          <a href="#modules"><span>12</span>模块</a>
+          <a href="#calls"><span>13</span>调用与成员</a>
+          <a href="#grammar"><span>14</span>语法总览</a>
+        </nav>
+        <a class="rail-doc-link" href="https://github.com/SuHeling1212/cilexec/blob/master/docs/fcl-function-reference.md" target="_blank" rel="noreferrer">运行时函数参考 ↗</a>
+      </aside>
+
+      <div class="syntax-content">
+        <div class="syntax-empty" id="syntax-empty" hidden>
+          <strong>没有匹配的语法</strong>
+          <p>换一个关键词，或者清除搜索内容。</p>
+          <button type="button" id="clear-search">清除搜索</button>
+        </div>
+
+        <section class="syntax-card" id="lexical" data-search="词法 注释 标识符 保留字 字符串 转义 换行 分号 keyword comment identifier string">
+          <header class="syntax-card-head">
+            <div><span>01 / LEXICAL RULES</span><h2>词法与文件结构</h2></div>
+            <p>FCL 源文件由顶层声明和语句构成。换行或分号结束简单语句。</p>
+          </header>
+          <div class="rule-grid">
+            <article><strong>注释</strong><code>// 到行尾</code><p><code>#</code> 不是注释，它是长度运算符。</p></article>
+            <article><strong>标识符</strong><code>[A-Za-z_][A-Za-z0-9_]*</code><p>区分大小写，不能使用保留字。</p></article>
+            <article><strong>语句分隔</strong><code>换行 或 ;</code><p>空行与连续分号会被忽略。</p></article>
+            <article><strong>嵌套上限</strong><code>256 levels</code><p>括号、方括号与大括号共同计数。</p></article>
+          </div>
+          <div class="keyword-block">
+            <span>RESERVED WORDS</span>
+            <div>func · if · else · while · break · continue · return · import · include · as · and · or · not · public · private · true · false · null · class · extends · new · this · super · link · try · catch</div>
+          </div>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-lexical">复制</button><pre><code id="code-lexical"><span class="tok-comment">// 只有双斜线注释</span>
+name = <span class="tok-string">"CilExec"</span>; version = <span class="tok-number">4</span>
+
+text = <span class="tok-string">"支持多行
+字符串"</span>
+escaped = <span class="tok-string">"\n \t \r \\ \&quot;"</span></code></pre></div>
+          <p class="syntax-note"><strong>字符串转义：</strong>仅支持 <code>\n</code>、<code>\t</code>、<code>\r</code>、<code>\\</code>、<code>\&quot;</code>；不支持 <code>\u0041</code> 等其他形式。文件中的 CRLF/CR 会在多行字符串中规范化为 LF。</p>
+        </section>
+
+        <section class="syntax-card" id="values" data-search="值 类型 字面量 数字 字符串 布尔 null 数组 map 对象 列表 literal number string boolean array collection">
+          <header class="syntax-card-head">
+            <div><span>02 / VALUES & COLLECTIONS</span><h2>值与集合</h2></div>
+            <p>数字、字符串、布尔、null、数组、Map 与对象都是可持久化值。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-values">复制</button><pre><code id="code-values">integer = <span class="tok-number">42</span>
+decimal = <span class="tok-number">3.14</span>
+negative = -<span class="tok-number">8</span>
+enabled = <span class="tok-keyword">true</span>
+missing = <span class="tok-keyword">null</span>
+
+items = [<span class="tok-string">"alpha"</span>, <span class="tok-number">2</span>, <span class="tok-keyword">false</span>]
+config = {
+  theme: <span class="tok-string">"dark"</span>,
+  <span class="tok-string">"max-retries"</span>: <span class="tok-number">3</span>,
+  (<span class="tok-number">1</span> + <span class="tok-number">1</span>): <span class="tok-string">"computed key"</span>
+}
+
+first = items[<span class="tok-number">0</span>]
+theme = config.theme
+alsoTheme = config[<span class="tok-string">"theme"</span>]</code></pre></div>
+          <div class="fact-row"><span>整数</span><p>64 位有符号整数；超范围字面量在编译时拒绝。</p></div>
+          <div class="fact-row"><span>小数</span><p>有限 double；不接受指数记法或非有限结果。</p></div>
+          <div class="fact-row"><span>Map 键</span><p>可使用标识符简写、字符串或表达式；数值上相等的 <code>1</code> 与 <code>1.0</code> 是同一个键。</p></div>
+        </section>
+
+        <section class="syntax-card" id="assignment" data-search="变量 赋值 复制 写入 索引 字段 深拷贝 写时复制 assignment copy variable field index">
+          <header class="syntax-card-head">
+            <div><span>03 / ASSIGNMENT</span><h2>赋值与复制</h2></div>
+            <p>普通赋值复制值。数组、Map 与对象赋给另一个名字后，双方独立。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-assignment">复制</button><pre><code id="code-assignment">a = [<span class="tok-number">1</span>, <span class="tok-number">2</span>]
+b = a
+b[<span class="tok-number">0</span>] = <span class="tok-number">9</span>       <span class="tok-comment">// a[0] 仍是 1</span>
+
+user.name = <span class="tok-string">"Ada"</span>
+matrix[<span class="tok-number">1</span>][<span class="tok-number">2</span>] = <span class="tok-number">7</span>
+result = calculate(total)</code></pre></div>
+          <p class="syntax-note">赋值目标可以是名字、对象字段或带一个/多个索引的名字。运行时命名空间（例如 <code>file</code>、<code>process</code>）不能成为赋值目标。</p>
+        </section>
+
+        <section class="syntax-card" id="operators" data-search="运算符 优先级 算术 比较 逻辑 长度 真值 短路 加减乘除 operator precedence arithmetic comparison logic length">
+          <header class="syntax-card-head">
+            <div><span>04 / OPERATORS</span><h2>运算符与优先级</h2></div>
+            <p>从上到下优先级逐渐降低。同一层通常从左到右结合。</p>
+          </header>
+          <div class="operator-table" role="table" aria-label="FCL 运算符优先级">
+            <div class="table-head" role="row"><span>优先级</span><span>运算符</span><span>说明</span></div>
+            <div role="row"><b>1</b><code>() [] . x++ x--</code><span>调用、索引、成员、后缀更新</span></div>
+            <div role="row"><b>2</b><code>! not - #</code><span>逻辑非、取负、长度</span></div>
+            <div role="row"><b>3</b><code>* / %</code><span>乘、除、取模</span></div>
+            <div role="row"><b>4</b><code>+ -</code><span>算术；<code>+</code> 也用于文本连接</span></div>
+            <div role="row"><b>5</b><code>&lt; &lt;= &gt; &gt;=</code><span>同类型有序比较；布尔不可排序</span></div>
+            <div role="row"><b>6</b><code>== !=</code><span>相等与不等</span></div>
+            <div role="row"><b>7</b><code>&amp;&amp; and</code><span>短路逻辑与</span></div>
+            <div role="row"><b>8</b><code>|| or</code><span>短路逻辑或</span></div>
+          </div>
+          <div class="syntax-code compact"><button class="copy-code" type="button" data-copy-target="code-operators">复制</button><pre><code id="code-operators">size = #items
+valid = #name &gt; <span class="tok-number">0</span> <span class="tok-keyword">and not</span> disabled
+inside = value &gt;= min <span class="tok-keyword">and</span> value &lt; max</code></pre></div>
+          <p class="syntax-note"><code>0</code>、<code>null</code>、<code>false</code>、空字符串为假。整数 <code>+</code>、<code>-</code>、<code>*</code> 与一元负号溢出时抛出运行错误，不会静默回绕。</p>
+        </section>
+
+        <section class="syntax-card" id="condition" data-search="条件 分支 if else else-if 真值 condition branch">
+          <header class="syntax-card-head">
+            <div><span>05 / CONDITIONALS</span><h2>条件分支</h2></div>
+            <p>条件外层括号可写可不写；分支块的大括号不可省略。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-condition">复制</button><pre><code id="code-condition"><span class="tok-keyword">if</span> score &gt;= <span class="tok-number">90</span> {
+  grade = <span class="tok-string">"A"</span>
+} <span class="tok-keyword">else if</span> (score &gt;= <span class="tok-number">60</span>) {
+  grade = <span class="tok-string">"PASS"</span>
+} <span class="tok-keyword">else</span> {
+  grade = <span class="tok-string">"RETRY"</span>
+}</code></pre></div>
+        </section>
+
+        <section class="syntax-card" id="loops" data-search="循环 while break continue loop">
+          <header class="syntax-card-head">
+            <div><span>06 / LOOPS</span><h2>循环</h2></div>
+            <p>FCL 只有 <code>while</code> 循环；<code>break</code> 与 <code>continue</code> 只能出现在循环体内。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-loops">复制</button><pre><code id="code-loops">i = <span class="tok-number">0</span>
+sum = <span class="tok-number">0</span>
+
+<span class="tok-keyword">while</span> (i &lt; #items) {
+  i++
+  <span class="tok-keyword">if</span> items[i - <span class="tok-number">1</span>] == <span class="tok-keyword">null</span> { <span class="tok-keyword">continue</span> }
+  sum = sum + items[i - <span class="tok-number">1</span>]
+  <span class="tok-keyword">if</span> sum &gt; <span class="tok-number">1000</span> { <span class="tok-keyword">break</span> }
+}</code></pre></div>
+        </section>
+
+        <section class="syntax-card" id="functions" data-search="函数 参数 返回 作用域 public private func return scope recursion function">
+          <header class="syntax-card-head">
+            <div><span>07 / FUNCTIONS</span><h2>函数、返回与作用域</h2></div>
+            <p>函数只能在顶层声明。每次调用获得新的参数和局部作用域。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-functions">复制</button><pre><code id="code-functions"><span class="tok-keyword">public func</span> total(items) {
+  sum = <span class="tok-number">0</span>
+  i = <span class="tok-number">0</span>
+  <span class="tok-keyword">while</span> i &lt; #items {
+    sum = sum + items[i]
+    i++
+  }
+  <span class="tok-keyword">return</span> sum
+}
+
+<span class="tok-keyword">private func</span> normalize(value) {
+  <span class="tok-keyword">return</span> text.trim(value)
+}
+
+answer = total([<span class="tok-number">10</span>, <span class="tok-number">20</span>, <span class="tok-number">30</span>])
+<span class="tok-keyword">return</span> answer</code></pre></div>
+          <div class="fact-row"><span>可见性</span><p>未修饰的 <code>func</code> 默认公开；<code>private func</code> 只供模块内部调用。</p></div>
+          <div class="fact-row"><span>返回值</span><p><code>return</code> 可省略值，此时返回 <code>null</code>；顶层 <code>return</code> 是整个程序的结果。</p></div>
+          <div class="fact-row"><span>解析规则</span><p>用户函数或导出函数优先于同名内置函数；函数不能读取调用者的局部变量。</p></div>
+        </section>
+
+        <section class="syntax-card" id="classes" data-search="类 对象 字段 方法 构造 this new init public private class object field method constructor">
+          <header class="syntax-card-head">
+            <div><span>08 / CLASSES & OBJECTS</span><h2>类与对象</h2></div>
+            <p>类只能在顶层声明。字段与方法默认公开，构造方法固定命名为 <code>init</code>。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-classes">复制</button><pre><code id="code-classes"><span class="tok-keyword">public class</span> Counter {
+  <span class="tok-keyword">private</span> value = <span class="tok-number">0</span>
+
+  init(initial) {
+    <span class="tok-keyword">this</span>.value = initial
+  }
+
+  <span class="tok-keyword">func</span> increment() {
+    <span class="tok-keyword">this</span>.value++
+    <span class="tok-keyword">return this</span>.value
+  }
+
+  <span class="tok-keyword">func</span> current() { <span class="tok-keyword">return this</span>.value }
+}
+
+counter = <span class="tok-keyword">new</span> Counter(<span class="tok-number">10</span>)
+counter.increment()</code></pre></div>
+          <p class="syntax-note"><code>private</code> 字段或方法只能由声明它的类访问，子类也不能直接访问。<code>private class</code> 不会被模块导出。</p>
+        </section>
+
+        <section class="syntax-card" id="inheritance" data-search="继承 单继承 extends super 重写 重载 动态分派 inheritance override overload">
+          <header class="syntax-card-head">
+            <div><span>09 / INHERITANCE</span><h2>继承、重写与重载</h2></div>
+            <p>每个类最多继承一个父类。方法只按“名称 + 参数数量”选择。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-inheritance">复制</button><pre><code id="code-inheritance"><span class="tok-keyword">class</span> Person {
+  name = <span class="tok-string">""</span>
+  init(name) { <span class="tok-keyword">this</span>.name = name }
+  <span class="tok-keyword">func</span> label() { <span class="tok-keyword">return</span> <span class="tok-string">"Person: "</span> + <span class="tok-keyword">this</span>.name }
+}
+
+<span class="tok-keyword">class</span> Admin <span class="tok-keyword">extends</span> Person {
+  init(name) { <span class="tok-keyword">super</span>(name) }
+  <span class="tok-keyword">func</span> label() { <span class="tok-keyword">return super</span>.label() + <span class="tok-string">" (admin)"</span> }
+  <span class="tok-keyword">func</span> label(prefix) { <span class="tok-keyword">return</span> prefix + <span class="tok-keyword">this</span>.name }
+}
+
+user = <span class="tok-keyword">new</span> Admin(<span class="tok-string">"Ada"</span>)</code></pre></div>
+          <div class="fact-row"><span>重写</span><p>子类声明相同“方法名/参数数量”时覆盖父类版本，并支持动态分派。</p></div>
+          <div class="fact-row"><span>重载</span><p><code>show(text)</code> 与 <code>show(title, text)</code> 可以并存；两个单参数版本不能仅靠参数类型区分。</p></div>
+        </section>
+
+        <section class="syntax-card" id="links" data-search="自增 自减 postfix link 链接 跟随 删除 destroy memory 复制 update increment decrement">
+          <header class="syntax-card-head">
+            <div><span>10 / UPDATE & LINK</span><h2>后缀更新、link 与删除</h2></div>
+            <p>普通赋值复制值；<code>link</code> 是唯一显式共享名字关系。</p>
+          </header>
+          <div class="split-code">
+            <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-update">复制</button><pre><code id="code-update">count = <span class="tok-number">1</span>
+next = count++  <span class="tok-comment">// 两者都是 2</span>
+count--
+
+counter.value++
+items[<span class="tok-number">0</span>]--</code></pre></div>
+            <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-link">复制</button><pre><code id="code-link">source = [<span class="tok-number">1</span>, <span class="tok-number">2</span>]
+view <span class="tok-keyword">link</span> source
+view[<span class="tok-number">0</span>] = <span class="tok-number">9</span>
+
+memory.destroy(view)
+<span class="tok-comment">// source 与 view 都被删除</span></code></pre></div>
+          </div>
+          <div class="fact-row"><span>后缀更新</span><p><code>++</code>/<code>--</code> 的表达式结果是更新后的值；不支持前缀 <code>++count</code>。</p></div>
+          <div class="fact-row"><span>删除目标</span><p><code>memory.destroy(name)</code> 或 <code>memory.destroy(items[index])</code>；不能删除对象字段或父作用域变量。</p></div>
+        </section>
+
+        <section class="syntax-card" id="exceptions" data-search="异常 try catch error stack message type exception 错误 捕获">
+          <header class="syntax-card-head">
+            <div><span>11 / EXCEPTIONS</span><h2>异常处理</h2></div>
+            <p>只捕获确定性的 FCL 程序失败。内核错误、强制终止与数据库一致性错误不可捕获。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-exceptions">复制</button><pre><code id="code-exceptions"><span class="tok-keyword">try</span> {
+  result = util.fromJson(payload)
+  processResult(result)
+} <span class="tok-keyword">catch</span> (error) {
+  io.println(error.type)
+  io.println(error.message)
+  frame = error.stack[<span class="tok-number">0</span>]
+  io.println(frame.source + <span class="tok-string">":"</span> + frame.line)
+}</code></pre></div>
+          <p class="syntax-note">捕获变量只在 <code>catch</code> 内可见，且不可修改。当前没有 <code>throw</code>、<code>finally</code>、类型化捕获或多个 <code>catch</code>。</p>
+        </section>
+
+        <section class="syntax-card" id="modules" data-search="模块 import include as 导入 包 源文件 sha256 wildcard public private module package source">
+          <header class="syntax-card-head">
+            <div><span>12 / MODULES</span><h2>import 与 include</h2></div>
+            <p>两者都只能出现在顶层。<code>import</code> 建立模块绑定，<code>include</code> 在编译前展开源文件。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-modules">复制</button><pre><code id="code-modules"><span class="tok-comment">// 导入 VFS 中的 .fcl 源文件</span>
+<span class="tok-keyword">import</span> <span class="tok-string">"/lib/format.fcl"</span> <span class="tok-keyword">as</span> <span class="tok-string">"format"</span>
+
+<span class="tok-comment">// 导入已安装包：目标是 64 位数据库文件 SHA-256</span>
+<span class="tok-keyword">import</span> <span class="tok-string">"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"</span> <span class="tok-keyword">as</span> <span class="tok-string">"editor"</span>
+
+<span class="tok-comment">// 在编译前包含另一个 VFS 源文件</span>
+<span class="tok-keyword">include</span> <span class="tok-string">"/shared/constants.fcl"</span></code></pre></div>
+          <p class="syntax-note">导入别名必须是引号内的简单标识符。公开函数与公开类可被导入方使用；私有声明仍只对模块内部可见。</p>
+        </section>
+
+        <section class="syntax-card" id="calls" data-search="调用 函数 参数 索引 成员 点号 包 hash namespace call member access qualified">
+          <header class="syntax-card-head">
+            <div><span>13 / CALLS & ACCESS</span><h2>调用、索引与成员访问</h2></div>
+            <p>圆括号调用具名函数；方括号索引集合；点号访问 Map、对象成员或命名空间函数。</p>
+          </header>
+          <div class="syntax-code"><button class="copy-code" type="button" data-copy-target="code-calls">复制</button><pre><code id="code-calls">length = text.length(name)
+first = rows[<span class="tok-number">0</span>]
+status = response.status
+counter.increment()
+
+<span class="tok-comment">// 已安装包也可按不可变哈希限定函数</span>
+result = <span class="tok-string">"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"</span>.run()</code></pre></div>
+          <p class="syntax-note">建议始终使用完整运行时函数名，例如 <code>file.read(...)</code>，避免与短别名或用户函数产生歧义。字符串索引采用 UTF-16 code unit 位置。</p>
+        </section>
+
+        <section class="syntax-card grammar-card" id="grammar" data-search="语法 总览 ebnf grammar program statement expression 完整">
+          <header class="syntax-card-head">
+            <div><span>14 / GRAMMAR MAP</span><h2>语法总览</h2></div>
+            <p>下面是便于阅读的结构摘要；实际编译器实现是最终依据。</p>
+          </header>
+          <div class="syntax-code grammar-code"><button class="copy-code" type="button" data-copy-target="code-grammar">复制</button><pre><code id="code-grammar">program      := (declaration | statement)* EOF
+declaration  := visibility? (function | class)
+visibility   := "public" | "private"
+function     := "func" name "(" parameters? ")" block
+class        := "class" name ("extends" name)? "{" member* "}"
+member       := visibility? (field | method | constructor)
+field        := name "=" expression separator
+method       := "func" name "(" parameters? ")" block
+constructor  := "init" "(" parameters? ")" block
+
+statement    := assignment | link | update | expression
+              | if | while | break | continue | return
+              | try-catch | import | include
+if           := "if" condition block ("else" (if | block))?
+while        := "while" condition block
+try-catch    := "try" block "catch" "(" name ")" block
+return       := "return" expression?
+link         := name "link" name
+block        := "{" statement* "}"
+
+expression   := or
+or           := and (("||" | "or") and)*
+and          := equality (("&&" | "and") equality)*
+equality     := comparison (("==" | "!=") comparison)*
+comparison   := term (("&lt;" | "&lt;=" | "&gt;" | "&gt;=") term)*
+term         := factor (("+" | "-") factor)*
+factor       := unary (("*" | "/" | "%") unary)*
+unary        := ("!" | "not" | "-" | "#")* postfix
+postfix      := primary (call | index | member | "++" | "--")*
+primary      := number | string | boolean | null | name
+              | array | map | "new" name arguments
+              | "super" arguments | "(" expression ")"</code></pre></div>
+          <div class="unsupported">
+            <strong>当前有意不支持</strong>
+            <p>for · switch · 三元表达式 · throw · finally · 类型化 catch · 接口 · 抽象类 · 静态成员 · 泛型 · 反射 · 多继承 · 前缀 ++/--</p>
+          </div>
+        </section>
+
+        <section class="syntax-finish">
+          <p class="eyebrow">LANGUAGE COMPLETE / API SEPARATE</p>
+          <h2>语法到这里完整结束。<br><span>能力从函数命名空间开始。</span></h2>
+          <div>
+            <p>需要查询 <code>file.*</code>、<code>process.*</code>、<code>ipc.*</code>、<code>timer.*</code> 等运行时能力时，请继续阅读函数参考。</p>
+            <a class="button button-primary" href="https://github.com/SuHeling1212/cilexec/blob/master/docs/fcl-function-reference.md" target="_blank" rel="noreferrer">打开函数参考 <span aria-hidden="true">↗</span></a>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer syntax-footer">
+    <div class="section-shell">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">C:</span><span>CilExec</span></a>
+      <p>FCL v0.0.4 language reference.</p>
+      <a class="footer-meta" href="#top">回到顶部 ↑</a>
+    </div>
+  </footer>
+
+  <script src="fcl.js"></script>
+</body>
+</html>
