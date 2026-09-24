@@ -215,6 +215,64 @@ class SchedulerServiceTest {
     }
 
     @Test
+    void handlerFailureAbandonsTheExactClaimBeforeRetrying() throws Exception {
+        UUID processUid = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        AtomicInteger epoch = new AtomicInteger();
+        AtomicBoolean ready = new AtomicBoolean(true);
+        AtomicBoolean runningProcess = new AtomicBoolean();
+        CountDownLatch recovered = new CountDownLatch(1);
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicReference<SchedulerClaim> active = new AtomicReference<>();
+        SchedulerRepository scheduler = new SchedulerRepository() {
+            @Override public void enqueue(SchedulerQueueEntry entry) { }
+            @Override public Optional<SchedulerClaim> claimNext(UUID runnerId, UUID bootId,
+                    Instant now, Duration leaseDuration) {
+                if (!ready.compareAndSet(true, false)) return Optional.empty();
+                runningProcess.set(true);
+                SchedulerClaim claim = new SchedulerClaim(processUid, ownerId, runnerId, bootId,
+                        epoch.incrementAndGet(), now, now, now.plus(leaseDuration));
+                active.set(claim);
+                return Optional.of(claim);
+            }
+            @Override public boolean heartbeat(SchedulerClaim claim) { return true; }
+            @Override public void release(UUID processUid, long executionEpoch) { }
+            @Override public boolean abandon(SchedulerClaim claim, Instant now, Instant readyAt) {
+                if (!claim.equals(active.get()) || !runningProcess.compareAndSet(true, false)) {
+                    return false;
+                }
+                ready.set(true);
+                recovered.countDown();
+                return true;
+            }
+            @Override public int releaseExpired(Instant now) { return 0; }
+        };
+        TransactionContext context = contextWith(scheduler);
+        TransactionExecutor transactions = new TransactionExecutor() {
+            @Override public <T> T inTransaction(Isolation isolation,
+                                                  TransactionWork<T> work) {
+                return work.execute(context);
+            }
+        };
+        AtomicInteger attempts = new AtomicInteger();
+
+        try (SchedulerService service = new SchedulerService(transactions, claim -> {
+            if (attempts.getAndIncrement() == 0) throw new IllegalStateException("before commit");
+            runningProcess.set(false);
+            completed.countDown();
+        }, UUID.randomUUID(), 1, Duration.ofSeconds(30), Duration.ofMillis(5),
+                failure -> { })) {
+            service.start();
+            assertTrue(recovered.await(1, TimeUnit.SECONDS),
+                    "a handler exception must recover its exact RUNNING lease");
+            assertTrue(completed.await(1, TimeUnit.SECONDS),
+                    "the recovered process must become schedulable again");
+            assertEquals(2, attempts.get());
+            assertEquals(2, epoch.get(), "retry must use a fresh execution epoch");
+        }
+    }
+
+    @Test
     void reportsJvmErrorsAsFatal() throws Exception {
         Error failure = new AssertionError("runtime broken");
         AtomicReference<Throwable> reported = new AtomicReference<>();

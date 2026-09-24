@@ -10,9 +10,11 @@ Do not edit release numbers in Maven files, Docker files, Compose files, CI work
 code. They either read this Maven property directly or obtain it through `tools/Version.sh`.
 
 For the current `0.0.N` release line, `N` is derived as the runtime-format and database schema
-number. Thus `0.0.4` requires the immutable Flyway migration `V004` and writes runtime format
-`4`. The V004 migration is a validation-only contract fence: it verifies the V003 schema and
-security invariants without rewriting application rows. Existing migration class names and old
+number. Thus `0.0.4` requires Flyway migration `V004` and writes runtime format `4`. While 0.0.4
+remains unreleased, V004 is not frozen. It completes the tenant-role privilege needed for
+owner-scoped package-binding deletion, then verifies the V003 schema and security invariants,
+without changing application-table structure or rewriting user rows. Once 0.0.4 is released,
+V004 becomes immutable migration history. Existing released migration class names and old
 persisted data are historical identities and must not be renamed.
 
 Before a new release, add its immutable `V00N` migration first (a no-DDL version fence when the

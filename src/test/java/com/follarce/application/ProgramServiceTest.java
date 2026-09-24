@@ -371,31 +371,41 @@ class ProgramServiceTest {
 
     static final class MemoryProcessRepository implements ProcessRepository {
         CilProcess current;
+        final Map<UUID, CilProcess> inserted = new LinkedHashMap<>();
         UpdateResult forcedResult;
         int updates;
         long nextPid = 1;
 
         @Override public long allocatePid() { return nextPid++; }
         @Override public Optional<CilProcess> findByUid(UUID processUid) {
-            return current != null && current.identity().processUid().equals(processUid)
-                    ? Optional.of(current) : Optional.empty();
+            if (current != null && current.identity().processUid().equals(processUid)) {
+                return Optional.of(current);
+            }
+            return Optional.ofNullable(inserted.get(processUid));
         }
         @Override public Optional<CilProcess> findByPid(long pid) {
-            return current != null && current.identity().pid() == pid
-                    ? Optional.of(current) : Optional.empty();
+            if (current != null && current.identity().pid() == pid) return Optional.of(current);
+            return inserted.values().stream()
+                    .filter(process -> process.identity().pid() == pid).findFirst();
         }
-        @Override public void insert(CilProcess process) { current = process; }
+        @Override public void insert(CilProcess process) {
+            inserted.put(process.identity().processUid(), process);
+            if (current == null) current = process;
+        }
         @Override public UpdateResult update(CilProcess process, long expectedVersion,
                                              long expectedEpoch) {
             updates++;
             if (forcedResult != null) return forcedResult;
-            if (current == null || current.executionEpoch() != expectedEpoch) {
+            CilProcess stored = findByUid(process.identity().processUid()).orElse(null);
+            if (stored == null || stored.executionEpoch() != expectedEpoch) {
                 return UpdateResult.EPOCH_FENCED;
             }
-            if (current.stateVersion() != expectedVersion) {
+            if (stored.stateVersion() != expectedVersion) {
                 return UpdateResult.VERSION_CONFLICT;
             }
-            current = process;
+            inserted.put(process.identity().processUid(), process);
+            if (current != null && current.identity().processUid()
+                    .equals(process.identity().processUid())) current = process;
             return UpdateResult.UPDATED;
         }
         @Override public UpdateResult updateClaimed(CilProcess process, long expectedVersion,

@@ -108,6 +108,7 @@ public final class SchedulerService implements AutoCloseable {
     /** A dedicated worker consumes Ctrl+C claims; normal workers never claim those rows. */
     private void interruptLoop(UUID runnerId) {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
+            SchedulerClaim activeClaim = null;
             try {
                 long observedWake = interruptAvailable.version();
                 Instant now = Instant.now();
@@ -119,7 +120,8 @@ public final class SchedulerService implements AutoCloseable {
                     interruptAvailable.awaitChange(observedWake);
                     continue;
                 }
-                handler.executeSlice(claim.orElseThrow());
+                activeClaim = claim.orElseThrow();
+                handler.executeSlice(activeClaim);
             } catch (Throwable failure) {
                 if (!running.get()) return;
                 if (isFatal(failure)) {
@@ -127,6 +129,7 @@ public final class SchedulerService implements AutoCloseable {
                     fatalFailure.accept(failure);
                     return;
                 }
+                if (activeClaim != null && !abandon(activeClaim, failure)) return;
                 LOG.warn("Interrupt worker {} rejected a cancellation cycle", runnerId,
                         failure);
                 LockSupport.parkNanos(errorBackoff.toNanos());
@@ -136,6 +139,7 @@ public final class SchedulerService implements AutoCloseable {
 
     private void workerLoop(UUID runnerId) {
         while (running.get() && !Thread.currentThread().isInterrupted()) {
+            SchedulerClaim activeClaim = null;
             try {
                 // Observe before querying PostgreSQL. If a commit notification arrives while
                 // the query is running or before this worker starts waiting, awaitChange sees
@@ -149,7 +153,8 @@ public final class SchedulerService implements AutoCloseable {
                     workAvailable.awaitChange(observedWake);
                     continue;
                 }
-                handler.executeSlice(claim.get());
+                activeClaim = claim.orElseThrow();
+                handler.executeSlice(activeClaim);
             } catch (Throwable failure) {
                 if (!running.get()) return;
                 if (isFatal(failure)) {
@@ -157,9 +162,37 @@ public final class SchedulerService implements AutoCloseable {
                     fatalFailure.accept(failure);
                     return;
                 }
+                if (activeClaim != null && !abandon(activeClaim, failure)) return;
                 LOG.warn("Scheduler worker {} rejected a claim cycle", runnerId, failure);
                 LockSupport.parkNanos(errorBackoff.toNanos());
             }
+        }
+    }
+
+    /**
+     * Recovers only the exact lease that reached the handler. The database transition is an
+     * epoch- and owner-fenced RUNNING -> READY CAS; if the handler committed before a later
+     * publisher failed, or another recovery already fenced this claim, it is a harmless no-op.
+     */
+    private boolean abandon(SchedulerClaim claim, Throwable handlerFailure) {
+        Instant now = Instant.now();
+        try {
+            boolean recovered = transactions.inTransaction(Isolation.READ_COMMITTED,
+                    transaction -> transaction.scheduler().abandon(
+                            claim, now, now.plus(errorBackoff)));
+            if (recovered) workAvailable.signal();
+            return true;
+        } catch (Throwable recoveryFailure) {
+            handlerFailure.addSuppressed(recoveryFailure);
+            if (isFatal(recoveryFailure)) {
+                running.set(false);
+                fatalFailure.accept(handlerFailure);
+                return false;
+            }
+            LOG.warn("Could not recover rejected scheduler claim {} at epoch {}; "
+                            + "lease expiry remains the durable fallback",
+                    claim.processUid(), claim.executionEpoch(), recoveryFailure);
+            return true;
         }
     }
 

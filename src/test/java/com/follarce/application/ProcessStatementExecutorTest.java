@@ -477,6 +477,79 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void forkInsideFunctionThenExecReplacesTheChildProgramAndRunsIt() {
+        Fixture fixture = new Fixture("""
+                func launch() {
+                    child = process.fork()
+                    if child == 0 { process.exec("/child.fcl", []) }
+                    return child
+                }
+                launched = launch()
+                """, com.follarce.extension.SourceExtensionIndex.catalog());
+        StoredObject source = StoredObject.create(new BinaryContent(
+                "result = 42\n".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                ProgramService.SOURCE_MEDIA_TYPE, NOW);
+        fixture.persistence.vfs.saveObject(source);
+        com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
+                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
+                java.util.Set.of(), false, NOW, NOW);
+        fixture.persistence.vfs.insertNode(root);
+        fixture.persistence.vfs.insertNode(new com.follarce.domain.vfs.VfsNode(
+                UUID.randomUUID(), Optional.of(root.nodeId()), fixture.ownerId, "child.fcl",
+                com.follarce.domain.vfs.VfsNode.Type.FILE, Optional.of(source.objectHash()),
+                java.util.Set.of(), false, NOW, NOW));
+        FclContinuation terminal = new FclContinuation();
+        String outputRoute = UUID.randomUUID().toString();
+        terminal.scope().put(TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY, true);
+        terminal.scope().put(TerminalReplService.TERMINAL_SESSION_SCOPE_KEY, outputRoute);
+        terminal.scope().put(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY, outputRoute);
+        Continuation seeded = new FclPersistenceBridge(new FclContinuationCodec()).persist(
+                fixture.processUid, fixture.program, initial(fixture.program), terminal);
+        CilProcess parent = fixture.persistence.processes.current;
+        fixture.persistence.processes.current = new CilProcess(parent.identity(), parent.ownerId(),
+                parent.status(), parent.stateVersion(), parent.executionEpoch(), seeded,
+                parent.parentProcessUid(), parent.createdAt(), parent.updatedAt());
+
+        fixture.executor.executeSlice(fixture.claim);
+
+        CilProcess committedParent = fixture.persistence.processes.current;
+        FclContinuation parentRuntime = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(committedParent.continuation());
+        long childPid = ((Number) parentRuntime.scope().get("launched")).longValue();
+        CilProcess forked = fixture.persistence.processes.findByPid(childPid).orElseThrow();
+        UUID childUid = forked.identity().processUid();
+        UUID originalProgramId = forked.continuation().programId();
+        assertEquals(CilProcess.Status.READY, forked.status());
+
+        int budget = 20;
+        CilProcess child = forked;
+        while (child.status() == CilProcess.Status.READY && budget-- > 0) {
+            child = child.claim(child.executionEpoch() + 1, NOW);
+            fixture.persistence.processes.inserted.put(childUid, child);
+            SchedulerClaim childClaim = claim(childUid, fixture.ownerId, child.executionEpoch());
+            fixture.persistence.scheduler.lease = childClaim;
+            fixture.executor.executeSlice(childClaim);
+            child = fixture.persistence.processes.findByUid(childUid).orElseThrow();
+        }
+
+        assertTrue(budget > 0, "fork/exec child did not finish within the slice budget");
+        assertEquals(CilProcess.Status.TERMINATED, child.status());
+        assertNotEquals(originalProgramId, child.continuation().programId());
+        assertEquals(childPid, child.identity().pid());
+        assertEquals(childUid, child.identity().processUid());
+        FclContinuation childRuntime = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(child.continuation());
+        assertEquals(42L, childRuntime.scope().get("result"));
+        assertEquals(outputRoute, childRuntime.globalScope()
+                .get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY));
+        assertFalse(childRuntime.globalScope().contains(
+                TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY));
+        assertFalse(childRuntime.globalScope().contains(
+                TerminalReplService.TERMINAL_SESSION_SCOPE_KEY));
+    }
+
+    @Test
     void execResolvesARelativePathAgainstTheProcessWorkingDirectory() {
         Fixture fixture = new Fixture("process.exec(\"./next.fcl\")\noldTail = 99\n",
                 com.follarce.extension.SourceExtensionIndex.catalog());

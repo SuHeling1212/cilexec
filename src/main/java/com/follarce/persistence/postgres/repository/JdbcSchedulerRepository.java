@@ -132,6 +132,41 @@ public final class JdbcSchedulerRepository extends JdbcRepositorySupport impleme
     }
 
     @Override
+    public boolean abandon(SchedulerClaim claim, Instant now, Instant readyAt) {
+        String sql = "WITH abandoned AS (DELETE FROM scheduler.lease lease USING process.process process "
+                + "WHERE lease.process_uid=? AND lease.owner_id=? AND lease.runner_id=? "
+                + "AND lease.boot_id=? AND lease.execution_epoch=? "
+                + "AND process.process_uid=lease.process_uid "
+                + "AND process.execution_epoch=lease.execution_epoch "
+                + "AND process.status='RUNNING' RETURNING lease.process_uid,lease.execution_epoch), recovered AS ("
+                + "UPDATE process.process p SET status='READY',state_version=state_version+1,"
+                + "updated_at=? FROM abandoned a WHERE p.process_uid=a.process_uid "
+                + "AND p.execution_epoch=a.execution_epoch AND p.status='RUNNING' "
+                + "RETURNING p.process_uid), queued AS (UPDATE scheduler.queue q "
+                + "SET queue_state='READY',claimed_by=NULL,claimed_at=NULL,ready_at=?,enqueued_at=? "
+                + "FROM recovered r WHERE q.process_uid=r.process_uid RETURNING q.process_uid) "
+                + "SELECT count(*) FROM queued";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, claim.processUid());
+            statement.setObject(2, claim.ownerId());
+            statement.setObject(3, claim.runnerId());
+            statement.setObject(4, claim.bootId());
+            statement.setLong(5, claim.executionEpoch());
+            statement.setTimestamp(6, java.sql.Timestamp.from(now));
+            statement.setTimestamp(7, java.sql.Timestamp.from(readyAt));
+            statement.setTimestamp(8, java.sql.Timestamp.from(now));
+            try (ResultSet rows = statement.executeQuery()) {
+                rows.next();
+                boolean recovered = rows.getInt(1) == 1;
+                if (recovered) notifyWork("cilexec_scheduler_work", "scheduler.abandon.notify");
+                return recovered;
+            }
+        } catch (SQLException exception) {
+            throw failure("scheduler.abandon", exception);
+        }
+    }
+
+    @Override
     public int releaseExpired(Instant now) {
         String sql = "WITH expired AS (DELETE FROM scheduler.lease WHERE expires_at<=? "
                 + "RETURNING process_uid,execution_epoch), recovered AS ("

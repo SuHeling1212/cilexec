@@ -1,4 +1,52 @@
--- CilExec V004 is a validation-only version fence. Do not add mutable repair behavior here.
+-- CilExec V004 remains unreleased. Besides validating the V003 contract, it completes the
+-- owner-scoped package-binding privilege needed by process.exec to discard the old image pins.
+SET ROLE cilexec_owner;
+
+GRANT DELETE ON process.package_binding TO cilexec_runtime;
+
+DO $grant_existing_users$
+DECLARE
+    account record;
+BEGIN
+    FOR account IN
+        SELECT user_id, postgres_role_name
+        FROM auth.user_account
+        WHERE status = 'ACTIVE'
+    LOOP
+        IF account.postgres_role_name::text = 'cilexec_user_'
+                || replace(account.user_id::text, '-', '')
+           AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles
+                       WHERE rolname = account.postgres_role_name) THEN
+            EXECUTE format('GRANT DELETE ON process.package_binding TO %I',
+                    account.postgres_role_name);
+        END IF;
+    END LOOP;
+END
+$grant_existing_users$;
+
+ALTER FUNCTION auth.grant_login_role_access(uuid)
+    RENAME TO grant_login_role_access_v003;
+
+CREATE FUNCTION auth.grant_login_role_access(p_user_id uuid)
+RETURNS name
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, auth
+AS $function$
+DECLARE
+    mapped_role name;
+BEGIN
+    mapped_role := auth.grant_login_role_access_v003(p_user_id);
+    EXECUTE format('GRANT DELETE ON process.package_binding TO %I', mapped_role);
+    RETURN mapped_role;
+END
+$function$;
+
+REVOKE ALL ON FUNCTION auth.grant_login_role_access(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION auth.grant_login_role_access(uuid) TO cilexec_migrator;
+
+RESET ROLE;
+
 DO $migration$
 DECLARE
     wait_constraint text;

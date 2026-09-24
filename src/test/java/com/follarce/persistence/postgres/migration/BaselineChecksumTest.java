@@ -27,8 +27,8 @@ class BaselineChecksumTest {
     }
 
     @Test
-    void currentJavaMigrationChecksumTracksItsImmutableSqlResource() {
-        assertEquals(409_911_152, new V004().getChecksum());
+    void currentUnreleasedJavaMigrationChecksumTracksItsSqlResource() {
+        assertEquals(1_347_768_308, new V004().getChecksum());
     }
 
     private static String sourceSha256(String value) throws Exception {

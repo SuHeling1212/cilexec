@@ -17,6 +17,7 @@ import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
 import com.follarce.persistence.postgres.transaction.JdbcTransactionExecutor;
 import com.follarce.scheduler.SchedulerService;
+import com.follarce.terminal.TerminalOutputRouter;
 import com.follarce.timer.TimerService;
 import com.follarce.timer.TimerWorkerService;
 import com.follarce.vfs.AdminVfsService;
@@ -26,6 +27,8 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.postgresql.ds.PGSimpleDataSource;
 
 import java.nio.charset.StandardCharsets;
+import java.io.PrintWriter;
+import java.io.Writer;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -786,7 +789,9 @@ class FclSystemFunctionsExternalIT {
         UserAccount owner = new AuthService(transactions, clock).create("fork-owner-" + suffix,
                 "owner-password-123".toCharArray(), Set.of(Capability.PROCESS_CREATE,
                         Capability.PROCESS_CONTROL_OWN, Capability.TERMINAL_ATTACH,
-                        Capability.VFS_READ, Capability.VFS_WRITE, Capability.SYSTEM_ADMIN));
+                        Capability.VFS_READ, Capability.VFS_WRITE, Capability.EFFECT_REQUEST,
+                        Capability.PACKAGE_IMPORT, Capability.PACKAGE_BIND,
+                        Capability.SYSTEM_ADMIN));
         UUID sessionId = UUID.randomUUID();
         Instant now = clock.instant();
         transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED, transaction -> {
@@ -794,6 +799,41 @@ class FclSystemFunctionsExternalIT {
                     TerminalSession.Status.OPEN, 1, now, now, Optional.empty()));
             return null;
         });
+        VfsService vfs = new VfsService(transactions, clock);
+        VfsNode rootDirectory = transactions.inUserTransaction(owner.userId(),
+                Isolation.READ_COMMITTED, transaction -> transaction.vfs()
+                        .findChild(owner.userId(), Optional.empty(), "/").orElseThrow());
+        vfs.createFile(owner.userId(), rootDirectory.nodeId(), "fork-exec-child.fcl",
+                "result = 42\n".getBytes(StandardCharsets.UTF_8), "text/x-fcl", Set.of(), false);
+        vfs.createFile(owner.userId(), rootDirectory.nodeId(), "fork-exec-output.fcl",
+                "io.println(\"HELLO FROM EXEC CHILD\")\n".getBytes(StandardCharsets.UTF_8),
+                "text/x-fcl", Set.of(), false);
+        vfs.createFile(owner.userId(), rootDirectory.nodeId(), "fork-exec-loop.fcl",
+                "a = 0\nwhile true {\n  io.println(a)\n  a = a + 1\n}\n"
+                        .getBytes(StandardCharsets.UTF_8),
+                "text/x-fcl", Set.of(), false);
+        com.follarce.domain.vfs.StoredObject packageObject =
+                com.follarce.domain.vfs.StoredObject.create(
+                        new com.follarce.domain.vfs.BinaryContent(
+                                "fork-exec-pin".getBytes(StandardCharsets.UTF_8)),
+                        "application/vnd.sqlite3", now);
+        com.follarce.domain.packageinfo.PackageRelease pinnedRelease =
+                transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                        transaction -> {
+                            transaction.vfs().saveObject(packageObject);
+                            com.follarce.domain.packageinfo.PackageRelease release =
+                                    new com.follarce.domain.packageinfo.PackageRelease(
+                                            new com.follarce.domain.packageinfo.PackageRelease.Coordinate(
+                                                    "fork", "exec-pin", "1.0.0"),
+                                            new com.follarce.domain.packageinfo.PackageRelease.Hash(
+                                                    new com.follarce.domain.vfs.ObjectHash(
+                                                            "5".repeat(64))),
+                                            packageObject.objectHash(), packageObject.objectHash(), now);
+                            transaction.packages().registerRelease(
+                                    new com.follarce.domain.packageinfo.PackageIndex(release,
+                                            List.of(), List.of(), List.of(), List.of(), List.of()));
+                            return release;
+                        });
 
         long controlKey = 0x51A7C0DE5L;
         long proofKey = controlKey ^ 0x9e3779b97f4a7c15L;
@@ -837,13 +877,27 @@ class FclSystemFunctionsExternalIT {
         metadata.markReady(boot);
         UUID bootId = boot.bootId();
         AtomicReference<Throwable> fatal = new AtomicReference<>();
-        ProcessStatementExecutor executor = new ProcessStatementExecutor(transactions);
+        AtomicReference<SchedulerService> schedulerRef = new AtomicReference<>();
+        AtomicReference<EffectWorkerService> effectsRef = new AtomicReference<>();
+        ProcessStatementExecutor executor = new ProcessStatementExecutor(transactions,
+                () -> Optional.ofNullable(schedulerRef.get()).ifPresent(SchedulerService::wake),
+                () -> Optional.ofNullable(effectsRef.get()).ifPresent(EffectWorkerService::wake));
+        EffectWorkerService effects = new EffectWorkerService(transactions, transactions, bootId,
+                new EffectHandlerRegistry(BuiltinEffectHandlers.defaults()), 1,
+                Duration.ofMillis(50), clock, fatal::set,
+                () -> Optional.ofNullable(schedulerRef.get()).ifPresent(SchedulerService::wake));
         SchedulerService scheduler = new SchedulerService(transactions, executor, bootId, 2,
                 Duration.ofSeconds(30), Duration.ofMillis(50), fatal::set);
+        schedulerRef.set(scheduler);
+        effectsRef.set(effects);
         TimerWorkerService timers = new TimerWorkerService(new TimerService(transactions,
                 transactions, clock), 16, Duration.ofMillis(25), fatal::set);
         scheduler.start();
         timers.start();
+        effects.start();
+        CapturingWriter terminalOutput = new CapturingWriter();
+        PrintWriter terminalWriter = new PrintWriter(terminalOutput);
+        TerminalOutputRouter.attach(sessionId, terminalWriter);
         try {
             TerminalReplService repl = new TerminalReplService(transactions, scheduler::wake);
             TerminalReplService.Submission first = repl.submit(owner.userId(), sessionId,
@@ -914,12 +968,244 @@ class FclSystemFunctionsExternalIT {
                             transaction -> transaction.processes().findByUid(rootUid)
                                     .orElseThrow().status()),
                     "terminal root must remain PAUSED after its submissions");
+
+            TerminalReplService.Submission execSubmission = repl.submit(owner.userId(), sessionId,
+                    "func launchExec() {\n"
+                            + "  forked = process.fork()\n"
+                            + "  if forked == 0 { process.exec(\"/fork-exec-child.fcl\", []) }\n"
+                            + "  return forked\n"
+                            + "}\n"
+                            + "execChild = launchExec()\n");
+            assertEquals(rootUid, execSubmission.process().identity().processUid(),
+                    "the parent terminal process must continue with the same identity");
+            FclContinuation execParent = awaitForkPaused(transactions, scheduler, owner, rootUid,
+                    "execChild", fatal);
+            long execChildPid = ((Number) execParent.scope().get("execChild")).longValue();
+            CilProcess execChild = awaitProcessStatus(transactions, scheduler, owner, execChildPid,
+                    CilProcess.Status.TERMINATED, fatal);
+            assertEquals(execChildPid, execChild.identity().pid(),
+                    "exec must retain the fork child's PID");
+            assertEquals(rootUid, execChild.parentProcessUid().orElseThrow(),
+                    "exec must retain the fork child's parent identity");
+            assertFalse(execChild.continuation().programId()
+                            .equals(execSubmission.process().continuation().programId()),
+                    "exec must replace the fork child's program");
+            FclContinuation execChildRuntime = new FclPersistenceBridge(
+                    new FclContinuationCodec()).restore(execChild.continuation());
+            assertEquals(42L, execChildRuntime.scope().get("result"),
+                    "the replacement program must execute from PC 0");
+            assertFalse(execChildRuntime.globalScope().contains(
+                            TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY),
+                    "exec must not restore the terminal lifecycle on a fork child");
+
+            repl.submit(owner.userId(), sessionId,
+                    "func launchBoundExec() {\n"
+                            + "  boundChild = process.fork()\n"
+                            + "  if boundChild == 0 {\n"
+                            + "    util.sleep(5000)\n"
+                            + "    process.exec(\"/fork-exec-child.fcl\", [])\n"
+                            + "  }\n"
+                            + "  return boundChild\n"
+                            + "}\n"
+                            + "boundExecChild = launchBoundExec()\n");
+            FclContinuation boundParent = awaitForkPaused(transactions, scheduler, owner,
+                    rootUid, "boundExecChild", fatal);
+            long boundChildPid = ((Number) boundParent.scope().get("boundExecChild")).longValue();
+            CilProcess boundChild = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findByPid(boundChildPid).orElseThrow());
+            UUID boundChildUid = boundChild.identity().processUid();
+            transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                    transaction -> {
+                        transaction.packages().saveProcessBinding(
+                                new com.follarce.domain.packageinfo.ProcessPackageBinding(
+                                        boundChildUid, "oldPin", pinnedRelease.packageHash(), now));
+                        return null;
+                    });
+            boundChild = awaitProcessStatus(transactions, scheduler, owner, boundChildPid,
+                    CilProcess.Status.TERMINATED, fatal);
+            assertEquals(42L, new FclPersistenceBridge(new FclContinuationCodec())
+                    .restore(boundChild.continuation()).scope().get("result"));
+            boolean oldBindingsRemoved = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.packages()
+                            .findProcessBindings(boundChildUid).isEmpty());
+            assertTrue(oldBindingsRemoved,
+                    "exec replacement must delete every package pin from the old image");
+
+            repl.submit(owner.userId(), sessionId,
+                    "func launchOutput() {\n"
+                            + "  forkedOutput = process.fork()\n"
+                            + "  if forkedOutput == 0 {"
+                            + " process.exec(\"/fork-exec-output.fcl\", []) }\n"
+                            + "  return forkedOutput\n"
+                            + "}\n"
+                            + "outputChild = launchOutput()\n");
+            FclContinuation outputParent = awaitForkPaused(transactions, scheduler, owner,
+                    rootUid, "outputChild", fatal);
+            long outputChildPid = ((Number) outputParent.scope().get("outputChild")).longValue();
+            CilProcess outputChild = awaitProcessStatus(transactions, scheduler, effects::wake,
+                    owner, outputChildPid, CilProcess.Status.TERMINATED, fatal);
+            assertTrue(terminalOutput.await("HELLO FROM EXEC CHILD", Duration.ofSeconds(5)),
+                    "durable io.println must reach the inherited terminal output route");
+            FclContinuation outputRuntime = new FclPersistenceBridge(new FclContinuationCodec())
+                    .restore(outputChild.continuation());
+            assertEquals(sessionId.toString(), outputRuntime.globalScope()
+                    .get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY));
+            assertFalse(outputRuntime.globalScope().contains(
+                    TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY));
+            assertFalse(outputRuntime.globalScope().contains(
+                    TerminalReplService.TERMINAL_SESSION_SCOPE_KEY));
+
+            repl.submit(owner.userId(), sessionId,
+                    "func launchGrandchild() {\n"
+                            + "  childLevel = process.fork()\n"
+                            + "  if childLevel == 0 {\n"
+                            + "    grandchildLevel = process.fork()\n"
+                            + "    if grandchildLevel == 0 {"
+                            + " process.exec(\"/fork-exec-child.fcl\", []) }\n"
+                            + "  }\n"
+                            + "  return childLevel\n"
+                            + "}\n"
+                            + "nestedChild = launchGrandchild()\n");
+            FclContinuation nestedParent = awaitForkPaused(transactions, scheduler, owner,
+                    rootUid, "nestedChild", fatal);
+            long nestedChildPid = ((Number) nestedParent.scope().get("nestedChild")).longValue();
+            CilProcess nestedChild = awaitProcessStatus(transactions, scheduler, owner,
+                    nestedChildPid, CilProcess.Status.TERMINATED, fatal);
+            CilProcess grandchild = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findChildren(nestedChild.identity().processUid()).stream()
+                            .findFirst().orElseThrow());
+            grandchild = awaitProcessStatus(transactions, scheduler, owner,
+                    grandchild.identity().pid(), CilProcess.Status.TERMINATED, fatal);
+            FclContinuation grandchildRuntime = new FclPersistenceBridge(
+                    new FclContinuationCodec()).restore(grandchild.continuation());
+            assertEquals(42L, grandchildRuntime.scope().get("result"));
+            assertEquals(sessionId.toString(), grandchildRuntime.globalScope()
+                    .get(TerminalReplService.TERMINAL_OUTPUT_ROUTE_SCOPE_KEY),
+                    "every fork depth must retain the original terminal output route");
+            assertFalse(grandchildRuntime.globalScope().contains(
+                    TerminalReplService.TERMINAL_PROCESS_SCOPE_KEY));
+
+            repl.submit(owner.userId(), sessionId,
+                    "func launchLoop() {\n"
+                            + "  loopFork = process.fork()\n"
+                            + "  if loopFork == 0 {"
+                            + " process.exec(\"/fork-exec-loop.fcl\", []) }\n"
+                            + "  return loopFork\n"
+                            + "}\n"
+                            + "loopChild = launchLoop()\n");
+            FclContinuation loopParent = awaitForkPaused(transactions, scheduler, owner,
+                    rootUid, "loopChild", fatal);
+            long loopChildPid = ((Number) loopParent.scope().get("loopChild")).longValue();
+            UUID loopOriginalProgramId = transactions.inUserTransaction(owner.userId(),
+                    Isolation.READ_COMMITTED, transaction -> transaction.processes()
+                            .findByUid(rootUid).orElseThrow().continuation().programId());
+            CilProcess loopChild = awaitProgramReplacement(transactions, scheduler, effects,
+                    owner, loopChildPid, loopOriginalProgramId, fatal);
+            assertFalse(loopChild.status() == CilProcess.Status.RUNNING
+                            && loopChild.stateVersion() == 1,
+                    "fork/exec child must not remain at the initial RUNNING claim");
+            assertTrue(terminalOutput.await("0", Duration.ofSeconds(5)),
+                    "the exec loop must produce durable output without monopolizing a slice");
+            repl.submit(owner.userId(), sessionId,
+                    "loopKilled = process.kill(loopChild)\n");
+            FclContinuation killedParent = awaitForkPaused(transactions, scheduler, owner,
+                    rootUid, "loopKilled", fatal);
+            assertEquals(true, killedParent.scope().get("loopKilled"));
+            awaitProcessStatus(transactions, scheduler, effects::wake, owner, loopChildPid,
+                    CilProcess.Status.TERMINATED, fatal);
         } finally {
+            TerminalOutputRouter.detachAll(terminalWriter);
             scheduler.close();
             timers.close();
+            effects.close();
             controlConnection.close();
         }
         assertNull(fatal.get());
+    }
+
+    private static CilProcess awaitProcessStatus(JdbcTransactionExecutor transactions,
+                                                 SchedulerService scheduler,
+                                                 UserAccount owner, long pid,
+                                                 CilProcess.Status expected,
+                                                 AtomicReference<Throwable> fatal)
+            throws Exception {
+        return awaitProcessStatus(transactions, scheduler, () -> { }, owner, pid, expected,
+                fatal);
+    }
+
+    private static CilProcess awaitProcessStatus(JdbcTransactionExecutor transactions,
+                                                 SchedulerService scheduler,
+                                                 Runnable maintenanceWake,
+                                                 UserAccount owner, long pid,
+                                                 CilProcess.Status expected,
+                                                 AtomicReference<Throwable> fatal)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        CilProcess current = null;
+        while (System.nanoTime() < deadline) {
+            scheduler.wake();
+            maintenanceWake.run();
+            Thread.sleep(25);
+            current = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                    transaction -> transaction.processes().findByPid(pid).orElseThrow());
+            if (current.status() == expected) return current;
+        }
+        throw new AssertionError("process did not reach " + expected + ": pid=" + pid
+                + " status=" + (current == null ? "missing" : current.status())
+                + " epoch=" + (current == null ? "missing" : current.executionEpoch())
+                + " stateVersion=" + (current == null ? "missing" : current.stateVersion())
+                + " programId=" + (current == null ? "missing"
+                : current.continuation().programId())
+                + (fatal.get() != null ? " FATAL=" + fatal.get() : ""));
+    }
+
+    private static CilProcess awaitProgramReplacement(JdbcTransactionExecutor transactions,
+                                                      SchedulerService scheduler,
+                                                      EffectWorkerService effects,
+                                                      UserAccount owner, long pid,
+                                                      UUID originalProgramId,
+                                                      AtomicReference<Throwable> fatal)
+            throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        CilProcess current = null;
+        while (System.nanoTime() < deadline) {
+            scheduler.wake();
+            effects.wake();
+            Thread.sleep(25);
+            current = transactions.inUserTransaction(owner.userId(), Isolation.READ_COMMITTED,
+                    transaction -> transaction.processes().findByPid(pid).orElseThrow());
+            if (!current.continuation().programId().equals(originalProgramId)
+                    && current.stateVersion() > 1) return current;
+        }
+        throw new AssertionError("process never committed exec replacement: pid=" + pid
+                + " status=" + (current == null ? "missing" : current.status())
+                + " stateVersion=" + (current == null ? "missing" : current.stateVersion())
+                + (fatal.get() != null ? " FATAL=" + fatal.get() : ""));
+    }
+
+    private static final class CapturingWriter extends Writer {
+        private final StringBuilder text = new StringBuilder();
+
+        @Override
+        public synchronized void write(char[] characters, int offset, int length) {
+            text.append(characters, offset, length);
+            notifyAll();
+        }
+
+        @Override public void flush() { }
+        @Override public void close() { }
+
+        synchronized boolean await(String expected, Duration timeout) throws InterruptedException {
+            long deadline = System.nanoTime() + timeout.toNanos();
+            while (text.indexOf(expected) < 0) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return false;
+                TimeUnit.NANOSECONDS.timedWait(this, remaining);
+            }
+            return true;
+        }
     }
 
     private static FclContinuation awaitForkPaused(JdbcTransactionExecutor transactions,

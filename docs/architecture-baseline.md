@@ -734,7 +734,7 @@ Flyway is the schema versioning tool.
 V001__CilexecBaseline.java       # frozen CilExec 0.0.1 modular baseline
 V002.java                        # frozen CilExec 0.0.2 forward migration
 V003.java                        # frozen CilExec 0.0.3 executable-artifact migration
-V004.java                        # CilExec 0.0.4 validation-only contract fence
+V004.java                        # unreleased CilExec 0.0.4 contract completion and fence
 ```
 
 V003 is intentionally a single Java migration. It advances the database contract for the V003
@@ -743,11 +743,14 @@ instruction artifact; V002 JSON source artifacts remain readable only for safe c
 existing processes. It also adds explicit directory clearing for package-private data. It does not
 introduce time-based deletion of user data. Once applied, V003 is immutable like V001 and V002.
 
-V004 executes the immutable `db/contracts/V004.sql` resource through the shared checksummed Java
-migration adapter. It performs no application DDL or data rewrite. It verifies that the V003
-administrator functions, explicit-retention policy, compiled-program column, complete process
-wait-kind constraint, and database security invariants are present before recording schema version
-4. Runtime format 4 remains able to decode V002 and V003 programs and continuations.
+V004 executes `db/contracts/V004.sql` through the shared checksummed Java migration adapter. While
+0.0.4 is unreleased, V004 is not frozen; after release its checksum becomes immutable migration
+history. It adds the forced-RLS package-binding delete privilege to the Runtime, existing tenant
+roles, and the tenant-role provisioning path, but performs no application-table DDL or user-data
+rewrite. It then verifies that the V003 administrator functions, explicit-retention policy,
+compiled-program column, complete process wait-kind constraint, and database security invariants
+are present before recording schema version 4. Runtime format 4 remains able to decode V002 and
+V003 programs and continuations.
 
 Rules:
 
@@ -1105,6 +1108,14 @@ an expired lease can be reclaimed by another worker
 a stale worker's commit fails because its epoch no longer matches
 ```
 
+If a claimed handler throws before its slice transaction commits, the worker immediately attempts
+an atomic claim abandonment. PostgreSQL deletes only the lease matching the full process, owner,
+runner, boot, and execution-epoch identity, advances `RUNNING → READY`, increments
+`state_version`, and requeues the process after the configured error backoff. A handler that
+actually committed before a disposable post-commit publisher failed produces a no-op, as does a
+claim already fenced by another recovery. Lease expiry remains the durable fallback if the
+abandonment transaction itself cannot reach PostgreSQL.
+
 ### 10.3 Crash Recovery
 
 RUNNING processes are classified by their last committed state:
@@ -1459,6 +1470,9 @@ process.package_binding
 Import lookup uses the SHA-256 of the `.db` file, while the binding row stores the package's
 internal logical-content hash. A private alias may be rebound by a later terminal submission;
 already linked execution state keeps its committed binding until the next program is linked.
+`process.exec` deletes the calling process's owner-scoped binding rows in the same transaction as
+the replacement continuation commit. V004 grants tenant roles `DELETE` only on this forced-RLS
+table, so a process can discard its own old image pins without gaining cross-owner access.
 
 ### 14.7 Lifecycle Hooks
 

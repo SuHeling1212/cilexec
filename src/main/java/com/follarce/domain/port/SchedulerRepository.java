@@ -32,6 +32,15 @@ public interface SchedulerRepository {
 
     void release(UUID processUid, long executionEpoch);
 
+    /**
+     * Gives back a claim whose handler failed before committing a slice. Implementations must
+     * match the complete lease identity and execution epoch before changing RUNNING to READY;
+     * a stale worker therefore cannot revive or requeue a process owned by a newer claim.
+     */
+    default boolean abandon(SchedulerClaim claim, Instant now, Instant readyAt) {
+        return false;
+    }
+
     int releaseExpired(Instant now);
 
     default Optional<Instant> nextLeaseExpiry() {
