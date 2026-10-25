@@ -71,8 +71,7 @@ global tree.
 
 **Reasons:**
 - Small change; the schema is untouched.
-- Analogy to Docker namespaces — each container has its own `/`; the host
-  (administrator) sees everything.
+- Each user has an independent `/`; the administrator can traverse all user roots.
 - RLS isolation is safe by default.
 
 ### 2.2 Administrator Traversal Mechanism
@@ -135,8 +134,8 @@ Authorization.requireAdministrator(transaction, userId);  // SYSTEM_ADMIN gate
 `TerminalServer` is a TCP server (default port 8022, configurable via
 `CILEXEC_TERMINAL_PORT`). Each interactive client supplies a stable terminal context ID;
 after authentication that ID selects one durable host session and its attached REPL PID. The
-distributed `tools/Install.sh` derives the ID from the project path and host TTY, so reconnecting
-after a Runtime/Docker restart resumes the same terminal while other host terminals remain
+standalone terminal client derives the ID from its host context, so reconnecting
+after a Runtime restart resumes the same terminal while other host terminals remain
 separate. Older clients without an ID use the legacy most-recent-session fallback. A headless
 variant (`DatabaseTerminalControl.headless`) binds a named durable context for host tooling.
 
@@ -355,8 +354,8 @@ baseline; it is not a terminal migration.
 
 - `mvn compile` succeeds.
 - `mvn test` passes for `*Test` unit suites.
-- `mvn verify` passes for the full `*Test` and `*IT` suite; `*IT` requires Docker and
-  PostgreSQL/Testcontainers.
+- `mvn verify` runs the test suite. External PostgreSQL tests are opt-in; the former
+  container-based suite described in older plans has been removed.
 - Starting the Runtime brings up the terminal server; logging in presents the
   `cilexec>` prompt.
 - `:help` lists the colon commands; FCL input evaluates as a durable process and a

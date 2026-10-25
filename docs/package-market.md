@@ -12,7 +12,7 @@ SHA-256 download, install  ◄────►  Serves index and HEAD/Range downl
 ```
 
 The client ships with `cilexec-app.jar`. The server is a standalone fat JAR that runs on
-macOS, Linux, and Windows with `java -jar` and depends on neither Python, Bash, nor Docker.
+macOS, Linux, and Windows with `java -jar` and depends on neither Python nor Bash.
 
 ## Starting the Server
 
@@ -43,8 +43,8 @@ java --enable-native-access=ALL-UNNAMED `
   --catalog dist\catalog.json
 ```
 
-By default the server listens only on `127.0.0.1:8787`. To make it reachable from Docker
-containers, bind an explicit host interface and allow only the actual container network:
+By default the server listens only on `127.0.0.1:8787`. To make it reachable from another
+host, bind an explicit interface and allow only the actual client network:
 
 ```bash
 java --enable-native-access=ALL-UNNAMED \
@@ -94,8 +94,11 @@ and `tags` query parameters override package metadata.
 
 Configure a unique mirror origin for the current user first:
 
+For a market server on the same host, set
+`CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS=http://127.0.0.1:8787` before starting the Runtime.
+
 ```fcl
-market.configure("http://host.docker.internal:8787")
+market.configure("http://127.0.0.1:8787")
 market.update()
 ```
 
@@ -121,7 +124,7 @@ tells you explicitly to call `market.configure(...)`.
 Installing an editor end to end:
 
 ```fcl
-market.configure("http://host.docker.internal:8787")
+market.configure("http://127.0.0.1:8787")
 market.update()
 market.search("editor")
 market.install("c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff")
@@ -241,7 +244,7 @@ java --enable-native-access=ALL-UNNAMED -jar target/cilexec-app.jar \
   package build dist/editor editor.db
 ```
 
-The command requires neither Docker nor a database service and produces an immutable
+The command requires no external database service and produces an immutable
 `editor.db`; it does not publish anything. Let the release flow generate the official
 repository path and catalog. When the content at the same coordinate changes, the package
 version must be incremented.

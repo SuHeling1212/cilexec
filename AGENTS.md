@@ -8,18 +8,15 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 # Core Runtime: requires Java 26 and Maven 3.9+
 mvn compile
 
-# Unit tests (`*Test`; no Docker needed)
+# Unit tests (`*Test`; no external service required)
 mvn test
 
-# Optional full verification (`*Test` plus `*IT`; Docker/Testcontainers required)
-mvn clean verify
+# Full verification (external PostgreSQL suites are opt-in)
+mvn verify
 
 # Create the shaded Runtime JAR (the supported 0.0.5 distribution)
 mvn package
 java -jar target/cilexec-app.jar   # run in a dedicated directory; creates cilexec-data/ beside it
-
-# Deprecated Docker-image installer (legacy packaging only)
-bash ./build/package.sh <version>
 
 # Clean Maven outputs
 bash ./build/clean.sh
@@ -136,10 +133,8 @@ To add a source-only Java extension:
 
 Host-to-VFS transfer is deliberately a host tool rather than an FCL function. The `host move`
 application command streams one explicitly named regular file into PostgreSQL and creates the
-VFS node while retaining the host source (the Docker-era `tools/HostMove.sh` wrapper is
-deprecated). `host move` requires a target user holding `VFS_MOUNT_HOST` and
-`VFS_WRITE` and unconditionally refuses the `local` superuser. Never mount the Docker Socket
-or a broad host directory for this feature.
+VFS node while retaining the host source. `host move` requires a target user holding `VFS_MOUNT_HOST` and
+`VFS_WRITE` and unconditionally refuses the `local` superuser. Never grant this feature broad host-directory access.
 
 ## Important Design Details
 
@@ -161,10 +156,10 @@ or a broad host directory for this feature.
 - **Zero memory state:** all authoritative runtime state is persisted to PostgreSQL after each committed slice;
   recovery validates continuations, leases, IPC, timers, effects, and security invariants.
 - **Configuration and secrets:** `src/main/resources/cilexec-defaults.properties` provides
-  non-secret defaults and `CILEXEC_*` overrides. Local Compose secrets and TLS material are
-  generated with `bash docker/create-secrets.sh` under `docker/secrets/`; production may use an
-  external secret manager. Never commit secret material.
+  non-secret defaults and `CILEXEC_*` overrides. The standalone JAR creates database credentials
+  in memory. Optional externally managed PostgreSQL may use protected secret files; never commit
+  secret material.
 - **Health endpoints:** `GET /health/live` and `GET /health/ready` on an HTTP server bound to
-  `127.0.0.1` only (internal to the container).
+  `127.0.0.1` only.
 - **Import/include:** `import` resolves an exact installed `.db` SHA-256;
   `include` expands VFS source files before compilation.

@@ -1,12 +1,11 @@
 # Copying Host Files into the CilExec VFS
 
-> **0.0.5 note.** `tools/HostMove.sh` is a Docker-era wrapper and is deprecated as of 0.0.5.
-> The standalone JAR does not require Docker; the application command described below remains
-> available when CilExec runs against an externally managed PostgreSQL database.
+> **0.0.5 note.** The standalone JAR provides this application command when CilExec runs
+> against an externally managed PostgreSQL database.
 
 CilExec deliberately keeps host-to-VFS transfer outside FCL: it is an explicitly invoked host
 tool, not a function a script can call. The result is a real CilExec VFS file node with its
-database objects, not a temporary file left in a container filesystem.
+database objects.
 
 ## Application command
 
@@ -15,13 +14,6 @@ credential files), run the JAR's application command from the host:
 
 ```bash
 java -jar cilexec-app.jar host move /absolute/host/report.pdf /documents/report.pdf alice
-```
-
-The Docker-era wrapper hid the database connection and mounted the single source file read-only
-into a disposable tool container:
-
-```bash
-./tools/HostMove.sh /absolute/host/report.pdf /documents/report.pdf alice   # historical
 ```
 
 The target user is a required argument. It must be an active, named CilExec user holding
@@ -52,8 +44,7 @@ The internal Java command is:
 cilexec host move <source-file> <absolute-vfs-path> <username>
 ```
 
-The actual behavior is a copy. It requires no host database port exposure. Never mount the
-Docker Socket or a broad host directory for this feature.
+The actual behavior is a copy. It requires no host database port exposure.
 
 ## Single-JAR mode
 

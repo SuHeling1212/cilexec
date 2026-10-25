@@ -565,7 +565,7 @@ b = a
 b.increment()
 ~~~
 
-If the Runtime or Docker container is forcibly stopped after this state is committed and then
+If the Runtime is forcibly stopped after this state is committed and then
 restarted, a.value remains 10 and b.value remains 11. They do not become shared simply because
 of recovery. A link relationship is deliberately saved as a name-to-name relation, so it is also
 restored correctly.
@@ -624,15 +624,9 @@ The repository includes [fcl-oop-smoke-test.fcl](examples/fcl-oop-smoke-test.fcl
 constructors, fields and encapsulation, ordinary copying, inheritance and super, overriding,
 overloading, link, array copying, and memory.destroy.
 
-From the repository root, run:
-
-~~~bash
-./tools/OopSmokeTest.sh
-~~~
-
-It asks for the local password, writes the script to /fcl-oop-smoke-test.fcl in that user's VFS
-root, then immediately runs it. Once it is in the VFS, it can be run again from any local FCL
-terminal:
+The legacy automatic importer was removed with the container-specific tools. This section
+retains the historical source example; use the 0.0.5 object API to import it manually. Once it
+is in the VFS, it can be run again from any local FCL terminal:
 
 ~~~fcl
 process.exec("/fcl-oop-smoke-test.fcl")

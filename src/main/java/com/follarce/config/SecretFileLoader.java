@@ -12,10 +12,10 @@ import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Set;
 
-/** Reads a Docker/external secret without retaining it as application configuration text. */
-public final class DockerSecretLoader {
+/** Reads an external database secret without retaining it as application configuration text. */
+public final class SecretFileLoader {
     private static final int MAX_SECRET_BYTES = 64 * 1024;
-    private DockerSecretLoader() {
+    private SecretFileLoader() {
     }
 
     public static SecretValue read(Path path) {

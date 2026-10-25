@@ -11,7 +11,7 @@ CilExec Runtime（内置 market.*）        cilexec-market-server.jar
 ```
 
 客户端随 `cilexec-app.jar` 一起发布。服务端是独立胖 JAR，macOS、Linux 和 Windows
-均以 `java -jar` 运行，不依赖 Python、Bash 或 Docker。本文件中的命令均以解压后的
+均以 `java -jar` 运行，不依赖 Python 或 Bash。本文件中的命令均以解压后的
 发布目录为当前目录。
 
 ## 启动服务端
@@ -61,8 +61,8 @@ java --enable-native-access=ALL-UNNAMED `
   --headless
 ```
 
-默认只监听 `127.0.0.1:8787`。需要让 Docker 容器访问时，应显式监听宿主接口并只放行
-实际的容器网段：
+默认只监听 `127.0.0.1:8787`。只有远程客户端需要访问时，才显式监听宿主接口并
+限制客户端网段：
 
 ```bash
 java --enable-native-access=ALL-UNNAMED \
@@ -105,8 +105,11 @@ java --enable-native-access=ALL-UNNAMED \
 
 首次使用先为当前用户配置唯一镜像源：
 
+同机市场服务使用回环地址时，先在启动 Runtime 前设置
+`CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS=http://127.0.0.1:8787`。
+
 ```fcl
-market.configure("http://host.docker.internal:8787")
+market.configure("http://127.0.0.1:8787")
 market.update()
 ```
 
@@ -132,7 +135,7 @@ market.update()
 安装编辑器的完整流程：
 
 ```fcl
-market.configure("http://host.docker.internal:8787")
+market.configure("http://127.0.0.1:8787")
 market.update()
 market.search("editor")
 market.install("c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff")

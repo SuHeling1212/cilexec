@@ -12,7 +12,7 @@ java -jar /绝对路径/cilexec-app.jar
 仍建议把正式运行的 JAR 和数据目录放在独立位置并定期备份。
 
 需要 Java 26。当前 JAR 内含 PostgreSQL 17.6 的 macOS/Linux ARM64 与 AMD64
-二进制；无需安装 PostgreSQL 或 Docker，也无需创建数据库密码文件。首次启动会在
+二进制；无需安装 PostgreSQL，也无需创建数据库密码文件。首次启动会在
 JAR 同级创建 `cilexec-data/`，解包本机架构的数据库程序到 `bin/`，把数据库集群
 存入 `postgres/`，把嵌入式数据库的工作目录设为 `epg/`，创建所需数据库角色，
 并运行 JAR 内已有的 Flyway Schema。
@@ -43,7 +43,7 @@ JAR 同级创建 `cilexec-data/`，解包本机架构的数据库程序到 `bin/
 
 如果显式设置 `CILEXEC_DATABASE_URL`，程序改用外部 PostgreSQL，保留原有
 角色、TLS、密码文件和显式迁移配置。这是兼容模式；直接启动单 JAR 时无需设置它。
-Docker/Compose 发行方式自 0.0.5 起已废弃；单 JAR 是唯一受支持发行方式，正常使用不再需要 Docker。
+容器镜像发行文件已从仓库移除；单 JAR 是受支持的发行方式。
 
 当前仓库尚未提供 Windows PostgreSQL 二进制，因此单 JAR 本地数据库模式只支持
 上述 macOS 和 Linux 架构。构建及迁移不会自动替换正在运行的实例或其数据。

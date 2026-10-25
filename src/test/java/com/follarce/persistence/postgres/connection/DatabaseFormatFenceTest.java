@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Docker-free decision tests for the 0.0.5 database-format fence. */
+/** Decision tests for the 0.0.5 database-format fence. */
 class DatabaseFormatFenceTest {
     private static final int SCHEMA = 5;
 

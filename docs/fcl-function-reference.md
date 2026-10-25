@@ -779,9 +779,11 @@ External operations suspend the FCL process and resume it when the effect comple
 | `socket.connect(host, port)` | Outbound socket; subject to the network target policy. |
 | `socket.send(handle, data)` / `socket.receive(handle [, maximumBytes])` / `socket.close(handle)` | Socket I/O. |
 
-The network target policy blocks loopback/link-local/metadata endpoints and applies the
-Runtime's configured allow/deny rules and DNS-pinning rules; hosts configured as
-`CILEXEC_NETWORK_TARGET_ALLOWLIST` are the only permitted targets.
+The network target policy blocks loopback, link-local, special-use addresses, and
+`.internal` hostnames by default. DNS results are checked and pinned. Operators can
+explicitly allow private hosts or HTTP origins through
+`CILEXEC_NETWORK_ALLOW_PRIVATE_HOSTS` and
+`CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS`.
 
 ## Packages and the market
 

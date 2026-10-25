@@ -1,7 +1,7 @@
 package com.follarce.persistence.postgres.connection;
 
 import com.follarce.config.DatabaseConfig;
-import com.follarce.config.DockerSecretLoader;
+import com.follarce.config.SecretFileLoader;
 import com.follarce.config.LocalDatabaseCredentials;
 import com.follarce.version.ReleaseVersion;
 import org.flywaydb.core.Flyway;
@@ -85,7 +85,7 @@ public final class FlywayMigrator {
         if (database.passwordFile() == null) {
             return LocalDatabaseCredentials.password(database.username());
         }
-        try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
+        try (SecretFileLoader.SecretValue secret = SecretFileLoader.read(database.passwordFile())) {
             return secret.exposeForDriver();
         }
     }

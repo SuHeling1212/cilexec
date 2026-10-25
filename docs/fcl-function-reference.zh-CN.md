@@ -715,8 +715,9 @@ file.open("/.../<key>.json").remove()
 | `socket.connect(host, port)` | 出站套接字，受网络目标策略约束。 |
 | `socket.send(handle, data)` / `socket.receive(handle [, maximumBytes])` / `socket.close(handle)` | 套接字 I/O。 |
 
-网络目标策略阻止回环、链路本地和元数据端点，并应用 Runtime 配置的允许/拒绝规则与 DNS
-固定规则；只有 `CILEXEC_NETWORK_TARGET_ALLOWLIST` 配置的宿主才是允许目标。
+网络目标策略默认阻止回环、链路本地、特殊用途地址和 `.internal` 主机名，并检查及固定
+DNS 解析结果。管理员可通过 `CILEXEC_NETWORK_ALLOW_PRIVATE_HOSTS` 和
+`CILEXEC_NETWORK_ALLOW_PRIVATE_HTTP_ORIGINS` 显式允许私有目标。
 
 ## 包与市场
 

@@ -70,8 +70,8 @@ final class NetworkTargetPolicy {
         boolean explicitlyAllowed = explicitlyAllowedOrigin
                 || EXPLICIT_PRIVATE_HOSTS.contains(host);
         if (!explicitlyAllowed && (host.equals("localhost") || host.endsWith(".localhost")
-                || host.equals("host.docker.internal"))) {
-            throw new SecurityException("Local and Docker host targets are blocked");
+                || host.endsWith(".internal"))) {
+            throw new SecurityException("Local and internal host targets are blocked");
         }
         InetAddress[] addresses = DnsResolver.resolveAll(host);
         if (addresses.length == 0) throw new UnknownHostException(host);

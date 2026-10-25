@@ -248,9 +248,8 @@ mvn package
 java -jar target/cilexec-app.jar
 ```
 
-Run the JAR from a dedicated directory so its own `cilexec-data/` lives beside it. The legacy
-Docker-image packaging path is deprecated as of 0.0.5; rebuild `target/cilexec-app.jar`
-instead.
+Run the JAR from a dedicated directory so its own `cilexec-data/` lives beside it. Rebuild
+`target/cilexec-app.jar` after adding an extension.
 
 `system.extensions()` returns the extension IDs, versions, and descriptions sealed into the
 current build; `system.list()` returns the actual function names, including extensions.

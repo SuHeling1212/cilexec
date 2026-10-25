@@ -66,8 +66,7 @@ mvn package
 java -jar target/cilexec-app.jar
 ```
 
-No Docker, separately installed PostgreSQL, Compose files, or database password files are
-needed. The JAR contains PostgreSQL 17.6 binaries for macOS and Linux on ARM64 and AMD64.
+No separately installed PostgreSQL or database password files are needed. The JAR contains PostgreSQL 17.6 binaries for macOS and Linux on ARM64 and AMD64.
 First startup creates `cilexec-data/` beside the JAR, initializes the database and the current
 schema, and connects the launching TTY to the terminal. Routine startup logs are hidden by
 default; set `CILEXEC_LOG_LEVEL=INFO` to see them. Later starts reuse the same data. Keep the
@@ -88,7 +87,7 @@ refused by the same format fence before any migration runs.
 
 ### Source checkout
 
-Running from a source checkout requires JDK 26 and Maven 3.9+; Docker is not used.
+Running from a source checkout requires JDK 26 and Maven 3.9+.
 
 ```bash
 mvn package
@@ -122,8 +121,8 @@ for a timeout.
 Production operators should keep the JAR and its `cilexec-data/` directory together, stop the
 Runtime before backups, and follow the
 [backup, restore, and credential rotation runbook](docs/production-backup-restore.md).
-The Docker-image distribution and its installer scripts are deprecated as of 0.0.5 and are no
-longer required or tested for normal operation.
+The standalone JAR is the supported distribution. Container packaging files and container-only
+tests have been removed from this repository.
 
 ## Core concepts
 
@@ -170,13 +169,13 @@ src/main/resources/db/contracts/  immutable V002+ contract/fence SQL
 ## Build & test
 
 ```bash
-mvn test              # unit and lifecycle tests (no Docker required)
+mvn test              # unit and lifecycle tests
 mvn package -DskipTests   # build target/cilexec-app.jar
-mvn verify            # optional: PostgreSQL/crash-recovery integration tests (Docker)
+mvn verify            # full local verification; external PostgreSQL suites are opt-in
 ```
 
-The integration suite requires Docker and is not part of the standalone-JAR acceptance path;
-`mvn test` plus the standalone JAR smoke tests are sufficient for normal development.
+The retained external PostgreSQL suites run only when an explicit test database is configured.
+Normal development uses `mvn test` and a standalone JAR smoke test in a fresh directory.
 
 ## Documentation
 
@@ -189,7 +188,6 @@ The integration suite requires Docker and is not part of the standalone-JAR acce
 - [Java source extensions](docs/java-extension-development.md)
 - [Package & market](docs/package-market.md)
 - [Durable FCL Snake game](docs/snake-game.md)
-- [Headless mode](docs/headless-mode.md)
 - [Host-to-VFS import](docs/host-vfs-import.md)
 - [Terminal & administration](docs/terminal-and-admin-plan.md)
 - [Release process](docs/release.md)

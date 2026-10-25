@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 
 class CilExecConfigTest {
     @Test
-    void localDatabaseNeverUsesDockerPasswordFilesOrUpgradesExistingData() {
+    void localDatabaseNeedsNoPasswordFilesOrUpgradesExistingData() {
         CilExecConfig fresh = CilExecConfig.loadLocal(54321, true);
         CilExecConfig existing = CilExecConfig.loadLocal(54321, false);
 

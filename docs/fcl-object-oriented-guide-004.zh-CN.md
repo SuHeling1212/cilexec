@@ -544,7 +544,7 @@ b = a
 b.increment()
 ```
 
-即使 Runtime 或 Docker 容器在后续已提交状态后被强制终止并恢复，语义仍是：`a.value` 为 `10`，`b.value` 为 `11`。不会因为重启把它们变成共享对象。
+即使 Runtime 在后续已提交状态后被强制终止并恢复，语义仍是：`a.value` 为 `10`，`b.value` 为 `11`。不会因为重启把它们变成共享对象。
 
 一个尚未提交的执行片段会回滚或被重新执行；所以外部世界操作（网络、命令等）使用 CilExec 的效果日志机制，不能依赖普通内存行为。对象字段本身则属于可恢复的 FCL 状态。
 
@@ -594,12 +594,8 @@ b.increment()
 仓库提供 [fcl-oop-smoke-test.fcl](examples/fcl-oop-smoke-test.fcl)，会逐项验证构造方法、
 字段和封装、普通复制、继承和 `super`、重写、重载、`link`、数组复制与 `memory.destroy`。
 
-在项目根目录执行下面的一条命令即可。它会提示输入 `local` 的密码，把脚本写入
-`local` 的 VFS 根目录 `/fcl-oop-smoke-test.fcl`，随后立即执行：
-
-```bash
-./tools/OopSmokeTest.sh
-```
+旧版自动导入脚本已随容器专用工具移除。此处只保留历史示例源码；
+在当前版本中请按 0.0.5 对象 API 手动导入并运行。
 
 脚本已经写入后，也可以在任意 `local` FCL 终端重复执行：
 

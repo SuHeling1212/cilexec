@@ -6,7 +6,8 @@ The single editable CilExec release version is in [`.mvn/maven.config`](../.mvn/
 -Drevision=0.0.5
 ```
 
-Do not edit release numbers in Maven files, Docker files, Compose files, or runtime code. They either read this Maven property directly or obtain it through `tools/Version.sh`.
+Do not edit release numbers in Maven files or runtime code. They read this Maven property
+directly or obtain it through `tools/Version.sh`.
 
 For the current `0.0.N` release line, `N` is derived as the runtime-format, package format
 fence, and database schema number. Thus `0.0.5`:

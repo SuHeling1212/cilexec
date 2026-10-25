@@ -333,7 +333,7 @@ public final class MarketRuntimeFunctions {
         String value = host.environment(ORIGIN_VARIABLE);
         if (value == null || value.isBlank()) {
             throw new FclRuntimeException("Market mirror is not configured; call "
-                    + "market.configure(\"http://host.docker.internal:8787\")");
+                    + "market.configure(\"http://127.0.0.1:8787\")");
         }
         return normalizeOrigin(value);
     }

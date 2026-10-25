@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/** Optional runner for databases supplied by CI or local Docker when Testcontainers is unavailable. */
+/** Optional runner for an externally supplied PostgreSQL test database. */
 @EnabledIfSystemProperty(named = "cilexec.external.jdbc", matches = ".+")
 class AdminVfsExternalIT {
     @Test

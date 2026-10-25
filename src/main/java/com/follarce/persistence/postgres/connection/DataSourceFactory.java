@@ -1,7 +1,7 @@
 package com.follarce.persistence.postgres.connection;
 
 import com.follarce.config.DatabaseConfig;
-import com.follarce.config.DockerSecretLoader;
+import com.follarce.config.SecretFileLoader;
 import com.follarce.config.LocalDatabaseCredentials;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -18,7 +18,7 @@ public final class DataSourceFactory {
         hikari.setJdbcUrl(database.jdbcUrl());
         hikari.setUsername(database.username());
         if (database.passwordFile() != null) {
-            try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
+            try (SecretFileLoader.SecretValue secret = SecretFileLoader.read(database.passwordFile())) {
                 hikari.setPassword(secret.exposeForDriver());
             }
         } else {

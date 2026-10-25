@@ -262,7 +262,7 @@ terminal context. The example below is the repository's current editor release; 
 hash returned by your configured market if it publishes a newer release:
 
 ```fcl
-market.configure("http://host.docker.internal:8787")
+market.configure("http://127.0.0.1:8787")
 market.update()
 market.install("c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff")
 import "c8b8a024847aa873de9655443280104f4cc185b1770b6308ca073999b1503bff" as "editor"
@@ -418,7 +418,7 @@ These functions return ANSI control text, usually combined with `io.print()` /
 | `term.hideCursor()` / `term.showCursor()` | Hide / show the terminal cursor. |
 | `term.displayWidth(value)` | Return the terminal display columns the text occupies; CJK, full-width characters, and emoji usually take two columns, and ANSI style sequences count as zero width. |
 | `term.truncate(value, width)` | Truncate text safely by terminal display columns without splitting Unicode code points. |
-| `term.getSize()` | Return the current terminal character size, for example `{"width":120,"height":40}`. Alias: `term.size()`. Docker terminal clients push a structured `resize` input event when this size changes, so full-screen programs do not need a polling timeout. |
+| `term.getSize()` | Return the current terminal character size, for example `{"width":120,"height":40}`. Alias: `term.size()`. Terminal clients push a structured `resize` input event when this size changes, so full-screen programs do not need a polling timeout. |
 | `term.sanitize(value)` | Return text with terminal control characters replaced by `?` and tabs expanded to four spaces. |
 | `term.render(frame)` | Queue one ANSI terminal frame for the terminal that started this process. The frame is published only after the enclosing FCL state transaction commits and does not suspend through the external-effect worker. It is a disposable TUI repaint, not a durable output journal: use `io.print`/`io.println` when the output itself must retain external-effect recovery semantics. Calls from processes without a terminal output route fail. |
 | `term.alternate(active)` | Return the enter/leave alternate-screen-buffer sequence so a full-screen program does not pollute the terminal scrollback. |
@@ -463,7 +463,7 @@ intermediate state.
 | `io.println(value)` | Print with a newline. Alias: `util.println(value)`. |
 | `io.input([prompt])` | Wait for one full line of input. Alias: `util.input([prompt])`. While a process waits for input, the terminal prompt becomes `pid:?`. |
 | `io.readChar()` | Wait for input and return the first character; empty input returns an empty string. |
-| `io.readKey([timeoutMs[, coalesceText]])`, `io.readKey(coalesceText)` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"paste_rejected","limit":262144}` when one bracketed paste exceeds 256 KiB (the full terminal sequence is consumed and none of it is inserted); `{"kind":"focus","focus":true}` for focus events; `{"kind":"resize"}` when a Docker terminal reports a changed character size; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. Passing one Boolean, for example `io.readKey(true)`, enables text coalescing without creating a timeout timer. When `coalesceText` is `true`, up to 64 printable characters arriving within 8 milliseconds of the first are returned as one paste event; an already-buffered Backspace run is returned as `{"kind":"repeat","key":"BACKSPACE","count":n}`. The deadline never resets and control events keep their order. It bounds only the wait for further bytes; text already buffered when the batch is checked is always included. |
+| `io.readKey([timeoutMs[, coalesceText]])`, `io.readKey(coalesceText)` | Read one input event as a structured object. `{"kind":"key","key":"UP","shift":false,"ctrl":false,"alt":false,"text":""}` for keys; `{"kind":"mouse","button":"LEFT","action":"PRESS|RELEASE|MOVE|SCROLL","scroll":n,"x":n,"y":n,...}` for mouse; `{"kind":"paste","text":"..."}` for bracketed paste; `{"kind":"paste_rejected","limit":262144}` when one bracketed paste exceeds 256 KiB (the full terminal sequence is consumed and none of it is inserted); `{"kind":"focus","focus":true}` for focus events; `{"kind":"resize"}` when a terminal reports a changed character size; `{"kind":"raw","sequence":"..."}` for unrecognized escape sequences. With `timeoutMs`, an idle wait returns `{"kind":"timeout"}` after that many milliseconds (0-86400000); without it the call blocks until an event arrives. Passing one Boolean, for example `io.readKey(true)`, enables text coalescing without creating a timeout timer. When `coalesceText` is `true`, up to 64 printable characters arriving within 8 milliseconds of the first are returned as one paste event; an already-buffered Backspace run is returned as `{"kind":"repeat","key":"BACKSPACE","count":n}`. The deadline never resets and control events keep their order. It bounds only the wait for further bytes; text already buffered when the batch is checked is always included. |
 | `io.readFile(path [, targetUser])` | Alias of `file.read`. |
 | `io.writeFile(path, content [, targetUser])` | Alias of `file.write`. |
 
@@ -601,7 +601,7 @@ Every `network.*` request is resolved and pinned before any bytes are sent:
 
 - **Default-deny SSRF policy.** Loopback, link-local, site-local, multicast, NAT64, 6to4,
   documentation, and other special-use ranges are blocked; `localhost` and
-  `host.docker.internal` hostnames are blocked unless explicitly allowed. DNS is resolved
+  `.internal` hostnames are blocked unless explicitly allowed. DNS is resolved
   once, every returned address is validated, and the connection is pinned to a validated
   address while the original host name is preserved as the `Host` header (and TLS peer
   name). Multi-address hostnames may fail over across address families.
@@ -645,8 +645,7 @@ cycles. At runtime, exported symbols of dependencies are linked recursively alon
 the hash dependency graph; package source calls them as `<full dependency SHA-256>.<export name>`.
 
 The host market's default index is
-`http://127.0.0.1:8787/market/v1/index.json`; inside a container it is
-`http://host.docker.internal:8787/market/v1/index.json`. The full design is in
+`http://127.0.0.1:8787/market/v1/index.json`. The full design is in
 `docs/package-market.md`.
 
 | Call | Effect |

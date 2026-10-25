@@ -30,7 +30,7 @@ mvn package
 java -jar target/cilexec-app.jar
 ```
 
-不需要 Docker、预装 PostgreSQL、Compose 文件或数据库密码文件。JAR 内含 macOS 和 Linux
+不需要预装 PostgreSQL，也不需要数据库密码文件。JAR 内含 macOS 和 Linux
 的 ARM64、AMD64 PostgreSQL 17.6 二进制。首次启动会在 JAR 同级创建 `cilexec-data/`、
 初始化数据库及当前 Schema，并把当前 TTY 接入终端；默认隐藏常规启动日志，需要时设置
 `CILEXEC_LOG_LEVEL=INFO`。以后重启复用该目录。启动后立即显示进度提示，首次初始化可能
@@ -47,7 +47,7 @@ JAR 必须独占自己的数据目录：请从专用目录运行，不要在仓�
 
 ### 从源码运行
 
-从源码运行需要 JDK 26 与 Maven 3.9+；不需要 Docker。
+从源码运行需要 JDK 26 与 Maven 3.9+。
 
 ```bash
 mvn package
@@ -76,8 +76,8 @@ io.println(note.read())   // first second
 若 JAR 被杀后 PostgreSQL 仍在运行，下次启动会报告其 PID 并要求先停止，而不是等待超时。
 
 生产环境应把 JAR 与其 `cilexec-data/` 目录一起保存，备份前先停止 Runtime，并遵循
-[备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。Docker 镜像发行方式及其
-安装脚本自 0.0.5 起已废弃，正常使用不再需要，也不在验收范围内。
+[备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。仓库已移除容器镜像
+打包文件和容器专用测试，受支持的运行方式是独立 JAR。
 
 ## 核心概念
 
@@ -122,13 +122,13 @@ src/main/resources/db/contracts/  不可变的 V002+ 契约/围栏 SQL
 ## 构建与测试
 
 ```bash
-mvn test                  # 单元与生命周期测试（不需要 Docker）
+mvn test                  # 单元与生命周期测试
 mvn package -DskipTests   # 构建 target/cilexec-app.jar
-mvn verify                # 可选：PostgreSQL/崩溃恢复集成测试（需要 Docker）
+mvn verify                # 本地完整验证；外部 PostgreSQL 测试需显式配置
 ```
 
-集成套件需要 Docker，不属于独立 JAR 的验收路径；正常开发用 `mvn test` 加独立 JAR
-冒烟测试即可。
+保留的外部 PostgreSQL 套件仅在提供测试数据库时运行；正常开发使用 `mvn test`
+和全新目录中的独立 JAR 冒烟测试。
 
 ## 文档
 
@@ -140,7 +140,6 @@ mvn verify                # 可选：PostgreSQL/崩溃恢复集成测试（需�
 - [Java 源码扩展](docs/java-extension-development.md)
 - [包与市场](docs/package-market.md)
 - [可恢复的 FCL 贪吃蛇](docs/snake-game.zh-CN.md)
-- [无头模式](docs/headless-mode.md)
 - [宿主文件导入](docs/host-vfs-import.md)
 - [终端与运维](docs/terminal-and-admin-plan.md)
 - [发布流程](docs/release.md)

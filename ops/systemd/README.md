@@ -1,4 +1,4 @@
-# Non-Docker Linux Deployment
+# Linux systemd Deployment
 
 These templates target a systemd host with Java 26, PostgreSQL 17, `psql`, and `runuser`.
 Review paths and hardening directives against the local distribution before installation.
@@ -18,11 +18,9 @@ Review paths and hardening directives against the local distribution before inst
 5. Install and run `bootstrap-postgres.sh` as root. It invokes local `psql` as the
    `postgres` OS user, creates or repairs only the CilExec roles/database, and rotates their
    passwords to the protected files.
-6. Compile `docker/terminal-client.c` with `cc -std=c11 -O2` and install the resulting
-   `cilexec-terminal-client` in `/usr/local/bin`; it is also the health probe used by containers.
-7. Install the two unit files under `/etc/systemd/system/`, run `systemctl daemon-reload`,
+6. Install the two unit files under `/etc/systemd/system/`, run `systemctl daemon-reload`,
    then execute `systemctl start cilexec-migrate.service`.
-8. Start the runtime with `systemctl enable --now cilexec.service`. Verify
+7. Start the runtime with `systemctl enable --now cilexec.service`. Verify
    `curl --fail http://127.0.0.1:8080/health/ready` and inspect JSON logs with
    `journalctl -u cilexec.service`.
 

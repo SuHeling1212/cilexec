@@ -3,22 +3,14 @@ package com.follarce.persistence.postgres.migration;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DatabaseRoleSecurityBaselineTest {
     @Test
-    void baselineSeparatesExporterCredentialsAndReadonlyDiagnostics() throws IOException {
+    void baselineSeparatesExporterAndReadonlyDiagnostics() throws IOException {
         String sql = BaselineSql.load();
-        String bootstrap = Files.readString(
-                Path.of("docker/postgres/init/00-cilexec-bootstrap.sh"));
-
-        assertTrue(bootstrap.contains("CREATE ROLE cilexec_exporter LOGIN NOINHERIT"));
-        assertTrue(bootstrap.contains("CILEXEC_EXPORTER_PASSWORD_FILE"));
-        assertTrue(bootstrap.contains("cilexec_exporter SET default_transaction_read_only TO on"));
         assertTrue(sql.contains("exportable boolean NOT NULL DEFAULT false"));
         assertTrue(sql.contains("CREATE POLICY cilexec_exporter_read"));
         assertTrue(sql.contains("REVOKE ALL ON auth.user_credential FROM cilexec_readonly, cilexec_exporter"));

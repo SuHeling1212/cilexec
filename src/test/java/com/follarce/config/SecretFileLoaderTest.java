@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-class DockerSecretLoaderTest {
+class SecretFileLoaderTest {
     @TempDir
     Path temporaryDirectory;
 
@@ -21,7 +21,7 @@ class DockerSecretLoaderTest {
         Path secret = secretWithPermissions(EnumSet.of(PosixFilePermission.OWNER_READ,
                 PosixFilePermission.OWNER_WRITE));
 
-        try (DockerSecretLoader.SecretValue loaded = DockerSecretLoader.read(secret)) {
+        try (SecretFileLoader.SecretValue loaded = SecretFileLoader.read(secret)) {
             assertArrayEquals("database-password".toCharArray(), loaded.copy());
         }
     }
@@ -31,7 +31,7 @@ class DockerSecretLoaderTest {
         Path secret = secretWithPermissions(EnumSet.of(PosixFilePermission.OWNER_READ,
                 PosixFilePermission.OWNER_WRITE, PosixFilePermission.GROUP_READ));
 
-        assertThrows(ConfigException.class, () -> DockerSecretLoader.read(secret));
+        assertThrows(ConfigException.class, () -> SecretFileLoader.read(secret));
     }
 
     private Path secretWithPermissions(EnumSet<PosixFilePermission> permissions) throws Exception {

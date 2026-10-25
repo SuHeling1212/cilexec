@@ -32,6 +32,12 @@ class NetworkTargetPolicyTest {
     }
 
     @Test
+    void rejectsInternalHostnamesBeforeDnsResolution() {
+        assertThrows(SecurityException.class,
+                () -> NetworkTargetPolicy.requirePublicAddress("gateway.internal"));
+    }
+
+    @Test
     void hostHeaderKeepsIpv6BracketsExactlyOnce() {
         NetworkTargetPolicy.ResolvedHttpTarget target = new NetworkTargetPolicy.ResolvedHttpTarget(
                 URI.create("http://[2001:db8::1]:8080/path"),

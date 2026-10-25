@@ -45,25 +45,12 @@ audited key access. Test key recovery independently; a backup without its key is
 
 ## Credential Rotation
 
-For an externally managed PostgreSQL deployment, rotate all six database passwords with:
-
-```bash
-./docker/rotate-secrets.sh
-```
-
-The command stops a running Runtime, changes all role passwords in one PostgreSQL transaction,
-atomically replaces the Compose-managed files, recreates PostgreSQL so every secret mount uses
-the new inode, verifies each role over TLS, runs the migrator, and restores the Runtime to its
-previous running state. Use `--force` only for non-interactive, controlled automation. If a
-process kill leaves `docker/secrets/.rotation.lock`, first confirm no rotation process is active,
-then run `./docker/rotate-secrets.sh --recover`. Recovery reapplies the retained values through
-the local trusted database socket before publishing them, so it is safe whether the interrupted
-transaction committed or not. Never delete a nonempty recovery directory before reconciliation.
-
-The command refuses custom `CILEXEC_*_PASSWORD_FILE` paths. Rotate those through the external
-secret provider and use its coordinated PostgreSQL password workflow. The command does not
-rotate the PostgreSQL CA or server identity; perform certificate rotation as a separate planned
-trust-rollover operation so old and new CA trust can overlap.
+The standalone JAR creates local database credentials in memory. For externally managed
+PostgreSQL, rotate service-role passwords with the external secret provider and the DBA's
+coordinated PostgreSQL workflow. Update the protected files supplied through
+`CILEXEC_*_DATABASE_PASSWORD_FILE`, verify each role over TLS, and restart the Runtime after
+the files are replaced. Rotate PostgreSQL CA and server identity separately with an overlapping
+trust period.
 
 ## PITR Configuration
 

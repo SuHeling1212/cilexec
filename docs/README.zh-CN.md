@@ -15,9 +15,7 @@ reconstructed from the database. There is no `.proc` snapshot format and no
 
 ## Documents
 
-- [architecture-baseline.md](architecture-baseline.md) — current architecture reference plus
-  the preserved historical decision record for the PostgreSQL runtime; Docker-era packaging is
-  deprecated as of 0.0.5.
+- [architecture-baseline.md](architecture-baseline.md) — current architecture reference for the standalone Runtime.
 - [fcl-function-reference.md](fcl-function-reference.md) / [fcl-function-reference.zh-CN.md](fcl-function-reference.zh-CN.md)
   — complete 0.0.5 reference for the FCL function registry, entity-object methods, removed old
   APIs, exception handling, permission rules, and terminal commands.
@@ -35,12 +33,10 @@ reconstructed from the database. There is no `.proc` snapshot format and no
   policies, and the release checklist.
 - [package-market.md](package-market.md) — the built-in market client and the standalone
   `cilexec-market-server.jar`; package database format 3 and private-data object semantics.
-- [headless-mode.md](headless-mode.md) — historical host wrapper; the standalone JAR is the
-  supported 0.0.5 distribution.
 - [host-vfs-import.md](host-vfs-import.md) — the host-to-VFS application command and required
-  capabilities (the Docker wrapper is deprecated).
-- [release.md](release.md) — release process; Docker installers are deprecated as of 0.0.5.
-- [single-jar-no-docker-plan.zh-CN.md](single-jar-no-docker-plan.zh-CN.md) — 单 JAR
+  capabilities.
+- [release.md](release.md) — standalone JAR release process.
+- [standalone-jar.zh-CN.md](standalone-jar.zh-CN.md) — 单 JAR
   启动、本地 PostgreSQL 数据目录、备份及外部数据库兼容模式。
 - [api-memory-audit.zh-CN.md](api-memory-audit.zh-CN.md) — 0.0.4 时期的 API/内存边界审计，
   仅作历史资料；当前接口见 0.0.5 函数参考。
@@ -76,8 +72,8 @@ mvn clean verify
 mvn -f market-server/pom.xml clean verify
 ```
 
-`mvn test` runs the `*Test` unit suites. `mvn verify` also runs Failsafe `*IT` suites, which
-require Docker and PostgreSQL through Testcontainers.
+`mvn test` runs the `*Test` unit suites. `mvn verify` also runs the remaining opt-in external
+PostgreSQL suites when an explicit test database is configured. Both commands run without an external database unless explicitly configured.
 
 Outputs:
 
@@ -86,33 +82,12 @@ target/cilexec-app.jar
 target/dependency-lock.txt
 ```
 
-## Running with Docker Compose
+## Running the standalone JAR
 
-The default `java -jar target/cilexec-app.jar` command now starts bundled PostgreSQL and
-keeps its data beside the JAR. Compose is an optional legacy deployment path.
-
-Generate the six database-password files and local PostgreSQL TLS material before using the
-bundled Compose profiles:
-
-```bash
-bash docker/create-secrets.sh
-```
-
-The password files are 64-character lowercase hexadecimal secrets and must remain untracked.
-Production deployments may replace these local Docker-secret files with an external secret
-manager, while preserving the configured secret-file contract.
-
-Ephemeral database:
-
-```bash
-docker compose -f compose.yml -f docker/compose/ephemeral.yml up --build
-```
-
-Persistent volume (the volume is not a backup; follow the production backup runbook):
-
-```bash
-docker compose -f compose.yml -f docker/compose/persistent.yml up --build
-```
+`java -jar target/cilexec-app.jar` starts the bundled PostgreSQL and keeps its data in
+`cilexec-data/` beside the JAR. Run a separate instance from a separate directory. No external
+password files are required for this mode. Optional externally managed PostgreSQL can be
+configured through `CILEXEC_DATABASE_URL` and protected secret files.
 
 Application commands:
 
@@ -121,8 +96,7 @@ java -jar target/cilexec-app.jar migrate
 java -jar target/cilexec-app.jar runtime
 ```
 
-Health checks: `GET /health/live` and `GET /health/ready`, bound to `127.0.0.1` inside the
-Runtime container.
+Health checks: `GET /health/live` and `GET /health/ready`, bound to `127.0.0.1`.
 
 ## License
 
