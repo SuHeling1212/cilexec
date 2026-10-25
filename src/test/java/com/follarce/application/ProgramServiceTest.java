@@ -68,13 +68,17 @@ class ProgramServiceTest {
     private static final Instant NOW = Instant.parse("2026-07-22T03:00:00Z");
 
     @Test
-    void currentProgramsAcceptCompatibleV002AndV003PackageLanguages() {
+    void currentProgramsAcceptOnlyTheCurrentPackageLanguage() {
         assertTrue(ProgramService.compatiblePackageLanguage(
-                "fcl-0.0.2", ProgramService.LANGUAGE_VERSION));
-        assertTrue(ProgramService.compatiblePackageLanguage(
-                "fcl-0.0.3", ProgramService.LANGUAGE_VERSION));
+                ProgramService.LANGUAGE_VERSION, ProgramService.LANGUAGE_VERSION));
+        // 0.0.5 removed the legacy entity-function API, so pre-0.0.5 packages are not
+        // import-compatible even when their package database could be read.
         assertFalse(ProgramService.compatiblePackageLanguage(
                 "fcl-0.0.1", ProgramService.LANGUAGE_VERSION));
+        assertFalse(ProgramService.compatiblePackageLanguage(
+                "fcl-0.0.2", ProgramService.LANGUAGE_VERSION));
+        assertFalse(ProgramService.compatiblePackageLanguage(
+                "fcl-0.0.3", ProgramService.LANGUAGE_VERSION));
     }
 
     @Test
@@ -332,6 +336,8 @@ class ProgramServiceTest {
     static final class MemoryVfsRepository implements VfsRepository {
         final Map<ObjectHash, StoredObject> objects = new LinkedHashMap<>();
         final Map<UUID, VfsNode> nodes = new LinkedHashMap<>();
+        final Map<UUID, FileLock> locks = new LinkedHashMap<>();
+        long nextFencingToken = 1;
 
         @Override public void saveObject(StoredObject object) {
             objects.putIfAbsent(object.objectHash(), object);
@@ -367,6 +373,72 @@ class ProgramServiceTest {
         @Override public Optional<VfsMount> findMount(UUID mountId) { return Optional.empty(); }
         @Override public List<VfsMount> findMounts(UUID ownerId) { return List.of(); }
         @Override public boolean disableMount(UUID mountId, UUID ownerId) { return false; }
+
+        @Override
+        public Optional<FileLock> acquireLock(UUID nodeId, UUID ownerId, UUID processUid,
+                                              long executionEpoch, Instant leaseUntil, Instant at) {
+            FileLock current = locks.get(nodeId);
+            if (current != null && current.leaseUntil().isAfter(at)) return Optional.empty();
+            FileLock lock = new FileLock(nextFencingToken++, leaseUntil);
+            locks.put(nodeId, lock);
+            return Optional.of(lock);
+        }
+
+        @Override
+        public Optional<FileLock> renewLock(UUID nodeId, UUID ownerId, UUID processUid,
+                                            long executionEpoch, long fencingToken,
+                                            Instant leaseUntil, Instant at) {
+            FileLock current = locks.get(nodeId);
+            if (current == null || current.fencingToken() != fencingToken
+                    || !current.leaseUntil().isAfter(at)) {
+                return Optional.empty();
+            }
+            FileLock lock = new FileLock(fencingToken, leaseUntil);
+            locks.put(nodeId, lock);
+            return Optional.of(lock);
+        }
+
+        @Override
+        public boolean releaseLock(UUID nodeId, UUID ownerId, UUID processUid,
+                                   long executionEpoch, long fencingToken) {
+            FileLock current = locks.get(nodeId);
+            if (current == null || current.fencingToken() != fencingToken) return false;
+            locks.remove(nodeId);
+            return true;
+        }
+
+        @Override
+        public boolean renameNode(UUID nodeId, UUID ownerId, String replacementName,
+                                  Instant updatedAt) {
+            VfsNode node = nodes.get(nodeId);
+            if (node == null || !node.ownerId().equals(ownerId)
+                    || node.parentNodeId().isEmpty()) {
+                return false;
+            }
+            boolean taken = nodes.values().stream().anyMatch(other ->
+                    !other.nodeId().equals(nodeId) && other.ownerId().equals(ownerId)
+                            && other.parentNodeId().equals(node.parentNodeId())
+                            && other.name().equals(replacementName));
+            if (taken) return false;
+            nodes.put(nodeId, new VfsNode(node.nodeId(), node.parentNodeId(), node.ownerId(),
+                    replacementName, node.type(), node.currentObjectHash(),
+                    node.capabilities(), node.revisionEnabled(), node.createdAt(), updatedAt));
+            return true;
+        }
+
+        @Override
+        public boolean deleteNode(UUID nodeId, UUID ownerId) {
+            VfsNode node = nodes.get(nodeId);
+            if (node == null || !node.ownerId().equals(ownerId)
+                    || node.parentNodeId().isEmpty()) {
+                return false;
+            }
+            boolean hasChildren = nodes.values().stream()
+                    .anyMatch(other -> other.parentNodeId().filter(nodeId::equals).isPresent());
+            if (hasChildren) return false;
+            nodes.remove(nodeId);
+            return true;
+        }
     }
 
     static final class MemoryProcessRepository implements ProcessRepository {
@@ -609,6 +681,10 @@ class ProgramServiceTest {
     }
 
     static final class MemoryAuthRepository implements AuthRepository {
+        final java.util.concurrent.atomic.AtomicReference<Set<Capability>> capabilities =
+                new java.util.concurrent.atomic.AtomicReference<>(
+                        Set.copyOf(java.util.EnumSet.allOf(Capability.class)));
+
         @Override public Optional<UserAccount> findUser(UUID userId) {
             return Optional.of(UserAccount.active(userId, "test", Instant.EPOCH));
         }
@@ -623,7 +699,7 @@ class ProgramServiceTest {
         }
         @Override public void disablePrincipal(UUID userId) { }
         @Override public Set<Capability> capabilities(UUID userId) {
-            return Set.copyOf(java.util.EnumSet.allOf(Capability.class));
+            return capabilities.get();
         }
         @Override public void replaceCapabilities(UUID userId, Set<Capability> capabilities) { }
     }

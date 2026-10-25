@@ -92,9 +92,14 @@ public final class PostgresWorkListener implements AutoCloseable {
         } else {
             properties.setProperty("sslmode", "disable");
         }
-        try (com.follarce.config.DockerSecretLoader.SecretValue secret =
-                     com.follarce.config.DockerSecretLoader.read(database.passwordFile())) {
-            properties.setProperty("password", secret.exposeForDriver());
+        if (database.passwordFile() != null) {
+            try (com.follarce.config.DockerSecretLoader.SecretValue secret =
+                         com.follarce.config.DockerSecretLoader.read(database.passwordFile())) {
+                properties.setProperty("password", secret.exposeForDriver());
+            }
+        } else {
+            properties.setProperty("password", com.follarce.config.LocalDatabaseCredentials
+                    .password(database.username()));
         }
         return java.sql.DriverManager.getConnection(database.jdbcUrl(), properties);
     }

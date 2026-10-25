@@ -21,6 +21,7 @@ public final class FclValues {
             return value;
         }
         if (value instanceof FclObjectValue object) return object.copy();
+        if (value instanceof FclSystemHandle) return value;
         if (value instanceof List<?> list) {
             List<Object> copy = new ArrayList<>(list.size());
             list.forEach(item -> copy.add(deepCopy(item)));
@@ -198,6 +199,7 @@ public final class FclValues {
         if (value instanceof String || value instanceof Character) return "string";
         if (value instanceof List<?> || value.getClass().isArray()) return "array";
         if (value instanceof Map<?, ?>) return "map";
+        if (value instanceof FclSystemHandle handle) return handle.kind();
         return value.getClass().getSimpleName();
     }
 
@@ -215,6 +217,7 @@ public final class FclValues {
         if (value instanceof Number || value instanceof Boolean) {
             return String.valueOf(value);
         }
+        if (value instanceof FclSystemHandle handle) return handle.toString();
         if (value instanceof List<?> list) {
             StringBuilder result = new StringBuilder("[");
             for (int index = 0; index < list.size(); index++) {

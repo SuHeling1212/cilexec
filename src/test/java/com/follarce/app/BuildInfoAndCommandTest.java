@@ -17,8 +17,8 @@ class BuildInfoAndCommandTest {
     void embeddedBuildAcceptsTheLatestDatabaseMigration() {
         BuildInfo info = BuildInfo.load();
 
-        assertEquals(4, info.minimumSchema());
-        assertEquals(4, info.maximumSchema());
+        assertEquals(5, info.minimumSchema());
+        assertEquals(5, info.maximumSchema());
     }
 
     @Test

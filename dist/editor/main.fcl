@@ -1,7 +1,9 @@
 // CilEdit: the full-screen editor distributed through the CilExec package market.
-
-// The editor is deliberately modelled as an object rather than a loose map. This keeps all
-// mutable document state together and exercises FCL's class, constructor, fields, and methods.
+//
+// 0.0.5 rewrite: the editor is a real FCL object. Document state and every operation that
+// mutates or renders it are instance methods on EditorState, so this package exercises class
+// methods, receiver dispatch, persisted handles, and package-private data through the current
+// FCL surface. Only genuinely stateless helpers stay as module functions.
 class EditorState {
     path = ""
     lines = []
@@ -29,6 +31,492 @@ class EditorState {
         if this.height > 3 { return this.height - 3 }
         return 1
     }
+
+    func viewWidth() {
+        return ed_max(1, this.width)
+    }
+
+    // Keep the cursor and scroll offsets inside the current document and viewport.
+    func fix() {
+        lines = this.lines
+        if this.row < 0 { this.row = 0 }
+        if this.row >= #lines { this.row = #lines - 1 }
+        width = this.viewWidth()
+        height = this.bodyHeight()
+        line = lines[this.row]
+        if this.col < 0 { this.col = 0 }
+        if this.col > #line { this.col = #line }
+        if this.row < this.top { this.top = this.row }
+        if this.row >= this.top + height {
+            this.top = this.row - height + 1
+        }
+        if this.col < this.left { this.left = this.col }
+        if this.left < this.col and ed_segment_width(line, this.left, this.col) >= width {
+            // Keep a right-side margin so horizontal scrolling happens in chunks instead
+            // of rebuilding the frame after every character beyond the terminal edge.
+            margin = ed_min(16, ed_max(1, width - 1))
+            this.left = ed_max(0, this.col - ed_max(1, width - margin))
+            while this.left < this.col and ed_segment_width(line, this.left, this.col) >= width {
+                this.left++
+            }
+        }
+        if this.top < 0 { this.top = 0 }
+        if this.left < 0 { this.left = 0 }
+        return null
+    }
+
+    func insertText(value) {
+        row = this.row
+        col = this.col
+        line = this.lines[row]
+        this.lines[row] = text.slice(line, 0, col) + value + text.slice(line, col)
+        this.col = col + #value
+        this.dirty = true
+        this.message = ""
+        return this.fix()
+    }
+
+    func enterLine() {
+        row = this.row
+        col = this.col
+        lines = this.lines
+        line = lines[row]
+        lines[row] = text.slice(line, 0, col)
+        this.lines = array.insert(lines, row + 1, text.slice(line, col))
+        this.row = row + 1
+        this.col = 0
+        this.dirty = true
+        this.message = ""
+        return this.fix()
+    }
+
+    func backspace() {
+        row = this.row
+        col = this.col
+        lines = this.lines
+        if col > 0 {
+            line = lines[row]
+            lines[row] = text.slice(line, 0, col - 1) + text.slice(line, col)
+            this.col = col - 1
+            this.lines = lines
+            this.dirty = true
+        } else {
+            if row > 0 {
+                previous = lines[row - 1]
+                lines[row - 1] = previous + lines[row]
+                this.lines = ed_remove_row(lines, row)
+                this.row = row - 1
+                this.col = #previous
+                this.dirty = true
+            }
+        }
+        this.message = ""
+        return this.fix()
+    }
+
+    // A held Backspace key can leave many bytes buffered while a previous durable slice
+    // commits. Delete the common same-line case with one string rebuild and one repaint.
+    func backspaceMany(count) {
+        if count <= 0 { return null }
+        if this.mode == "search" {
+            remove = ed_min(count, #this.query)
+            this.query = text.slice(this.query, 0, #this.query - remove)
+            return null
+        }
+        if this.mode != "normal" {
+            while count > 0 {
+                this.promptKey({kind: "key", key: "BACKSPACE", text: ""})
+                count--
+            }
+            return null
+        }
+        if count <= this.col {
+            row = this.row
+            line = this.lines[row]
+            this.lines[row] = text.slice(line, 0, this.col - count) + text.slice(line, this.col)
+            this.col = this.col - count
+            this.dirty = true
+            this.message = ""
+            return this.fix()
+        }
+        while count > 0 {
+            this.backspace()
+            count--
+        }
+        return null
+    }
+
+    func deleteChar() {
+        row = this.row
+        col = this.col
+        lines = this.lines
+        line = lines[row]
+        if col < #line {
+            lines[row] = text.slice(line, 0, col) + text.slice(line, col + 1)
+            this.lines = lines
+            this.dirty = true
+        } else {
+            if row + 1 < #lines {
+                lines[row] = line + lines[row + 1]
+                this.lines = ed_remove_row(lines, row + 1)
+                this.dirty = true
+            }
+        }
+        this.message = ""
+        return this.fix()
+    }
+
+    func cutLine() {
+        row = this.row
+        this.clipboard = this.lines[row]
+        this.lines = ed_remove_row(this.lines, row)
+        if this.row >= #this.lines { this.row = #this.lines - 1 }
+        this.col = 0
+        this.dirty = true
+        this.message = "Cut one line"
+        return this.fix()
+    }
+
+    // Files are durable entity objects in 0.0.5: re-acquire the node on each save instead of
+    // holding a path-only function call.
+    func save() {
+        content = text.join(this.lines, "\n")
+        if file.path(this.path).exists() {
+            file.open(this.path).write(content)
+        } else {
+            file.create(this.path, content)
+        }
+        this.dirty = false
+        this.message = "Wrote " + util.toString(#this.lines) + " lines"
+        return null
+    }
+
+    func find() {
+        query = this.query
+        if #query == 0 {
+            this.message = "Search cancelled"
+            this.mode = "normal"
+            return null
+        }
+        lines = this.lines
+        startRow = this.row
+        row = startRow
+        from = this.col + 1
+        visited = 0
+        while visited < #lines {
+            found = text.indexOf(lines[row], query, ed_min(from, #lines[row]))
+            if found >= 0 {
+                this.row = row
+                this.col = found
+                this.mode = "normal"
+                this.message = "Found: " + query
+                return this.fix()
+            }
+            row = row + 1
+            if row >= #lines { row = 0 }
+            from = 0
+            visited = visited + 1
+        }
+        this.mode = "normal"
+        this.message = "Not found: " + query
+        return null
+    }
+
+    func promptKey(event) {
+        pressed = event["key"]
+        if this.mode == "help" {
+            this.mode = "normal"
+            this.message = ""
+            return null
+        }
+        if this.mode == "exit" {
+            if pressed == "y" or pressed == "Y" {
+                this.save()
+                this.running = false
+            } else {
+                if pressed == "n" or pressed == "N" {
+                    this.running = false
+                } else {
+                    if pressed == "CTRL_C" or pressed == "ESCAPE" {
+                        this.mode = "normal"
+                        this.message = "Exit cancelled"
+                    }
+                }
+            }
+            return null
+        }
+        if this.mode == "search" {
+            if pressed == "ENTER" { return this.find() }
+            if pressed == "CTRL_C" or pressed == "ESCAPE" {
+                this.mode = "normal"
+                this.message = "Search cancelled"
+                return null
+            }
+            if pressed == "BACKSPACE" {
+                if #this.query > 0 {
+                    this.query = text.slice(this.query, 0, #this.query - 1)
+                }
+                return null
+            }
+            if #pressed == 1 { this.query = this.query + pressed }
+            return null
+        }
+        return null
+    }
+
+    func key(event) {
+        kind = event["kind"]
+        if kind == "paste_rejected" {
+            this.message = "Paste is too large (maximum 256 KiB)"
+            return null
+        }
+        if kind == "mouse" {
+            if event["action"] == "SCROLL" {
+                this.top = this.top - event["scroll"]
+                if this.top < 0 { this.top = 0 }
+                return this.fix()
+            }
+            return null
+        }
+        if kind == "paste" {
+            if #event["text"] > 0 { return this.insertText(event["text"]) }
+            return null
+        }
+        if kind == "repeat" and event["key"] == "BACKSPACE" {
+            return this.backspaceMany(event["count"])
+        }
+        if kind != "key" { return null }
+        pressed = event["key"]
+        if this.mode != "normal" { return this.promptKey(event) }
+        lines = this.lines
+        row = this.row
+        col = this.col
+        if pressed == "CTRL_S" or pressed == "CTRL_O" { return this.save() }
+        if pressed == "CTRL_X" {
+            if this.dirty {
+                this.mode = "exit"
+            } else {
+                this.running = false
+            }
+            return null
+        }
+        if pressed == "CTRL_W" {
+            this.mode = "search"
+            this.query = ""
+            return null
+        }
+        if pressed == "CTRL_G" {
+            this.mode = "help"
+            return null
+        }
+        if pressed == "CTRL_K" { return this.cutLine() }
+        if pressed == "CTRL_U" {
+            if #this.clipboard > 0 { return this.insertText(this.clipboard) }
+            this.message = "Clipboard is empty"
+            return null
+        }
+        if pressed == "UP" {
+            if row > 0 { this.row = row - 1 }
+            return this.fix()
+        }
+        if pressed == "DOWN" {
+            if row + 1 < #lines { this.row = row + 1 }
+            return this.fix()
+        }
+        if pressed == "LEFT" {
+            if col > 0 {
+                this.col = col - 1
+            } else {
+                if row > 0 {
+                    this.row = row - 1
+                    this.col = #lines[row - 1]
+                }
+            }
+            return this.fix()
+        }
+        if pressed == "RIGHT" {
+            if col < #lines[row] {
+                this.col = col + 1
+            } else {
+                if row + 1 < #lines {
+                    this.row = row + 1
+                    this.col = 0
+                }
+            }
+            return this.fix()
+        }
+        if pressed == "HOME" {
+            this.col = 0
+            return this.fix()
+        }
+        if pressed == "END" {
+            this.col = #lines[row]
+            return this.fix()
+        }
+        if pressed == "PAGE_UP" {
+            this.row = ed_max(0, row - this.bodyHeight())
+            return this.fix()
+        }
+        if pressed == "PAGE_DOWN" {
+            this.row = ed_min(#lines - 1, row + this.bodyHeight())
+            return this.fix()
+        }
+        if pressed == "BACKSPACE" { return this.backspace() }
+        if pressed == "DELETE" { return this.deleteChar() }
+        if pressed == "ENTER" { return this.enterLine() }
+        if pressed == "TAB" { return this.insertText("    ") }
+        if kind == "key" and #event["text"] > 0 { return this.insertText(event["text"]) }
+        return null
+    }
+
+    func renderHelp() {
+        width = this.viewWidth()
+        screen = term.hideCursor() + term.clear()
+        screen = screen + term.inverse(ed_fit(" CilEdit Help", width)) + "\r\n"
+        screen = screen + ed_fit("Ctrl-O / Ctrl-S  Save file", width) + "\r\n"
+        screen = screen + ed_fit("Ctrl-X  Exit (asks before discarding changes)", width) + "\r\n"
+        screen = screen + ed_fit("Ctrl-W  Search forward", width) + "\r\n"
+        screen = screen + ed_fit("Ctrl-K  Cut current line; Ctrl-U Paste cut line", width) + "\r\n"
+        screen = screen + ed_fit("Arrows, Home, End, PageUp, PageDown move", width) + "\r\n"
+        screen = screen + ed_fit("Backspace, Delete, Enter and Tab edit", width) + "\r\n\r\n"
+        return screen + ed_fit("Press any key to return", width) + term.hideCursor()
+    }
+
+    func renderLineAt(lineIndex) {
+        line = this.lines[lineIndex]
+        start = ed_min(this.left, #line)
+        // Only the visible prefix can affect this frame. Avoid allocating and sanitizing an
+        // entire very long line after a large paste.
+        width = this.viewWidth()
+        return ed_fit(text.slice(line, start, ed_min(#line, start + width * 4)), width)
+    }
+
+    func statusLine() {
+        status = " line " + util.toString(this.row + 1) + "/" + util.toString(#this.lines)
+        return status + "  col " + util.toString(this.col + 1)
+    }
+
+    func titleLine() {
+        title = " CilEdit  " + this.path
+        if this.dirty { title = title + "  [Modified]" }
+        return term.inverse(ed_fit(title, this.viewWidth()))
+    }
+
+    func footerLine() {
+        if this.mode == "exit" {
+            return "Save modified buffer?  Y Yes   N No   Esc Cancel"
+        }
+        if this.mode == "search" { return "Search: " + this.query }
+        if #this.message > 0 { return this.message }
+        return "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
+    }
+
+    func cursorPosition() {
+        height = this.bodyHeight()
+        cursorRow = this.row - this.top + 2
+        line = this.lines[this.row]
+        cursorText = text.slice(line, this.left, ed_min(this.col, this.left + this.viewWidth() * 4))
+        cursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
+        return term.cursorTo(cursorRow, cursorCol) + term.showCursor()
+    }
+
+    // A complete normal-mode frame can be costly for a large terminal or document. Keep the
+    // interactive process responsible for terminal I/O, but move the pure string construction
+    // to a volatile process. The worker is package-private data: it is created once from this
+    // immutable package resource and recreated automatically if the private cache is cleared.
+    func workerSnapshot() {
+        return {
+            path: this.path,
+            lines: this.lines,
+            row: this.row,
+            col: this.col,
+            top: this.top,
+            left: this.left,
+            width: this.viewWidth(),
+            height: this.height,
+            dirty: this.dirty
+        }
+    }
+
+    func renderWorker() {
+        space = packageData.current()
+        workerPath = "runtime/editor-render-v1.fcl"
+        if !space.exists(workerPath) {
+            space.seedResource("render-worker.fcl", workerPath)
+        }
+        return process.run(space.root() + workerPath, [this.workerSnapshot()])
+    }
+
+    func render() {
+        if this.mode == "help" { return this.renderHelp() }
+        // A normal terminal frame is cheaper to build in the interactive process at ordinary
+        // sizes. Move only genuinely large full redraws to process.run; the frequent one-line
+        // delta path below never pays a process hand-off.
+        if this.mode == "normal" and (#this.lines > 10000 or this.viewWidth() * this.bodyHeight() > 12000) {
+            return this.renderWorker()
+        }
+        width = this.viewWidth()
+        height = this.bodyHeight()
+        screen = term.hideCursor() + term.clear() + this.titleLine() + "\r\n"
+        visibleRow = 0
+        available = ed_min(height, #this.lines - this.top)
+        while visibleRow < available {
+            lineIndex = this.top + visibleRow
+            screen = screen + this.renderLineAt(lineIndex)
+            screen = screen + "\r\n"
+            visibleRow = visibleRow + 1
+        }
+        remaining = height - visibleRow
+        if remaining > 0 {
+            screen = screen + text.repeat(ed_fit("~", width) + "\r\n", remaining)
+        }
+        screen = screen + term.inverse(ed_fit(this.statusLine(), width)) + "\r\n"
+        footerText = this.footerLine()
+        screen = screen + ed_fit(footerText, width)
+        if this.mode == "exit" { return screen + term.hideCursor() }
+        if this.mode == "search" {
+            promptColumn = ed_min(width, term.displayWidth(term.sanitize(footerText)) + 1)
+            return screen + term.cursorTo(height + 3, promptColumn) + term.showCursor()
+        }
+        return screen + this.cursorPosition()
+    }
+
+    // A normal character edit changes one visible row. Avoid clearing and rebuilding the
+    // complete screen in that case; full redraws remain necessary for scrolling, line-count
+    // changes, and prompt modes.
+    func snapshot() {
+        return {
+            row: this.row,
+            top: this.top,
+            left: this.left,
+            mode: this.mode,
+            lineCount: #this.lines,
+            line: this.lines[this.row],
+            dirty: this.dirty
+        }
+    }
+
+    func renderDelta(before) {
+        if before["mode"] != "normal" or this.mode != "normal" { return this.render() }
+        if before["top"] != this.top or before["left"] != this.left {
+            return this.render()
+        }
+        if before["lineCount"] != #this.lines { return this.render() }
+        height = this.bodyHeight()
+        screen = term.hideCursor()
+        if before["dirty"] != this.dirty {
+            screen = screen + term.cursorTo(1, 1) + this.titleLine()
+        }
+        if before["row"] == this.row and before["line"] != this.lines[this.row] {
+            screen = screen + term.cursorTo(this.row - this.top + 2, 1)
+            screen = screen + this.renderLineAt(this.row)
+        }
+        screen = screen + term.cursorTo(height + 2, 1)
+        screen = screen + term.inverse(ed_fit(this.statusLine(), this.viewWidth()))
+        screen = screen + term.cursorTo(height + 3, 1)
+        screen = screen + ed_fit(this.footerLine(), this.viewWidth())
+        return screen + this.cursorPosition()
+    }
 }
 
 func ed_min(a, b) {
@@ -47,15 +535,15 @@ func ed_fit(value, width) {
     return visible + text.repeat(" ", width - term.displayWidth(visible))
 }
 
-// The size is sampled at every layout/render pass. A low-rate input timeout checks
-// for resize without continuously repainting an unchanged screen.
-func ed_width(state) {
-    return ed_max(1, state.width)
+func ed_segment_width(line, start, end) {
+    // This predicate is only used to decide whether a horizontal scroll is needed. It must
+    // not scan a multi-megabyte pasted line just to answer that question.
+    return term.displayWidth(term.sanitize(text.slice(line, start, ed_min(end, start + 4096))))
 }
 
-func ed_body_height(state) {
-    // title + status + footer consume three terminal rows.
-    return state.bodyHeight()
+func ed_remove_row(lines, row) {
+    if #lines == 1 { return [""] }
+    return array.removeAt(lines, row)
 }
 
 func ed_path(editorPath) {
@@ -64,507 +552,19 @@ func ed_path(editorPath) {
     return path.join(env.get("PWD"), safePath)
 }
 
-func ed_segment_width(line, start, end) {
-    // This predicate is only used to decide whether a horizontal scroll is needed.  It
-    // must not scan a multi-megabyte pasted line just to answer that question.
-    return term.displayWidth(term.sanitize(text.slice(line, start, ed_min(end, start + 4096))))
-}
-
-func ed_fix(state) {
-    lines = state.lines
-    if state.row < 0 { state.row = 0 }
-    if state.row >= #lines { state.row = #lines - 1 }
-    width = ed_width(state)
-    height = ed_body_height(state)
-    line = lines[state.row]
-    if state.col < 0 { state.col = 0 }
-    if state.col > #line { state.col = #line }
-    if state.row < state.top { state.top = state.row }
-    if state.row >= state.top + height {
-        state.top = state.row - height + 1
-    }
-    if state.col < state.left { state.left = state.col }
-    if state.left < state.col and ed_segment_width(line, state.left, state.col) >= width {
-        // Keep a right-side margin so horizontal scrolling happens in chunks instead
-        // of rebuilding the frame after every character beyond the terminal edge.
-        margin = ed_min(16, ed_max(1, width - 1))
-        state.left = ed_max(0, state.col - ed_max(1, width - margin))
-        while state.left < state.col and ed_segment_width(line, state.left, state.col) >= width {
-            state.left++
-        }
-    }
-    if state.top < 0 { state.top = 0 }
-    if state.left < 0 { state.left = 0 }
-    return state
-}
-
-func ed_insert(state, value) {
-    row = state.row
-    col = state.col
-    line = state.lines[row]
-    state.lines[row] = text.slice(line, 0, col) + value + text.slice(line, col)
-    state.col = col + #value
-    state.dirty = true
-    state.message = ""
-    return ed_fix(state)
-}
-
-func ed_enter(state) {
-    row = state.row
-    col = state.col
-    lines = state.lines
-    line = lines[row]
-    lines[row] = text.slice(line, 0, col)
-    state.lines = array.insert(lines, row + 1, text.slice(line, col))
-    state.row = row + 1
-    state.col = 0
-    state.dirty = true
-    state.message = ""
-    return ed_fix(state)
-}
-
-func ed_remove_row(lines, row) {
-    if #lines == 1 { return [""] }
-    return array.removeAt(lines, row)
-}
-
-func ed_backspace(state) {
-    row = state.row
-    col = state.col
-    lines = state.lines
-    if col > 0 {
-        line = lines[row]
-        lines[row] = text.slice(line, 0, col - 1) + text.slice(line, col)
-        state.col = col - 1
-        state.lines = lines
-        state.dirty = true
-    } else {
-        if row > 0 {
-            previous = lines[row - 1]
-            lines[row - 1] = previous + lines[row]
-            state.lines = ed_remove_row(lines, row)
-            state.row = row - 1
-            state.col = #previous
-            state.dirty = true
-        }
-    }
-    state.message = ""
-    return ed_fix(state)
-}
-
-// A held Backspace key can leave many bytes buffered while a previous durable slice commits.
-// Delete the common same-line case with one string rebuild and one repaint.
-func ed_backspace_many(state, count) {
-    if count <= 0 { return state }
-    if state.mode == "search" {
-        remove = ed_min(count, #state.query)
-        state.query = text.slice(state.query, 0, #state.query - remove)
-        return state
-    }
-    if state.mode != "normal" {
-        while count > 0 {
-            state = ed_prompt_key(state, {kind: "key", key: "BACKSPACE", text: ""})
-            count--
-        }
-        return state
-    }
-    if count <= state.col {
-        row = state.row
-        line = state.lines[row]
-        state.lines[row] = text.slice(line, 0, state.col - count) + text.slice(line, state.col)
-        state.col = state.col - count
-        state.dirty = true
-        state.message = ""
-        return ed_fix(state)
-    }
-    while count > 0 {
-        state = ed_backspace(state)
-        count--
-    }
-    return state
-}
-
-func ed_delete(state) {
-    row = state.row
-    col = state.col
-    lines = state.lines
-    line = lines[row]
-    if col < #line {
-        lines[row] = text.slice(line, 0, col) + text.slice(line, col + 1)
-        state.lines = lines
-        state.dirty = true
-    } else {
-        if row + 1 < #lines {
-            lines[row] = line + lines[row + 1]
-            state.lines = ed_remove_row(lines, row + 1)
-            state.dirty = true
-        }
-    }
-    state.message = ""
-    return ed_fix(state)
-}
-
-func ed_cut(state) {
-    row = state.row
-    state.clipboard = state.lines[row]
-    state.lines = ed_remove_row(state.lines, row)
-    if state.row >= #state.lines { state.row = #state.lines - 1 }
-    state.col = 0
-    state.dirty = true
-    state.message = "Cut one line"
-    return ed_fix(state)
-}
-
-func ed_save(state) {
-    content = text.join(state.lines, "\n")
-    file.write(state.path, content)
-    state.dirty = false
-    state.message = "Wrote " + util.toString(#state.lines) + " lines"
-    return state
-}
-
-func ed_search(state) {
-    query = state.query
-    if #query == 0 {
-        state.message = "Search cancelled"
-        state.mode = "normal"
-        return state
-    }
-    lines = state.lines
-    startRow = state.row
-    row = startRow
-    from = state.col + 1
-    visited = 0
-    while visited < #lines {
-        found = text.indexOf(lines[row], query, ed_min(from, #lines[row]))
-        if found >= 0 {
-            state.row = row
-            state.col = found
-            state.mode = "normal"
-            state.message = "Found: " + query
-            return ed_fix(state)
-        }
-        row = row + 1
-        if row >= #lines { row = 0 }
-        from = 0
-        visited = visited + 1
-    }
-    state.mode = "normal"
-    state.message = "Not found: " + query
-    return state
-}
-
-func ed_prompt_key(state, event) {
-    key = event["key"]
-    mode = state.mode
-    if mode == "help" {
-        state.mode = "normal"
-        state.message = ""
-        return state
-    }
-    if mode == "exit" {
-        if key == "y" or key == "Y" {
-            state = ed_save(state)
-            state.running = false
-        } else {
-            if key == "n" or key == "N" {
-                state.running = false
-            } else {
-                if key == "CTRL_C" or key == "ESCAPE" {
-                    state.mode = "normal"
-                    state.message = "Exit cancelled"
-                }
-            }
-        }
-        return state
-    }
-    if mode == "search" {
-        if key == "ENTER" {
-            return ed_search(state)
-        }
-        if key == "CTRL_C" or key == "ESCAPE" {
-            state.mode = "normal"
-            state.message = "Search cancelled"
-            return state
-        }
-        if key == "BACKSPACE" {
-            if #state.query > 0 {
-                state.query = text.slice(state.query, 0, #state.query - 1)
-            }
-            return state
-        }
-        if #key == 1 { state.query = state.query + key }
-        return state
-    }
-    return state
-}
-
-func ed_key(state, event) {
-    kind = event["kind"]
-    if kind == "paste_rejected" {
-        state.message = "Paste is too large (maximum 256 KiB)"
-        return state
-    }
-    if kind == "mouse" {
-        if event["action"] == "SCROLL" {
-            state.top = state.top - event["scroll"]
-            if state.top < 0 { state.top = 0 }
-            return ed_fix(state)
-        }
-        return state
-    }
-    if kind == "paste" {
-        if #event["text"] > 0 { return ed_insert(state, event["text"]) }
-        return state
-    }
-    if kind == "repeat" and event["key"] == "BACKSPACE" {
-        return ed_backspace_many(state, event["count"])
-    }
-    if kind != "key" { return state }
-    key = event["key"]
-    if state.mode != "normal" { return ed_prompt_key(state, event) }
-    lines = state.lines
-    row = state.row
-    col = state.col
-    if key == "CTRL_S" or key == "CTRL_O" { return ed_save(state) }
-    if key == "CTRL_X" {
-        if state.dirty {
-            state.mode = "exit"
-        } else {
-            state.running = false
-        }
-        return state
-    }
-    if key == "CTRL_W" {
-        state.mode = "search"
-        state.query = ""
-        return state
-    }
-    if key == "CTRL_G" {
-        state.mode = "help"
-        return state
-    }
-    if key == "CTRL_K" { return ed_cut(state) }
-    if key == "CTRL_U" {
-        if #state.clipboard > 0 { return ed_insert(state, state.clipboard) }
-        state.message = "Clipboard is empty"
-        return state
-    }
-    if key == "UP" {
-        if row > 0 { state.row = row - 1 }
-        return ed_fix(state)
-    }
-    if key == "DOWN" {
-        if row + 1 < #lines { state.row = row + 1 }
-        return ed_fix(state)
-    }
-    if key == "LEFT" {
-        if col > 0 {
-            state.col = col - 1
-        } else {
-            if row > 0 {
-                state.row = row - 1
-                state.col = #lines[row - 1]
-            }
-        }
-        return ed_fix(state)
-    }
-    if key == "RIGHT" {
-        if col < #lines[row] {
-            state.col = col + 1
-        } else {
-            if row + 1 < #lines {
-                state.row = row + 1
-                state.col = 0
-            }
-        }
-        return ed_fix(state)
-    }
-    if key == "HOME" {
-        state.col = 0
-        return ed_fix(state)
-    }
-    if key == "END" {
-        state.col = #lines[row]
-        return ed_fix(state)
-    }
-    if key == "PAGE_UP" {
-        state.row = ed_max(0, row - ed_body_height(state))
-        return ed_fix(state)
-    }
-    if key == "PAGE_DOWN" {
-        state.row = ed_min(#lines - 1, row + ed_body_height(state))
-        return ed_fix(state)
-    }
-    if key == "BACKSPACE" { return ed_backspace(state) }
-    if key == "DELETE" { return ed_delete(state) }
-    if key == "ENTER" { return ed_enter(state) }
-    if key == "TAB" { return ed_insert(state, "    ") }
-    if kind == "key" and #event["text"] > 0 { return ed_insert(state, event["text"]) }
-    return state
-}
-
-func ed_render_help(state) {
-    width = ed_width(state)
-    screen = term.hideCursor() + term.clear()
-    screen = screen + term.inverse(ed_fit(" CilEdit Help", width)) + "\r\n"
-    screen = screen + ed_fit("Ctrl-O / Ctrl-S  Save file", width) + "\r\n"
-    screen = screen + ed_fit("Ctrl-X  Exit (asks before discarding changes)", width) + "\r\n"
-    screen = screen + ed_fit("Ctrl-W  Search forward", width) + "\r\n"
-    screen = screen + ed_fit("Ctrl-K  Cut current line; Ctrl-U Paste cut line", width) + "\r\n"
-    screen = screen + ed_fit("Arrows, Home, End, PageUp, PageDown move", width) + "\r\n"
-    screen = screen + ed_fit("Backspace, Delete, Enter and Tab edit", width) + "\r\n\r\n"
-    return screen + ed_fit("Press any key to return", width) + term.hideCursor()
-}
-
-func ed_render_line(state, lineIndex) {
-    line = state.lines[lineIndex]
-    start = ed_min(state.left, #line)
-    // Only the visible prefix can affect this frame.  Avoid allocating and sanitizing an
-    // entire very long line after a large paste.
-    width = ed_width(state)
-    return ed_fit(text.slice(line, start, ed_min(#line, start + width * 4)), width)
-}
-
-func ed_status(state) {
-    status = " line " + util.toString(state.row + 1) + "/" + util.toString(#state.lines)
-    return status + "  col " + util.toString(state.col + 1)
-}
-
-func ed_title(state) {
-    title = " CilEdit  " + state.path
-    if state.dirty { title = title + "  [Modified]" }
-    return term.inverse(ed_fit(title, ed_width(state)))
-}
-
-func ed_footer(state) {
-    if state.mode == "exit" {
-        return "Save modified buffer?  Y Yes   N No   Esc Cancel"
-    }
-    if state.mode == "search" { return "Search: " + state.query }
-    if #state.message > 0 { return state.message }
-    return "^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help"
-}
-
-func ed_cursor(state) {
-    height = ed_body_height(state)
-    cursorRow = state.row - state.top + 2
-    line = state.lines[state.row]
-    cursorText = text.slice(line, state.left, ed_min(state.col, state.left + ed_width(state) * 4))
-    cursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
-    return term.cursorTo(cursorRow, cursorCol) + term.showCursor()
-}
-
-// A complete normal-mode frame can be costly for a large terminal or document. Keep the
-// interactive process responsible for terminal I/O, but move the pure string construction to
-// a volatile process. The worker is package-private data: it is created once from this
-// immutable package resource and recreated automatically if the private cache is cleared.
-func ed_worker_snapshot(state) {
-    return {
-        path: state.path,
-        lines: state.lines,
-        row: state.row,
-        col: state.col,
-        top: state.top,
-        left: state.left,
-        width: ed_width(state),
-        height: state.height,
-        dirty: state.dirty
-    }
-}
-
-func ed_render_worker(state) {
-    workerPath = "runtime/editor-render-v1.fcl"
-    if !packageData.exists(workerPath) {
-        packageData.seedResource("render-worker.fcl", workerPath)
-    }
-    return process.run(packageData.root() + workerPath, [ed_worker_snapshot(state)])
-}
-
-func ed_render(state) {
-    if state.mode == "help" { return ed_render_help(state) }
-    // A normal terminal frame is cheaper to build in the interactive process at ordinary
-    // sizes. Move only genuinely large full redraws to process.run; the frequent one-line
-    // delta path below never pays a process hand-off.
-    if state.mode == "normal" and (#state.lines > 10000 or ed_width(state) * ed_body_height(state) > 12000) {
-        return ed_render_worker(state)
-    }
-    width = ed_width(state)
-    height = ed_body_height(state)
-    screen = term.hideCursor() + term.clear() + ed_title(state) + "\r\n"
-    visibleRow = 0
-    available = ed_min(height, #state.lines - state.top)
-    while visibleRow < available {
-        lineIndex = state.top + visibleRow
-        screen = screen + ed_render_line(state, lineIndex)
-        screen = screen + "\r\n"
-        visibleRow = visibleRow + 1
-    }
-    remaining = height - visibleRow
-    if remaining > 0 {
-        screen = screen + text.repeat(ed_fit("~", width) + "\r\n", remaining)
-    }
-    screen = screen + term.inverse(ed_fit(ed_status(state), width)) + "\r\n"
-    footerText = ed_footer(state)
-    screen = screen + ed_fit(footerText, width)
-    if state.mode == "exit" { return screen + term.hideCursor() }
-    if state.mode == "search" {
-        promptColumn = ed_min(width, term.displayWidth(term.sanitize(footerText)) + 1)
-        return screen + term.cursorTo(height + 3, promptColumn) + term.showCursor()
-    }
-    return screen + ed_cursor(state)
-}
-
-// A normal character edit changes one visible row. Avoid clearing and rebuilding the complete
-// screen in that case; full redraws remain necessary for scrolling, line-count changes, and
-// prompt modes. This cuts one terminal-output effect from a screen-sized payload to a single row.
-func ed_snapshot(state) {
-    return {
-        row: state.row,
-        top: state.top,
-        left: state.left,
-        mode: state.mode,
-        lineCount: #state.lines,
-        line: state.lines[state.row],
-        dirty: state.dirty
-    }
-}
-
-func ed_render_delta(state, before) {
-    if before["mode"] != "normal" or state.mode != "normal" { return ed_render(state) }
-    if before["top"] != state.top or before["left"] != state.left {
-        return ed_render(state)
-    }
-    if before["lineCount"] != #state.lines { return ed_render(state) }
-    height = ed_body_height(state)
-    screen = term.hideCursor()
-    if before["dirty"] != state.dirty {
-        screen = screen + term.cursorTo(1, 1) + ed_title(state)
-    }
-    if before["row"] == state.row and before["line"] != state.lines[state.row] {
-        screen = screen + term.cursorTo(state.row - state.top + 2, 1)
-        screen = screen + ed_render_line(state, state.row)
-    }
-    screen = screen + term.cursorTo(height + 2, 1)
-    screen = screen + term.inverse(ed_fit(ed_status(state), ed_width(state)))
-    screen = screen + term.cursorTo(height + 3, 1)
-    screen = screen + ed_fit(ed_footer(state), ed_width(state))
-    return screen + ed_cursor(state)
-}
-
 func open(editorPath) {
     editorPath = ed_path(editorPath)
     editorContent = ""
-    if file.exists(editorPath) { editorContent = file.read(editorPath) }
+    if file.path(editorPath).exists() { editorContent = file.open(editorPath).read() }
     editorSize = term.getSize()
     editorWidth = editorSize["width"]
     editorHeight = editorSize["height"]
     editorState = new EditorState(editorPath, editorContent, editorWidth, editorHeight)
     term.render(term.alternate(true) + term.mouse(true) + term.paste(true) + term.hideCursor())
-    term.render(ed_render(editorState))
+    term.render(editorState.render())
     while editorState.running {
-        // Block until real input or a transport resize event. The old 250 ms timeout created a
-        // durable timer and several state transactions four times per second even while idle.
+        // Block until real input or a transport resize event. A timeout here would create a
+        // durable timer and several state transactions per second while the editor is idle.
         editorEvent = io.readKey(true)
         nextSize = term.getSize()
         resized = nextSize["width"] != editorWidth or nextSize["height"] != editorHeight
@@ -576,16 +576,16 @@ func open(editorPath) {
         }
         if editorEvent["kind"] == "resize" {
             if resized {
-                term.render(ed_render(editorState))
+                term.render(editorState.render())
             }
         } else {
-            editorBefore = ed_snapshot(editorState)
-            editorState = ed_key(editorState, editorEvent)
+            editorBefore = editorState.snapshot()
+            editorState.key(editorEvent)
             if editorState.running {
                 if resized {
-                    term.render(ed_render(editorState))
+                    term.render(editorState.render())
                 } else {
-                    term.render(ed_render_delta(editorState, editorBefore))
+                    term.render(editorState.renderDelta(editorBefore))
                 }
             }
         }
@@ -594,7 +594,7 @@ func open(editorPath) {
     return null
 }
 
-// Universal zero-argument application entrypoint used by package.run("<editor-db-sha256>").
+// Universal zero-argument application entrypoint used by the package runner.
 func run() {
     return open("untitled.txt")
 }

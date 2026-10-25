@@ -805,11 +805,9 @@ public final class FclCompiler {
                     continue;
                 }
                 if (match(Type.LEFT_PAREN)) {
-                    if (!(expression instanceof FclExpression.Variable)) {
-                        fail(previous(), "Only named functions can be called");
-                    }
-                    FclExpression.Variable variable = (FclExpression.Variable) expression;
-                    if (DESTROY_FUNCTIONS.contains(variable.name())) {
+                    FclExpression.Variable variable = expression instanceof FclExpression.Variable named
+                            ? named : null;
+                    if (variable != null && DESTROY_FUNCTIONS.contains(variable.name())) {
                         if (check(Type.IDENTIFIER) && !RESERVED_WORDS.contains(peek().text())) {
                             expression = destroyTarget(variable.name());
                             continue;
@@ -825,7 +823,14 @@ public final class FclCompiler {
                         } while (match(Type.COMMA));
                     }
                     consume(Type.RIGHT_PAREN, "Expected ')' after arguments");
-                    expression = new FclExpression.Call(nextId(), variable.name(), arguments);
+                    if (variable != null) {
+                        expression = new FclExpression.Call(nextId(), variable.name(), arguments);
+                    } else if (expression instanceof FclExpression.Member member) {
+                        expression = new FclExpression.MethodCall(nextId(), member.target(),
+                                member.name(), arguments);
+                    } else {
+                        fail(previous(), "Only named functions and object methods can be called");
+                    }
                     continue;
                 }
                 if (match(Type.LEFT_BRACKET)) {

@@ -1,5 +1,10 @@
 # Releasing CilExec
 
+> **0.0.5 status.** The supported distribution is the standalone `cilexec-app.jar` with its
+> bundled PostgreSQL (`cilexec-data/` beside the JAR). The Docker-image installers built by
+> `tools/release-all.sh` are deprecated as of 0.0.5 and are no longer required for normal
+> operation or acceptance; the sections below describe that legacy packaging path.
+
 ## Local One-Command Release
 
 Run from the project root:
@@ -57,18 +62,18 @@ changes is recorded as `<commit>-dirty`.
 Optional flags:
 
 ```bash
-# Use when CI has already run the full test suite
+# Use when the full test suite has already been run in this working tree
 ./tools/release.sh --skip-tests
 
 # Do not build; only recheck all existing artifacts in dist
 ./tools/release.sh --verify-only
 ```
 
-`--skip-tests` only applies to candidate assembly when a trusted CI job in the same run has
-already executed the tests. Formal mode rejects it. A normal build also runs
+`--skip-tests` only applies to candidate assembly when the full test suite has already been
+run and its reports are available locally. Formal mode rejects it. A normal build also runs
 `tools/check_test_reports.py` before staging artifacts.
 
-Formal release mode is used by the tag workflow:
+Formal release mode can be used for a tagged local release:
 
 ```bash
 version="$(./tools/Version.sh)"
@@ -93,51 +98,18 @@ manager. Notable defaults:
   startup: when enabled, the Runtime applies pending Flyway migrations itself during boot
   instead of requiring the one-shot `migrate` command.
 
-## GitHub Actions
+## Publishing
 
-Before formal publication, enable GitHub Release immutability and restrict GHCR package-write
-access to this release workflow. The workflow refuses known tag or asset replacement, but only
-repository policy can prevent a different credential from racing an OCI tag update.
+This repository no longer uses CI workflows. Build and verify the release locally, then publish
+the files in `dist/` through the operator's chosen channel:
 
-Ordinary pushes and pull requests run the Java 26 Runtime verification matrix against PostgreSQL
-17 and 18, the separate Java 21 market-server verification, host-tool checks, multi-architecture
-Docker builds, and release-directory validation. The Dockerfile's build stage runs `verify` with
-integration tests skipped; the mandatory integration suites run separately in CI. Pushing a
-`v*` tag or manually running the `release-artifacts` workflow runs the full release flow, with
-PostgreSQL 17 and 18 both gating publication. Unprivileged jobs build and scan the exact verified
-JAR, OCI archive, and host
-artifacts before a separate narrowly privileged job uploads or signs anything. A tag publishes
-a signed amd64/arm64 GHCR image under an immutable version tag,
-creates a GitHub Release, and uploads the exact OCI archive, two architecture-specific
-Runtime-image installers, the Windows package, and a deployment archive pinned to the OCI manifest
-digest. It does not publish a mutable `latest`
-tag. The release also includes `cilexec-<version>-windows.zip`, whose `Cilexec.ps1` entry point
-supports `install`, `terminal`, `headless`, `host-move`, `shell`, and `uninstall` directly from
-PowerShell without WSL. The signed outer checksum file covers every GitHub Release asset,
-including `cilexec-image.oci.tar`. A manual run names its artifacts after the project
-version (for example `cilexec-0.0.4-linux-amd64.sh`) instead of a candidate prefix, remains
-non-formal and changeable, retains the unsigned installers as temporary artifacts, and does not
-publish an OCI image or deployment archive.
+```bash
+./tools/release.sh
+```
 
-### Changeable tag release (first release)
+No GitHub Actions, GHCR image, or cosign signature is produced by this repository.
 
-A manual dispatch with the `tag` input (for example `v0.0.4-SNAPSHOT`) publishes a changeable
-release with a real Git tag and a downloadable GitHub Release page. The tag base must start
-with the project version (`0.0.4-SNAPSHOT` is accepted, `0.0.5-SNAPSHOT` is not). The workflow
-creates the tag, uploads the two installers, the Windows package, and the checksum file, and
-auto-generates the release notes. Nothing is signed and no OCI image is published, so the
-release remains replaceable: delete the tag and Release to republish. If a run creates its tag
-but fails before creating the Release page, a later manual run safely recovers that incomplete
-publication by moving the tag to the new verified revision; an existing Release is never
-overwritten. A later push of the exact
-`v<pom-version>` tag still produces the formal immutable release; validate-runtime refuses a
-formal tag whose version does not equal the pom version, so a snapshot tag never triggers the
-formal path. The formal archive contains
-the JARs, market repository/catalog, validated release metadata, SBOM, Compose/host tools,
-credential rotation tool, systemd templates, and production recovery runbook. Each installer
-contains its architecture-specific CilExec image; none currently contains PostgreSQL.
-
-After downloading the archive, verify it in the extraction directory:
+After copying or downloading the artifacts, verify the checksums.
 
 ```bash
 sha256sum -c SHA256SUMS
@@ -147,26 +119,4 @@ On macOS:
 
 ```bash
 shasum -a 256 -c SHA256SUMS
-```
-
-For a formal release, first verify the signed outer checksum file downloaded from the GitHub
-Release, then verify its listed files:
-
-```bash
-cosign verify-blob \
-  --bundle cilexec-0.0.4-SHA256SUMS.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/SuHeling1212/cilexec/.github/workflows/release.yml@refs/tags/v[0-9].*$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  cilexec-0.0.4-SHA256SUMS
-sha256sum -c cilexec-0.0.4-SHA256SUMS
-```
-
-The deployment archive's `.env` pins `CILEXEC_IMAGE` to the published manifest digest. Verify
-that same signed image before installation:
-
-```bash
-cosign verify \
-  --certificate-identity-regexp '^https://github.com/SuHeling1212/cilexec/.github/workflows/release.yml@refs/tags/v[0-9].*$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/suheling1212/cilexec@sha256:<manifest-digest>
 ```

@@ -28,7 +28,7 @@ public record DatabaseConfig(
     public DatabaseConfig {
         jdbcUrl = requireJdbcUrl(jdbcUrl);
         username = requireText(username, "username");
-        passwordFile = Objects.requireNonNull(passwordFile, "passwordFile");
+        // Null is reserved for the private, loopback-only PostgreSQL instance.
         sslRootCertificateFile = Objects.requireNonNull(
                 sslRootCertificateFile, "sslRootCertificateFile").map(path -> {
                     if (!path.isAbsolute()) {

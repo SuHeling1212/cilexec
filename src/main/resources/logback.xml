@@ -22,8 +22,8 @@
         </encoder>
     </appender>
 
-    <logger name="org.flywaydb" level="INFO"/>
-    <logger name="com.zaxxer.hikari" level="INFO"/>
+    <logger name="org.flywaydb" level="${CILEXEC_LOG_LEVEL}"/>
+    <logger name="com.zaxxer.hikari" level="${CILEXEC_LOG_LEVEL}"/>
     <logger name="org.postgresql" level="WARN"/>
 
     <root level="${CILEXEC_LOG_LEVEL}">

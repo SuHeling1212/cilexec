@@ -5,7 +5,14 @@ Core Runtime: **Java 26**; standalone market server: **Java 21**
 Implementation language: **Java (existing language and FCL runtime semantics retained)**  
 Runtime database: **PostgreSQL**  
 Package artifact: **immutable SQLite `.db`**  
-Distribution: **Docker Compose, Linux AMD64 and ARM64**
+Distribution: **standalone JAR with bundled PostgreSQL on macOS/Linux AMD64 and ARM64;
+Docker-era packaging is deprecated as of 0.0.5 and is not required**
+
+> **0.0.5 note.** CilExec 0.0.5 runs **FCL entity objects** (durable system handles with methods)
+instead of the removed path/PID/hash entity functions. Persisted identities are FCL
+program/continuation format **5**, package database format **3**, and database schema **V005**.
+A 0.0.5 Runtime refuses old `cilexec-data/` directories and old external databases before any
+write; old data are never migrated or converted. The Docker-image distribution is deprecated.
 
 ---
 
@@ -506,9 +513,9 @@ runtime stage
 - no Maven cache, sources, or test reports
 ```
 
-The Dockerfile deliberately skips `*IT` suites while assembling an image; CI runs those
-PostgreSQL/Testcontainers suites independently with `mvn clean verify` before accepting image
-or release artifacts. The formal `release` target replaces the self-built JAR with the exact
+The Dockerfile deliberately skips `*IT` suites while assembling an image; run those
+PostgreSQL/Testcontainers suites locally with `mvn clean verify` before accepting image or
+release artifacts. The formal `release` target replaces the self-built JAR with the exact
 verified `dist/cilexec-app.jar` recorded in the release manifest.
 
 Entry point form:
@@ -721,7 +728,7 @@ database business tables
 ### 5.6 Capability Enforcement Details
 
 - **Process control ownership rule.** Controlling a process requires `SYSTEM_ADMIN`, or — for same-owner control — `PROCESS_CONTROL_OWN`, or — for cross-owner control — `PROCESS_CONTROL_ANY`. Both `ProcessService` and the FCL runtime apply the same rule.
-- **Package capability policy.** A package manifest may declare a fixed set of required capability keys (`vfs.read`, `vfs.write`, `terminal.raw_input`, `network.http`, `network.socket`, `process.create`, `process.control`, `package.manage`, `package.data`, `system.admin`). At import time the package source is compiled and checked so it cannot silently use more authority than the manifest declares. `packageData.*` maps to `package.data`; its package provenance and per-user installation are checked before access. A user must hold the mapped capabilities before the package can run.
+- **Package capability policy.** A package manifest may declare a fixed set of required capability keys (`vfs.read`, `vfs.write`, `terminal.raw_input`, `network.http`, `network.socket`, `process.create`, `process.control`, `package.manage`, `package.data`, `system.admin`). At import time the package source is compiled and checked so it cannot silently use more authority than the manifest declares. The package-data object methods map to `package.data`; package provenance and per-user installation are checked before access. A user must hold the mapped capabilities before the package can run.
 - **Extension state keys.** Durable extension state is namespaced as `cilexec.extension.<id.length>.<id>.<key>`; the length prefix keeps dotted extension IDs prefix-independent.
 
 ---
@@ -1204,7 +1211,7 @@ a delivery may commit the transition from RESERVED to CONSUMED at most once
 ```
 
 This is not exactly-once application processing. A poll-based consumer that performs work and
-crashes before `ipc.consume()` leaves a RESERVED row; startup resets it to PENDING and it may
+crashes before `Delivery.consume()` commits leaves a RESERVED row; startup resets it to PENDING and it may
 be delivered again.
 
 Broadcast is not multiple processes contending for one row; each subscriber receives an independent delivery.
@@ -2177,7 +2184,7 @@ legacy .proc and legacy file persistence code are deleted
 | 77 | P0 | What is used for database tests | C. Real PostgreSQL test containers |  |
 | 78 | P0 | Real forced-crash tests | B. Verify recovery after force-killing the JVM and container | `DockerObjectCrashRecoveryIT` force-kills the Runtime container after object and active-try state are committed, then verifies aliases, tombstones, and catch recovery after restart. |
 | 79 | P1 | Package determinism tests | C. Test both hashes separately |  |
-| 80 | P1 | Docker test platforms | C. CI builds Linux amd64 and arm64 images | Runtime verification currently runs on the GitHub-hosted AMD64 matrix |
+| 80 | P1 | Docker test platforms | C. Manual Linux amd64 and arm64 image builds | CI was removed; Docker distribution is deprecated |
 | 81 | P1 | Performance benchmark targets | A. Finish a runnable version, measure the baseline, then set targets |  |
 | 82 | P0 | Keep a legacy data migrator | A. No |  |
 | 83 | P0 | Rewrite directly on the same branch | A. Modify main directly | pre-refactor tag established; continue on main |

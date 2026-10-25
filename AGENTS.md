@@ -8,16 +8,17 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 # Core Runtime: requires Java 26 and Maven 3.9+
 mvn compile
 
-# Unit tests (`*Test`; no Testcontainers integration suites)
+# Unit tests (`*Test`; no Docker needed)
 mvn test
 
-# Full verification (`*Test` plus `*IT`; Docker and PostgreSQL/Testcontainers required)
+# Optional full verification (`*Test` plus `*IT`; Docker/Testcontainers required)
 mvn clean verify
 
-# Create the shaded Runtime JAR
+# Create the shaded Runtime JAR (the supported 0.0.5 distribution)
 mvn package
+java -jar target/cilexec-app.jar   # run in a dedicated directory; creates cilexec-data/ beside it
 
-# Build a Linux Docker-image installer
+# Deprecated Docker-image installer (legacy packaging only)
 bash ./build/package.sh <version>
 
 # Clean Maven outputs
@@ -130,22 +131,24 @@ To add a source-only Java extension:
 2. Register functions/effect handlers through `ExtensionRegistrar`.
 3. Add exactly one constructor entry to `SourceExtensionIndex.sourceExtensions()`.
 4. Follow `docs/java-extension-development.md`, especially the persistence/effect rules.
-5. Run `mvn clean test` and rebuild the JAR/image. There is intentionally no runtime
+5. Run `mvn test` and rebuild `target/cilexec-app.jar`. There is intentionally no runtime
    Java-plugin install path.
 
-Host-to-VFS transfer is deliberately a host tool rather than an FCL function. `tools/HostMove.sh`
-mounts one explicitly named regular file read-only into a disposable tool container; the
-`host move` application command streams it into PostgreSQL and creates the VFS node while
-retaining the host source. `host move` requires a target user holding `VFS_MOUNT_HOST` and
+Host-to-VFS transfer is deliberately a host tool rather than an FCL function. The `host move`
+application command streams one explicitly named regular file into PostgreSQL and creates the
+VFS node while retaining the host source (the Docker-era `tools/HostMove.sh` wrapper is
+deprecated). `host move` requires a target user holding `VFS_MOUNT_HOST` and
 `VFS_WRITE` and unconditionally refuses the `local` superuser. Never mount the Docker Socket
 or a broad host directory for this feature.
 
 ## Important Design Details
 
 - **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen modular baseline.
-  Never modify an applied migration; the next schema or persisted-format change must be an
-  immutable `V005` forward migration with upgrade, backup, and rollback-by-restore tests.
-  Automatic downgrades remain forbidden.
+  Never modify an applied migration; `V002`..`V005` are immutable forward migrations. 0.0.5
+  is a hard format break: FCL program/continuation format `5`, package database format `3`,
+  and schema `V005`. Startup refuses old `cilexec-data/` directories and old external
+  databases before any write; old data are never migrated, converted, or deleted, and automatic
+  downgrades remain forbidden. The next change must be an immutable V006.
 - **Database migrations:** Flyway baselines live in `src/main/resources/db/baseline/`;
   `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) now takes
   effect — when enabled, the Runtime applies pending migrations at startup instead of
@@ -153,7 +156,7 @@ or a broad host directory for this feature.
 - **Connection pools:** HikariCP. `runtime.pool.max` defaults to 20 and must be at least
   `scheduler.workers + effect.workers + 2`; the invariant is enforced at config load.
 - **SQLite packages:** package artifacts are immutable, read-only SQLite `.db` files (format
-  v2). Releases have logical and file-SHA-256 identities; installations, dependency closures,
+  v3 in 0.0.5; older package formats are refused). Releases have logical and file-SHA-256 identities; installations, dependency closures,
   private data spaces, and exact process bindings are persisted per user.
 - **Zero memory state:** all authoritative runtime state is persisted to PostgreSQL after each committed slice;
   recovery validates continuations, leases, IPC, timers, effects, and security invariants.

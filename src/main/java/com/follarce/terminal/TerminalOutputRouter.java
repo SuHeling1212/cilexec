@@ -32,12 +32,18 @@ public final class TerminalOutputRouter {
 
     public static void detachAll(PrintWriter output) {
         SessionOutput session = SESSIONS.remove(output);
-        if (session != null) session.close();
-        OUTPUTS.forEach((ownerId, ignored) -> OUTPUTS.computeIfPresent(ownerId,
-                (unused, outputs) -> {
-                    outputs.remove(session);
-                    return outputs.isEmpty() ? null : outputs;
-                }));
+        // A connection can close before its output route was ever attached (port probe,
+        // aborted login, CLOSED handshake), or be detached a second time by the headless /
+        // interactive cleanup paths. Removing a null key from a ConcurrentHashMap key set
+        // throws; only the first detach of an attached writer may touch the route sets.
+        if (session != null) {
+            session.close();
+            OUTPUTS.forEach((ownerId, ignored) -> OUTPUTS.computeIfPresent(ownerId,
+                    (unused, outputs) -> {
+                        outputs.remove(session);
+                        return outputs.isEmpty() ? null : outputs;
+                    }));
+        }
         TerminalOutputTracker.discard(output);
     }
 

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -11,6 +12,21 @@ import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 class CilExecConfigTest {
+    @Test
+    void localDatabaseNeverUsesDockerPasswordFilesOrUpgradesExistingData() {
+        CilExecConfig fresh = CilExecConfig.loadLocal(54321, true);
+        CilExecConfig existing = CilExecConfig.loadLocal(54321, false);
+
+        assertEquals("jdbc:postgresql://127.0.0.1:54321/cilexec",
+                fresh.runtimeDatabase().jdbcUrl());
+        assertNull(fresh.runtimeDatabase().passwordFile());
+        assertNull(fresh.effectDatabase().passwordFile());
+        assertNull(fresh.migratorDatabase().passwordFile());
+        assertNull(fresh.exporterDatabase().passwordFile());
+        assertTrue(fresh.migrateOnStart());
+        assertFalse(existing.migrateOnStart());
+    }
+
     @Test
     void defaultsReserveRuntimePoolCapacity() {
         Map<String, String> environment = Map.of("CILEXEC_RUNTIME_POOL_MAX", "20");

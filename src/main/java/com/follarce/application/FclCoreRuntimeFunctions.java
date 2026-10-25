@@ -12,6 +12,7 @@ import com.follarce.domain.vfs.StoredObject;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclFunctionRegistry;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclSystemHandle;
 import com.follarce.fcl.FclScope;
 import com.follarce.fcl.TerminalModeState;
 import com.follarce.fcl.FclSuspension;
@@ -413,6 +414,40 @@ final class FclCoreRuntimeFunctions extends FclVfsRuntimeSupport {
                             "purged", Integer.toString(purged)));
                     return purged;
                 });
+        registry.register("program", "find", args -> {
+            arity(args, 1, "program.find");
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            UUID id = uuid(args.getFirst(), "program.find id");
+            transaction.programs().findById(id).orElseThrow(() ->
+                    new FclRuntimeException("Unknown program: " + id));
+            return new FclSystemHandle("Program", id.toString());
+        });
+        registry.register("terminal", "find", args -> {
+            arity(args, 1, "terminal.find");
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            UUID id = uuid(args.getFirst(), "terminal.find id");
+            transaction.terminal().findSession(id).orElseThrow(() ->
+                    new FclRuntimeException("Unknown terminal session: " + id));
+            return new FclSystemHandle("TerminalSession", id.toString());
+        });
+        registry.registerMethod("Program", "remove", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "Program.remove");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            transaction.programs().findById(UUID.fromString(handle.id())).orElseThrow(() ->
+                    new FclRuntimeException("StaleHandle", "Program was removed"));
+            return registry.invokeInternal("program.remove", List.of(handle.id()), invocation);
+        });
+        registry.registerMethod("TerminalSession", "remove", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "TerminalSession.remove");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            transaction.terminal().findSession(UUID.fromString(handle.id())).orElseThrow(() ->
+                    new FclRuntimeException("StaleHandle", "Terminal session was removed"));
+            return registry.invokeInternal("terminal.remove", List.of(handle.id()), invocation);
+        });
+        registry.internalize("program.remove");
+        registry.internalize("terminal.remove");
     }
 
     private static int positiveLimit(Object value, int maximum, String field) {

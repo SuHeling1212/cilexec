@@ -69,18 +69,23 @@ final class FclObjectRuntime {
         object.field(field, value);
     }
 
-    static FclObjectValue methodReceiver(FclContinuation continuation, String expression) {
+    /**
+     * Resolves a dotted receiver path ({@code a}, {@code a.b}, {@code this.field.child}) to
+     * its raw value without a deep copy, so a user method can write the mutated receiver back
+     * through {@link #replaceObject}. Intermediate segments must be user objects and every
+     * field read is access-checked exactly like an ordinary member read.
+     */
+    static Object receiver(FclProgram program, FclContinuation continuation, String expression) {
         String[] segments = expression.split("\\.");
-        if (segments.length < 2) throw new IllegalArgumentException("Method path requires a dot");
+        if (segments.length < 1) throw new IllegalArgumentException("Receiver path cannot be empty");
         Object current = root(continuation, segments[0]);
-        for (int index = 1; index < segments.length - 1; index++) {
+        for (int index = 1; index < segments.length; index++) {
             if (!(current instanceof FclObjectValue object)) throw new FclRuntimeException(
                     "Cannot call member of non-object");
+            requireFieldAccess(program, continuation, object, segments[index]);
             current = object.mutableField(segments[index]);
         }
-        if (!(current instanceof FclObjectValue object)) throw new FclRuntimeException(
-                "Cannot call member of non-object");
-        return object;
+        return current;
     }
 
     /** Replaces the receiver value after an instance method completed. */
@@ -111,12 +116,12 @@ final class FclObjectRuntime {
         return object;
     }
 
-    private static boolean hasRoot(FclContinuation continuation, String name) {
+    static boolean hasRoot(FclContinuation continuation, String name) {
         return continuation.scope().contains(name) || (continuation.globalScope() != continuation.scope()
                 && continuation.globalScope().contains(name));
     }
 
-    private static Object root(FclContinuation continuation, String name) {
+    static Object root(FclContinuation continuation, String name) {
         if (continuation.scope().contains(name)) return continuation.scope().get(name);
         if (continuation.globalScope() != continuation.scope() && continuation.globalScope().contains(name)) {
             return continuation.globalScope().get(name);
@@ -124,8 +129,8 @@ final class FclObjectRuntime {
         throw new FclRuntimeException("UndefinedVariable", "Undefined variable: " + name);
     }
 
-    private static void requireFieldAccess(FclProgram program, FclContinuation continuation,
-                                           FclObjectValue object, String fieldName) {
+    static void requireFieldAccess(FclProgram program, FclContinuation continuation,
+                                  FclObjectValue object, String fieldName) {
         FieldOwner field = fieldOwner(program, object.className(), fieldName);
         if (field.field().access() == FclProgram.Access.PRIVATE
                 && !field.owner().equals(lexicalClass(program, continuation))) {

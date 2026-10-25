@@ -659,15 +659,14 @@ abstract class FclVfsRuntimeSupport extends FclRuntimeFunctionSupport {
                 || !absolute.startsWith("/Users/")) {
             return new RoutedPath(requestedOwner, absolute);
         }
-        String remainder = absolute.substring("/Users/".length());
-        int slash = remainder.indexOf('/');
-        String username = slash < 0 ? remainder : remainder.substring(0, slash);
-        String userPath = slash < 0 ? "/" : remainder.substring(slash);
-        UserAccount target = transaction.auth().findUsersByAdministrator(process.ownerId())
-                .stream().filter(user -> user.username().equalsIgnoreCase(username))
-                .findFirst().orElseThrow(() ->
-                        new FclRuntimeException("Unknown VFS path: " + absolute));
-        return new RoutedPath(target.userId(), userPath);
+        var users = transaction.auth().findUsersByAdministrator(process.ownerId());
+        var routed = com.follarce.vfs.AdministratorUserPath.route(absolute,
+                process.ownerId(), username -> users.stream()
+                        .filter(user -> user.username().equalsIgnoreCase(username))
+                        .findFirst().orElseThrow(() ->
+                                new FclRuntimeException("Unknown VFS path: " + absolute))
+                        .userId());
+        return new RoutedPath(routed.ownerId(), routed.path());
     }
 
     protected Map<String, Object> virtualUserNode(UserAccount user) {

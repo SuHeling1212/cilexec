@@ -16,30 +16,34 @@ reconstructed from the database. There is no `.proc` snapshot format and no
 ## Documents
 
 - [architecture-baseline.md](architecture-baseline.md) — current architecture reference plus
-  the preserved historical decision record for the PostgreSQL and Docker rewrite.
-- [fcl-function-reference.md](fcl-function-reference.md) — complete reference for the FCL
-  function registry, namespaces, aliases, v0.0.4 object-oriented syntax, exception handling,
-  permission scope, and terminal commands.
-- [fcl-object-oriented-guide.md](fcl-object-oriented-guide.md) — beginner-oriented English
-  guide to FCL v0.0.4 classes, objects, constructors, copy semantics, encapsulation,
-  inheritance, deletion, and persistence recovery.
-- [fcl-object-oriented-guide.zh-CN.md](fcl-object-oriented-guide.zh-CN.md) — 面向零基础读者的
-  FCL v0.0.4 面向对象教程：类、对象、构造方法、值语义、封装、继承、删除与持久化恢复。
+  the preserved historical decision record for the PostgreSQL runtime; Docker-era packaging is
+  deprecated as of 0.0.5.
+- [fcl-function-reference.md](fcl-function-reference.md) / [fcl-function-reference.zh-CN.md](fcl-function-reference.zh-CN.md)
+  — complete 0.0.5 reference for the FCL function registry, entity-object methods, removed old
+  APIs, exception handling, permission rules, and terminal commands.
+- [fcl-object-oriented-guide.md](fcl-object-oriented-guide.md) / [fcl-object-oriented-guide.zh-CN.md](fcl-object-oriented-guide.zh-CN.md)
+  — 0.0.5 object guide: user-class values versus system entity handles, dispatch, stale-handle
+  rules, leases, save/restore, and package private data.
+- [fcl-function-reference-004.md](fcl-function-reference-004.md) /
+  [fcl-object-oriented-guide-004.md](fcl-object-oriented-guide-004.md) —
+  historical 0.0.4 documents for reading old code only.
 - [fcl-executable-artifact.md](fcl-executable-artifact.md) / [fcl-executable-artifact.zh-CN.md](fcl-executable-artifact.zh-CN.md)
-  — V003 的 FCLB 可执行产物、恢复校验、V002 升级说明，以及仅由显式操作执行的
-  `program.remove` 等资源删除规则。
-- [v004-contract-fence.md](v004-contract-fence.md) — 尚未发布的 0.0.4 源码状态：V004
-  契约校验、V002/V003 持久格式兼容范围，以及升级/回滚边界。
+  — historical design record of the V003 FCLB artifact; 0.0.5 reads only format 5.
+- [v004-contract-fence.md](v004-contract-fence.md) — historical 0.0.4 contract-fence record.
 - [java-extension-development.md](java-extension-development.md) — how to add source-only
   Java extensions: functions, effect handlers, persistence and effect rules, recovery
   policies, and the release checklist.
 - [package-market.md](package-market.md) — the built-in market client and the standalone
-  `cilexec-market-server.jar`.
-- [headless-mode.md](headless-mode.md) — running one FCL submission from the host without
-  entering the interactive Shell (`./tools/Headless.sh`).
-- [host-vfs-import.md](host-vfs-import.md) — importing one named host file into the VFS
-  (`tools/HostMove.sh` / `host move`), including the required capabilities.
-- [release.md](release.md) — one-command local release process (`./tools/release.sh`).
+  `cilexec-market-server.jar`; package database format 3 and private-data object semantics.
+- [headless-mode.md](headless-mode.md) — historical host wrapper; the standalone JAR is the
+  supported 0.0.5 distribution.
+- [host-vfs-import.md](host-vfs-import.md) — the host-to-VFS application command and required
+  capabilities (the Docker wrapper is deprecated).
+- [release.md](release.md) — release process; Docker installers are deprecated as of 0.0.5.
+- [single-jar-no-docker-plan.zh-CN.md](single-jar-no-docker-plan.zh-CN.md) — 单 JAR
+  启动、本地 PostgreSQL 数据目录、备份及外部数据库兼容模式。
+- [api-memory-audit.zh-CN.md](api-memory-audit.zh-CN.md) — 0.0.4 时期的 API/内存边界审计，
+  仅作历史资料；当前接口见 0.0.5 函数参考。
 - [terminal-and-admin-plan.md](terminal-and-admin-plan.md) — implementation plan and status
   for the terminal command surface and `SYSTEM_ADMIN` global administration.
 - [package-management-redesign-plan.md](package-management-redesign-plan.md) — historical
@@ -83,6 +87,9 @@ target/dependency-lock.txt
 ```
 
 ## Running with Docker Compose
+
+The default `java -jar target/cilexec-app.jar` command now starts bundled PostgreSQL and
+keeps its data beside the JAR. Compose is an optional legacy deployment path.
 
 Generate the six database-password files and local PostgreSQL TLS material before using the
 bundled Compose profiles:

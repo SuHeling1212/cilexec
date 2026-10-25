@@ -243,16 +243,14 @@ Add third-party library requirements as ordinary Maven dependencies in the proje
 CilExec; do not download Java dependencies at runtime. Recommended flow:
 
 ```bash
-mvn clean test
-mvn clean package
-java -jar target/cilexec-app.jar terminal
+mvn test
+mvn package
+java -jar target/cilexec-app.jar
 ```
 
-When using a container, rebuild explicitly:
-
-```bash
-./tools/Install.sh --rebuild
-```
+Run the JAR from a dedicated directory so its own `cilexec-data/` lives beside it. The legacy
+Docker-image packaging path is deprecated as of 0.0.5; rebuild `target/cilexec-app.jar`
+instead.
 
 `system.extensions()` returns the extension IDs, versions, and descriptions sealed into the
 current build; `system.list()` returns the actual function names, including extensions.

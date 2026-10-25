@@ -1,7 +1,10 @@
-# CilExec 0.0.4 / V004 Contract Fence
+# CilExec 0.0.4 / V004 Contract Fence (historical)
 
-This document describes the current, unreleased 0.0.4 source state. It does not announce or
-publish a release.
+> **0.0.5 note.** This document records the 0.0.4 contract-fence state. 0.0.5 adds the
+> immutable `V005` migration and reads only FCL format 5 / package format 3; old databases are
+> refused before any migration runs.
+
+This document describes the 0.0.4 source state. It does not announce or publish a release.
 
 ## Scope
 

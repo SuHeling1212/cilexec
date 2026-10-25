@@ -18,6 +18,7 @@ import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.fcl.FclFunctionRegistry;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclSystemHandle;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import com.follarce.package_manager.PackageCoordinateConflictException;
@@ -28,6 +29,7 @@ import com.follarce.market.client.MarketRuntimeFunctions;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -103,6 +105,167 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
                                             ? issues.size() : 0)));
                     return Map.copyOf(report);
                 });
+        registry.register("package", "find", args -> {
+            arity(args, 1, "package.find");
+            Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
+            PackageRelease release = requirePackage(args, "package.find");
+            return new FclSystemHandle("Package", release.databaseFileHash().value());
+        });
+        registry.register("package", "quotaFor", args -> {
+            arity(args, 2, "package.quotaFor");
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            UUID userId = owner(args, 0);
+            String hash = string(args.get(1), "package.quotaFor hash");
+            if (!hash.matches("(?i)[0-9a-f]{64}")) throw new FclRuntimeException(
+                    "package.quotaFor requires a full package SHA-256");
+            if (transaction.packages().findInstalledReleaseByDatabaseFileHash(userId,
+                    new ObjectHash(hash.toLowerCase(Locale.ROOT))).isEmpty()) {
+                throw new FclRuntimeException("Package is not installed for the user");
+            }
+            return new FclSystemHandle("PackageQuota", hash.toLowerCase(Locale.ROOT),
+                    Map.of("user", userId.toString()));
+        });
+        registry.registerMethod("PackageQuota", "set", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 1, "PackageQuota.set");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            requireQuotaTarget(handle);
+            return registry.invokeInternal("package.setDataQuota", List.of(
+                    handle.attributes().get("user"), handle.id(), args.get(1)), invocation);
+        });
+        registry.registerMethod("PackageQuota", "remove", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "PackageQuota.remove");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            requireQuotaTarget(handle);
+            return registry.invokeInternal("package.removeDataQuota", List.of(
+                    handle.attributes().get("user"), handle.id()), invocation);
+        });
+        for (String method : List.of("info", "verify", "run", "resource", "pin", "uninstall")) {
+            registry.registerMethod("Package", method, (args, invocation) -> {
+                FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+                requireLivePackage(handle);
+                List<Object> forwarded = new ArrayList<>(args.size());
+                forwarded.add(handle.id());
+                forwarded.addAll(args.subList(1, args.size()));
+                return registry.invokeInternal("package." + method, forwarded, invocation);
+            });
+        }
+        registry.registerMethod("Package", "data", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "Package.data");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            requireLivePackage(handle);
+            return new FclSystemHandle("PackageSpace", handle.id());
+        });
+        for (String method : List.of("info", "list", "read", "export", "import", "clear", "quota")) {
+            registry.registerMethod("PackageSpace", method, (args, invocation) -> {
+                FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+                requireInstalledSpace(handle);
+                String oldName = switch (method) {
+                    case "info" -> "dataInfo";
+                    case "list" -> "dataList";
+                    case "read" -> "dataRead";
+                    case "export" -> "dataExport";
+                    case "import" -> "dataImport";
+                    case "clear" -> "clearData";
+                    default -> "dataQuota";
+                };
+                List<Object> forwarded = new ArrayList<>(args.size());
+                forwarded.add(handle.id());
+                forwarded.addAll(args.subList(1, args.size()));
+                return registry.invokeInternal("package." + oldName, forwarded, invocation);
+            });
+        }
+        registry.registerMethod("PackageSpace", "usage", (args, invocation) -> {
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            requireInstalledSpace(handle);
+            arity(args.subList(1, args.size()), 0, "PackageSpace.usage");
+            Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+            PackageDataUsage usage = transaction.packages().findDataUsage(
+                    process.ownerId(), new ObjectHash(handle.id()));
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("logicalBytes", usage.logicalBytes());
+            summary.put("quota", usage.quota());
+            summary.put("files", usage.files());
+            summary.put("updatedAt", usage.updatedAt().toString());
+            return Map.copyOf(summary);
+        });
+        registry.registerMethod("PackageSpace", "write", (args, invocation) -> {
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            requireInstalledSpace(handle);
+            Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);
+            arity(args.subList(1, args.size()), 2, "PackageSpace.write");
+            String path = string(args.get(1), "PackageSpace.write path");
+            byte[] content = string(args.get(2), "PackageSpace.write value")
+                    .getBytes(StandardCharsets.UTF_8);
+            ObjectHash fileHash = new ObjectHash(handle.id());
+            transaction.packages().writeDataEntry(process.ownerId(), fileHash, path,
+                    content, TEXT, packageDataVersion(fileHash, path));
+            audit("package.dataWrite", process.identity().processUid(), Map.of(
+                    "packageFileSha256", fileHash.value(), "path", path));
+            return true;
+        });
+        registry.registerMethod("PackageSpace", "root", (args, invocation) -> {
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            requireInstalledSpace(handle);
+            arity(args.subList(1, args.size()), 0, "PackageSpace.root");
+            requirePackageCode(handle, invocation);
+            return "package-data://" + handle.id() + "/";
+        });
+        for (String method : List.of("exists", "readChunk", "seedResource", "append",
+                "mkdir", "remove", "rename", "size")) {
+            registry.registerMethod("PackageSpace", method, (args, invocation) -> {
+                FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+                requireInstalledSpace(handle);
+                requirePackageCode(handle, invocation);
+                return registry.invokeInternal("packageData." + method,
+                        args.subList(1, args.size()), invocation);
+            });
+        }
+        for (String name : List.of("info", "uninstall", "run", "verify", "resource", "pin",
+                "dataInfo", "dataList", "dataRead", "dataExport", "dataImport", "clearData",
+                "dataQuota", "setDataQuota", "removeDataQuota")) {
+            registry.internalize("package." + name);
+        }
+    }
+
+    private PackageRelease requireLivePackage(FclSystemHandle handle) {
+        Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
+        return requirePackage(List.of(handle.id()), "Package handle");
+    }
+
+    /**
+     * A PackageSpace handle names one exact installed database-file SHA-256. Every call
+     * re-checks that installation; the handle itself never grants access.
+     */
+    private void requireInstalledSpace(FclSystemHandle handle) {
+        if (!handle.id().matches("(?i)[0-9a-f]{64}")) {
+            throw new FclRuntimeException("StaleHandle", "Invalid package data handle identity");
+        }
+        ObjectHash fileHash = new ObjectHash(handle.id().toLowerCase(Locale.ROOT));
+        if (transaction.packages().findInstalledReleaseByDatabaseFileHash(
+                process.ownerId(), fileHash).isEmpty()) {
+            throw new FclRuntimeException("StaleHandle", "Package is not installed for the user");
+        }
+    }
+
+    /**
+     * Private package-data methods run only from code linked to the same package database
+     * file. A user-level handle can never reach them without executing that package.
+     */
+    private void requirePackageCode(FclSystemHandle handle,
+                                    FclFunctionRegistry.Invocation invocation) {
+        if (!handle.id().equals(invocation.packageIdentity())) {
+            throw new FclRuntimeException(
+                    "Package data write and private operations require package code");
+        }
+    }
+
+    private void requireQuotaTarget(FclSystemHandle handle) {
+        Authorization.requireAdministrator(transaction, process.ownerId());
+        UUID userId = UUID.fromString(handle.attributes().get("user"));
+        if (transaction.packages().findInstalledReleaseByDatabaseFileHash(userId,
+                new ObjectHash(handle.id())).isEmpty()) {
+            throw new FclRuntimeException("StaleHandle", "Package was uninstalled for the user");
+        }
     }
 
     /**
@@ -247,6 +410,13 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
             return Map.of("logicalBytes", usage.logicalBytes(), "quota", usage.quota(),
                     "files", usage.files());
         }, "packageUsage");
+        registry.registerContextual("packageData", "current", (args, invocation) -> {
+            arity(args, 0, "packageData.current");
+            return new FclSystemHandle("PackageSpace", requirePackageDataFile(invocation).value());
+        });
+        for (String name : List.of("root", "exists", "read", "readChunk", "write",
+                "seedResource", "append", "mkdir", "list", "remove", "clear", "rename",
+                "size", "usage")) registry.internalize("packageData." + name);
     }
 
     protected record PackageDataEntryMap(String name, String type, long size) {
@@ -338,13 +508,9 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
                 return FclPackageRuntimeFunctions.this.download(List.of(url, path), invocation);
             }
 
-            @Override @SuppressWarnings("unchecked")
+            @Override
             public Map<String, Object> install(String path) {
-                Object installed = installPackage(List.of(path));
-                if (!(installed instanceof Map<?, ?> map)) {
-                    throw new FclRuntimeException("Package installer returned an invalid result");
-                }
-                return (Map<String, Object>) map;
+                return installPackageMetadata(List.of(path));
             }
 
             @Override
@@ -377,7 +543,14 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
         }).register(registry);
     }
 
+    /** Creation factory: resolves access, installs, and returns a durable Package handle. */
     protected Object installPackage(List<Object> args) {
+        Map<String, Object> installed = installPackageMetadata(args);
+        return new FclSystemHandle("Package", (String) installed.get("sha256"));
+    }
+
+    /** Installation implementation shared by the factory and the built-in market client. */
+    protected Map<String, Object> installPackageMetadata(List<Object> args) {
         if (args.size() != 1) throw new FclRuntimeException(
                 "package.install expects a VFS path to an immutable package database");
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_IMPORT);
@@ -417,7 +590,8 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
         audit("package.install", node.nodeId(), Map.of(
                 "coordinate", release.coordinate().key(), "writeResult", result.name()));
         Map<String, Object> installed = new LinkedHashMap<>(packageMap(release));
-        installed.putAll(descriptorMap(descriptor));
+        installed.put("coordinate", release.coordinate().key());
+        installed.put("writeResult", result.name());
         return Map.copyOf(installed);
     }
 
@@ -623,8 +797,8 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
 
     protected Object packageSetDataQuota(List<Object> args) {
         arity(args, 3, "package.setDataQuota");
-        UUID owner = owner(args, 1);
-        ObjectHash fileHash = requireInstalledFileHash(args, "package.setDataQuota");
+        UUID owner = owner(args, 0);
+        ObjectHash fileHash = requireInstalledFileHash(List.of(args.get(1)), "package.setDataQuota");
         long quotaBytes = integer(args.get(2), "package.setDataQuota bytes");
         if (quotaBytes < 0) throw new FclRuntimeException(
                 "package.setDataQuota bytes cannot be negative");
@@ -637,8 +811,8 @@ final class FclPackageRuntimeFunctions extends FclVfsRuntimeSupport {
 
     protected Object packageClearDataQuota(List<Object> args) {
         arity(args, 2, "package.removeDataQuota");
-        UUID owner = owner(args, 1);
-        ObjectHash fileHash = requireInstalledFileHash(args, "package.removeDataQuota");
+        UUID owner = owner(args, 0);
+        ObjectHash fileHash = requireInstalledFileHash(List.of(args.get(1)), "package.removeDataQuota");
         transaction.packages().clearDataQuota(process.ownerId(), owner, fileHash);
         audit("package.removeDataQuota", process.identity().processUid(), Map.of(
                 "targetUser", owner.toString(), "packageFileSha256", fileHash.value()));

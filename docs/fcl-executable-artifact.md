@@ -1,4 +1,8 @@
-# FCL Executable Artifacts (V003)
+# FCL Executable Artifacts (V003 — historical)
+
+> **0.0.5 note.** The current executable/continuation format is **5**. 0.0.5 reads only
+> format 5 and rejects older FCLB artifacts instead of converting them; this document is kept
+> as the design record for the format-3 introduction and is not a 0.0.5 compatibility promise.
 
 CilExec 0.0.3 introduces the V003 executable-program artifact. This changes how a program is
 persisted and restored; it does not change FCL source syntax. The language version therefore

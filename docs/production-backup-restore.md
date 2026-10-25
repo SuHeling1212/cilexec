@@ -1,5 +1,13 @@
 # Production Backup And Restore Runbook
 
+> **0.0.5 standalone JAR.** The supported distribution keeps its whole PostgreSQL cluster in
+> `cilexec-data/postgres/` beside the JAR. For that mode the disaster-recovery backup is:
+> stop the program, copy the complete `cilexec-data/` directory, restart, and verify a terminal
+> login. Do not copy a live `cilexec-data/postgres/` directory with a generic filesystem copier.
+> The PostgreSQL-aware procedures below apply when you run against an externally managed
+> PostgreSQL instance (`CILEXEC_DATABASE_URL`). 0.0.5 deliberately refuses old data directories
+> and old external databases, so a backup restore only works into the same 0.0.5 format.
+
 All CilExec runtime state is in PostgreSQL. The SQLite logical export is useful for inspection,
 but it is not a disaster-recovery backup: it does not preserve PostgreSQL roles, ownership,
 WAL history, or a point-in-time recovery chain.
@@ -37,7 +45,7 @@ audited key access. Test key recovery independently; a backup without its key is
 
 ## Credential Rotation
 
-For the bundled persistent Compose deployment, rotate all six database passwords with:
+For an externally managed PostgreSQL deployment, rotate all six database passwords with:
 
 ```bash
 ./docker/rotate-secrets.sh

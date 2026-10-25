@@ -37,7 +37,7 @@ class FclFunctionOriginTest {
                 new ProgramServiceTest.TestPersistence();
         UUID ownerId = UUID.randomUUID();
         String source = """
-                runtimeOrigin = util.which("file.read")
+                runtimeOrigin = util.which("file.open")
                 packageOrigin = util.which("e.open")
                 barePackageOrigin = util.which("open")
                 missingOrigin = util.which("e.missing")

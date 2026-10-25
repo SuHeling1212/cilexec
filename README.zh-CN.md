@@ -8,7 +8,7 @@
 ## 核心特性
 
 - **零内存状态** —— 程序、完整延续（continuation）、调度租约、IPC、定时器、VFS、包绑定、副作用日志、终端输入和审计事件全部存于 PostgreSQL；数据库 advisory lock 保证同一数据库只有一个活跃运行时。
-- **崩溃安全的延续** —— 每个已提交执行切片持久化完整解释器状态（变量、调用栈、程序计数器）；`state_version` + `execution_epoch` 围栏防止陈旧 worker 提交。
+- **崩溃安全的延续** —— 每个已提交执行切片持久化完整解释器状态（变量、调用栈、程序计数器、系统实体句柄）；`state_version` + `execution_epoch` 围栏防止陈旧 worker 提交。
 - **不可变可执行产物** —— 新程序同时保留可读 FCL 源码和独立的版本化 FCLB 指令产物；恢复时校验两者，直接执行原有指令表而不重新编译源码。
 - **天然多租户** —— 每个用户对应一个稳定 PostgreSQL `NOLOGIN`、`NOINHERIT` 租户角色并强制 RLS；`SYSTEM_ADMIN` 是应用级超级用户，绝不获得集群或宿主特权。
 - **内容寻址 VFS** —— 可变命名空间节点指向不可变的 SHA-256 文件或符号链接内容；目录和挂载是关系型元数据。跨用户管理操作经 SECURITY DEFINER API 并全程审计。
@@ -16,46 +16,45 @@
 - **日志化外部副作用** —— FCL 发起的 HTTP、socket 和白名单命令通过持久效果行执行。中断时外部结果可能进入 `UNKNOWN`，再按远端查询、幂等重试或人工处理。定时器使用独立的持久定时器行。
 - **持久化 IPC 与定时器** —— 直连/频道/主题/广播消息和定时器可跨重启唤醒暂停的进程。
 - **可验证导出** —— 基于单个只读快照的 PostgreSQL → SQLite 逻辑导出，端到端哈希校验。
-- **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；进程提交后通过事件通知唤醒终端，不再按 25 毫秒轮询。全屏 FCL 程序可用 `term.render` 在状态提交后直接发布可丢弃的重绘帧，普通 `io.print` 仍走可恢复的效果日志；另有无头协议供宿主脚本调用。
-- **仅前向 Schema 升级** —— 0.0.1 的 V001 是发布基线；后续持久格式变更使用不可修改的 V002+，降级通过恢复备份完成。
+- **友好的终端** —— 交互式 REPL 的进程（变量、导入、函数、工作目录）跨登出/登录和运行时重启保持；全屏 FCL 程序可用 `term.render` 发布可丢弃的重绘帧，普通 `io.print` 仍走可恢复的效果日志；另有无头协议供宿主脚本调用。
+- **显式的 0.0.5 前向格式** —— 程序、延续、包和数据库 Schema 各只接受一种当前格式。旧持久数据在启动时被**明确拒绝并说明原因**；绝不转换、删除或原地迁移。
 
 ## 快速开始
 
-### 使用正式安装包
+### 独立 JAR（macOS / Linux）—— 唯一受支持的发行方式
 
-前置条件：Docker Engine（Linux）或 Docker Desktop（macOS/Windows）已经启动，并且
-Docker Compose 插件可用。安装器不会安装 Docker。CilExec Runtime 镜像已包含在正式
-安装包中；PostgreSQL 镜像未包含，首次安装时必须能够从镜像仓库下载。
-
-Linux 根据 Docker 主机架构下载 `linux-amd64` 或 `linux-arm64` 安装包，然后运行：
+安装 Java 26 后，在实例应保存的目录中构建或放置 shaded `cilexec-app.jar`：
 
 ```bash
-chmod +x cilexec-<版本>-linux-<架构>.sh
-./cilexec-<版本>-linux-<架构>.sh
-cd ~/cilexec
-./tools/Install.sh
+mvn package
+java -jar target/cilexec-app.jar
 ```
 
-第一条安装命令将文件解压到 `~/cilexec`（可通过 `INSTALL_DIR` 修改），校验 Docker
-架构并加载内嵌 Runtime 镜像。`Install.sh` 随后创建密钥、启动 PostgreSQL、执行迁移、
-启动共享 Runtime 并进入终端。
+不需要 Docker、预装 PostgreSQL、Compose 文件或数据库密码文件。JAR 内含 macOS 和 Linux
+的 ARM64、AMD64 PostgreSQL 17.6 二进制。首次启动会在 JAR 同级创建 `cilexec-data/`、
+初始化数据库及当前 Schema，并把当前 TTY 接入终端；默认隐藏常规启动日志，需要时设置
+`CILEXEC_LOG_LEVEL=INFO`。以后重启复用该目录。启动后立即显示进度提示，首次初始化可能
+需要几十秒。若从 `target/` 运行 JAR，`mvn clean` 会保留 `target/cilexec-data/`；
+正式使用建议把 JAR 与数据放在独立目录并备份。默认终端用户名是 `local`，首次使用时设置
+管理员密码。
 
-Windows 解压 `cilexec-<版本>-windows.zip` 后，在该目录运行：
+JAR 必须独占自己的数据目录：请从专用目录运行，不要在仓库根目录运行；启动第二个实例时
+把 JAR 复制到另一目录。0.0.5 **拒绝启动**在其他 CilExec 版本创建的 `cilexec-data/`
+上，并说明旧数据需由运维自行归档或处理；运行时绝不修改旧数据。
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Cilexec.ps1 install
-```
-
-完整 Windows 命令见 [`windows/README.md`](windows/README.md)。
+仅当设置 `CILEXEC_DATABASE_URL` 时才使用外部 PostgreSQL；该模式仍需要外部数据库凭据及
+显式 `migrate` 命令。旧外部数据库会先被格式检查拒绝，不会执行任何迁移。
 
 ### 从源码运行
 
-使用 `Install.sh` 从源码安装或运行只需要 Docker 与 Docker Compose 插件；镜像构建会在
-Docker 内提供 JDK 26 和 Maven 3.9+。若直接在宿主机运行 Maven，则需要自行安装 JDK 26
-和 Maven 3.9+。
+从源码运行需要 JDK 26 与 Maven 3.9+；不需要 Docker。
 
 ```bash
-./tools/Install.sh            # 一条命令：密钥 + PostgreSQL + 迁移 + 终端
+mvn package
+mkdir -p /tmp/cilexec-instance
+cp target/cilexec-app.jar /tmp/cilexec-instance/
+cd /tmp/cilexec-instance
+java -jar cilexec-app.jar
 ```
 
 首次使用会要求设置管理员密码（默认用户名 `local`）。然后直接试 FCL：
@@ -65,50 +64,27 @@ io.println("hello cilexec")
 sum = 0; i = 1
 while i <= 10 { sum = sum + i; i = i + 1 }
 return sum
+
+// 0.0.5 实体对象：先取得对象，再调用方法。
+note = file.create("/notes/hello.txt", "first")
+note.append(" second")
+io.println(note.read())   // first second
 ```
 
-从宿主免交互执行单次提交（不进入交互终端）：
+键入 `:exit` 只断开当前终端，共享 Runtime 和后台进程继续运行；用 `:shutdown`
+（需管理员密码）停止 Runtime。请用 `:shutdown` 或 SIGTERM 正常停止，不要强制 kill：
+若 JAR 被杀后 PostgreSQL 仍在运行，下次启动会报告其 PID 并要求先停止，而不是等待超时。
 
-```bash
-./tools/Headless.sh 'value = 41'
-./tools/Headless.sh 'io.println(value + 1)'     # 42；同一宿主终端的调用共享同一持久 REPL 进程
-```
-
-常用宿主命令：
-
-```bash
-./tools/Install.sh                                      # 启动或复用 Runtime，并进入终端
-./tools/Headless.sh 'io.println("hello")'               # 非交互执行一段 FCL
-./tools/HostMove.sh /绝对路径/report.pdf /docs/report.pdf alice
-./tools/Shell.sh                                        # 进入应用或 PostgreSQL 容器
-./tools/Uninstall.sh                                    # 删除本安装实例及其数据库卷
-```
-
-退出交互终端请键入 `:exit`。这只断开当前终端，后台 Runtime 和进程继续运行。正式 Linux
-安装包也可直接执行 `./cilexec-<版本>-linux-<架构>.sh --uninstall`；卸载会永久删除该安装
-实例的 PostgreSQL 数据卷，执行前应先备份。
-
-使用 Docker Desktop 时，请在 16 GB 内存的宿主上给其 Linux 虚拟机至少分配
-10 GB 内存（Settings → Resources → Advanced）。Runtime JVM、PostgreSQL 和
-`mvn verify` 集成套件各自需要数 GB；默认 7.8 GB 虚拟机下宿主可能内存耗尽，
-Java 工具或 Runtime 可能被杀掉。
-
-生产环境应使用已签名的正式镜像和制品，并遵循[发行验证](docs/release.md)及
-[备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。
-
-不使用 Docker 时可直接运行 JAR（需自行准备 PostgreSQL 17.1+）：
-
-```bash
-java -jar target/cilexec-app.jar migrate
-java -jar target/cilexec-app.jar terminal
-```
+生产环境应把 JAR 与其 `cilexec-data/` 目录一起保存，备份前先停止 Runtime，并遵循
+[备份、恢复与凭据轮换手册](docs/production-backup-restore.md)。Docker 镜像发行方式及其
+安装脚本自 0.0.5 起已废弃，正常使用不再需要，也不在验收范围内。
 
 ## 核心概念
 
 | 概念 | 说明 |
 |---|---|
-| **FCL** | 脚本语言：`//` 注释、`#` 长度运算符、保留字、函数、循环、映射/列表、包导入。完整参考：[docs/fcl-function-reference.md](docs/fcl-function-reference.md) |
-| **进程与延续** | 进程是持久对象；每个已提交切片持久化完整解释器状态。未提交切片会回滚，并可能在恢复后重放 |
+| **FCL** | 脚本语言：`//` 注释、`#` 长度运算符、保留字、函数、循环、映射/列表、类、包导入以及实体对象方法调用。完整参考：[docs/fcl-function-reference.zh-CN.md](docs/fcl-function-reference.zh-CN.md) |
+| **进程与延续** | 进程是持久对象；每个已提交切片持久化完整解释器状态（含系统实体句柄）。未提交切片会回滚，并可能在恢复后重放 |
 | **VFS** | 每用户内容寻址文件树（根为 `/`），管理员可见 `/Users/<name>`；宿主文件经 `host move` 导入 |
 | **包** | 不可变 SQLite 数据库，声明能力、入口点与精确哈希依赖 |
 | **副作用** | 日志化的外部操作（HTTP、socket、宿主命令），崩溃可恢复，按策略重试 |
@@ -128,7 +104,7 @@ FCL 源码 → 编译器 → ProcessStatementExecutor（每个执行切片一个
 ```text
 src/main/java/com/follarce
   app/            启动、停机、应用命令
-  fcl/            FCL 编译器、延续运行时、内置函数
+  fcl/            FCL 编译器、延续运行时、内置函数、实体句柄
   application/    数据库感知内置函数、语句执行器、REPL
   persistence/    JDBC 仓库、事务、SQLite 包读取器
   scheduler/      有界 FIFO/租约 worker
@@ -140,19 +116,27 @@ src/main/java/com/follarce
   terminal/       交互与无头控制面
   auth/ audit/ health/ config/ extension/   安全、运维与扩展面
 src/main/resources/db/baseline/   已冻结的 V001 模块（角色、RLS、SQL 函数）
+src/main/resources/db/contracts/  不可变的 V002+ 契约/围栏 SQL
 ```
 
 ## 构建与测试
 
 ```bash
-mvn clean test        # 400+ 单元与生命周期测试
-mvn clean verify      # 强制 PostgreSQL/崩溃恢复集成测试、质量门禁与 JAR
+mvn test                  # 单元与生命周期测试（不需要 Docker）
+mvn package -DskipTests   # 构建 target/cilexec-app.jar
+mvn verify                # 可选：PostgreSQL/崩溃恢复集成测试（需要 Docker）
 ```
+
+集成套件需要 Docker，不属于独立 JAR 的验收路径；正常开发用 `mvn test` 加独立 JAR
+冒烟测试即可。
 
 ## 文档
 
-- [FCL 函数与终端参考](docs/fcl-function-reference.md)
+- [FCL 函数与对象参考](docs/fcl-function-reference.zh-CN.md) · [English](docs/fcl-function-reference.md)
+- [FCL 0.0.5 对象指南](docs/fcl-object-oriented-guide.zh-CN.md) · [English](docs/fcl-object-oriented-guide.md)
+- [FCL 0.0.4 参考（历史）](docs/fcl-function-reference-004.md)
 - [架构基线](docs/architecture-baseline.md)
+- [FCLB 可执行产物](docs/fcl-executable-artifact.md)
 - [Java 源码扩展](docs/java-extension-development.md)
 - [包与市场](docs/package-market.md)
 - [可恢复的 FCL 贪吃蛇](docs/snake-game.zh-CN.md)

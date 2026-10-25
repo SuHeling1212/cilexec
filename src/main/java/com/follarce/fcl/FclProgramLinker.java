@@ -271,6 +271,11 @@ public final class FclProgramLinker {
             return new FclExpression.Call(id, name, call.arguments().stream()
                     .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList());
         }
+        if (expression instanceof FclExpression.MethodCall call) {
+            return new FclExpression.MethodCall(id, copyExpression(call.target(), offset, context,
+                    allNames, localNames), call.name(), call.arguments().stream()
+                    .map(item -> copyExpression(item, offset, context, allNames, localNames)).toList());
+        }
         throw new IllegalArgumentException("Unsupported FCL expression: " + expression.getClass());
     }
 
@@ -340,6 +345,9 @@ public final class FclProgramLinker {
             maximum = Math.max(maximum, max(value.target()));
             maximum = Math.max(maximum, max(value.index()));
         } else if (expression instanceof FclExpression.Call value) {
+            for (FclExpression child : value.arguments()) maximum = Math.max(maximum, max(child));
+        } else if (expression instanceof FclExpression.MethodCall value) {
+            maximum = Math.max(maximum, max(value.target()));
             for (FclExpression child : value.arguments()) maximum = Math.max(maximum, max(child));
         } else if (expression instanceof FclExpression.Member value) {
             maximum = Math.max(maximum, max(value.target()));

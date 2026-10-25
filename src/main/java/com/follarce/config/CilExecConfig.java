@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
@@ -80,6 +81,20 @@ public record CilExecConfig(
         return load(System.getenv());
     }
 
+    /** Configuration for the private PostgreSQL process started alongside the JAR. */
+    public static CilExecConfig loadLocal(int port, boolean newDatabase) {
+        Map<String, String> local = new HashMap<>(System.getenv());
+        local.put("CILEXEC_DATABASE_URL", "jdbc:postgresql://127.0.0.1:" + port + "/cilexec");
+        local.put("CILEXEC_LOCAL_DATABASE", "true");
+        local.put("CILEXEC_MIGRATE_ON_START", Boolean.toString(newDatabase));
+        local.put("CILEXEC_DATABASE_SSL_ROOT_CERTIFICATE_FILE", "");
+        local.put("CILEXEC_RUNTIME_DATABASE_USER", "cilexec_runtime");
+        local.put("CILEXEC_EFFECT_DATABASE_USER", "cilexec_effect_worker");
+        local.put("CILEXEC_MIGRATOR_DATABASE_USER", "cilexec_migrator");
+        local.put("CILEXEC_EXPORTER_DATABASE_USER", "cilexec_exporter");
+        return load(local);
+    }
+
     static CilExecConfig load(Map<String, String> environment) {
         Properties defaults = loadDefaults();
         String url = setting(environment, defaults, "CILEXEC_DATABASE_URL", "database.url");
@@ -126,10 +141,12 @@ public record CilExecConfig(
                                            Duration connect, Duration validate, Duration statement,
                                            boolean readOnly) {
         String upper = role.toUpperCase();
+        boolean local = "true".equals(env.get("CILEXEC_LOCAL_DATABASE"));
         return new DatabaseConfig(
                 url,
                 setting(env, defaults, "CILEXEC_" + upper + "_DATABASE_USER", role + ".database.user"),
-                Path.of(setting(env, defaults, "CILEXEC_" + upper + "_DATABASE_PASSWORD_FILE",
+                local ? null : Path.of(setting(env, defaults,
+                        "CILEXEC_" + upper + "_DATABASE_PASSWORD_FILE",
                         role + ".database.password-file")),
                 sslRootCertificate,
                 integer(env, defaults, "CILEXEC_" + upper + "_POOL_MAX", role + ".pool.max"),

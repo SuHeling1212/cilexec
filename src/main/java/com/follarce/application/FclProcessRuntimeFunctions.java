@@ -3,6 +3,7 @@ package com.follarce.application;
 import com.follarce.auth.Authorization;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.ipc.IpcChannel;
+import com.follarce.domain.ipc.IpcDelivery;
 import com.follarce.domain.ipc.IpcMessage;
 import com.follarce.domain.ipc.IpcTopic;
 import com.follarce.domain.process.CilProcess;
@@ -23,6 +24,7 @@ import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclSystemHandle;
 import com.follarce.fcl.FclScope;
 import com.follarce.fcl.FclSuspension;
 
@@ -200,6 +202,50 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
                     return waitForProcess(target, invocation);
                 })
                 .register("process", "removeFinished", args -> removeFinishedProcesses(args));
+        registry.register("process", "find", args -> {
+            arity(args, 1, "process.find");
+            long pid = integer(args.getFirst(), "process.find pid");
+            CilProcess target = targetProcess(pid, "process.find");
+            return new FclSystemHandle("Process", target.identity().processUid().toString());
+        });
+        registry.register("process", "clearFinished", args -> {
+            arity(args, 0, "process.clearFinished");
+            return removeFinishedProcesses(args);
+        });
+        registry.registerMethod("Process", "status", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "Process.status");
+            return processForHandle((FclSystemHandle) args.getFirst()).status().name();
+        });
+        for (String method : List.of("wait", "pause", "continue", "kill", "removeFinished", "send")) {
+            registry.registerMethod("Process", method, (args, invocation) -> {
+                if (method.equals("send")) {
+                    if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
+                            "Process.send expects payload and optional expiration");
+                } else {
+                    arity(args.subList(1, args.size()), 0, "Process." + method);
+                }
+                CilProcess target = processForHandle((FclSystemHandle) args.getFirst());
+                String oldName = switch (method) {
+                    case "wait" -> "waitPID";
+                    default -> method;
+                };
+                List<Object> forwarded = new ArrayList<>();
+                forwarded.add(target.identity().pid());
+                forwarded.addAll(args.subList(1, args.size()));
+                return registry.invokeInternal(method.equals("send") ? "ipc.sendDirect"
+                        : "process." + oldName, forwarded, invocation);
+            });
+        }
+        for (String name : List.of("kill", "pause", "continue", "waitPID", "removeFinished")) {
+            registry.internalize("process." + name);
+        }
+    }
+
+    private CilProcess processForHandle(FclSystemHandle handle) {
+        CilProcess target = transaction.processes().findByUid(UUID.fromString(handle.id()))
+                .orElseThrow(() -> new FclRuntimeException("StaleHandle", "Process was removed"));
+        targetProcess(target.identity().pid(), "Process handle");
+        return target;
     }
 
     private VolatileSource volatileSource(String requestedPath,
@@ -334,11 +380,35 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
         return deleted;
     }
 
+    /** Swap pool names and variable names have database-level shape constraints. */
+    private static String swapPoolName(Object value, String field) {
+        String pool = string(value, field);
+        if (!pool.matches("[A-Za-z0-9_-]{1,128}")) {
+            throw new FclRuntimeException("InvalidSwapPoolName",
+                    "Swap pool name must match [A-Za-z0-9_-]{1,128}: " + pool);
+        }
+        return pool;
+    }
+
+    private static String swapVariableName(Object value, String field) {
+        String variable = string(value, field);
+        if (!variable.matches("[A-Za-z_][A-Za-z0-9_.-]{0,127}")) {
+            throw new FclRuntimeException("InvalidSwapVariableName",
+                    "Swap variable name must match [A-Za-z_][A-Za-z0-9_.-]{0,127}: "
+                            + variable);
+        }
+        return variable;
+    }
+
     protected void registerSwapPool() {
         registry.register("swapPool", "create", args -> {
-                    String pool = path(args, 0, 1, "swapPool.create");
-                    return transaction.ipc().createSwapPool(process.ownerId(),
-                            process.identity().processUid(), pool, now);
+                    String pool = swapPoolName(path(args, 0, 1, "swapPool.create"),
+                            "swapPool.create name");
+                    if (!transaction.ipc().createSwapPool(process.ownerId(),
+                            process.identity().processUid(), pool, now)) {
+                        throw new FclRuntimeException("Swap pool already exists: " + pool);
+                    }
+                    return new FclSystemHandle("SwapPool", pool);
                 })
                 .register("swapPool", "remove", args -> {
                     if (args.size() == 1) {
@@ -424,6 +494,101 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
                 })
                 .registerContextual("swapPool", "waitFor", (args, invocation) ->
                         waitForSwap(args, invocation));
+        registry.register("swapPool", "open", args -> {
+            String pool = swapPoolName(path(args, 0, 1, "swapPool.open"),
+                    "swapPool.open name");
+            if (!transaction.ipc().swapPoolExists(process.ownerId(), pool)) {
+                throw new FclRuntimeException("Unknown swap pool: " + pool);
+            }
+            return new FclSystemHandle("SwapPool", pool);
+        });
+        registry.registerMethod("SwapPool", "get", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 1, "SwapPool.get");
+            return swapMethod("get", args, invocation);
+        });
+        registry.registerMethod("SwapPool", "add", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 2, "SwapPool.add");
+            FclSystemHandle pool = (FclSystemHandle) args.getFirst();
+            requireSwapPool(pool.id());
+            return transaction.ipc().addSwapValue(process.ownerId(), pool.id(),
+                    swapVariableName(args.get(1), "SwapPool.add name"), typed(args.get(2)),
+                    "ALWAYS", Optional.empty(), now);
+        });
+        for (String method : List.of("list", "clear", "remove")) {
+            registry.registerMethod("SwapPool", method, (args, invocation) ->
+                    swapMethod(method, args, invocation));
+        }
+        registry.registerMethod("SwapPool", "variable", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 1, "SwapPool.variable");
+            FclSystemHandle pool = (FclSystemHandle) args.getFirst();
+            requireSwapPool(pool.id());
+            return new FclSystemHandle("SwapVariable", pool.id(), Map.of(
+                    "name", swapVariableName(args.get(1), "SwapPool.variable name")));
+        });
+        for (String method : List.of("get", "update", "remove", "lock", "signal", "waitFor")) {
+            registry.registerMethod("SwapVariable", method, (args, invocation) -> {
+                FclSystemHandle variable = (FclSystemHandle) args.getFirst();
+                requireSwapPool(variable.id());
+                List<Object> forwarded = new ArrayList<>();
+                forwarded.add(variable.id());
+                forwarded.add(variable.attributes().get("name"));
+                for (Object supplied : args.subList(1, args.size())) {
+                    // Update/remove accept either a raw fencing token or the lease handle that
+                    // carries it; a lease handle is never a valid numeric argument.
+                    if (supplied instanceof FclSystemHandle lease
+                            && lease.kind().equals("SwapLease")) {
+                        String token = lease.attributes().get("token");
+                        if (token == null) throw new FclRuntimeException("InvalidLease",
+                                "Swap lease handle has no fencing token");
+                        forwarded.add(Long.parseLong(token));
+                    } else {
+                        forwarded.add(supplied);
+                    }
+                }
+                Object result = registry.invokeInternal("swapPool." + method, forwarded, invocation);
+                if (method.equals("lock") && result != null) {
+                    return new FclSystemHandle("SwapLease", variable.id(), Map.of(
+                            "name", variable.attributes().get("name"),
+                            "token", String.valueOf(((Map<?, ?>) result).get("fencingToken"))));
+                }
+                return result;
+            });
+        }
+        for (String method : List.of("renew", "release")) {
+            registry.registerMethod("SwapLease", method, (args, invocation) -> {
+                FclSystemHandle lease = (FclSystemHandle) args.getFirst();
+                requireSwapPool(lease.id());
+                List<Object> forwarded = new ArrayList<>(List.of(lease.id(),
+                        lease.attributes().get("name"), Long.parseLong(lease.attributes().get("token"))));
+                forwarded.addAll(args.subList(1, args.size()));
+                Object result = registry.invokeInternal(method.equals("renew")
+                        ? "swapPool.renewLock" : "swapPool.unlock", forwarded, invocation);
+                if (method.equals("renew") && result == null) {
+                    throw new FclRuntimeException("ExpiredLease", "Swap lease expired");
+                }
+                return method.equals("renew") ? lease : result;
+            });
+        }
+        for (String name : List.of("remove", "exists", "list", "add", "get", "update", "clear",
+                "lock", "renewLock", "unlock", "signal", "waitFor")) {
+            registry.internalize("swapPool." + name);
+        }
+    }
+
+    private void requireSwapPool(String pool) {
+        if (!transaction.ipc().swapPoolExists(process.ownerId(), pool)) {
+            throw new FclRuntimeException("StaleHandle", "Swap pool was removed");
+        }
+    }
+
+    private Object swapMethod(String method, List<Object> args,
+                              FclFunctionRegistry.Invocation invocation) {
+        FclSystemHandle pool = (FclSystemHandle) args.getFirst();
+        requireSwapPool(pool.id());
+        List<Object> forwarded = new ArrayList<>();
+        forwarded.add(pool.id());
+        forwarded.addAll(args.subList(1, args.size()));
+        return registry.invokeInternal("swapPool." + method, forwarded, invocation);
     }
 
     protected void registerIpc() {
@@ -431,15 +596,14 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
                     arity(args, 1, "ipc.createChannel");
                     IpcChannel channel = IpcService.createChannelIn(transaction,
                             process.ownerId(), string(args.get(0), "ipc.createChannel name"), now);
-                    return Map.of("channelId", channel.channelId().toString(),
-                            "name", channel.name());
+                    return new FclSystemHandle("Channel", channel.channelId().toString());
                 })
                 .register("ipc", "createTopic", args -> {
                     arity(args, 1, "ipc.createTopic");
                     IpcTopic topic = IpcService.createTopicIn(transaction, process.ownerId(),
                             string(args.get(0), "ipc.createTopic name"), now);
-                    return Map.of("topicId", topic.topicId().toString(),
-                            "name", topic.name());
+                    return new FclSystemHandle("Topic", topic.topicId().toString(),
+                            Map.of("name", topic.name()));
                 })
                 .register("ipc", "removeChannel", args -> {
                     arity(args, 1, "ipc.removeChannel");
@@ -538,6 +702,113 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
                     return IpcService.consumeIn(transaction, process.ownerId(),
                             uuid(args.get(0), "ipc.consume deliveryId"));
                 });
+        registry.register("ipc", "channel", args -> {
+            arity(args, 1, "ipc.channel");
+            UUID id = uuid(args.getFirst(), "ipc.channel id");
+            IpcChannel channel = transaction.ipc().findChannel(id)
+                    .orElseThrow(() -> new FclRuntimeException("Unknown channel"));
+            if (!channel.ownerId().equals(process.ownerId())
+                    || channel.status() != IpcChannel.Status.ACTIVE) {
+                throw new FclRuntimeException("Channel is unavailable");
+            }
+            return new FclSystemHandle("Channel", id.toString());
+        });
+        registry.register("ipc", "topic", args -> {
+            arity(args, 1, "ipc.topic");
+            IpcTopic topic = transaction.ipc().findTopic(string(args.getFirst(), "ipc.topic name"))
+                    .orElseThrow(() -> new FclRuntimeException("Unknown topic"));
+            if (!topic.ownerId().equals(process.ownerId())
+                    || topic.status() != IpcTopic.Status.ACTIVE) {
+                throw new FclRuntimeException("Topic is unavailable");
+            }
+            return new FclSystemHandle("Topic", topic.topicId().toString(),
+                    Map.of("name", topic.name()));
+        });
+        registry.register("ipc", "delivery", args -> {
+            arity(args, 1, "ipc.delivery");
+            UUID id = uuid(args.getFirst(), "ipc.delivery id");
+            requireDelivery(id);
+            return new FclSystemHandle("Delivery", id.toString());
+        });
+        for (String method : List.of("send", "subscribe", "remove")) {
+            registry.registerMethod("Channel", method, (args, invocation) -> {
+                IpcChannel channel = requireChannel((FclSystemHandle) args.getFirst());
+                return ipcObjectCall(switch (method) {
+                    case "send" -> "sendChannel";
+                    case "subscribe" -> "subscribeChannel";
+                    default -> "removeChannel";
+                }, channel.channelId().toString(), args.subList(1, args.size()), invocation);
+            });
+        }
+        for (String method : List.of("publish", "broadcast", "subscribe", "remove")) {
+            registry.registerMethod("Topic", method, (args, invocation) -> {
+                IpcTopic topic = requireTopic((FclSystemHandle) args.getFirst());
+                String oldName = switch (method) {
+                    case "publish" -> "publishTopic";
+                    case "subscribe" -> "subscribeTopic";
+                    case "remove" -> "removeTopic";
+                    default -> method;
+                };
+                String identity = method.equals("remove") ? topic.topicId().toString() : topic.name();
+                return ipcObjectCall(oldName, identity, args.subList(1, args.size()), invocation);
+            });
+        }
+        registry.registerMethod("Delivery", "consume", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "Delivery.consume");
+            UUID id = UUID.fromString(((FclSystemHandle) args.getFirst()).id());
+            requireDelivery(id);
+            IpcDelivery delivery = transaction.ipc().findDelivery(id).orElseThrow(() ->
+                    new FclRuntimeException("StaleHandle", "Delivery was removed"));
+            // Consume is a durable state transition: repeating it must not fail the process or
+            // consume twice. Only a reserved delivery of this receiver may transition.
+            if (delivery.status() == IpcDelivery.Status.CONSUMED) return false;
+            if (delivery.status() != IpcDelivery.Status.RESERVED) {
+                throw new FclRuntimeException("DeliveryNotReserved",
+                        "Delivery is not reserved; reserve it with ipc.receive() or ipc.poll()");
+            }
+            return registry.invokeInternal("ipc.consume", List.of(id.toString()), invocation);
+        });
+        for (String name : List.of("sendDirect", "removeChannel", "removeTopic", "subscribeChannel",
+                "subscribeTopic", "sendChannel", "publishTopic", "broadcast", "consume")) {
+            registry.internalize("ipc." + name);
+        }
+    }
+
+    private Object ipcObjectCall(String name, String identity, List<Object> arguments,
+                                 FclFunctionRegistry.Invocation invocation) {
+        List<Object> forwarded = new ArrayList<>(arguments.size() + 1);
+        forwarded.add(identity);
+        forwarded.addAll(arguments);
+        return registry.invokeInternal("ipc." + name, forwarded, invocation);
+    }
+
+    private IpcChannel requireChannel(FclSystemHandle handle) {
+        IpcChannel channel = transaction.ipc().findChannel(UUID.fromString(handle.id()))
+                .orElseThrow(() -> new FclRuntimeException("StaleHandle", "Channel was removed"));
+        if (!channel.ownerId().equals(process.ownerId())
+                || channel.status() != IpcChannel.Status.ACTIVE) {
+            throw new FclRuntimeException("Channel is unavailable");
+        }
+        return channel;
+    }
+
+    private IpcTopic requireTopic(FclSystemHandle handle) {
+        IpcTopic topic = transaction.ipc().findTopic(handle.attributes().getOrDefault("name", ""))
+                .orElse(null);
+        if (topic == null || !topic.ownerId().equals(process.ownerId())
+                || topic.status() != IpcTopic.Status.ACTIVE
+                || !topic.topicId().toString().equals(handle.id())) {
+            throw new FclRuntimeException("StaleHandle", "Topic is unavailable");
+        }
+        return topic;
+    }
+
+    private void requireDelivery(UUID id) {
+        var delivery = transaction.ipc().findDelivery(id)
+                .orElseThrow(() -> new FclRuntimeException("StaleHandle", "Delivery was removed"));
+        if (!delivery.receiverProcessUid().equals(process.identity().processUid())) {
+            throw new FclRuntimeException("Delivery is not owned by this process");
+        }
     }
 
     /** Serializes any FCL value into a durable IPC payload. */

@@ -6,6 +6,7 @@ import com.follarce.auth.UsernamePolicy;
 import com.follarce.domain.auth.Capability;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclSystemHandle;
 
 import java.util.Arrays;
 import java.util.List;
@@ -111,7 +112,7 @@ final class FclUserRuntimeFunctions {
                         // The VFS root is provisioned idempotently on the new user's first login
                         // (TerminalAccessService.ensureRoot); user transactions cannot insert a
                         // node owned by another user under forced RLS.
-                        return userMap(created);
+                        return new FclSystemHandle("User", created.userId().toString());
                     } finally {
                         Arrays.fill(secret, '\0');
                         if (secretAdmin != null) Arrays.fill(secretAdmin, '\0');
@@ -131,6 +132,45 @@ final class FclUserRuntimeFunctions {
                 })
                 .register("user", "switchUser", args -> unavailable("user.switchUser",
                         "a durable process identity cannot be changed in place"));
+        registry.register("user", "find", args -> {
+            arity(args, 1, "user.find");
+            String requested = string(args.getFirst(), "user.find identity");
+            UserAccount found = findVisible(requested);
+            return new FclSystemHandle("User", found.userId().toString());
+        });
+        registry.registerMethod("User", "info", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "User.info");
+            return userMap(findVisible(((FclSystemHandle) args.getFirst()).id()));
+        });
+        registry.registerMethod("User", "disable", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "User.disable");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            findVisible(handle.id());
+            return registry.invokeInternal("user.disable", List.of(handle.id()), invocation);
+        });
+        registry.registerMethod("User", "remove", (args, invocation) -> {
+            arity(args.subList(1, args.size()), 0, "User.remove");
+            FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+            findVisible(handle.id());
+            return registry.invokeInternal("user.remove", List.of(handle.id()), invocation);
+        });
+        registry.internalize("user.validateUser");
+        registry.internalize("user.disable");
+        registry.internalize("user.remove");
+    }
+
+    private UserAccount findVisible(String requested) {
+        UserAccount found;
+        try {
+            UUID id = UUID.fromString(requested);
+            found = auth.findUser(id).orElse(null);
+        } catch (IllegalArgumentException invalidUuid) {
+            found = auth.findUser(requested).orElse(null);
+        }
+        if (found == null || (!found.userId().equals(ownerId) && !isAdministrator())) {
+            throw new FclRuntimeException("Unknown or inaccessible user: " + requested);
+        }
+        return found;
     }
 
     private static Map<String, Object> userMap(UserAccount user) {

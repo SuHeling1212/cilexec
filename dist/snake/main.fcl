@@ -1,5 +1,8 @@
 // Snake: a durable terminal game written entirely in FCL.
-
+//
+// 0.0.5 rewrite: SnakeGame owns both the simulation and its rendering through instance
+// methods. play() only owns the interactive event loop, so every board operation is a real
+// receiver-method call (game.step(), game.draw(), game.turn(...), game.directionFor(...)).
 func sn_min(a, b) {
     if a < b { return a }
     return b
@@ -122,6 +125,20 @@ class SnakeGame {
         return true
     }
 
+    // Translate one input key into a direction, or "" when the key is not a direction.
+    func directionFor(key) {
+        if key == "UP" or key == "w" or key == "W" { return "UP" }
+        if key == "DOWN" or key == "s" or key == "S" { return "DOWN" }
+        if key == "LEFT" or key == "a" or key == "A" { return "LEFT" }
+        if key == "RIGHT" or key == "d" or key == "D" { return "RIGHT" }
+        return ""
+    }
+
+    func togglePause() {
+        this.paused = !this.paused
+        return null
+    }
+
     func step() {
         if this.paused or this.over { return false }
         this.direction = this.nextDirection
@@ -154,68 +171,60 @@ class SnakeGame {
         }
         return true
     }
-}
 
-func sn_direction(key) {
-    if key == "UP" or key == "w" or key == "W" { return "UP" }
-    if key == "DOWN" or key == "s" or key == "S" { return "DOWN" }
-    if key == "LEFT" or key == "a" or key == "A" { return "LEFT" }
-    if key == "RIGHT" or key == "d" or key == "D" { return "RIGHT" }
-    return ""
-}
+    func draw(terminalWidth, terminalHeight, clearFirst) {
+        requiredWidth = this.width + 2
+        requiredHeight = this.height + 4
+        frame = term.hideCursor()
+        if clearFirst { frame = frame + term.clear() }
+        frame = frame + term.cursorTo(1, 1)
+        if terminalWidth < requiredWidth or terminalHeight < requiredHeight {
+            frame = frame + "Snake needs at least " + util.toString(requiredWidth)
+            frame = frame + "x" + util.toString(requiredHeight) + ".\r\n"
+            frame = frame + "Current terminal: " + util.toString(terminalWidth)
+            frame = frame + "x" + util.toString(terminalHeight) + ".\r\n"
+            return frame + "Resize the terminal, or press Q to quit."
+        }
 
-func sn_draw(game, terminalWidth, terminalHeight, clearFirst) {
-    requiredWidth = game.width + 2
-    requiredHeight = game.height + 4
-    frame = term.hideCursor()
-    if clearFirst { frame = frame + term.clear() }
-    frame = frame + term.cursorTo(1, 1)
-    if terminalWidth < requiredWidth or terminalHeight < requiredHeight {
-        frame = frame + "Snake needs at least " + util.toString(requiredWidth)
-        frame = frame + "x" + util.toString(requiredHeight) + ".\r\n"
-        frame = frame + "Current terminal: " + util.toString(terminalWidth)
-        frame = frame + "x" + util.toString(terminalHeight) + ".\r\n"
-        return frame + "Resize the terminal, or press Q to quit."
-    }
-
-    title = " Snake  Score: " + util.toString(game.score)
-    if game.paused { title = title + "  [PAUSED]" }
-    frame = frame + sn_fit(title, requiredWidth) + "\r\n"
-    frame = frame + "+" + text.repeat("-", game.width) + "+\r\n"
-    y = 0
-    while y < game.height {
-        line = "|"
-        x = 0
-        while x < game.width {
-            segment = game.segmentAt(x, y)
-            if segment == 0 {
-                line = line + term.green("@")
-            } else {
-                if segment > 0 {
-                    line = line + term.green("o")
+        title = " Snake  Score: " + util.toString(this.score)
+        if this.paused { title = title + "  [PAUSED]" }
+        frame = frame + sn_fit(title, requiredWidth) + "\r\n"
+        frame = frame + "+" + text.repeat("-", this.width) + "+\r\n"
+        y = 0
+        while y < this.height {
+            line = "|"
+            x = 0
+            while x < this.width {
+                segment = this.segmentAt(x, y)
+                if segment == 0 {
+                    line = line + term.green("@")
                 } else {
-                    if x == game.foodX and y == game.foodY {
-                        line = line + term.red("*")
+                    if segment > 0 {
+                        line = line + term.green("o")
                     } else {
-                        line = line + " "
+                        if x == this.foodX and y == this.foodY {
+                            line = line + term.red("*")
+                        } else {
+                            line = line + " "
+                        }
                     }
                 }
+                x++
             }
-            x++
+            frame = frame + line + "|\r\n"
+            y++
         }
-        frame = frame + line + "|\r\n"
-        y++
-    }
-    frame = frame + "+" + text.repeat("-", game.width) + "+\r\n"
-    footer = "Arrows/WASD move  P pause  Q quit"
-    if game.over {
-        if game.won {
-            footer = "You filled the board!  R restart  Q quit"
-        } else {
-            footer = "Game over!  R restart  Q quit"
+        frame = frame + "+" + text.repeat("-", this.width) + "+\r\n"
+        footer = "Arrows/WASD move  P pause  Q quit"
+        if this.over {
+            if this.won {
+                footer = "You filled the board!  R restart  Q quit"
+            } else {
+                footer = "Game over!  R restart  Q quit"
+            }
         }
+        return frame + sn_fit(footer, requiredWidth)
     }
-    return frame + sn_fit(footer, requiredWidth)
 }
 
 func play() {
@@ -228,7 +237,7 @@ func play() {
     running = true
 
     term.render(term.alternate(true) + term.hideCursor() + term.clear())
-    term.render(sn_draw(game, lastWidth, lastHeight, false))
+    term.render(game.draw(lastWidth, lastHeight, false))
     while running {
         waitMs = game.tickMs
         if game.paused or game.over { waitMs = 500 }
@@ -243,10 +252,10 @@ func play() {
         } else {
             if event["kind"] == "key" {
                 key = event["key"]
-                direction = sn_direction(key)
+                direction = game.directionFor(key)
                 if #direction > 0 { game.turn(direction) }
                 if key == "p" or key == "P" {
-                    game.paused = !game.paused
+                    game.togglePause()
                     repaint = true
                 }
                 if game.over {
@@ -267,7 +276,7 @@ func play() {
             repaint = true
         }
         if running and repaint {
-            term.render(sn_draw(game, lastWidth, lastHeight, resized))
+            term.render(game.draw(lastWidth, lastHeight, resized))
         }
     }
     term.render(term.alternate(false) + term.showCursor())

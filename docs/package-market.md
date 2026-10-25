@@ -149,12 +149,12 @@ as `cacheFilesRemoved`; ordinary user files are never registered or touched.
 
 Every user and exact installed package release owns an isolated private data space
 (`package-data://<database-file-sha256>/`) with a default quota of 256 MiB. Package
-code writes to it with the `packageData.*` functions, which require the declared
-`package.data` capability and resolve the space from the linked package identity;
-other packages and ordinary VFS paths cannot reach it. Users inspect, export,
-import, and clear the space with `package.dataInfo`, `package.dataList`,
-`package.dataRead`, `package.dataExport`, `package.dataImport`, and
-`package.clearData`. Uninstallation removes the private space, the market download
+code accesses it through a `PackageSpace` object (`packageData.current()`); private
+operations require the declared `package.data` capability and resolve the space from the
+linked package identity, so other packages and ordinary VFS paths cannot reach it.
+Users inspect, export, import, and clear the space through
+`package.find(hash).data()` (`info`, `usage`, `list`, `read`, `write`, `export`,
+`import`, `clear`, `quota`). Uninstallation removes the private space, the market download
 cache, the installation ledger, and process bindings, and garbage-collects
 globally unreferenced release payloads; ordinary user documents are never touched.
 
@@ -173,13 +173,13 @@ uses a capability that was not declared. The audit covers the following mapping:
 
 | Function calls | Required package capability |
 | --- | --- |
-| `io.readFile`, `file.*` read operations | `vfs.read` |
-| `io.writeFile`, `file.*` write operations | `vfs.write` |
+| `file.open`, `file.path(...).exists`, `File.read/readChunk/size/metadata/list` | `vfs.read` |
+| `file.create`, `file.mkdir`, `File.write/append/rename/remove/lock/clear`, `file.link` | `vfs.write` |
 | `util.input`, `io.input`, `io.readKey`, `io.readChar` | `terminal.raw_input` |
 | `market.configure`, `market.update`, `market.download`, `market.install` | `package.manage` |
-| `packageData.*` private data functions | `package.data` |
-| `process.exec`, `process.kill`, `process.pause`, `process.continue`, `process.getList` | `process.control` |
-| `user.validateUser`, `user.list`, `user.disable`, `user.remove` | `system.admin` |
+| `packageData.current` and private `PackageSpace.*` methods, `Package.data()` data-space methods | `package.data` |
+| `process.find` and `Process.status/wait/pause/continue/kill/send/removeFinished`, `process.exec` | `process.control` |
+| `user.find`, `user.list` and `User.info/disable/remove`, `program.find`, `terminal.find` | `system.admin` |
 
 Query-only market functions (`market.origin`, `market.search`, `market.info`, `market.list`,
 `market.help`, `market.run`) require no capability. `system.list` and `system.extensions` are
@@ -229,8 +229,8 @@ Windows runs `tools\release.bat`. The flow runs the Runtime and market-server te
 the two JARs, scans package sources in `dist/*/` that carry a `package.json` and
 `market.json`, generates the market repository and `catalog.json` from their coordinates,
 then regenerates and rechecks `SHA256SUMS`. Only after all staged artifacts validate are
-the release artifacts in `dist` replaced. Use `--skip-tests` when CI has already run the
-full test suite; use `--verify-only` to only recheck the existing artifacts.
+the release artifacts in `dist` replaced. Use `--skip-tests` when the full test suite has
+already been run locally; use `--verify-only` to only recheck the existing artifacts.
 
 The editor source lives in `dist/editor/`. To build a single `.db`, use the package
 builder bundled into the Runtime JAR so package validation uses the authoritative current

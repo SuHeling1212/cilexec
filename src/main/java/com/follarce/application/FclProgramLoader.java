@@ -7,7 +7,6 @@ import com.follarce.domain.process.CilProcess;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.StoredObject;
-import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramLinker;
@@ -60,30 +59,19 @@ final class FclProgramLoader {
             throw new IllegalStateException("Unsupported persisted FCL program format: "
                     + program.runtimeFormatVersion());
         }
-        FclProgram decoded;
-        if (program.compiledObjectHash().isPresent()) {
-            ObjectHash compiledHash = program.compiledObjectHash().orElseThrow();
-            decoded = programCache.get(compiledHash, () -> {
-                StoredObject sourceObject = transaction.vfs().findObject(program.sourceObjectHash())
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Program source object is missing"));
-                String source = utf8(sourceObject, "program source");
-                StoredObject compiledObject = transaction.vfs().findObject(compiledHash)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Compiled program object is missing"));
-                return programCodec.fromBytes(compiledObject.content().bytes(),
-                        program.runtimeFormatVersion(), source);
-            });
-        } else {
-            if (program.runtimeFormatVersion() != FclProgramCodec.LEGACY_FORMAT_VERSION) {
-                throw new IllegalStateException("FCLB program has no executable artifact");
-            }
+        ObjectHash compiledHash = program.compiledObjectHash().orElseThrow(() ->
+                new IllegalStateException("Persisted FCL program has no executable artifact"));
+        FclProgram decoded = programCache.get(compiledHash, () -> {
             StoredObject sourceObject = transaction.vfs().findObject(program.sourceObjectHash())
                     .orElseThrow(() -> new IllegalStateException(
                             "Program source object is missing"));
             String source = utf8(sourceObject, "program source");
-            decoded = new FclCompiler().compile(source);
-        }
+            StoredObject compiledObject = transaction.vfs().findObject(compiledHash)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Compiled program object is missing"));
+            return programCodec.fromBytes(compiledObject.content().bytes(),
+                    program.runtimeFormatVersion(), source);
+        });
         if (!decoded.sourceHash().equals(program.programHash().value())) {
             throw new IllegalStateException("Loaded program hash does not match metadata");
         }

@@ -24,9 +24,7 @@ import java.util.function.Supplier;
 /** Persists immutable FCL programs, compiling only when their source identity is new. */
 public final class ProgramService {
     public static final String LANGUAGE_VERSION = "fcl-" + ReleaseVersion.current();
-    /** Read compatibility for packages published before the current source-language release. */
-    public static final Set<String> LEGACY_LANGUAGE_VERSIONS = Set.of(
-            "fcl-0.0.2", "fcl-0.0.3");
+
     public static final String SOURCE_MEDIA_TYPE = "text/x-fcl; charset=utf-8";
     public static final String COMPILED_MEDIA_TYPE =
             "application/vnd.cilexec.fcl-program; version=" + FclProgramCodec.FORMAT_VERSION;
@@ -61,14 +59,12 @@ public final class ProgramService {
     }
 
     /**
-     * V003 and V004 did not invalidate the V002 source language, so their packages remain
-     * import-compatible. This allowlist is deliberately explicit: a future source-language
-     * change must opt in after compatibility has been reviewed.
+     * 0.0.5 replaces the entity-function API with receiver objects and changes the accepted
+     * program format. Packages written for the removed API cannot execute, so compatibility is
+     * strict equality: only packages compiled for the current source language may be linked.
      */
     public static boolean compatiblePackageLanguage(String packageLanguage, String programLanguage) {
-        return packageLanguage.equals(programLanguage)
-                || (LANGUAGE_VERSION.equals(programLanguage)
-                && LEGACY_LANGUAGE_VERSIONS.contains(packageLanguage));
+        return packageLanguage.equals(programLanguage);
     }
 
     public Program create(UUID ownerId, String source, String workingDirectory) {

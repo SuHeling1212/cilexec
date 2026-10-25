@@ -5,10 +5,16 @@ import com.follarce.domain.auth.Capability;
 import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.fcl.FclRuntimeException;
+import com.follarce.fcl.FclSystemHandle;
+import com.follarce.fcl.FclFunctionRegistry;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
@@ -62,12 +68,12 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                             : string(args.getFirst(), "file.list path");
                     UUID owner = owner(args, 1);
                     String absolute = normalize(requested);
-                    if (owner.equals(process.ownerId()) && absolute.equals("/Users")
-                            && isLocalAdministrator()) {
+                    RoutedPath routed = route(requested, owner);
+                    if (routed.ownerId().equals(process.ownerId())
+                            && routed.path().equals("/Users") && isLocalAdministrator()) {
                         return transaction.auth().findUsersByAdministrator(process.ownerId())
                                 .stream().map(user -> virtualUserNode(user)).toList();
                     }
-                    RoutedPath routed = route(requested, owner);
                     requireFileAccess(routed.ownerId(), Capability.VFS_READ);
                     VfsNode directory = requireNode(routed.path(), routed.ownerId());
                     requireType(directory, VfsNode.Type.DIRECTORY, "file.list");
@@ -186,6 +192,182 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
         registry.aliasQualified("file.read", "io", "readFile")
                 .aliasQualified("file.write", "io", "writeFile");
 
+        registerObjects();
+
+    }
+
+    private static final String OWNER_ATTRIBUTE = "owner";
+
+    private void registerObjects() {
+        registry.register("file", "open", args -> {
+            if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                    "file.open expects path and optional target user");
+            RoutedPath routed = route(string(args.getFirst(), "file.open path"), owner(args, 1));
+            // Opening resolves identity only; the individual method still checks the
+            // capability it needs (read, write, or delete) before doing any work, so a
+            // read-only caller may open a node for read methods.
+            requireFileAccess(routed.ownerId(), Capability.VFS_READ);
+            VfsNode node = requireNode(routed.path(), routed.ownerId());
+            return new FclSystemHandle(node.type() == VfsNode.Type.DIRECTORY
+                    ? "Directory" : "File", node.nodeId().toString(), ownerAttributes(node));
+        });
+        registry.register("file", "path", args -> {
+            arity(args, 1, "file.path");
+            return new FclSystemHandle("Path", normalize(string(args.getFirst(), "file.path path")));
+        });
+        registry.register("file", "create", args -> {
+            if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                    "file.create expects path and optional content");
+            String path = string(args.getFirst(), "file.create path");
+            String content = args.size() == 2 ? display(args.get(1)) : "";
+            String id = createText(path, content, process.ownerId());
+            return new FclSystemHandle("File", id);
+        });
+        registry.register("file", "mkdir", args -> {
+            arity(args, 1, "file.mkdir");
+            String id = createDirectory(string(args.getFirst(), "file.mkdir path"), process.ownerId());
+            return new FclSystemHandle("Directory", id);
+        });
+        registry.registerMethod("Path", "exists", (args, invocation) -> {
+            FclSystemHandle path = (FclSystemHandle) args.getFirst();
+            arity(args.subList(1, args.size()), 0, "Path.exists");
+            return registry.invokeInternal("file.exists", List.of(path.id()), invocation);
+        });
+        for (String method : List.of("read", "readChunk", "size", "metadata", "write", "append",
+                "rename", "remove", "lock")) {
+            registry.registerMethod("File", method, (args, invocation) ->
+                    invokeNode((FclSystemHandle) args.getFirst(), method,
+                            args.subList(1, args.size()), invocation));
+        }
+        for (String method : List.of("list", "clear", "metadata", "rename", "remove")) {
+            registry.registerMethod("Directory", method, (args, invocation) ->
+                    invokeNode((FclSystemHandle) args.getFirst(), method,
+                            args.subList(1, args.size()), invocation));
+        }
+        registry.registerMethod("FileLease", "renew", (args, invocation) -> {
+            FclSystemHandle lease = (FclSystemHandle) args.getFirst();
+            arity(args.subList(1, args.size()), 1, "FileLease.renew");
+            FileTarget target = leaseTarget(lease);
+            target.requireLeasable();
+            Object result = registry.invokeInternal("file.renewLock", List.of(
+                    target.path(), Long.parseLong(lease.attributes().get("token")),
+                    args.get(1)), invocation);
+            if (result == null) throw new FclRuntimeException("ExpiredLease", "File lease expired");
+            return lease;
+        });
+        registry.registerMethod("FileLease", "release", (args, invocation) -> {
+            FclSystemHandle lease = (FclSystemHandle) args.getFirst();
+            arity(args.subList(1, args.size()), 0, "FileLease.release");
+            FileTarget target = leaseTarget(lease);
+            return registry.invokeInternal("file.unlock", List.of(target.path(),
+                    Long.parseLong(lease.attributes().get("token"))), invocation);
+        });
+        for (String name : List.of("read", "readChunk", "size", "exists", "list", "readMetaData",
+                "write", "append", "createFile", "createDir", "remove", "clear", "rename",
+                "lock", "renewLock", "unlock")) registry.internalize("file." + name);
+    }
+
+    private Object invokeNode(FclSystemHandle handle, String method, List<Object> supplied,
+                              FclFunctionRegistry.Invocation invocation) {
+        FileTarget target = liveTarget(handle);
+        boolean crossOwner = !target.ownerId().equals(process.ownerId());
+        if (crossOwner && Set.of("lock", "renewLock", "unlock").contains(method)) {
+            throw new FclRuntimeException(
+                    "File leases are limited to files owned by the current user");
+        }
+        String legacy = method.equals("metadata") ? "readMetaData" : method;
+        List<Object> arguments = new ArrayList<>(supplied.size() + 2);
+        arguments.add(target.path());
+        arguments.addAll(supplied);
+        if (crossOwner) arguments.add(target.ownerId().toString());
+        Object result = registry.invokeInternal("file." + legacy, arguments, invocation);
+        if (method.equals("lock")) {
+            if (result == null) return null;
+            Object token = ((Map<?, ?>) result).get("fencingToken");
+            Map<String, String> attributes = new LinkedHashMap<>();
+            attributes.put("token", String.valueOf(token));
+            if (crossOwner) attributes.put(OWNER_ATTRIBUTE, target.ownerId().toString());
+            return new FclSystemHandle("FileLease", target.node().nodeId().toString(),
+                    Map.copyOf(attributes));
+        }
+        return result;
+    }
+
+    private Map<String, String> ownerAttributes(VfsNode node) {
+        return node.ownerId().equals(process.ownerId())
+                ? Map.of() : Map.of(OWNER_ATTRIBUTE, node.ownerId().toString());
+    }
+
+    private record FileTarget(UUID ownerId, VfsNode node, String path) {
+        void requireLeasable() {
+            if (!node.type().equals(VfsNode.Type.FILE)) {
+                throw new FclRuntimeException("File lease requires a file");
+            }
+        }
+    }
+
+    /** Re-resolves the durable node identity on every call; a handle never grants authority. */
+    private FileTarget liveTarget(FclSystemHandle handle) {
+        UUID nodeId;
+        try {
+            nodeId = UUID.fromString(handle.id());
+        } catch (IllegalArgumentException invalid) {
+            throw new FclRuntimeException("StaleHandle", "Invalid VFS handle identity");
+        }
+        UUID ownerId = handle.attributes().containsKey(OWNER_ATTRIBUTE)
+                ? UUID.fromString(handle.attributes().get(OWNER_ATTRIBUTE)) : process.ownerId();
+        VfsNode node;
+        if (ownerId.equals(process.ownerId())) {
+            node = transaction.vfs().findNode(nodeId).orElseThrow(() ->
+                    new FclRuntimeException("StaleHandle", "VFS node was removed"));
+        } else {
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            node = transaction.vfs().findAllNodesByAdministrator(process.ownerId(), ownerId,
+                            UUID.randomUUID(), now).stream()
+                    .filter(candidate -> candidate.nodeId().equals(nodeId))
+                    .findFirst().orElseThrow(() ->
+                            new FclRuntimeException("StaleHandle", "VFS node was removed"));
+        }
+        if (!node.ownerId().equals(ownerId)) {
+            throw new FclRuntimeException("StaleHandle", "VFS node owner changed");
+        }
+        boolean directory = node.type() == VfsNode.Type.DIRECTORY;
+        if (handle.kind().equals("Directory") != directory) {
+            throw new FclRuntimeException("StaleHandle", "VFS node type changed");
+        }
+        return new FileTarget(ownerId, node, pathOf(node, ownerId));
+    }
+
+    private FileTarget leaseTarget(FclSystemHandle lease) {
+        return liveTarget(new FclSystemHandle("File", lease.id(), lease.attributes()));
+    }
+
+    private String pathOf(VfsNode node, UUID ownerId) {
+        Map<UUID, VfsNode> administratorNodes = null;
+        if (!ownerId.equals(process.ownerId())) {
+            Authorization.requireAdministrator(transaction, process.ownerId());
+            administratorNodes = new LinkedHashMap<>();
+            for (VfsNode candidate : transaction.vfs().findAllNodesByAdministrator(
+                    process.ownerId(), ownerId, UUID.randomUUID(), now)) {
+                administratorNodes.put(candidate.nodeId(), candidate);
+            }
+        }
+        List<String> parts = new ArrayList<>();
+        VfsNode current = node;
+        for (int depth = 0; current.parentNodeId().isPresent(); depth++) {
+            if (depth >= 256) throw new FclRuntimeException("InvalidPath", "VFS ancestry is too deep");
+            parts.addFirst(current.name());
+            UUID parentId = current.parentNodeId().orElseThrow();
+            current = administratorNodes != null
+                    ? Optional.ofNullable(administratorNodes.get(parentId)).orElseThrow(() ->
+                    new FclRuntimeException("StaleHandle", "VFS parent was removed"))
+                    : transaction.vfs().findNode(parentId).orElseThrow(() ->
+                    new FclRuntimeException("StaleHandle", "VFS parent was removed"));
+            if (!current.ownerId().equals(ownerId)) {
+                throw new FclRuntimeException("StaleHandle", "VFS owner changed");
+            }
+        }
+        return "/" + String.join("/", parts);
     }
 
 }

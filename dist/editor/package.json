@@ -2,7 +2,7 @@
   "namespace": "cilexec",
   "name": "editor",
   "version": "0.0.3",
-  "languageVersion": "fcl-0.0.3",
+  "languageVersion": "fcl-0.0.5",
   "kind": "application",
   "modules": [
     {

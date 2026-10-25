@@ -5,6 +5,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import javax.sql.DataSource;
 
 /** Runtime-side read-only schema check; it never needs migrator credentials. */
@@ -21,37 +22,43 @@ public final class SchemaVerifier {
     }
 
     public int verify() {
-        String sql = "SELECT current_setting('server_version_num')::integer, "
-                + "(SELECT version FROM flyway.flyway_schema_history WHERE success "
-                + "ORDER BY installed_rank DESC LIMIT 1), "
-                + "EXISTS(SELECT 1 FROM flyway.flyway_schema_history WHERE NOT success)";
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql);
-             ResultSet rows = statement.executeQuery()) {
-            if (!rows.next()) {
-                throw new IllegalStateException("Database version query returned no row");
+        try (Connection connection = dataSource.getConnection()) {
+            requireSecurePostgresql(serverVersion(connection));
+            DatabaseFormatFence.Inspection inspection;
+            try {
+                inspection = DatabaseFormatFence.inspect(connection);
+            } catch (SQLException failure) {
+                throw SqlStateClassifier.classify("schema.inspect", failure);
             }
-            requireSecurePostgresql(rows.getInt(1));
-            if (rows.getBoolean(3)) {
-                throw new IllegalStateException("Database contains failed Flyway migrations");
+            DatabaseFormatFence.Decision decision =
+                    DatabaseFormatFence.classify(inspection, minimum, maximum);
+            if (decision == DatabaseFormatFence.Decision.FRESH) {
+                throw new IllegalStateException(
+                        DatabaseFormatFence.missingMigrationMessage(minimum));
             }
-            if (rows.getString(2) == null) {
-                throw new IllegalStateException("Database has no successful CilExec migration");
-            }
-            int version = Integer.parseInt(rows.getString(2));
-            if (version < minimum || version > maximum) {
-                throw new IllegalStateException("Database schema " + version
-                        + " is outside supported range " + minimum + ".." + maximum);
+            if (decision != DatabaseFormatFence.Decision.CURRENT) {
+                // Refusal happens before this Runtime writes instance, boot, or audit rows.
+                throw new DatabaseFormatFence.RefusalException(
+                        DatabaseFormatFence.refusalMessage(decision, inspection, minimum, maximum));
             }
             try (PreparedStatement invariants = connection.prepareStatement(
                     "SELECT meta.assert_security_invariants()")) {
                 invariants.execute();
             }
-            return version;
+            return inspection.latestSuccessfulVersion();
         } catch (SQLException exception) {
             throw SqlStateClassifier.classify("schema.verify", exception);
-        } catch (NumberFormatException exception) {
-            throw new IllegalStateException("Flyway schema version is not numeric", exception);
+        }
+    }
+
+    private static int serverVersion(Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery(
+                     "SELECT current_setting('server_version_num')::integer")) {
+            if (!rows.next()) {
+                throw new IllegalStateException("Database version query returned no row");
+            }
+            return rows.getInt(1);
         }
     }
 

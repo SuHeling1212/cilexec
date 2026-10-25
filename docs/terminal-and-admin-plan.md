@@ -100,7 +100,10 @@ administrator operations:
 ```
 
 The `local` administrator account additionally gets a stable `/Users` virtual
-directory as the entry point for per-user home mounts.
+directory as the entry point for per-user home mounts. Its own home points back to
+its root, so `/Users/local/Users`, `/Users/local/Users/local/Users`, and further
+repetitions show the same virtual user list. These aliases do not create extra VFS
+nodes or duplicate stored data.
 
 ### 2.3 The system_admin Capability
 
@@ -273,7 +276,7 @@ adminRename* / adminDeleteNode        rename and constrained-delete (no recursiv
 ### 5.2 Administrator FCL Functions
 
 File functions accept an optional trailing target user, e.g.
-`file.read("/home/a.txt", "alice")`; ordinary users may only reach their own files,
+`file.open("/home/a.txt", "alice").read()`; ordinary users may only reach their own files,
 while `SYSTEM_ADMIN` holders may reach any user's files (each cross-user access
 leaves an audit record). `system.*` functions, `user.*` user administration, and
 `system.*` management functions and `user.*` administration require administrator authority.

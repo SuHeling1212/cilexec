@@ -13,6 +13,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -107,6 +108,32 @@ class TerminalOutputRouterTest {
         UUID route = UUID.randomUUID();
         TerminalOutputRouter.attach(route, output);
         TerminalOutputRouter.detachAll(output);
+        assertFalse(TerminalOutputRouter.publish(route, "x", true));
+    }
+
+    @Test
+    void detachingAnUnregisteredWriterIsSafeWhileAnotherSessionIsAttached() {
+        PrintWriter attached = new PrintWriter(new ByteArrayOutputStream());
+        PrintWriter neverAttached = new PrintWriter(new ByteArrayOutputStream());
+        UUID route = UUID.randomUUID();
+        TerminalOutputRouter.attach(route, attached);
+        try {
+            assertDoesNotThrow(() -> TerminalOutputRouter.detachAll(neverAttached),
+                    "closing a connection that never registered an output route must not throw");
+            assertTrue(TerminalOutputRouter.attached(route));
+        } finally {
+            TerminalOutputRouter.detachAll(attached);
+        }
+    }
+
+    @Test
+    void repeatedDetachIsIdempotent() {
+        PrintWriter output = new PrintWriter(new ByteArrayOutputStream());
+        UUID route = UUID.randomUUID();
+        TerminalOutputRouter.attach(route, output);
+        TerminalOutputRouter.detachAll(output);
+        assertDoesNotThrow(() -> TerminalOutputRouter.detachAll(output),
+                "the headless and interactive cleanup paths may detach twice");
         assertFalse(TerminalOutputRouter.publish(route, "x", true));
     }
 

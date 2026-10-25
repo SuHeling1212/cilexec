@@ -47,8 +47,13 @@ class MarketSnakePackageTest {
                 StandardCharsets.UTF_8);
         assertTrue(module.contains("class SnakeGame"));
         assertTrue(module.contains("func step()"));
+        assertTrue(module.contains("func draw(terminalWidth, terminalHeight, clearFirst)"));
+        assertTrue(module.contains("func directionFor(key)"));
+        assertTrue(module.contains("func togglePause()"));
         assertTrue(module.contains("io.readKey(waitMs, false)"));
-        assertTrue(module.contains("term.render(sn_draw"));
+        assertTrue(module.contains("term.render(game.draw("));
+        assertTrue(module.contains("game.step()"));
+        assertTrue(module.contains("game.directionFor(key)"));
         assertTrue(module.contains("func play()"));
     }
 

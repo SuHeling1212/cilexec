@@ -33,8 +33,6 @@ final class FclPersistenceBridge {
     static final String ENVELOPE_TYPE =
             "application/vnd.cilexec.fcl-continuation+json;version="
                     + FclProgramCodec.FORMAT_VERSION;
-    static final String LEGACY_ENVELOPE_TYPE =
-            "application/vnd.cilexec.fcl-continuation+json;version=2";
 
     private final FclContinuationCodec codec;
 
@@ -134,7 +132,6 @@ final class FclPersistenceBridge {
     }
 
     static String envelopeType(int formatVersion) {
-        if (formatVersion == FclProgramCodec.LEGACY_FORMAT_VERSION) return LEGACY_ENVELOPE_TYPE;
         if (FclProgramCodec.supportsFormat(formatVersion)) {
             return "application/vnd.cilexec.fcl-continuation+json;version=" + formatVersion;
         }

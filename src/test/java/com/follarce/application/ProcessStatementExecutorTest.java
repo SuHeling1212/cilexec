@@ -83,23 +83,24 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void restoresACompletedV002ContinuationAfterTheV003Upgrade() {
+    void refusesAnOldFormatContinuationBeforeExecution() {
         Fixture fixture = new Fixture("value = 1\n");
-        FclContinuation legacyRuntime = new FclContinuation(FclProgramCodec.LEGACY_FORMAT_VERSION);
-        legacyRuntime.scope().put("survives", 7L);
         FclContinuationCodec codec = new FclContinuationCodec();
-        Continuation legacy = new Continuation(fixture.program.programId(), fixture.program.programHash(), 0,
-                List.of(), List.of(new Continuation.ScopeFrame(UUID.randomUUID(), Optional.empty(), Map.of(
-                "survives", new Continuation.PersistedValue("long", codec.valueToJson(7L))))), List.of(), List.of(), Optional.empty(), Map.of(
-                FclPersistenceBridge.ENVELOPE_KEY, new Continuation.PersistedValue(
-                        FclPersistenceBridge.LEGACY_ENVELOPE_TYPE,
-                        codec.toJson(legacyRuntime))), Map.of(),
-                fixture.program.languageVersion(), Integer.toString(FclProgramCodec.LEGACY_FORMAT_VERSION));
+        int oldFormat = FclProgramCodec.FORMAT_VERSION - 1;
+        Continuation legacy = new Continuation(fixture.program.programId(),
+                fixture.program.programHash(), 0, List.of(), List.of(), List.of(), List.of(),
+                Optional.empty(), Map.of(FclPersistenceBridge.ENVELOPE_KEY,
+                        new Continuation.PersistedValue(
+                                "application/vnd.cilexec.fcl-continuation+json;version=2",
+                                "{}")), Map.of(),
+                fixture.program.languageVersion(), Integer.toString(oldFormat));
 
-        FclContinuation restored = new FclPersistenceBridge(codec).restore(legacy);
+        IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                () -> new FclPersistenceBridge(codec).restore(legacy));
 
-        assertEquals(FclProgramCodec.LEGACY_FORMAT_VERSION, restored.formatVersion());
-        assertEquals(7L, restored.scope().get("survives"));
+        assertTrue(refusal.getMessage().contains("Unsupported FCL continuation format: 4"),
+                refusal.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> new FclContinuation(oldFormat));
     }
 
     @Test
@@ -640,7 +641,7 @@ class ProcessStatementExecutorTest {
 
     @Test
     void fileReadResolvesARelativePathAgainstTheProcessWorkingDirectory() {
-        Fixture fixture = new Fixture("content = file.read(\"index.json\")\n",
+        Fixture fixture = new Fixture("content = file.open(\"index.json\").read()\n",
                 com.follarce.extension.SourceExtensionIndex.catalog());
         StoredObject content = StoredObject.create(new BinaryContent(
                 "market index".getBytes(java.nio.charset.StandardCharsets.UTF_8)),
@@ -680,8 +681,8 @@ class ProcessStatementExecutorTest {
     @Test
     void createFileRejectsAnExistingFile() {
         Fixture fixture = new Fixture("""
-                first = file.createFile("/note.txt", "first")
-                second = file.createFile("/note.txt", "second")
+                first = file.create("/note.txt", "first")
+                second = file.create("/note.txt", "second")
                 """, com.follarce.extension.SourceExtensionIndex.catalog());
         com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
                 UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
@@ -817,7 +818,7 @@ class ProcessStatementExecutorTest {
 
     @Test
     void linksAliasedPackageExportsAndPersistsTheExactHash() {
-        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
+        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.5",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(new PackageManifest.Export("greet", "main", "greet")), List.of());
@@ -862,7 +863,7 @@ class ProcessStatementExecutorTest {
     @Test
     void transitivelyLinksDependencyExportsByDatabaseFileSha256() {
         PackageManifest dependencyManifest = new PackageManifest("demo", "base", "1.0.0",
-                "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
+                "fcl-0.0.5", com.follarce.domain.packageinfo.PackageKind.LIBRARY,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(), List.of(new PackageManifest.Export("value", "main", "value")),
                 List.of());
@@ -872,7 +873,7 @@ class ProcessStatementExecutorTest {
         String dependencyHash = dependencyDescriptor.databaseFileHash();
 
         PackageManifest parentManifest = new PackageManifest("demo", "parent", "1.0.0",
-                "fcl-0.0.2", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
+                "fcl-0.0.5", com.follarce.domain.packageinfo.PackageKind.APPLICATION,
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(),
                 List.of(new PackageManifest.Dependency(dependencyHash, false)),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
@@ -944,7 +945,7 @@ class ProcessStatementExecutorTest {
 
     @Test
     void resolvesAnInstalledPackageByHashAndPinsItsExactHash() {
-        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.2",
+        PackageManifest manifest = new PackageManifest("demo", "hello", "1.0.0", "fcl-0.0.5",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(new PackageManifest.Export("greet", "main", "greet")),
@@ -1030,7 +1031,7 @@ class ProcessStatementExecutorTest {
     }
 
     private static byte[] buildEditorDatabase(String tag) {
-        return new PackageBuilder().build(new PackageManifest("demo", "pkg", "1.0.0", "fcl-0.0.2",
+        return new PackageBuilder().build(new PackageManifest("demo", "pkg", "1.0.0", "fcl-0.0.5",
                 List.of(new PackageManifest.Module("main", "main.fcl")), List.of(), List.of(),
                 List.of(new PackageManifest.Entrypoint("run", "main", "run")),
                 List.of(new PackageManifest.Export("greet", "main", "greet")), List.of()),

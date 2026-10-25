@@ -7,6 +7,7 @@ import com.follarce.fcl.FclFunctionRegistry;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclRuntime;
 import com.follarce.fcl.FclStepResult;
+import com.follarce.fcl.FclSystemHandle;
 import com.follarce.persistence.sqlite.PackageDescriptor;
 import com.follarce.persistence.sqlite.SqlitePackageReader;
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,7 @@ class MarketEditorPackageTest {
                 .register("term", "render", arguments -> null)
                 .register("io", "readKey", arguments ->
                         events.get(eventIndex.getAndIncrement()));
+        installEditorObjects(functions, false, "", saved);
         FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
         FclContinuation continuation = new FclContinuation();
         FclRuntime runtime = new FclRuntime(functions);
@@ -114,6 +116,7 @@ class MarketEditorPackageTest {
                     if (index == 0) size.set(Map.of("width", 100L, "height", 30L));
                     return events.get(index);
                 });
+        installEditorObjects(functions, false, "", null);
         FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
         FclContinuation continuation = new FclContinuation();
         FclRuntime runtime = new FclRuntime(functions);
@@ -163,6 +166,7 @@ class MarketEditorPackageTest {
                 })
                 .register("io", "readKey", arguments ->
                         events.get(eventIndex.getAndIncrement()));
+        installEditorObjects(functions, false, "", saved);
         FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
         FclContinuation continuation = new FclContinuation();
         FclRuntime runtime = new FclRuntime(functions);
@@ -204,9 +208,16 @@ class MarketEditorPackageTest {
         assertTrue(module.contains("func run()"));
         assertTrue(module.contains("class EditorState"));
         assertTrue(module.contains("func bodyHeight()"));
-        assertTrue(module.contains("state.left++"));
-        assertTrue(module.contains("packageData.seedResource(\"render-worker.fcl\", workerPath)"));
-        assertTrue(module.contains("process.run(packageData.root() + workerPath"));
+        assertTrue(module.contains("this.left++"));
+        assertTrue(module.contains("func save()"));
+        assertTrue(module.contains("func key(event)"));
+        assertTrue(module.contains("func render()"));
+        assertTrue(module.contains("func renderDelta(before)"));
+        assertTrue(module.contains("return this.fix()"));
+        assertTrue(module.contains("file.open(this.path).write(content)"));
+        assertTrue(module.contains("space = packageData.current()"));
+        assertTrue(module.contains("space.seedResource(\"render-worker.fcl\", workerPath)"));
+        assertTrue(module.contains("process.run(space.root() + workerPath"));
         assertTrue(module.contains("io.readKey(true)"));
         assertFalse(module.contains("io.readKey(250"));
         assertTrue(module.contains("array.removeAt(lines, row)"));
@@ -254,6 +265,7 @@ class MarketEditorPackageTest {
                     return java.util.Map.of("kind", "key", "key", key,
                             "shift", false, "ctrl", false, "alt", false, "text", text);
                 });
+        installEditorObjects(functions, false, "", saved);
         FclProgram program = new FclCompiler().compile(module + "\nreturn run()\n");
         FclContinuation continuation = new FclContinuation();
         FclRuntime runtime = new FclRuntime(functions);
@@ -314,6 +326,7 @@ class MarketEditorPackageTest {
                     return java.util.Map.of("kind", "key", "key", key,
                             "shift", false, "ctrl", false, "alt", false, "text", "");
                 });
+        installEditorObjects(functions, true, source, saved);
         FclProgram program = new FclCompiler().compile(
                 module + "\nreturn open(\"large.txt\")\n");
         FclContinuation continuation = new FclContinuation();
@@ -362,6 +375,7 @@ class MarketEditorPackageTest {
                     return java.util.Map.of("kind", "key", "key", key,
                             "shift", false, "ctrl", false, "alt", false, "text", text);
                 });
+        installEditorObjects(functions, true, "中a", null);
         FclProgram program = new FclCompiler().compile(module + "\nreturn open(\"wide.txt\")\n");
         FclContinuation continuation = new FclContinuation();
         FclRuntime runtime = new FclRuntime(functions);
@@ -382,4 +396,36 @@ class MarketEditorPackageTest {
                 "CJK search text must advance the footer cursor by two columns");
     }
 
+    private static void installEditorObjects(FclFunctionRegistry registry, boolean fileExists,
+                                             String existingContent,
+                                             AtomicReference<String> saved) {
+        FclSystemHandle pathHandle = new FclSystemHandle("Path", "path:fake");
+        FclSystemHandle fileHandle = new FclSystemHandle("File", "file:fake");
+        FclSystemHandle spaceHandle = new FclSystemHandle("PackageSpace", "space:fake");
+        registry.register("file", "path", arguments -> pathHandle)
+                .register("file", "open", arguments -> fileHandle)
+                .register("file", "create", arguments -> {
+                    if (saved != null) saved.set(String.valueOf(arguments.get(1)));
+                    return fileHandle;
+                })
+                .register("file", "mkdir", arguments ->
+                        new FclSystemHandle("Directory", "dir:fake"))
+                .registerMethod("Path", "exists", (arguments, invocation) -> fileExists)
+                .registerMethod("File", "read", (arguments, invocation) -> existingContent)
+                .registerMethod("File", "write", (arguments, invocation) -> {
+                    if (saved != null) saved.set(String.valueOf(arguments.get(1)));
+                    return true;
+                })
+                .registerMethod("File", "append", (arguments, invocation) -> true)
+                .registerMethod("File", "size", (arguments, invocation) ->
+                        existingContent == null ? 0L : (long) existingContent.length())
+                .register("packageData", "current", arguments -> spaceHandle)
+                .registerMethod("PackageSpace", "exists", (arguments, invocation) -> false)
+                .registerMethod("PackageSpace", "seedResource", (arguments, invocation) -> true)
+                .registerMethod("PackageSpace", "root", (arguments, invocation) ->
+                        "package-data://fake/")
+                .register("process", "run", arguments -> "");
+    }
+
 }
+

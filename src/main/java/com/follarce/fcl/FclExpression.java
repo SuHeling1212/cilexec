@@ -6,7 +6,7 @@ import java.util.Objects;
 /** Immutable expression tree. Node ids make suspended function calls resumable. */
 public sealed interface FclExpression permits FclExpression.Literal, FclExpression.Variable,
         FclExpression.ArrayLiteral, FclExpression.MapLiteral, FclExpression.Unary,
-        FclExpression.Binary, FclExpression.Index, FclExpression.Call,
+        FclExpression.Binary, FclExpression.Index, FclExpression.Call, FclExpression.MethodCall,
         FclExpression.Member, FclExpression.Update, FclExpression.DestroyTarget, FclExpression.NewObject,
         FclExpression.SuperConstructor {
 
@@ -82,6 +82,15 @@ public sealed interface FclExpression permits FclExpression.Literal, FclExpressi
 
     record Call(long id, String name, List<FclExpression> arguments) implements FclExpression {
         public Call {
+            Objects.requireNonNull(name, "name");
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    record MethodCall(long id, FclExpression target, String name, List<FclExpression> arguments)
+            implements FclExpression {
+        public MethodCall {
+            Objects.requireNonNull(target, "target");
             Objects.requireNonNull(name, "name");
             arguments = List.copyOf(arguments);
         }

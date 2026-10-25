@@ -305,13 +305,14 @@ public final class DatabaseTerminalControl implements TerminalControl {
                 transaction -> {
                     String current = transaction.terminal().workingDirectory(sessionId);
                     String requested = FclPath.resolve(current, path.orElse("."));
-                    if (requested.equals("/Users") && isLocalAdministrator()) {
+                    ResolvedPath routed = route(transaction, requested);
+                    if (routed.ownerId().equals(user.userId())
+                            && routed.path().equals("/Users") && isLocalAdministrator()) {
                         return transaction.auth().findUsersByAdministrator(user.userId()).stream()
                                 .map(UserAccount::username).sorted(String.CASE_INSENSITIVE_ORDER)
                                 .map(name -> name + "/")
                                 .collect(java.util.stream.Collectors.joining("\n"));
                     }
-                    ResolvedPath routed = route(transaction, requested);
                     VfsNode directory = resolve(transaction, routed.ownerId(), routed.path());
                     if (directory.type() != VfsNode.Type.DIRECTORY) {
                         throw new IllegalArgumentException("Not a directory: " + requested);
@@ -353,15 +354,14 @@ public final class DatabaseTerminalControl implements TerminalControl {
         if (!isLocalAdministrator() || !absolutePath.startsWith("/Users/")) {
             return new ResolvedPath(user.userId(), absolutePath);
         }
-        String remainder = absolutePath.substring("/Users/".length());
-        int slash = remainder.indexOf('/');
-        String username = slash < 0 ? remainder : remainder.substring(0, slash);
-        String userPath = slash < 0 ? "/" : remainder.substring(slash);
-        UserAccount target = transaction.auth().findUsersByAdministrator(user.userId()).stream()
-                .filter(candidate -> candidate.username().equalsIgnoreCase(username))
-                .findFirst().orElseThrow(() ->
-                        new IllegalArgumentException("Unknown VFS path: " + absolutePath));
-        return new ResolvedPath(target.userId(), userPath);
+        var users = transaction.auth().findUsersByAdministrator(user.userId());
+        var routed = com.follarce.vfs.AdministratorUserPath.route(absolutePath,
+                user.userId(), username -> users.stream()
+                        .filter(candidate -> candidate.username().equalsIgnoreCase(username))
+                        .findFirst().orElseThrow(() ->
+                                new IllegalArgumentException("Unknown VFS path: " + absolutePath))
+                        .userId());
+        return new ResolvedPath(routed.ownerId(), routed.path());
     }
 
     private record ResolvedPath(UUID ownerId, String path) {}
@@ -454,7 +454,10 @@ public final class DatabaseTerminalControl implements TerminalControl {
                   Ctrl-O/Ctrl-S save, Ctrl-X exit, Ctrl-W search, Ctrl-K cut line, Ctrl-U paste,
                   Ctrl-G help, mouse wheel scrolls
 
-                Process, file, package, user, effect, and system operations are FCL functions.
+                Entities are FCL objects. Get one from a factory (file.open, file.create,
+                  process.find, swapPool.open, ipc.channel, package.find, user.find, ...) and
+                  call its methods; for example file.open("/note.txt").read(). Old 0.0.4
+                  path/PID/hash functions are removed. system.list() shows exact callable names.
 
                 Attached input:
                   When a process waits in io.input(), the prompt changes to pid:? and the

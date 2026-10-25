@@ -8,6 +8,7 @@ import com.follarce.fcl.FclCompiler;
 import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclProgramCodec;
 import com.follarce.persistence.postgres.connection.DataSourceFactory;
+import com.follarce.persistence.postgres.connection.DatabaseFormatFence;
 import com.follarce.persistence.postgres.connection.FlywayMigrator;
 import com.follarce.package_manager.PackageBuilder;
 import com.follarce.host.HostVfsImportService;
@@ -30,6 +31,9 @@ public final class CilExecApplication {
     private static final Logger LOG = LoggerFactory.getLogger(CilExecApplication.class);
     private static final int USAGE_ERROR = 64;
     private static final int RUNTIME_FAILURE = 70;
+    /** The private PostgreSQL process owned by this JVM; one command runs per process. */
+    private static final java.util.concurrent.atomic.AtomicReference<AutoCloseable>
+            LOCAL_DATABASE = new java.util.concurrent.atomic.AtomicReference<>();
 
     private final Supplier<CilExecConfig> configSource;
     private final Supplier<BuildInfo> buildSource;
@@ -109,17 +113,47 @@ public final class CilExecApplication {
     }
 
     public static int run(String[] arguments) {
-        CilExecApplication application = new CilExecApplication(
-                CilExecConfig::load,
-                BuildInfo::load,
-                CilExecApplication::runRuntime,
-                CilExecApplication::runMigration,
-                CilExecApplication::runExport,
-                CilExecApplication::runPackageBuild,
-                CilExecApplication::runTerminal,
-                CilExecApplication::runCompile);
         try {
-            return application.execute(arguments);
+            ApplicationCommand command = ApplicationCommand.parse(arguments);
+            boolean needsDatabase = command != ApplicationCommand.PACKAGE_BUILD
+                    && command != ApplicationCommand.COMPILE;
+            if (needsDatabase && !System.getenv().containsKey("CILEXEC_DATABASE_URL")) {
+                LocalPostgres postgres = LocalPostgres.start();
+                LOCAL_DATABASE.set(postgres);
+                // The lifecycle shutdown hook closes the database after the Runtime has
+                // stopped. Commands without a lifecycle (migrate/export/host move) use their
+                // own hook so a SIGTERM cannot orphan the embedded postmaster.
+                boolean lifecycleCommand = command == ApplicationCommand.TERMINAL
+                        || command == ApplicationCommand.RUNTIME;
+                Thread databaseHook = null;
+                if (!lifecycleCommand) {
+                    databaseHook = Thread.ofPlatform()
+                            .name("cilexec-local-postgres-stop")
+                            .unstarted(CilExecApplication::closeLocalDatabase);
+                    Runtime.getRuntime().addShutdownHook(databaseHook);
+                }
+                try {
+                    return productionApplication(() -> CilExecConfig.loadLocal(
+                            postgres.port(), postgres.newDatabase()))
+                            .execute(arguments);
+                } finally {
+                    if (databaseHook != null) {
+                        try {
+                            Runtime.getRuntime().removeShutdownHook(databaseHook);
+                        } catch (IllegalStateException ignored) {
+                            // The VM is already running shutdown hooks.
+                        }
+                    }
+                    closeLocalDatabase();
+                }
+            }
+            return productionApplication(CilExecConfig::load).execute(arguments);
+        } catch (LocalPostgres.DataFormatMismatchException
+                | LocalPostgres.RunningServerException
+                | DatabaseFormatFence.RefusalException refusal) {
+            // Old data are refused, never migrated or deleted; tell the operator why.
+            System.err.println(refusal.getMessage());
+            return RUNTIME_FAILURE;
         } catch (IllegalArgumentException usage) {
             System.err.println(usage.getMessage());
             return USAGE_ERROR;
@@ -127,6 +161,18 @@ public final class CilExecApplication {
             LOG.error("CilExec command failed", failure);
             return RUNTIME_FAILURE;
         }
+    }
+
+    private static CilExecApplication productionApplication(Supplier<CilExecConfig> configSource) {
+        return new CilExecApplication(
+                configSource,
+                BuildInfo::load,
+                CilExecApplication::runRuntime,
+                CilExecApplication::runMigration,
+                CilExecApplication::runExport,
+                CilExecApplication::runPackageBuild,
+                CilExecApplication::runTerminal,
+                CilExecApplication::runCompile);
     }
 
     int execute(String[] arguments) {
@@ -173,17 +219,41 @@ public final class CilExecApplication {
     }
 
     private static int runTerminal(CilExecConfig config, BuildInfo buildInfo) {
-        return runLifecycle(RuntimeBootstrap.assembleTerminal(config, buildInfo,
-                com.follarce.terminal.TerminalSettings.load()));
+        var settings = com.follarce.terminal.TerminalSettings.load();
+        return runLifecycle(RuntimeBootstrap.assembleTerminal(config, buildInfo, settings),
+                () -> {
+                    if (System.console() == null) {
+                        System.out.printf("CilExec terminal ready on 127.0.0.1:%d%n",
+                                settings.port());
+                    } else {
+                        try {
+                            LocalTerminalClient.attach(settings.port());
+                        } catch (IllegalStateException failure) {
+                            System.err.println("Local terminal disconnected: " + failure.getMessage());
+                        }
+                    }
+                });
     }
 
     private static int runLifecycle(RuntimeLifecycle lifecycle) {
+        return runLifecycle(lifecycle, () -> {});
+    }
+
+    private static int runLifecycle(RuntimeLifecycle lifecycle, Runnable onStarted) {
         Thread shutdownHook = Thread.ofPlatform().name("cilexec-sigterm")
-                .unstarted(() -> lifecycle.shutdown("SIGTERM"));
+                .unstarted(() -> {
+                    try {
+                        lifecycle.shutdown("SIGTERM");
+                    } finally {
+                        // Stop the embedded database only after the Runtime stopped writing.
+                        closeLocalDatabase();
+                    }
+                });
         Runtime runtime = Runtime.getRuntime();
         runtime.addShutdownHook(shutdownHook);
         try {
             lifecycle.start();
+            onStarted.run();
             lifecycle.awaitStop();
             return lifecycle.state() == RuntimeLifecycle.State.FENCED ? RUNTIME_FAILURE : 0;
         } catch (InterruptedException interrupted) {
@@ -203,6 +273,17 @@ public final class CilExecApplication {
                 // The VM is already running shutdown hooks.
             }
             lifecycle.close();
+        }
+    }
+
+    /** Closes the private database exactly once, whichever shutdown path runs first. */
+    private static void closeLocalDatabase() {
+        AutoCloseable database = LOCAL_DATABASE.getAndSet(null);
+        if (database == null) return;
+        try {
+            database.close();
+        } catch (Exception failure) {
+            LOG.warn("Cannot stop local PostgreSQL during shutdown", failure);
         }
     }
 

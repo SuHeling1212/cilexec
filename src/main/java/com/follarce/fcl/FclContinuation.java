@@ -10,11 +10,12 @@ import java.util.Objects;
 /**
  * Complete persisted state required to resume FCL at a statement boundary.
  *
- * <p>The state deliberately contains no thread, callback, JDBC object, or host handle.
+ * <p>The state deliberately contains no thread, callback, JDBC object, or host handle. System
+ * entity handles are persisted as logical {@link FclSystemHandle} values only.
  *
- * <p>The continuation format is coupled to the executable program format. V004 is the active
- * write format; V002 and V003 remain readable so an upgraded Runtime can finish an
- * already-persisted process before it is explicitly recompiled.
+ * <p>The continuation format is coupled to the executable program format. Since 0.0.5 only the
+ * current release format ({@link #FORMAT_VERSION}) is accepted; continuations persisted by an
+ * older release can never be loaded instead of being silently converted.
  */
 public final class FclContinuation {
     public static final int FORMAT_VERSION = FclProgramCodec.FORMAT_VERSION;
@@ -136,7 +137,7 @@ public final class FclContinuation {
                 List.of(), WaitState.ready(), null, false, false, null);
     }
 
-    /** Creates a pristine continuation for a supported persisted program format. */
+    /** Creates a pristine continuation for the current persisted program format only. */
     public FclContinuation(int formatVersion) {
         this(formatVersion, 0, new FclScope(), List.of(), List.of(), List.of(), List.of(),
                 List.of(), WaitState.ready(), null, false, false, null);
@@ -152,8 +153,8 @@ public final class FclContinuation {
                             PendingStatement pendingStatement,
                             boolean halted, boolean failed, Object result) {
         if (!FclProgramCodec.supportsFormat(formatVersion)) {
-            throw new IllegalArgumentException("Unsupported continuation format: "
-                    + formatVersion);
+            throw new IllegalArgumentException("Unsupported FCL continuation format: "
+                    + formatVersion + "; this release accepts only format " + FORMAT_VERSION);
         }
         this.formatVersion = formatVersion;
         this.programCounter = programCounter;

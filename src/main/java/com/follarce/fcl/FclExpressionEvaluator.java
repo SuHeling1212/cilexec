@@ -10,6 +10,9 @@ final class FclExpressionEvaluator {
     record UserCall(long expressionId, String name, List<Object> arguments,
                     FclObjectValue receiver, String receiverPath, boolean construction) {}
 
+    /** A resolved method receiver; a non-null {@code path} is the name to write mutations back to. */
+    private record Receiver(FclObjectValue object, FclSystemHandle handle, String path) {}
+
     @SuppressWarnings("serial") // Internal stackless control signal; never crosses a JVM boundary.
     static final class UserCallSignal extends RuntimeException {
         private final UserCall call;
@@ -85,7 +88,7 @@ final class FclExpressionEvaluator {
             return FclValues.index(evaluate(index.target()), evaluate(index.index()));
         }
         if (expression instanceof FclExpression.Member member) {
-            return nativeMember(evaluate(member.target()), member.name());
+            return readMember(evaluate(member.target()), member.name());
         }
         if (expression instanceof FclExpression.Update update) {
             return update(update.variable(), update.indices(), update.delta(), update.id());
@@ -110,8 +113,7 @@ final class FclExpressionEvaluator {
             if (pending != null && pending.hasResult(call.id())) {
                 return pending.result(call.id());
             }
-            List<Object> arguments = new ArrayList<>(call.arguments().size());
-            for (FclExpression argument : call.arguments()) arguments.add(evaluate(argument));
+            List<Object> arguments = evaluateArguments(call.arguments());
             if (call.name().startsWith("super.")) {
                 String lexicalClass = FclObjectRuntime.currentClass(program, continuation);
                 if (lexicalClass == null) throw new FclRuntimeException("Invalid super access");
@@ -128,20 +130,17 @@ final class FclExpressionEvaluator {
                 throw new UserCallSignal(new UserCall(call.id(), method.functionKey(), arguments,
                         receiver, "this", false));
             }
-            if (FclObjectRuntime.isMemberPath(continuation, call.name())) {
-                FclObjectValue receiver = FclObjectRuntime.methodReceiver(continuation, call.name());
-                String methodName = call.name().substring(call.name().lastIndexOf('.') + 1);
-                FclProgram.Method method = FclObjectRuntime.method(program,
-                        receiver.className(), methodName,
-                        arguments.size());
-                if (method == null) throw new FclRuntimeException("UndefinedMethod", "Undefined method "
-                        + receiver.className() + "."
-                        + methodName + "/" + arguments.size());
-                FclObjectRuntime.requireMethodAccess(program, continuation,
-                        receiver.className(), methodName,
-                        arguments.size(), method);
-                throw new UserCallSignal(new UserCall(call.id(), method.functionKey(), arguments,
-                        receiver, call.name().substring(0, call.name().lastIndexOf('.')), false));
+            int separator = call.name().lastIndexOf('.');
+            if (separator > 0) {
+                Receiver receiver = namedReceiver(call.name().substring(0, separator));
+                if (receiver != null) {
+                    String methodName = call.name().substring(separator + 1);
+                    if (receiver.object() != null) {
+                        return dispatchUserMethod(call.id(), receiver.object(), receiver.path(),
+                                methodName, arguments);
+                    }
+                    return dispatchHandleMethod(call.id(), receiver.handle(), methodName, arguments);
+                }
             }
             FclProgram.Function userFunction = program.function(call.name());
             if (userFunction != null && !userFunction.publicBinding()
@@ -154,15 +153,115 @@ final class FclExpressionEvaluator {
             Object value = functions.invoke(call.name(), arguments,
                     new FclFunctionRegistry.Invocation(call.id(), continuation,
                             currentPackageIdentity(), program));
-            FclContinuation.PendingStatement current = continuation.pendingStatement();
-            if (current == null) {
-                current = new FclContinuation.PendingStatement(continuation.programCounter());
-            }
-            continuation.pendingStatement(current.withResult(call.id(), value));
+            recordResult(call.id(), value);
             return value;
+        }
+        if (expression instanceof FclExpression.MethodCall call) {
+            FclContinuation.PendingStatement pending = continuation.pendingStatement();
+            if (pending != null && pending.hasResult(call.id())) return pending.result(call.id());
+            Receiver receiver = resolveMethodReceiver(call.target());
+            List<Object> arguments = evaluateArguments(call.arguments());
+            if (receiver.object() != null) {
+                return dispatchUserMethod(call.id(), receiver.object(), receiver.path(), call.name(),
+                        arguments);
+            }
+            return dispatchHandleMethod(call.id(), receiver.handle(), call.name(), arguments);
         }
         throw new FclRuntimeException("Unsupported expression node: "
                 + expression.getClass().getSimpleName());
+    }
+
+    private List<Object> evaluateArguments(List<FclExpression> expressions) {
+        List<Object> arguments = new ArrayList<>(expressions.size());
+        for (FclExpression expression : expressions) arguments.add(evaluate(expression));
+        return arguments;
+    }
+
+    /**
+     * Resolves a dotted name whose root is bound in the current or the durable global scope.
+     * The root value decides dispatch: a user-object member path (including {@code this.field})
+     * or a system handle. Anything else returns {@code null} so qualified registry functions,
+     * hash-qualified package functions, and user functions still resolve normally.
+     *
+     * <p>Namespace roots such as {@code io}, {@code file}, or {@code process} are not reserved
+     * names: if a program binds such a root name, receiver dispatch deliberately takes
+     * precedence over the registry.
+     */
+    private Receiver namedReceiver(String path) {
+        int separator = path.indexOf('.');
+        String rootName = separator < 1 ? path : path.substring(0, separator);
+        if (!FclObjectRuntime.hasRoot(continuation, rootName)) return null;
+        Object rootValue = FclObjectRuntime.root(continuation, rootName);
+        if (rootValue instanceof FclObjectValue) {
+            Object value = path.equals(rootName) ? rootValue
+                    : FclObjectRuntime.receiver(program, continuation, path);
+            if (value instanceof FclObjectValue object) return new Receiver(object, null, path);
+            if (value instanceof FclSystemHandle handle) return new Receiver(null, handle, path);
+            throw new FclRuntimeException("Cannot call member of non-object");
+        }
+        if (rootValue instanceof FclSystemHandle handle && path.equals(rootName)) {
+            return new Receiver(null, handle, path);
+        }
+        return null;
+    }
+
+    /**
+     * Resolves a {@link FclExpression.MethodCall} target. A purely named target follows exactly
+     * the same named-receiver rules as a plain dotted call, so {@code (a).increment()} writes a
+     * mutated receiver back precisely like {@code a.increment()}. Any other target is a
+     * temporary expression: it is evaluated with ordinary value-copy semantics and its method
+     * result is usable, but there is no named location to write the mutated receiver back to.
+     */
+    private Receiver resolveMethodReceiver(FclExpression target) {
+        String path = namedPath(target);
+        if (path != null) {
+            Receiver receiver = namedReceiver(path);
+            if (receiver != null) return receiver;
+        }
+        Object value = evaluate(target);
+        if (value instanceof FclObjectValue object) return new Receiver(object, null, null);
+        if (value instanceof FclSystemHandle handle) return new Receiver(null, handle, null);
+        throw new FclRuntimeException("InvalidReceiver", "Method receiver is not an object");
+    }
+
+    /** Returns the dotted name of a pure Variable/Member path, or null for any other expression. */
+    private static String namedPath(FclExpression expression) {
+        if (expression instanceof FclExpression.Variable variable) return variable.name();
+        if (expression instanceof FclExpression.Member member) {
+            String target = namedPath(member.target());
+            return target == null ? null : target + "." + member.name();
+        }
+        return null;
+    }
+
+    private Object dispatchUserMethod(long expressionId, FclObjectValue receiver,
+                                      String receiverPath, String name,
+                                      List<Object> arguments) {
+        FclProgram.Method method = FclObjectRuntime.method(program, receiver.className(), name,
+                arguments.size());
+        if (method == null) throw new FclRuntimeException("UndefinedMethod", "Undefined method "
+                + receiver.className() + "." + name + "/" + arguments.size());
+        FclObjectRuntime.requireMethodAccess(program, continuation, receiver.className(), name,
+                arguments.size(), method);
+        throw new UserCallSignal(new UserCall(expressionId, method.functionKey(), arguments,
+                receiver, receiverPath, false));
+    }
+
+    private Object dispatchHandleMethod(long expressionId, FclSystemHandle handle, String name,
+                                        List<Object> arguments) {
+        Object value = functions.invokeMethod(handle, name, arguments,
+                new FclFunctionRegistry.Invocation(expressionId, continuation,
+                        currentPackageIdentity(), program));
+        recordResult(expressionId, value);
+        return value;
+    }
+
+    private void recordResult(long expressionId, Object value) {
+        FclContinuation.PendingStatement current = continuation.pendingStatement();
+        if (current == null) {
+            current = new FclContinuation.PendingStatement(continuation.programCounter());
+        }
+        continuation.pendingStatement(current.withResult(expressionId, value));
     }
 
     /**
@@ -267,6 +366,18 @@ final class FclExpressionEvaluator {
     private FclProgram.Function currentFunction() {
         List<FclContinuation.CallFrame> frames = continuation.callStack();
         return frames.isEmpty() ? null : program.function(frames.getLast().functionName());
+    }
+
+    /** Reads a member of a temporary expression value, including user-object fields. */
+    private Object readMember(Object target, String name) {
+        if (target instanceof FclExceptionValue || target instanceof FclStackFrame) {
+            return nativeMember(target, name);
+        }
+        if (target instanceof FclObjectValue object) {
+            FclObjectRuntime.requireFieldAccess(program, continuation, object, name);
+            return object.field(name);
+        }
+        throw new FclRuntimeException("Cannot access member '" + name + "' of non-object");
     }
 
     private Object nativeMemberPath(String path) {

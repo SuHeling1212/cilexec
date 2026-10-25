@@ -2,6 +2,7 @@ package com.follarce.persistence.postgres.connection;
 
 import com.follarce.config.DatabaseConfig;
 import com.follarce.config.DockerSecretLoader;
+import com.follarce.config.LocalDatabaseCredentials;
 import com.follarce.persistence.postgres.error.SqlStateClassifier;
 import org.postgresql.PGConnection;
 import java.sql.Connection;
@@ -54,8 +55,12 @@ public final class ControlLock implements AutoCloseable {
         } else {
             properties.setProperty("sslmode", "disable");
         }
-        try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
-            properties.setProperty("password", secret.exposeForDriver());
+        if (database.passwordFile() != null) {
+            try (DockerSecretLoader.SecretValue secret = DockerSecretLoader.read(database.passwordFile())) {
+                properties.setProperty("password", secret.exposeForDriver());
+            }
+        } else {
+            properties.setProperty("password", LocalDatabaseCredentials.password(database.username()));
         }
         Connection connection = null;
         try {

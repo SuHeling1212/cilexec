@@ -4,11 +4,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
-import java.nio.charset.StandardCharsets;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -59,37 +58,44 @@ class FclCodecAndRegistryTest {
     }
 
     @Test
-    void readsAnExistingV003FclbArtifactAfterTheV004VersionFence() {
+    void readsOnlyTheCurrentFclbFormatAndRejectsOldOrAlteredHeaders() {
         String source = "answer = 6 * 7\n";
         FclProgramCodec codec = new FclProgramCodec();
         FclProgram original = new FclCompiler().compile(source);
-        byte[] v003 = codec.toBytes(original);
-        java.nio.ByteBuffer.wrap(v003, Integer.BYTES, Integer.BYTES)
-                .putInt(FclProgramCodec.FIRST_BINARY_FORMAT_VERSION);
+        byte[] artifact = codec.toBytes(original);
 
-        FclProgram restored = codec.fromBytes(v003,
-                FclProgramCodec.FIRST_BINARY_FORMAT_VERSION, source);
-
-        assertEquals(original.instructions(), restored.instructions());
-        assertTrue(FclProgramCodec.supportsFormat(2));
-        assertTrue(FclProgramCodec.supportsFormat(3));
-        assertTrue(FclProgramCodec.supportsFormat(4));
-        assertFalse(FclProgramCodec.supportsFormat(1));
-        assertFalse(FclProgramCodec.supportsFormat(5));
+        assertEquals(original.instructions(),
+                codec.fromBytes(artifact, FclProgramCodec.FORMAT_VERSION, source).instructions());
+        assertTrue(FclProgramCodec.supportsFormat(FclProgramCodec.FORMAT_VERSION));
+        for (int version : List.of(1, 2, 3, 4, 6)) {
+            assertFalse(FclProgramCodec.supportsFormat(version), "format " + version);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.fromBytes(artifact, FclProgramCodec.FORMAT_VERSION - 1, source));
+        byte[] oldHeader = artifact.clone();
+        java.nio.ByteBuffer.wrap(oldHeader, Integer.BYTES, Integer.BYTES)
+                .putInt(FclProgramCodec.FORMAT_VERSION - 1);
+        assertThrows(IllegalArgumentException.class,
+                () -> codec.fromBytes(oldHeader, FclProgramCodec.FORMAT_VERSION, source));
     }
 
     @Test
-    void roundTripsAnExistingV003ContinuationAfterTheV004VersionFence() {
-        FclContinuation original = new FclContinuation(
-                FclProgramCodec.FIRST_BINARY_FORMAT_VERSION);
+    void roundTripsTheCurrentContinuationFormatAndRefusesOlderContinuations() {
+        FclContinuation original = new FclContinuation();
         original.scope().put("value", 42L);
         FclContinuationCodec codec = new FclContinuationCodec();
+        String json = codec.toJson(original);
 
-        FclContinuation restored = codec.fromJson(codec.toJson(original));
+        FclContinuation restored = codec.fromJson(json);
 
-        assertEquals(FclProgramCodec.FIRST_BINARY_FORMAT_VERSION,
-                restored.formatVersion());
+        assertEquals(FclProgramCodec.FORMAT_VERSION, restored.formatVersion());
         assertEquals(42L, restored.scope().get("value"));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FclContinuation(FclProgramCodec.FORMAT_VERSION - 1));
+        String older = json.replace("\"formatVersion\":" + FclProgramCodec.FORMAT_VERSION,
+                "\"formatVersion\":" + (FclProgramCodec.FORMAT_VERSION - 1));
+        assertFalse(older.equals(json));
+        assertThrows(IllegalArgumentException.class, () -> codec.fromJson(older));
     }
 
     @Test
@@ -130,11 +136,6 @@ class FclCodecAndRegistryTest {
         tampered[tampered.length - 1] ^= 1;
         assertThrows(IllegalArgumentException.class,
                 () -> programCodec.fromBytes(tampered, FclProgramCodec.FORMAT_VERSION, source));
-
-        byte[] legacy = programCodec.toLegacyJson(program).getBytes(StandardCharsets.UTF_8);
-        FclProgram restoredLegacy = programCodec.fromBytes(legacy,
-                FclProgramCodec.LEGACY_FORMAT_VERSION, source);
-        assertEquals(program.instructions(), restoredLegacy.instructions());
     }
 
     @Test

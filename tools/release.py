@@ -842,7 +842,7 @@ def publish(staging: Path) -> None:
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-tests", action="store_true",
-                        help="package without rerunning tests (intended for CI after verify)")
+                        help="package without rerunning tests after a local verify")
     parser.add_argument("--verify-only", action="store_true",
                         help="verify the existing dist artifacts without rebuilding")
     parser.add_argument("--formal", action="store_true",

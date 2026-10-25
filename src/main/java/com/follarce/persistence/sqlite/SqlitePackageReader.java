@@ -28,7 +28,7 @@ import java.util.Set;
 
 /** Opens package bytes through an immutable, query-only SQLite cache file. */
 public final class SqlitePackageReader {
-    public static final int FORMAT_VERSION = 2;
+    public static final int FORMAT_VERSION = 3;
     public static final int MAX_PACKAGE_DATABASE_BYTES = 64 * 1024 * 1024;
     public static final int MAX_PACKAGE_RESOURCE_BYTES = 16 * 1024 * 1024;
     private static final List<String> REQUIRED_TABLES = List.of(

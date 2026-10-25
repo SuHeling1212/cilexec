@@ -1,9 +1,6 @@
 package com.follarce.fcl;
 
 import com.follarce.version.ReleaseVersion;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -11,7 +8,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
-import java.lang.reflect.Type;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -25,13 +21,17 @@ import java.util.Objects;
  *
  * <p>V003 introduced {@code FCLB}: a canonical binary instruction artifact. Source remains a
  * separate immutable VFS object for inspection and editing, but recovery executes this artifact
- * without parsing or recompiling source. V004 retains the same binary structure with a new format
- * identity. V002's JSON source envelope and V003 FCLB remain readable so an upgraded runtime can
- * finish already-persisted work safely.
+ * without parsing or recompiling source. Since 0.0.5 the codec enforces a strict format fence:
+ * it writes and reads exactly the current release format ({@link #FORMAT_VERSION}) and rejects
+ * every other persisted program format. Older formats are intentionally never converted; an
+ * upgraded runtime requires a new database or a fresh data directory instead of replaying old
+ * artifacts.
  */
 public final class FclProgramCodec {
-    public static final int LEGACY_FORMAT_VERSION = 2;
-    public static final int FIRST_BINARY_FORMAT_VERSION = 3;
+    /**
+     * The single persisted FCL program format accepted by this release. It always equals the
+     * release schema number, so release 0.0.5 accepts format 5 only.
+     */
     public static final int FORMAT_VERSION = ReleaseVersion.schemaNumber(ReleaseVersion.current());
 
     private static final int MAGIC = 0x46434c42; // FCLB
@@ -69,6 +69,7 @@ public final class FclProgramCodec {
     private static final byte DESTROY_TARGET = 11;
     private static final byte NEW_OBJECT = 12;
     private static final byte SUPER_CONSTRUCTOR = 13;
+    private static final byte METHOD_CALL = 14;
 
     private static final byte NULL = 0;
     private static final byte STRING = 1;
@@ -78,24 +79,11 @@ public final class FclProgramCodec {
     private static final byte CHARACTER = 5;
     private static final byte BIG_INTEGER = 6;
 
-    private static final Type LEGACY_MAP_TYPE = new TypeToken<LinkedHashMap<String, Object>>() { }
-            .getType();
+    public FclProgramCodec() { }
 
-    private final FclCompiler legacyCompiler;
-    private final Gson gson;
-
-    public FclProgramCodec() {
-        this(new FclCompiler());
-    }
-
-    public FclProgramCodec(FclCompiler legacyCompiler) {
-        this.legacyCompiler = Objects.requireNonNull(legacyCompiler, "legacyCompiler");
-        this.gson = new GsonBuilder().disableHtmlEscaping().create();
-    }
-
+    /** True only for the current persisted program format. */
     public static boolean supportsFormat(int version) {
-        return version == LEGACY_FORMAT_VERSION
-                || version >= FIRST_BINARY_FORMAT_VERSION && version <= FORMAT_VERSION;
+        return version == FORMAT_VERSION;
     }
 
     /** Encodes an executable artifact using the current FCLB format identity. */
@@ -117,61 +105,27 @@ public final class FclProgramCodec {
         }
     }
 
-    /** Decodes exactly the indicated persisted program format. */
+    /**
+     * Decodes an artifact persisted under exactly {@code formatVersion}. Every other format
+     * number is rejected before the artifact bytes are interpreted.
+     */
     public FclProgram fromBytes(byte[] encoded, int formatVersion, String source) {
+        if (!supportsFormat(formatVersion)) {
+            throw new IllegalArgumentException("Unsupported FCL program format: " + formatVersion
+                    + "; this release accepts only format " + FORMAT_VERSION);
+        }
         Objects.requireNonNull(encoded, "encoded");
         Objects.requireNonNull(source, "source");
-        if (formatVersion >= FIRST_BINARY_FORMAT_VERSION && formatVersion <= FORMAT_VERSION) {
-            return decodeBinary(encoded, formatVersion, source);
-        }
-        if (formatVersion == LEGACY_FORMAT_VERSION) {
-            FclProgram legacy = decodeLegacyJson(new String(encoded, StandardCharsets.UTF_8));
-            if (!legacy.source().equals(source)) {
-                throw new IllegalArgumentException("Legacy FCL program does not match source object");
-            }
-            return legacy;
-        }
-        throw new IllegalArgumentException("Unsupported FCL program format: " + formatVersion);
+        return decodeBinary(encoded, source);
     }
 
-    /**
-     * Reads the V002 source envelope. This is deliberately read-only compatibility support:
-     * newly persisted programs always use {@link #toBytes(FclProgram)}.
-     */
-    public FclProgram decodeLegacyJson(String json) {
-        Objects.requireNonNull(json, "json");
-        Map<String, Object> encoded = gson.fromJson(json, LEGACY_MAP_TYPE);
-        if (encoded == null) throw new IllegalArgumentException("Program JSON cannot be null");
-        int version = integer(encoded.get("formatVersion"), "formatVersion");
-        if (version != LEGACY_FORMAT_VERSION) {
-            throw new IllegalArgumentException("Unsupported legacy FCL program format: " + version);
-        }
-        String source = string(encoded.get("source"), "source");
-        String expectedHash = string(encoded.get("sourceHash"), "sourceHash");
-        FclProgram program = legacyCompiler.compile(source);
-        if (!program.sourceHash().equals(expectedHash)) {
-            throw new IllegalArgumentException("FCL program source hash mismatch");
-        }
-        return program;
-    }
-
-    /** Test/support helper for constructing an authentic V002 artifact. */
-    public String toLegacyJson(FclProgram program) {
-        Objects.requireNonNull(program, "program");
-        Map<String, Object> encoded = new LinkedHashMap<>();
-        encoded.put("formatVersion", LEGACY_FORMAT_VERSION);
-        encoded.put("source", program.source());
-        encoded.put("sourceHash", program.sourceHash());
-        return gson.toJson(encoded);
-    }
-
-    private FclProgram decodeBinary(byte[] encoded, int expectedFormat, String source) {
+    private FclProgram decodeBinary(byte[] encoded, String source) {
         try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(encoded))) {
             if (input.readInt() != MAGIC) throw new IllegalArgumentException("Invalid FCLB magic");
             int format = input.readInt();
-            if (format != expectedFormat || !supportsFormat(format)
-                    || format < FIRST_BINARY_FORMAT_VERSION) {
-                throw new IllegalArgumentException("Unsupported FCLB format: " + format);
+            if (!supportsFormat(format)) {
+                throw new IllegalArgumentException("Unsupported FCLB format: " + format
+                        + "; this release accepts only format " + FORMAT_VERSION);
             }
             String expectedHash = readString(input);
             List<FclInstruction> instructions = readInstructions(input);
@@ -438,6 +392,12 @@ public final class FclProgramCodec {
             output.writeByte(CALL); output.writeLong(expression.id()); writeString(output, expression.name());
             writeExpressions(output, expression.arguments()); return;
         }
+        if (value instanceof FclExpression.MethodCall expression) {
+            output.writeByte(METHOD_CALL); output.writeLong(expression.id());
+            writeExpression(output, expression.target(), depth + 1);
+            writeString(output, expression.name());
+            writeExpressions(output, expression.arguments()); return;
+        }
         if (value instanceof FclExpression.Member expression) {
             output.writeByte(MEMBER); output.writeLong(expression.id());
             writeExpression(output, expression.target(), depth + 1); writeString(output, expression.name()); return;
@@ -483,6 +443,8 @@ public final class FclProgramCodec {
             case INDEX -> new FclExpression.Index(id, readExpression(input, depth + 1),
                     readExpression(input, depth + 1));
             case CALL -> new FclExpression.Call(id, readString(input), readExpressions(input));
+            case METHOD_CALL -> new FclExpression.MethodCall(id, readExpression(input, depth + 1),
+                    readString(input), readExpressions(input));
             case MEMBER -> new FclExpression.Member(id, readExpression(input, depth + 1), readString(input));
             case EXPRESSION_UPDATE -> new FclExpression.Update(id, readString(input), readExpressions(input), input.readInt());
             case DESTROY_TARGET -> new FclExpression.DestroyTarget(id, readString(input), readString(input),
@@ -572,13 +534,4 @@ public final class FclProgramCodec {
         return values[ordinal];
     }
 
-    private static int integer(Object value, String field) {
-        if (value instanceof Number number && number.doubleValue() == number.intValue()) return number.intValue();
-        throw new IllegalArgumentException(field + " must be an integer");
-    }
-
-    private static String string(Object value, String field) {
-        if (value instanceof String text) return text;
-        throw new IllegalArgumentException(field + " must be a string");
-    }
 }

@@ -1,645 +1,234 @@
-# FCL v0.0.4: Object-Oriented Programming for Beginners
+# FCL 0.0.5 Object Guide
 
-This guide explains the object-oriented part of FCL as it exists in v0.0.4. It is written for
-readers who have not programmed before. For the complete built-in function list, see the
-[FCL function reference](fcl-function-reference.md). For the Chinese edition, see
-[fcl-object-oriented-guide.zh-CN.md](fcl-object-oriented-guide.zh-CN.md).
+This guide explains the two object models of FCL 0.0.5 for readers who are new to the
+language semantics: **user-class values** and **system entity handles**. It is deliberately
+practical — every example runs on a 0.0.5 Runtime and only uses the current API. The complete
+method catalog is in the [0.0.5 function and object reference](fcl-function-reference.md).
+The [0.0.4 object guide](fcl-object-oriented-guide-004.md) describes the removed API and is
+kept only for reading old code.
 
-## Versions covered by this guide
+## Two kinds of object
 
-| Layer | Current value |
-| --- | --- |
-| CilExec product version | 0.0.4  |
-| FCL language version | fcl-0.0.4 |
-| FCL program and continuation format | 3 |
-| Database migration | V004 (highest schema version: 4) |
-
-## 1. The central idea
-
-FCL is an object-oriented language with classes, objects, fields, constructors, methods,
-encapsulation, and inheritance.
-
-The most important rule is: **a name is the thing it currently represents. It is not a box
-containing the thing, and it is not a hidden remote control for another thing.**
-
-~~~fcl
-a = new Counter(10)
-b = a
-b.increment()
-
-io.println(a.value) // 10
-io.println(b.value) // 11
-~~~
-
-a and b have the same type and start with the same contents, but they are separate objects.
-Changing b does not silently change a.
-
-A class is like a cookie cutter, and an object is one cookie made with it:
-
-~~~text
-Counter (the rules)
-       |
-       +-- new Counter(10) --> a: value is 10
-       |
-       +-- b = a           --> b: a separate Counter whose value is 10
-~~~
-
-The class defines fields and methods. Each object has its own field contents and follows those
-rules when a method runs.
-
-## 2. A smallest complete example
-
-Here is an object that counts:
-
-~~~fcl
-class Counter {
-    value = 0
-
-    init(initial) {
-        this.value = initial
-    }
-
-    func increment() {
-        this.value++
-        return this.value
-    }
-}
-
-counter = new Counter(10)
-counter.increment()
-io.println(counter.value) // 11
-~~~
-
-1. class Counter defines a kind of object called Counter.
-2. value = 0 is a field. Every Counter has its own value, initially 0.
-3. init(initial) is the constructor. It runs while a new object is being made.
-4. this.value means the value of the object currently running this method.
-5. func increment() is a method: an action a Counter can perform.
-6. new Counter(10) makes a fresh object. The 10 is passed to the constructor parameter named
-   initial; this.value = initial then gives the object's field that number.
-
-## 3. The words used in this guide
-
-| Word | Plain-language meaning | Example |
+| | User class instance | System entity handle |
 | --- | --- | --- |
-| class | The specification for a kind of object | Counter |
-| object | One concrete thing made from a class | new Counter(10) |
-| name | A program name that directly represents something | counter |
-| field | Information inside an object | counter.value |
-| method | An action an object can do | counter.increment() |
-| constructor | Setup that runs while an object is created | init(initial) |
+| Created by | `new ClassName(...)` | A factory such as `file.open`, `process.find`, `ipc.createChannel` |
+| Assignment / argument / return | Deep copy; the copy is independent | Same handle; both names point at the same entity |
+| Identity | None; equality compares class name and fields | Durable kind + stable id (+ private attributes) |
+| Lifetime | As long as some value holds it in the continuation | As long as the persisted entity exists |
+| Permission | Checked by FCL rules for class/private members | Re-checked against the database on **every** method call |
 
-One FCL source file may define several classes at its top level:
+The difference matters most when data crosses a statement, a function call, or a suspension.
 
-~~~fcl
-class Counter { value = 0 }
-class User { name = "" }
-
-counter = new Counter()
-user = new User()
-~~~
-
-Classes must be declared at the file's top level. A class cannot be declared inside a function,
-an if, or a while block.
-
-## 4. Fields: each object's own information
-
-Fields appear inside a class as name = defaultValue.
-
-~~~fcl
-class User {
-    name = "Anonymous"
-    age = 0
-}
-
-user = new User()
-io.println(user.name) // Anonymous
-
-user.name = "Alice"
-user.age = 18
-io.println(user.name) // Alice
-~~~
-
-Each new User() makes a separate set of fields:
-
-~~~fcl
-a = new User()
-b = new User()
-a.name = "Alice"
-b.name = "Bob"
-~~~
-
-Here a.name is Alice and b.name is Bob. Fields are not automatically shared between objects.
-Field defaults may also be arrays or Maps, and are likewise independent for every object:
-
-~~~fcl
-class Notebook {
-    pages = []
-    settings = {theme: "light"}
-}
-~~~
-
-## 5. Creating objects and constructors
-
-Use new to create an object:
-
-~~~fcl
-user = new User()
-~~~
-
-FCL prepares the default fields, runs an init with the matching number of arguments, and then
-creates the finished object.
-
-~~~fcl
-class User {
-    name = ""
-
-    init(name) {
-        this.name = name
-    }
-}
-
-user = new User("Ada")
-io.println(user.name) // Ada
-~~~
-
-"Ada" is passed, in order, to the constructor parameter named name. It is not put into a field
-automatically. this.name = name explicitly gives the object's name field the constructor argument.
-
-### Constructor argument counts must match
-
-~~~fcl
-class Point {
-    x = 0
-    y = 0
-
-    init(x, y) {
-        this.x = x
-        this.y = y
-    }
-}
-
-point = new Point(3, 5) // correct: two arguments
-~~~
-
-new Point(3) and new Point(3, 5, 7) fail because there is no constructor with that number of
-arguments. If a class has no init, use new ClassName() without arguments.
-
-A class may have more than one constructor when their argument counts differ:
-
-~~~fcl
-class User {
-    name = ""
-    age = 0
-
-    init(name) {
-        this.name = name
-    }
-
-    init(name, age) {
-        this.name = name
-        this.age = age
-    }
-}
-
-ada = new User("Ada")
-bob = new User("Bob", 18)
-~~~
-
-## 6. Methods: what an object can do
-
-Methods use func. Call one by writing it after an object name:
-
-~~~fcl
-class Lamp {
-    isOn = false
-
-    func turnOn() {
-        this.isOn = true
-    }
-
-    func status() {
-        if this.isOn {
-            return "on"
-        }
-        return "off"
-    }
-}
-
-lamp = new Lamp()
-lamp.turnOn()
-io.println(lamp.status()) // on
-~~~
-
-this is the object receiving the current method call. Therefore lamp.turnOn() changes lamp,
-while otherLamp.turnOn() changes otherLamp.
-
-Methods can receive arguments and return results:
-
-~~~fcl
-class Calculator {
-    base = 0
-
-    init(base) { this.base = base }
-
-    func add(number) {
-        return this.base + number
-    }
-}
-
-calculator = new Calculator(10)
-answer = calculator.add(5)
-io.println(answer) // 15
-~~~
-
-## 7. Increasing and decreasing a number
-
-Numeric names, public fields, array elements, and Map elements support postfix ++ and --:
-
-~~~fcl
+```fcl
 class Counter {
     value = 0
-
-    func increment() { this.value++ }
-    func decrement() { this.value-- }
-}
-~~~
-
-Only the postfix form exists. count++ is valid; ++count is not. An update expression has the
-updated value:
-
-~~~fcl
-count = 1
-after = count++ // count is 2 and after is 2
-count--
-~~~
-
-## 8. Ordinary assignment makes a separate copy
-
-Ordinary assignment means copy, then continue independently:
-
-~~~fcl
-a = new Counter(10)
-b = a
-~~~
-
-From the program's point of view, the result is already:
-
-~~~text
-a: Counter(value = 10)
-b: Counter(value = 10)
-~~~
-
-After b.value = 20, a.value is still 10 while b.value is 20. This is true for objects, arrays,
-and Maps:
-
-~~~fcl
-numbers = [1, 2, 3]
-other = numbers
-other[0] = 99
-
-// numbers[0] is 1; other[0] is 99
-~~~
-
-Arguments passed to a function, results returned from a function, and objects put into an array
-or Map follow the same independent-copy rule. The Runtime may delay physical copying internally
-with copy-on-write, but that is only an invisible performance optimization. FCL programs never
-observe a default shared object, an object ID, or a reference count.
-
-## 9. When two names must change together: link
-
-copy = user makes a copy. When two names must deliberately represent the same current thing,
-write a link:
-
-~~~fcl
-user = new User()
-currentUser link user
-~~~
-
-This does not make an object reference or a pointer. It makes currentUser follow the name user.
-user remains the original object; currentUser is an explicit linked name.
-
-~~~fcl
-count = 1
-displayedCount link count
-displayedCount++
-
-// count is 2; displayedCount is also 2
-
-count = 100
-// displayedCount is also 100
-~~~
-
-The order matters: target link source. link is a standalone middle word:
-
-~~~fcl
-b link a // correct: b follows a
-~~~
-
-b linka and linkb a are not link expressions. linkb is just an ordinary name.
-
-link works with numbers, arrays, Maps, and objects:
-
-~~~fcl
-items = [1, 2]
-visibleItems link items
-visibleItems[0] = 9
-// items[0] is also 9
-~~~
-
-It also gives deletion one special rule. Destroying either name destroys the source name and
-every name linked to it, directly or through another link:
-
-~~~fcl
-a = new User()
-b link a
-memory.destroy(b)
-
-// neither a nor b exists now
-~~~
-
-This is not a dangling object or a memory error. It is the end of this explicit linked-name
-group. The relationship is stored with the FCL continuation and restored after restart; it never
-stores a memory address, JVM reference, internal object ID, or pointer.
-
-## 10. A method changes its receiver after a copy
-
-Although assignment copies an object, a method changes the object on which it is called:
-
-~~~fcl
-a = new Counter(1)
-b = a
-
-b.increment()
-~~~
-
-After the call, b.value is 2 and a.value is still 1. This includes nested objects:
-order.customer.rename("Ada") changes order.customer, not another object copied from it earlier.
-
-## 11. Reading and printing objects
-
-Read a field with a dot:
-
-~~~fcl
-io.println(counter.value)
-~~~
-
-Printing an object directly shows its class shape, not a hidden object number or address:
-
-~~~fcl
-io.println(counter)
-// Counter{...}
-~~~
-
-To show actual information, print public fields or write a method that returns text:
-
-~~~fcl
-class Counter {
-    value = 0
-    func description() { return "Counter(value=" + this.value + ")" }
-}
-~~~
-
-Object equality compares the class and field contents, not a hidden identity number.
-
-## 12. Encapsulation: public and private
-
-Encapsulation lets an object protect details that callers should not change freely. Fields and
-methods are public by default. Mark a field or method private to allow use only inside the class
-that declared it:
-
-~~~fcl
-class Account {
-    private balance = 0
-
-    init(initial) {
-        this.balance = initial
-    }
-
-    func deposit(amount) {
-        this.balance = this.balance + amount
-    }
-
-    func getBalance() {
-        return this.balance
-    }
+    func increment() { value++ }
 }
 
-account = new Account(100)
-account.deposit(50)
-io.println(account.getBalance()) // 150
-// account.balance is rejected because it is private
-~~~
+left = new Counter()
+right = left          // deep copy: right is independent
+right.increment()
+io.println(left.value)   // 0
+io.println(right.value)  // 1
+```
 
-Private members cannot be read, written, or called outside the declaring class. A subclass also
-cannot directly access a private member declared by its parent.
+```fcl
+note = file.create("/note.txt", "first")
+same = note                  // handle copy: same durable file
+same.append(" second")
+io.println(note.read())      // first second
+```
 
-A class itself can be public class or private class. Unqualified classes are public. A private
-class is not exported for users of an imported module.
+A handle is **not** a capability token and not a cached object. It stores only the entity
+kind, a stable identity string, and optional private attributes such as a lease fencing token
+or a topic name. It never stores a Java pointer, a database connection, or a permission grant.
+Every call re-reads the entity and re-checks the caller's identity, capabilities, and the
+database permission (RLS) boundary.
 
-## 13. Inheritance: extending an existing class
+## Calling methods
 
-Use extends to make a class inherit from one parent class. FCL has single inheritance: each class
-has at most one direct parent.
+FCL supports both of these forms:
 
-~~~fcl
-class Person {
-    name = ""
+```fcl
+h = file.open("/note.txt")
+io.println(h.read())                        // named receiver
+io.println(file.open("/note.txt").read())   // chained expression receiver
+```
 
-    init(name) {
-        this.name = name
-    }
+Both dispatch to the same `File.read` method. The difference is only syntax:
 
-    func label() {
-        return "Person: " + this.name
-    }
-}
-
-class Admin extends Person {
-    init(name) {
-        super(name)
-    }
-
-    func label() {
-        return super.label() + " (admin)"
-    }
-}
-
-user = new Admin("Ada")
-io.println(user.label()) // Person: Ada (admin)
-~~~
-
-The child gets its parent's fields and accessible methods. super(...) calls a parent constructor;
-super.method(...) calls the parent version of a method. If the child defines a method with the
-same name and argument count, the child version overrides the parent version.
-
-Multiple inheritance is not supported: class C extends A, B is invalid.
-
-## 14. Method overloads
-
-One class may have methods with the same name when they have different argument counts:
-
-~~~fcl
-class Message {
-    func show(text) {
-        io.println(text)
-    }
-
-    func show(title, text) {
-        io.println(title + ": " + text)
-    }
-}
-~~~
-
-message.show("Hello") selects the first method. message.show("Notice", "Hello") selects the
-second one.
-
-FCL does not choose overloads by argument type. show(number) and show(text) cannot both exist
-when they each take one argument. Constructors follow the same name-and-argument-count rule.
-
-## 15. import, include, and classes
-
-import brings in an installed FCL package. include places the source of a VFS file into the
-current source before compilation. Both may appear only at the file's top level.
-
-An importing program can use the imported module's public classes. A private class is not
-available to importers, and private fields and methods cannot be called from outside their class.
-To inherit from a public class in another module, first import that module so the parent class is
-visible; FCL does not search arbitrary files automatically.
-
-## 16. memory.list and memory.destroy
-
-memory.list() shows the names and function information visible in the current FCL scope. Its
-returned field is still called variables for API compatibility. It is not a global heap or a list
-of every object that exists anywhere.
-
-~~~fcl
-counter = new Counter(10)
-io.println(memory.list())
-~~~
-
-FCL has one deletion API: memory.destroy(target).
-
-~~~fcl
-counter = new Counter(10)
-copy = counter
-
-memory.destroy(counter)
-// counter no longer exists; copy is still a complete Counter with value 10
-~~~
-
-It can also delete an array or Map element:
-
-~~~fcl
-items = ["a", "b", "c"]
-memory.destroy(items[1]) // removes "b"
-
-settings = {theme: "dark"}
-memory.destroy(settings["theme"])
-~~~
-
-It returns true when something was removed and false for a missing name or Map key. It accepts
-only a name or a name followed by an index in brackets. memory.destroy(counter.value) is not
-valid. There is no memory.unset, memory.delete, or memory.release.
-
-Destroying a normal name does not destroy a copy made by ordinary assignment. The linked-name
-group rule described in section 9 is the explicit exception.
-
-## 17. Persistence and recovery after restart
-
-After every committed execution slice, CilExec saves the complete FCL continuation to PostgreSQL:
-what names represent, object fields, the current call position, and other execution state. An
-object is saved as:
-
-~~~text
-object class + contents of every field + nested arrays / Maps / objects
-~~~
-
-The database does not save temporary runtime optimizations such as copy-on-write sharing, memory
-addresses, object IDs, or reference counts. After recovery, objects behave exactly as if the
-Runtime had never stopped.
-
-~~~fcl
-a = new Counter(10)
-b = a
-b.increment()
-~~~
-
-If the Runtime or Docker container is forcibly stopped after this state is committed and then
-restarted, a.value remains 10 and b.value remains 11. They do not become shared simply because
-of recovery. A link relationship is deliberately saved as a name-to-name relation, so it is also
-restored correctly.
-
-An execution slice that has not committed either rolls back or may be replayed. Operations that
-affect the outside world, such as network and command effects, therefore use CilExec's durable
-effect journal rather than ordinary in-memory behavior.
-
-## 18. What v0.0.4 includes and does not include
-
-Included:
-
-- Top-level class, new, fields, init, instance methods, and this
-- public / private encapsulation
-- Single inheritance, super(...), super.method(...), overriding, and dynamic dispatch
-- Basic overloading by method name plus argument count
-- Independent copy semantics for objects, arrays, and Maps, with transparent copy-on-write
-- Explicit target link source name links, including persistence and recovery
-- ++ / --, memory.list(), and the sole deletion API memory.destroy(...)
-- PostgreSQL persistence and crash recovery for objects
-
-Not included:
-
-- Default shared object references, object IDs, dangling objects, or user-visible reference
-  counting
-- A general manual object-memory-management system, memory.unset, memory.delete, or automatic
-  deletion as a language-level unreferenced-object concept
-- Multiple inheritance, interfaces, abstract classes, static members, generics, or reflection
-- Overloading by parameter type, or prefix ++count / --count
-
-## 19. Quick reference
-
-| Goal | Write |
+| Written form | How it dispatches |
 | --- | --- |
-| Define a class | class User { name = "" } |
-| Make an object | user = new User() |
-| Pass creation data | user = new User("Ada") |
-| Read or write a field | user.name / user.name = "Ada" |
-| Call a method | user.hello() |
-| Refer to the current object in a method | this.name |
-| Copy an object | copy = user |
-| Make one name follow another | currentUser link user |
-| Remove a name | memory.destroy(user) |
-| Remove an array or Map item | memory.destroy(items[0]) / memory.destroy(config["key"]) |
-| Inherit | class Cat extends Animal { ... } |
-| Call a parent constructor | super(name) |
-| Call a parent method | super.label() |
-| Protect an internal field | private password = "" |
+| `h.read()` | The name `h` currently holds a `File` handle, so the reader dispatches `File.read`. |
+| `file.open(p).read()` | `file.open` runs first, then `read` dispatches on the resulting handle. |
+| `a.child.method()` | `a` names a user object; the field path is resolved and the class method is dispatched. |
+| `new Thing().method()` | A temporary user object runs the method; the returned value is usable, but there is no named receiver to write changes back to. |
 
-The one sentence to remember is: **FCL objects have their own behavior and encapsulation;
-user is the object itself, and copy = user makes copy a separate object.**
+Use a named variable when you want to call several methods on the same entity, pass it to
+another process, or keep it across `io.input()` waits. Use the chained form for one-off work.
 
-## 20. One-command smoke test
+## Factories, not path arguments
 
-The repository includes [fcl-oop-smoke-test.fcl](examples/fcl-oop-smoke-test.fcl). It checks
-constructors, fields and encapsulation, ordinary copying, inheritance and super, overriding,
-overloading, link, array copying, and memory.destroy.
+An entity always starts from a factory function. The old 0.0.4 style of passing the path, PID,
+hash, or delivery id to each call was removed in 0.0.5.
 
-From the repository root, run:
+```fcl
+// Files and directories
+f = file.open("/docs/report.txt")     // existing node; File handle
+f = file.create("/docs/new.txt", "hello")
+d = file.mkdir("/docs/archive")
 
-~~~bash
-./tools/OopSmokeTest.sh
-~~~
+// Paths that may not exist yet
+maybe = file.path("/docs/not-there.txt")
+io.println(maybe.exists())            // false, no exception
 
-It asks for the local password, writes the script to /fcl-oop-smoke-test.fcl in that user's VFS
-root, then immediately runs it. Once it is in the VFS, it can be run again from any local FCL
-terminal:
+// Processes
+p = process.find(process.getPID())
+io.println(p.status())
 
-~~~fcl
-process.exec("/fcl-oop-smoke-test.fcl")
-~~~
+// Swap pools and variables
+pool = swapPool.open("job-42")   // pool names are simple ids, not VFS paths
+v = pool.variable("counter")
+pool.add("counter", 1)
 
-When every check passes, the final line is:
+// Messaging
+channel = ipc.createChannel("work")
+channel.send({"job": 1})
+envelope = ipc.receive()
+if envelope != null {
+    ipc.delivery(envelope["deliveryId"]).consume()
+}
 
-~~~text
-FCL OOP SMOKE TEST: ALL PASSED
-~~~
+// Packages and their private data
+pkg = package.find("<database-file-sha256>")
+io.println(pkg.info())
+space = pkg.data()
+io.println(space.usage())
+
+// Restricted administration objects
+me = user.find(user.getCurrentUser())
+io.println(me.info())
+```
+
+The factory may itself require a capability (for example `package.find` requires
+`PACKAGE_IMPORT`). It also requires the entity to exist, except for the explicit
+`file.path` value and the `create` factories.
+
+## Handles survive save and restore
+
+Every committed execution slice stores the full FCL continuation, including handles held in
+variables, call-frame arguments, and pending method results. That is why this works:
+
+```fcl
+note = file.create("/durable.txt", "before")
+io.input("press enter to suspend the process> ")
+note.append(" after")
+io.println(note.read())   // before after
+```
+
+While the process waits for input, the Runtime may be restarted. After it resumes, the
+`note` handle still names the same VFS node — not a path, not a copy. If the file was removed
+in the meantime (for example by another process), the next call fails with `StaleHandle`; it
+never silently targets a different file at the same path.
+
+Persisted handles contain only the logical identity. Restoring a continuation never re-opens a
+database connection or reuses a Java object; each call performs a fresh lookup.
+
+## Rename, delete, and stale handles
+
+```fcl
+h = file.create("/notes/draft.txt", "text")
+h.rename("draft-2.txt")
+io.println(h.read())                     // text — same node after rename
+
+h.remove()
+io.println(file.path("/notes/draft.txt").exists())   // false
+
+// A later file at the same path is a NEW entity with a NEW identity:
+fresh = file.create("/notes/draft.txt", "new")
+// old h is still stale; fresh is the only live handle
+```
+
+Rules:
+
+- **Rename keeps identity.** A file handle addresses the VFS node ID, so renaming does not
+  invalidate it.
+- **Delete invalidates.** Removing the entity makes every handle stale, even if a new entity
+  appears later at the same path or PID.
+- **Type changes invalidate.** If the entity is replaced by a different kind of entity, the old
+  handle is rejected as stale instead of being re-interpreted.
+
+## Permission is re-checked per call
+
+A handle carries no permission. Consider two users and an administrator-visible file: the
+administrator opens the file handle, stores it, then loses the cross-user capability. The next
+method call is rejected, because the check happens now, not when the handle was created.
+
+The same rule applies to leases: knowing a fencing token is not enough. The token must belong to
+the current logical process and still be the current fencing token. After the lease expires, a
+renewal throws `ExpiredLease` and another process may acquire the lock with a newer token.
+
+```fcl
+lease = file.open("/shared/counter.txt").lock(30000)
+if lease == null {
+    io.println("busy; try again")
+} else {
+    lease.renew(30000)    // fails after expiry with ExpiredLease
+    lease.release()
+}
+```
+
+## Chained calls and suspension
+
+```fcl
+pid = process.find(process.getPID()).kill()   // self termination returns true
+```
+
+A method call may suspend the process (for example `Process.wait()`,
+`SwapVariable.waitFor()`, or a chained `ipc.receive()`). Values already produced before the
+suspension point are recorded in the continuation, so a replay after a crash does not repeat
+earlier calls in the same statement. The suspended method itself resumes through the normal wait
+machinery. Always make externally visible effects idempotent: a delivery can be reserved again
+after a crash before `Delivery.consume()` commits, so treat duplicate delivery as possible.
+
+## Package private data
+
+`package.find(hash).data()` returns a `PackageSpace`. The owner may read, export, import,
+clear, and check usage/quota. Operations that can modify package-private helper files
+(`seedResource`, `append`, `mkdir`, `remove`, `rename`, ...) require the call to execute in
+linked code of that exact package, with the `package.data` capability:
+
+```fcl
+// Inside linked package code only:
+space = packageData.current()
+workerPath = "runtime/worker.fcl"
+if !space.exists(workerPath) {
+    space.seedResource("worker.fcl", workerPath)
+}
+process.run(space.root() + workerPath, [])
+```
+
+Private data is not a VFS path: arbitrary `file.*` calls cannot reach it, and other users'
+spaces are unreachable. Every call re-checks that the exact package database file is still
+installed for the current user.
+
+## What changed from 0.0.4
+
+- Old path/PID/hash-taking functions such as `file.read(path)`, `process.kill(pid)`,
+  `ipc.consume(id)`, and `package.info(hash)` are **removed**. They are not callable
+  and do not appear in `system.list()`. See the
+  [removed API table](fcl-function-reference.md#removed-004-apis-and-replacements).
+- Programs and continuations use format `5`, packages use database format `3`, and the
+  database schema is `V005`. Old data are refused, never converted. See
+  [old-data refusal](fcl-function-reference.md#005-compatibility-and-old-data-refusal).
+- A user-class instance is still a by-value object. Only entity handles keep identity when
+  copied; `b link a` keeps its name-following meaning.
+
+## Practical checklist
+
+1. Get the entity once: `h = file.open(path)` or `p = process.find(pid)`.
+2. Reuse `h` for related calls; do not pass the path/PID again.
+3. Handle `StaleHandle` and `ExpiredLease` explicitly in long-running programs.
+4. Treat chained calls as one-shot convenience, and named handles as durable references.
+5. Never assume a handle grants access; the Runtime checks permissions on every call.
+6. Use `system.list()` to confirm which functions your JAR exposes.

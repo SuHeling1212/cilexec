@@ -13,7 +13,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Lossless JSON/Map codec for every persisted continuation field. */
+/**
+ * Lossless JSON/Map codec for every persisted continuation field.
+ *
+ * <p>Since 0.0.5 the codec enforces the persisted-format fence: only the current release
+ * format ({@link FclContinuation#FORMAT_VERSION}) is accepted, and the encoded
+ * {@code formatVersion} field always carries that value. Values are typed and restricted to
+ * logical FCL data; a {@link FclSystemHandle} is written as kind, id, and attributes only, never
+ * as a Java or JDBC reference.
+ */
 public final class FclContinuationCodec {
     private static final Type MAP_TYPE = new TypeToken<LinkedHashMap<String, Object>>() { }
             .getType();
@@ -22,8 +30,13 @@ public final class FclContinuationCodec {
 
     public Map<String, Object> encode(FclContinuation continuation) {
         Objects.requireNonNull(continuation, "continuation");
+        if (continuation.formatVersion() != FclContinuation.FORMAT_VERSION) {
+            throw new IllegalArgumentException("Unsupported FCL continuation format: "
+                    + continuation.formatVersion() + "; this release accepts only format "
+                    + FclContinuation.FORMAT_VERSION);
+        }
         Map<String, Object> encoded = new LinkedHashMap<>();
-        encoded.put("formatVersion", continuation.formatVersion());
+        encoded.put("formatVersion", FclContinuation.FORMAT_VERSION);
         encoded.put("programCounter", continuation.programCounter());
         encoded.put("scope", encodeValue(continuation.scope().persistedValues()));
 
@@ -130,6 +143,11 @@ public final class FclContinuationCodec {
     public FclContinuation decode(Map<String, ?> encoded) {
         Objects.requireNonNull(encoded, "encoded");
         int formatVersion = integer(encoded.get("formatVersion"), "formatVersion");
+        if (formatVersion != FclContinuation.FORMAT_VERSION) {
+            throw new IllegalArgumentException("Unsupported FCL continuation format: "
+                    + formatVersion + "; this release accepts only format "
+                    + FclContinuation.FORMAT_VERSION);
+        }
         int programCounter = integer(encoded.get("programCounter"), "programCounter");
         FclScope scope = scope(encoded.get("scope"), "scope");
 
@@ -290,6 +308,13 @@ public final class FclContinuationCodec {
             encoded.put("source", link.source());
             return encoded;
         }
+        if (value instanceof FclSystemHandle handle) {
+            encoded.put("type", "system-handle");
+            encoded.put("kind", handle.kind());
+            encoded.put("id", handle.id());
+            encoded.put("attributes", handle.attributes());
+            return encoded;
+        }
         if (value instanceof FclObjectValue object) {
             encoded.put("type", "object");
             encoded.put("className", object.className());
@@ -364,6 +389,13 @@ public final class FclContinuationCodec {
             case "string" -> string(value.get("value"), "string value");
             case "char" -> charValue(value.get("value"), "char value");
             case "link" -> new FclLinkedName(string(value.get("source"), "link source"));
+            case "system-handle" -> {
+                Map<String, String> attributes = new LinkedHashMap<>();
+                map(value.get("attributes"), "handle attributes").forEach((key, item) ->
+                        attributes.put(key, string(item, "handle attribute")));
+                yield new FclSystemHandle(string(value.get("kind"), "handle kind"),
+                        string(value.get("id"), "handle id"), attributes);
+            }
             case "object" -> new FclObjectValue(string(value.get("className"), "object class name"),
                     stringMap(decodeValue(value.get("fields")), "object fields"));
             case "exception" -> {
