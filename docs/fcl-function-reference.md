@@ -723,36 +723,33 @@ receiver; all still use the current process identity and capabilities.
 
 ## Administrator system data files (0.0.5)
 
-The `local` administrator (any account with `SYSTEM_ADMIN`) can browse and edit every
-CilExec table as JSON files. The tree is generated on demand and is not part of `vfs.node`:
+An account with `SYSTEM_ADMIN` can browse the `/.cilexec/system/db/<schema>/<table>`
+tree. The tree and `_schema.json` expose table structure; row reads use an explicit
+allowlist. Credential verifiers, login throttles, object bytes, process and continuation
+state, messages, effects, terminal input and audit events are not readable here.
 
-```text
-/.cilexec/system/db/<schema>/<table>/
-    _schema.json                  columns, primary key, generated/identity columns
-    <key>.json                    one row (first page: at most 200 rows)
-    _next.json                    next-page cursor, present only when the page is full
-    page/<cursor>/                next page
-```
+A row name is base64url of its primary-key JSON without padding. Pagination uses
+`_next.json` and `page/<cursor>` with at most 200 rows per page. `_schema.json` reports
+`readable`, `readableColumns`, `creatable`, `writable`, `updatableColumns`, and `deletable`.
 
-`<key>.json` is the base64url encoding (without padding) of the primary-key JSON,
-for example `{"variable_name":"PROJ_TEST"}`. A row file contains the same JSON object as
-`SELECT to_jsonb(row)`; write only the columns you want to change. Primary-key columns
-cannot be changed through an existing file. Generated columns are read-only.
+Only two display columns are currently writable: `auth.group_account.group_name` and
+`auth.capability.description`. Open an existing row and call `write()` with its new
+value; the path supplies its primary key. For example:
 
 ```fcl
 file.open("/.cilexec/system/db").list()
-file.open("/.cilexec/system/db/auth/shared_environment_variable/_schema.json").read()
-file.create("/.cilexec/system/db/auth/shared_environment_variable/<key>.json",
-            "{\"variable_name\":\"PROJ_TEST\",\"variable_value\":\"one\"}")
-file.open("/.../<key>.json").write("{\"variable_value\":\"two\"}")
-file.open("/.../<key>.json").remove()
+file.open("/.cilexec/system/db/auth/group_account/_schema.json").read()
+file.open("/.cilexec/system/db/auth/group_account/<key>.json")
+    .write("{\"group_name\":\"new-name\"}")
 ```
 
-Only administrators can see the tree; other users receive `PathNotFound`. The
-`/.cilexec` prefix is reserved for this projection and is not writable as ordinary VFS.
-This is a raw database escape hatch: it bypasses typed resource functions and can corrupt
-runtime invariants, so prefer `process.*`, `package.*`, and other object APIs for normal
-work. It does not add a schema migration and remains part of 0.0.5.
+Projected row creation and deletion are disabled. Unknown, duplicate, generated,
+primary-key changing, and other read-only fields are rejected. Successful updates append an
+audit event in the same transaction; its details do not include row values. Denied
+operations and failed transactions do not claim a durable audit event. Non-admins
+receive `PathNotFound`. A real VFS node at `/.cilexec` causes `ProjectionConflict`
+instead of hiding that node. Use typed APIs for all other changes. No schema or FCL
+format change is involved.
 
 ## System and administration namespaces
 

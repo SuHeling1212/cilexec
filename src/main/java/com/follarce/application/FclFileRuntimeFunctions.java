@@ -98,6 +98,10 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                     if (isReservedRequest(requested)) throw projectionNotFound(requested);
                     RoutedPath routed = route(requested, owner);
                     if (routed.ownerId().equals(process.ownerId())
+                            && routed.path().equals("/") && isLocalAdministrator()) {
+                        projection().requireNoConflict();
+                    }
+                    if (routed.ownerId().equals(process.ownerId())
                             && routed.path().equals("/Users") && isLocalAdministrator()) {
                         return transaction.auth().findUsersByAdministrator(process.ownerId())
                                 .stream().map(user -> virtualUserNode(user)).toList();
@@ -202,6 +206,13 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                             || replacement.equals("..") || replacement.codePoints()
                             .anyMatch(Character::isISOControl)) {
                         throw new FclRuntimeException("file.rename requires a safe file name");
+                    }
+                    String parentPath = routed.path().substring(0,
+                            routed.path().lastIndexOf('/'));
+                    String destination = (parentPath.isEmpty() ? "" : parentPath)
+                            + "/" + replacement;
+                    if (SystemProjection.isReservedPath(destination)) {
+                        throw projectionReadOnly(destination);
                     }
                     boolean renamed = owner.equals(process.ownerId())
                             ? transaction.vfs().renameNode(source.nodeId(), owner, replacement, now)
@@ -498,7 +509,9 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
     }
 
     private boolean isReservedRequest(String source) {
-        return SystemProjection.isReservedPath(normalize(source));
+        boolean reserved = SystemProjection.isReservedPath(normalize(source));
+        if (reserved) projection().requireNoConflict();
+        return reserved;
     }
 
     private static boolean isProjectionHandle(FclSystemHandle handle) {

@@ -7,8 +7,8 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Administrator-only, generic JSON projection over the CilExec tables. It exists for the
- * read/write system projection; ordinary FCL code must keep using the typed repositories.
+ * Administrator-only, policy-limited JSON projection over reviewed CilExec tables.
+ * Ordinary FCL code must keep using the typed repositories.
  *
  * <p>The implementation temporarily switches the current transaction from the tenant role to
  * the runtime role (the session role) for the duration of one operation, then restores the
@@ -26,8 +26,10 @@ public interface AdminProjectionRepository {
     List<Row> listRows(UUID actorId, String schema, String table, Optional<String> afterKeyJson,
                        int limit);
 
+    /** Update one existing row's explicitly allowlisted columns; never inserts. */
     Row writeRow(UUID actorId, String schema, String table, String rowJson);
 
+    /** Reserved for the file API; currently always denied. */
     boolean deleteRow(UUID actorId, String schema, String table, String keyJson);
 
     record TableDefinition(

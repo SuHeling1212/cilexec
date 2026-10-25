@@ -51,6 +51,15 @@ Capabilities are checked in the application. Users map to stable PostgreSQL
 `SYSTEM_ADMIN` has an explicit policy over application data but no PostgreSQL
 cluster-superuser or `BYPASSRLS` privilege.
 
+The administrator `/.cilexec/system/db` projection exposes table structure and a
+reviewed subset of metadata rows. Generic creation and deletion are disabled; only
+`auth.group_account.group_name` and `auth.capability.description` can be updated.
+Each update and its value-free audit event commit in one PostgreSQL transaction.
+Protected credentials, object bytes, process state, messages, effects, terminal
+input, and audit history are not readable through this projection. A real VFS
+`/.cilexec` node causes a conflict error instead of being hidden. The full access
+matrix is in [SYSTEM_PROJECTION_PLAN.md](../SYSTEM_PROJECTION_PLAN.md).
+
 ## Version boundary
 
 0.0.5 uses FCL program and continuation format 5, package database format 3,

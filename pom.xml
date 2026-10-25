@@ -380,6 +380,11 @@
                                 <ignoredUnusedDeclaredDependency>com.fasterxml.jackson.core:jackson-databind</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>ch.qos.logback:logback-classic</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.junit.jupiter:junit-jupiter-engine</ignoredUnusedDeclaredDependency>
+                                <!-- Platform archives are loaded as resources by the embedded PostgreSQL runner. -->
+                                <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-darwin-arm64v8</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-darwin-amd64</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-linux-amd64</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-linux-arm64v8</ignoredUnusedDeclaredDependency>
                             </ignoredUnusedDeclaredDependencies>
                         </configuration>
                     </execution>

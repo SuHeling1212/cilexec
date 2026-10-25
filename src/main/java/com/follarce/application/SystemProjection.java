@@ -1,17 +1,19 @@
 package com.follarce.application;
 
 import com.follarce.domain.auth.Capability;
+import com.follarce.domain.audit.AuditEvent;
 import com.follarce.domain.port.AdminProjectionRepository;
 import com.follarce.domain.port.AdminProjectionRepository.Row;
 import com.follarce.domain.port.AdminProjectionRepository.TableDefinition;
 import com.follarce.domain.port.TransactionContext;
+import com.follarce.domain.port.ProjectionAccessPolicy;
 import com.follarce.fcl.FclPath;
 import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclSystemHandle;
+import com.follarce.json.StrictJsonObject;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -62,6 +64,18 @@ public final class SystemProjection {
         return transaction.auth().capabilities(actorId).contains(Capability.SYSTEM_ADMIN);
     }
 
+    /** A legacy real node must never be hidden by the synthetic tree. */
+    public void requireNoConflict() {
+        if (!isAdministrator()) return;
+        transaction.vfs().findChild(actorId, Optional.empty(), "/")
+                .flatMap(root -> transaction.vfs().findChild(actorId,
+                        Optional.of(root.nodeId()), ".cilexec"))
+                .ifPresent(node -> {
+                    throw new FclRuntimeException("ProjectionConflict",
+                            "A real VFS node conflicts with the reserved system projection");
+                });
+    }
+
     FclSystemHandle open(String source) {
         String path = FclPath.normalizeAbsolute(source);
         requireVisible(path);
@@ -83,6 +97,7 @@ public final class SystemProjection {
         if (!isAdministrator()) return false;
         String path = FclPath.normalizeAbsolute(source);
         if (!isProjectionPath(path)) return false;
+        requireNoConflict();
         try {
             Parsed parsed = parse(path);
             switch (parsed.kind()) {
@@ -176,11 +191,23 @@ public final class SystemProjection {
         String key = decodeRowKey(parsed.keyFile());
         String merged = mergeKey(content, key);
         repository().writeRow(actorId, parsed.schema(), parsed.table(), merged);
+        try {
+            transaction.audit().append(new AuditEvent(UUID.randomUUID(),
+                    AuditEvent.ActorType.ADMINISTRATOR, actorId.toString(),
+                    "projection.update", parsed.schema() + "." + parsed.table(), key,
+                    AuditEvent.Result.SUCCEEDED, Map.of(), now));
+        } catch (RuntimeException auditFailure) {
+            transaction.rollback();
+            throw auditFailure;
+        }
         return path;
     }
 
     String create(String source, String content) {
-        return write(source, content);
+        String path = FclPath.normalizeAbsolute(source);
+        requireVisible(path);
+        throw new FclRuntimeException("ReadOnlyProjection",
+                "Projected row creation is not allowed");
     }
 
     boolean remove(String source) {
@@ -240,8 +267,12 @@ public final class SystemProjection {
     public boolean isShellDirectory(String source) {
         if (!isAdministrator()) return false;
         String path = FclPath.normalizeAbsolute(source);
-        if (path.equals("/.cilexec") || path.equals("/.cilexec/system")) return true;
+        if (path.equals("/.cilexec") || path.equals("/.cilexec/system")) {
+            requireNoConflict();
+            return true;
+        }
         if (!isProjectionPath(path)) return false;
+        requireNoConflict();
         try {
             listShell(path);
             return true;
@@ -324,6 +355,7 @@ public final class SystemProjection {
         if (!isAdministrator()) {
             throw notFound(path);
         }
+        requireNoConflict();
     }
 
     private AdminProjectionRepository repository() {
@@ -336,19 +368,23 @@ public final class SystemProjection {
         result.put("table", definition.table());
         result.put("primaryKey", definition.primaryKey());
         result.put("columns", definition.columns());
+        result.put("readableColumns", ProjectionAccessPolicy.readColumns(
+                definition.schema(), definition.table()));
         result.put("generated", definition.generated());
         result.put("identity", definition.identity());
-        result.put("writable", true);
+        result.put("readable", ProjectionAccessPolicy.canRead(definition.schema(), definition.table()));
+        result.put("creatable", false);
+        result.put("writable", !ProjectionAccessPolicy.updateColumns(
+                definition.schema(), definition.table()).isEmpty());
+        result.put("updatableColumns", ProjectionAccessPolicy.updateColumns(
+                definition.schema(), definition.table()));
+        result.put("deletable", false);
         return Map.copyOf(result);
     }
 
     private String mergeKey(String content, String keyJson) {
-        JsonElement element = JsonParser.parseString(content);
-        if (!element.isJsonObject()) {
-            throw new FclRuntimeException("InvalidRow", "Row content must be a JSON object");
-        }
-        JsonObject row = element.getAsJsonObject();
-        JsonObject key = JsonParser.parseString(keyJson).getAsJsonObject();
+        JsonObject row = StrictJsonObject.parse(content, "row");
+        JsonObject key = StrictJsonObject.parse(keyJson, "key");
         for (String column : key.keySet()) {
             JsonElement supplied = row.get(column);
             if (supplied != null && !supplied.equals(key.get(column))) {
@@ -374,9 +410,7 @@ public final class SystemProjection {
         try {
             String json = new String(Base64.getUrlDecoder().decode(encoded),
                     StandardCharsets.UTF_8);
-            if (!JsonParser.parseString(json).isJsonObject()) {
-                throw new FclRuntimeException("InvalidPath", "Invalid projected row key");
-            }
+            StrictJsonObject.parse(json, "key");
             return json;
         } catch (RuntimeException invalid) {
             throw new FclRuntimeException("InvalidPath", "Invalid projected row key");
@@ -402,9 +436,7 @@ public final class SystemProjection {
         try {
             String json = new String(Base64.getUrlDecoder().decode(cursor),
                     StandardCharsets.UTF_8);
-            if (!JsonParser.parseString(json).isJsonObject()) {
-                throw new IllegalArgumentException("Not a key object");
-            }
+            StrictJsonObject.parse(json, "key");
             return json;
         } catch (RuntimeException invalid) {
             throw new FclRuntimeException("InvalidCursor", "Invalid projection cursor");

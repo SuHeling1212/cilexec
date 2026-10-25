@@ -358,6 +358,8 @@ public final class DatabaseTerminalControl implements TerminalControl {
                                     + (node.type() == VfsNode.Type.DIRECTORY ? "/" : ""))
                             .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
                     if (administrator && routed.path().equals("/")) {
+                        new SystemProjection(transaction, user.userId(), Instant.now())
+                                .requireNoConflict();
                         names.add(0, ".cilexec/");
                     }
                     return String.join("\n", names);

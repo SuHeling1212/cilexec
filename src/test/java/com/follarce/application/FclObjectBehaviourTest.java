@@ -99,6 +99,41 @@ class FclObjectBehaviourTest {
     }
 
     @Test
+    void realReservedNodeRejectsProjectionInsteadOfBeingHidden() {
+        Fixture fixture = fixture();
+        VfsNode root = fixture.persistence.vfs.findChild(fixture.ownerId,
+                Optional.empty(), "/").orElseThrow();
+        fixture.persistence.vfs.insertNode(new VfsNode(UUID.randomUUID(),
+                Optional.of(root.nodeId()), fixture.ownerId, ".cilexec",
+                VfsNode.Type.DIRECTORY, Optional.empty(), Set.of(), false, NOW, NOW));
+
+        SystemProjection projection = new SystemProjection(fixture.persistence,
+                fixture.ownerId, NOW);
+        FclRuntimeException conflict = assertThrows(FclRuntimeException.class,
+                () -> projection.exists("/.cilexec/system/db"));
+        assertEquals("ProjectionConflict", conflict.type());
+        FclRuntimeException open = assertThrows(FclRuntimeException.class,
+                () -> fixture.registry(NOW).invoke("file.open",
+                        List.of("/.cilexec/system/db"), fixture.invocation(1)));
+        assertEquals("ProjectionConflict", open.type());
+        FclRuntimeException shell = assertThrows(FclRuntimeException.class,
+                () -> projection.isShellDirectory("/.cilexec"));
+        assertEquals("ProjectionConflict", shell.type());
+    }
+
+    @Test
+    void renameCannotCreateReservedRoot() {
+        Fixture fixture = fixture();
+        FclFunctionRegistry registry = fixture.registry(NOW);
+        FclSystemHandle file = (FclSystemHandle) registry.invoke("file.create",
+                List.of("/ordinary.txt", "body"), fixture.invocation(1));
+        FclRuntimeException rejected = assertThrows(FclRuntimeException.class,
+                () -> registry.invokeMethod(file, "rename", List.of(".cilexec"),
+                        fixture.invocation(2)));
+        assertEquals("ReadOnlyProjection", rejected.type());
+    }
+
+    @Test
     void eachMethodCallRechecksTheCurrentCapabilities() {
         Fixture fixture = fixture();
         FclFunctionRegistry registry = fixture.registry(NOW);

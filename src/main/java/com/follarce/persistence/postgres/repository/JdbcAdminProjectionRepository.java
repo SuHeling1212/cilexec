@@ -2,7 +2,10 @@ package com.follarce.persistence.postgres.repository;
 
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.port.AdminProjectionRepository;
+import com.follarce.domain.port.ProjectionAccessPolicy;
+import com.follarce.json.StrictJsonObject;
 import com.follarce.persistence.postgres.error.SqlStateClassifier;
+import com.follarce.persistence.postgres.error.PersistenceFailure;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -21,13 +24,12 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Generic administrator-only JSON access to the CilExec tables. It switches the current
+ * Policy-limited administrator JSON access to the CilExec tables. It switches the current
  * transaction to the session (runtime) role for one operation and restores the tenant role
  * afterwards; the caller must have checked SYSTEM_ADMIN first.
  *
- * <p>This is deliberately not used by normal FCL resource functions. Values are passed through
- * {@code jsonb_populate_record}, so PostgreSQL performs the type conversion and enforces every
- * constraint, trigger, foreign key, and generated-column rule.
+ * <p>Read and update columns are explicitly allowlisted before PostgreSQL type conversion,
+ * constraints, triggers, foreign keys, and RLS provide additional enforcement.
  */
 public final class JdbcAdminProjectionRepository implements AdminProjectionRepository {
     private static final List<String> SCHEMAS = List.of(
@@ -74,7 +76,10 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
         requireSchema(schema);
         String cacheKey = schema + "\0" + table;
         TableDefinition cached = definitions.get(cacheKey);
-        if (cached != null) return cached;
+        if (cached != null) {
+            requireAdministrator(actorId);
+            return cached;
+        }
         return asAdmin(actorId, () -> {
             List<String> columns = new ArrayList<>();
             Set<String> generated = new HashSet<>();
@@ -119,6 +124,7 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
     @Override
     public Optional<Row> readRow(UUID actorId, String schema, String table, String keyJson) {
         TableDefinition definition = describe(actorId, schema, table);
+        requireReadable(definition);
         JsonObject key = keyObject(keyJson, definition);
         return asAdmin(actorId, () -> read(definition, key));
     }
@@ -127,12 +133,14 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
     public List<Row> listRows(UUID actorId, String schema, String table,
                               Optional<String> afterKeyJson, int limit) {
         TableDefinition definition = describe(actorId, schema, table);
+        requireReadable(definition);
         int bounded = Math.max(1, Math.min(limit, MAX_LIMIT));
         JsonObject after = afterKeyJson.map(value -> keyObject(value, definition)).orElse(null);
         return asAdmin(actorId, () -> {
             String keySelect = keySelect(definition, "t");
             StringBuilder sql = new StringBuilder()
-                    .append("SELECT to_jsonb(t)::text AS row_json, ")
+                    .append("SELECT ").append(readSelect(definition, "t"))
+                    .append("::text AS row_json, ")
                     .append(keySelect)
                     .append(" AS key_json FROM ")
                     .append(table(definition))
@@ -165,33 +173,33 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
         TableDefinition definition = describe(actorId, schema, table);
         JsonObject values = rowObject(rowJson, definition);
         requirePrimaryKey(values, definition);
+        Set<String> allowed = ProjectionAccessPolicy.updateColumns(schema, table);
+        boolean changes = false;
+        for (String column : values.keySet()) {
+            if (definition.primaryKey().contains(column)) continue;
+            if (!allowed.contains(column)) {
+                throw new SecurityException("Projected column is read-only: " + column);
+            }
+            changes = true;
+        }
+        if (!changes) throw new IllegalArgumentException("No writable column supplied");
         return asAdmin(actorId, () -> {
             Optional<Row> existing = read(definition, keyObjectFromRow(values, definition));
-            if (existing.isPresent()) {
-                return update(definition, values);
+            if (existing.isEmpty()) {
+                throw new SecurityException("Projected row creation is not allowed");
             }
-            return insert(definition, values);
+            return update(definition, values);
         });
     }
 
     @Override
     public boolean deleteRow(UUID actorId, String schema, String table, String keyJson) {
-        TableDefinition definition = describe(actorId, schema, table);
-        JsonObject key = keyObject(keyJson, definition);
-        return asAdmin(actorId, () -> {
-            String sql = "DELETE FROM " + table(definition) + " AS t USING (SELECT "
-                    + "jsonb_populate_record(NULL::" + table(definition)
-                    + ", ?::jsonb) AS r) AS k WHERE "
-                    + rowComparison(definition, "t", "k.r", "=");
-            try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                statement.setString(1, key.toString());
-                return statement.executeUpdate() > 0;
-            }
-        });
+        throw new SecurityException("Projected row deletion is not allowed");
     }
 
     private Optional<Row> read(TableDefinition definition, JsonObject key) throws SQLException {
-        String sql = "SELECT to_jsonb(t)::text AS row_json, " + keySelect(definition, "t")
+        String sql = "SELECT " + readSelect(definition, "t") + "::text AS row_json, "
+                + keySelect(definition, "t")
                 + " AS key_json FROM " + table(definition) + " AS t, (SELECT "
                 + "jsonb_populate_record(NULL::" + table(definition)
                 + ", ?::jsonb) AS r) AS k WHERE "
@@ -202,6 +210,12 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
                 if (!rows.next()) return Optional.empty();
                 return Optional.of(new Row(rows.getString("key_json"), rows.getString("row_json")));
             }
+        }
+    }
+
+    private static void requireReadable(TableDefinition definition) {
+        if (!ProjectionAccessPolicy.canRead(definition.schema(), definition.table())) {
+            throw new SecurityException("Projected row reading is not allowed");
         }
     }
 
@@ -225,46 +239,12 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
         sql.append(" FROM (SELECT jsonb_populate_record(NULL::").append(table(definition))
                 .append(", ?::jsonb) AS r) AS s WHERE ")
                 .append(rowComparison(definition, "t", "s.r", "="))
-                .append(" RETURNING to_jsonb(t)::text AS row_json");
+                .append(" RETURNING ").append(readSelect(definition, "t"))
+                .append("::text AS row_json");
         try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
             statement.setString(1, values.toString());
             try (ResultSet rows = statement.executeQuery()) {
                 if (!rows.next()) throw new IllegalStateException("Projected row disappeared");
-                String rowJson = rows.getString("row_json");
-                return new Row(keyJsonFromRow(rowJson, definition), rowJson);
-            }
-        }
-    }
-
-    private Row insert(TableDefinition definition, JsonObject values) throws SQLException {
-        List<String> provided = new ArrayList<>();
-        for (String column : definition.columns()) {
-            if (values.has(column)) provided.add(column);
-        }
-        if (provided.isEmpty()) throw new IllegalArgumentException("No writeable columns supplied");
-        StringBuilder columns = new StringBuilder();
-        StringBuilder selected = new StringBuilder();
-        for (int index = 0; index < provided.size(); index++) {
-            if (index > 0) {
-                columns.append(", ");
-                selected.append(", ");
-            }
-            String quoted = quote(provided.get(index));
-            columns.append(quoted);
-            selected.append("(s.r).").append(quoted);
-        }
-        boolean overriding = provided.stream().anyMatch(definition.identity()::contains);
-        StringBuilder sql = new StringBuilder("WITH inserted AS (INSERT INTO ")
-                .append(table(definition)).append(" (").append(columns).append(')');
-        if (overriding) sql.append(" OVERRIDING SYSTEM VALUE");
-        sql.append(" SELECT ").append(selected)
-                .append(" FROM (SELECT jsonb_populate_record(NULL::")
-                .append(table(definition)).append(", ?::jsonb) AS r) AS s RETURNING *)")
-                .append(" SELECT to_jsonb(inserted)::text AS row_json FROM inserted");
-        try (PreparedStatement statement = connection.prepareStatement(sql.toString())) {
-            statement.setString(1, values.toString());
-            try (ResultSet rows = statement.executeQuery()) {
-                if (!rows.next()) throw new IllegalStateException("Projected insert returned no row");
                 String rowJson = rows.getString("row_json");
                 return new Row(keyJsonFromRow(rowJson, definition), rowJson);
             }
@@ -305,6 +285,25 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
             if (index > 0) sql.append(", ");
             String column = definition.primaryKey().get(index);
             sql.append("'").append(column.replace("'", "''")).append("', ")
+                    .append(alias).append('.').append(quote(column));
+        }
+        return sql.append(')').toString();
+    }
+
+    private static String readSelect(TableDefinition definition, String alias) {
+        Set<String> readable = ProjectionAccessPolicy.readColumns(
+                definition.schema(), definition.table());
+        if (readable.isEmpty() || !definition.columns().containsAll(readable)
+                || !readable.containsAll(definition.primaryKey())) {
+            throw new SecurityException("Projected read policy is missing a current column");
+        }
+        StringBuilder sql = new StringBuilder("jsonb_build_object(");
+        boolean first = true;
+        for (String column : definition.columns()) {
+            if (!readable.contains(column)) continue;
+            if (!first) sql.append(", ");
+            first = false;
+            sql.append('\'').append(column.replace("'", "''")).append("', ")
                     .append(alias).append('.').append(quote(column));
         }
         return sql.append(')').toString();
@@ -380,14 +379,7 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
     }
 
     private static JsonObject parseObject(String json, String what) {
-        try {
-            JsonElement element = JsonParser.parseString(json);
-            if (!element.isJsonObject()) throw new IllegalArgumentException(what + " must be a JSON object");
-            return element.getAsJsonObject();
-        } catch (RuntimeException failure) {
-            if (failure instanceof IllegalArgumentException illegal) throw illegal;
-            throw new IllegalArgumentException("Invalid " + what + " JSON", failure);
-        }
+        return StrictJsonObject.parse(json, what);
     }
 
     private static void requirePrimaryKey(JsonObject values, TableDefinition definition) {
@@ -405,6 +397,7 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
     }
 
     private <T> T asAdmin(UUID actorId, SqlWork<T> work) {
+        requireAdministrator(actorId);
         try (Statement statement = connection.createStatement()) {
             statement.execute("RESET ROLE");
         } catch (SQLException exception) {
@@ -416,7 +409,7 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
             result = work.run();
         } catch (SQLException exception) {
             // A SQL failure aborts the transaction; the outer executor rolls it back.
-            throw SqlStateClassifier.classify("projection.query", exception);
+            throw safeFailure("projection.query", exception);
         } catch (RuntimeException runtime) {
             failure = runtime;
         }
@@ -430,6 +423,28 @@ public final class JdbcAdminProjectionRepository implements AdminProjectionRepos
         }
         if (failure != null) throw failure;
         return result;
+    }
+
+    private void requireAdministrator(UUID actorId) {
+        try (PreparedStatement check = connection.prepareStatement("""
+                SELECT auth.current_cilexec_user_is_system_administrator(),
+                       auth.current_cilexec_user_id()
+                """); ResultSet rows = check.executeQuery()) {
+            if (!rows.next() || !rows.getBoolean(1)
+                    || !actorId.equals(rows.getObject(2, UUID.class))) {
+                throw new SecurityException("System projection requires the current administrator");
+            }
+        } catch (SQLException exception) {
+            throw SqlStateClassifier.classify("projection.authorize", exception);
+        }
+    }
+
+    private static PersistenceFailure safeFailure(String operation, SQLException exception) {
+        PersistenceFailure classified = SqlStateClassifier.classify(operation, exception);
+        // JDBC detail messages may contain rejected row values. Keep the SQLSTATE and
+        // retry classification, but never attach the value-bearing driver exception.
+        return new PersistenceFailure(classified.kind(), classified.retryable(),
+                classified.getMessage(), null);
     }
 
     @FunctionalInterface
