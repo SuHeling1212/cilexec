@@ -68,6 +68,36 @@ class FclObjectBehaviourTest {
                 () -> registry.invokeMethod(file, "read", List.of(), fixture.invocation(8)));
     }
 
+
+    @Test
+    void systemProjectionIsInvisibleToNonAdministrators() {
+        Fixture fixture = fixture();
+        fixture.persistence.auth.capabilities.set(Set.of(
+                com.follarce.domain.auth.Capability.VFS_READ,
+                com.follarce.domain.auth.Capability.VFS_WRITE));
+        FclFunctionRegistry registry = fixture.registry(NOW);
+
+        FclRuntimeException hidden = assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("file.open",
+                        List.of("/.cilexec/system/db"), fixture.invocation(1)));
+        assertEquals("PathNotFound", hidden.type());
+        FclSystemHandle projectedPath = (FclSystemHandle) registry.invoke("file.path",
+                List.of("/.cilexec/system/db"), fixture.invocation(2));
+        assertEquals(false, registry.invokeMethod(projectedPath, "exists",
+                List.of(), fixture.invocation(2)));
+        FclRuntimeException write = assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("file.create",
+                        List.of("/.cilexec/system/db/auth/x.json", "{}"),
+                        fixture.invocation(3)));
+        assertEquals("PathNotFound", write.type());
+
+        FclRuntimeException reserved = assertThrows(FclRuntimeException.class,
+                () -> registry.invoke("file.create",
+                        List.of("/.cilexec/ordinary.txt", "body"),
+                        fixture.invocation(4)));
+        assertEquals("ReadOnlyProjection", reserved.type());
+    }
+
     @Test
     void eachMethodCallRechecksTheCurrentCapabilities() {
         Fixture fixture = fixture();

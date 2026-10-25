@@ -1,5 +1,6 @@
 package com.follarce.domain;
 
+import com.follarce.domain.port.AdminProjectionRepository;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.domain.port.AuthRepository;
 import com.follarce.domain.port.EffectRepository;
@@ -38,7 +39,8 @@ class PortContractTest {
             AuthRepository.class,
             AuditRepository.class,
             TerminalRepository.class,
-            EnvironmentRepository.class);
+            EnvironmentRepository.class,
+            AdminProjectionRepository.class);
 
     @Test
     void transactionContextExposesEveryRepositoryAndOwnsCompletion() {
@@ -47,7 +49,7 @@ class PortContractTest {
         Set<String> expected = Set.of(
                 "programs", "processes", "scheduler", "ipc", "timers", "vfs", "interrupts",
                 "packages", "effects", "auth", "audit", "terminal", "environment",
-                "commit", "rollback", "close");
+                "adminProjection", "commit", "rollback", "close");
         assertTrue(methods.containsAll(expected));
         assertEquals(expected.size(), methods.size());
     }

@@ -36,6 +36,11 @@ public interface TransactionContext extends AutoCloseable {
         throw new UnsupportedOperationException("Environment repository is not implemented");
     }
 
+    /** Administrator-only generic projection; unsupported by ordinary test fakes. */
+    default AdminProjectionRepository adminProjection() {
+        throw new UnsupportedOperationException("Admin projection repository is not implemented");
+    }
+
     void commit();
 
     void rollback();

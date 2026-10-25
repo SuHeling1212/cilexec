@@ -721,6 +721,39 @@ receiver; all still use the current process identity and capabilities.
 | `program` | `program.find(programId)`. |
 | `terminal` | `terminal.find(sessionId)`. |
 
+## Administrator system data files (0.0.5)
+
+The `local` administrator (any account with `SYSTEM_ADMIN`) can browse and edit every
+CilExec table as JSON files. The tree is generated on demand and is not part of `vfs.node`:
+
+```text
+/.cilexec/system/db/<schema>/<table>/
+    _schema.json                  columns, primary key, generated/identity columns
+    <key>.json                    one row (first page: at most 200 rows)
+    _next.json                    next-page cursor, present only when the page is full
+    page/<cursor>/                next page
+```
+
+`<key>.json` is the base64url encoding (without padding) of the primary-key JSON,
+for example `{"variable_name":"PROJ_TEST"}`. A row file contains the same JSON object as
+`SELECT to_jsonb(row)`; write only the columns you want to change. Primary-key columns
+cannot be changed through an existing file. Generated columns are read-only.
+
+```fcl
+file.open("/.cilexec/system/db").list()
+file.open("/.cilexec/system/db/auth/shared_environment_variable/_schema.json").read()
+file.create("/.cilexec/system/db/auth/shared_environment_variable/<key>.json",
+            "{\"variable_name\":\"PROJ_TEST\",\"variable_value\":\"one\"}")
+file.open("/.../<key>.json").write("{\"variable_value\":\"two\"}")
+file.open("/.../<key>.json").remove()
+```
+
+Only administrators can see the tree; other users receive `PathNotFound`. The
+`/.cilexec` prefix is reserved for this projection and is not writable as ordinary VFS.
+This is a raw database escape hatch: it bypasses typed resource functions and can corrupt
+runtime invariants, so prefer `process.*`, `package.*`, and other object APIs for normal
+work. It does not add a schema migration and remains part of 0.0.5.
+
 ## System and administration namespaces
 
 | Call | Effect |

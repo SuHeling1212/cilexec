@@ -1,5 +1,6 @@
 package com.follarce.persistence.postgres.transaction;
 
+import com.follarce.domain.port.AdminProjectionRepository;
 import com.follarce.domain.port.AuditRepository;
 import com.follarce.domain.port.AuthRepository;
 import com.follarce.domain.port.EffectRepository;
@@ -15,6 +16,7 @@ import com.follarce.domain.port.TransactionContext;
 import com.follarce.domain.port.VfsRepository;
 import com.follarce.persistence.postgres.error.SqlStateClassifier;
 import com.follarce.persistence.postgres.mapper.JsonCodec;
+import com.follarce.persistence.postgres.repository.JdbcAdminProjectionRepository;
 import com.follarce.persistence.postgres.repository.JdbcAuditRepository;
 import com.follarce.persistence.postgres.repository.JdbcAuthRepository;
 import com.follarce.persistence.postgres.repository.JdbcEffectRepository;
@@ -47,6 +49,7 @@ public final class JdbcTransactionContext implements TransactionContext {
     private final AuditRepository audit;
     private final TerminalRepository terminal;
     private final EnvironmentRepository environment;
+    private final AdminProjectionRepository adminProjection;
     private final AtomicReference<State> state = new AtomicReference<>(State.OPEN);
 
     JdbcTransactionContext(Connection connection, JsonCodec json) {
@@ -63,6 +66,7 @@ public final class JdbcTransactionContext implements TransactionContext {
         audit = new JdbcAuditRepository(connection, json);
         terminal = new JdbcTerminalRepository(connection);
         environment = new JdbcEnvironmentRepository(connection);
+        adminProjection = new JdbcAdminProjectionRepository(connection);
     }
 
     @Override public ProgramRepository programs() { return programs; }
@@ -77,6 +81,7 @@ public final class JdbcTransactionContext implements TransactionContext {
     @Override public AuditRepository audit() { return audit; }
     @Override public TerminalRepository terminal() { return terminal; }
     @Override public EnvironmentRepository environment() { return environment; }
+    @Override public AdminProjectionRepository adminProjection() { return adminProjection; }
 
     /** Adapter-only fault-injection hook; deliberately not part of {@link TransactionContext}. */
     public void setLocalSetting(String name, String value) {

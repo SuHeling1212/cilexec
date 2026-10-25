@@ -24,7 +24,13 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
         registry.register("file", "read", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.read expects path and optional target user");
-                    return readText(string(args.getFirst(), "file.read path"), owner(args, 1));
+                    String path = string(args.getFirst(), "file.read path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 1, "file.read");
+                        return projection().read(normalize(path));
+                    }
+                    if (isReservedRequest(path)) throw projectionNotFound(path);
+                    return readText(path, owner(args, 1));
                 })
                 .register("file", "readChunk", args -> {
                     if (args.size() < 3 || args.size() > 4) throw new FclRuntimeException(
@@ -36,6 +42,11 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                         throw new FclRuntimeException(
                                 "file.readChunk requires a non-negative offset and at most 4 MiB");
                     }
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 3, "file.readChunk");
+                        return projection().readChunk(normalize(path), offset, (int) requested);
+                    }
+                    if (isReservedRequest(path)) throw projectionNotFound(path);
                     return decodeUtf8(readRange(path, offset, (int) requested, owner(args, 3)),
                             "file.readChunk");
                 })
@@ -43,6 +54,11 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.size expects path and optional target user");
                     String path = string(args.getFirst(), "file.size path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 1, "file.size");
+                        return projection().size(normalize(path));
+                    }
+                    if (isReservedRequest(path)) throw projectionNotFound(path);
                     RoutedPath routed = route(path, owner(args, 1));
                     VfsNode node = resolveFileNode(routed.path(), routed.ownerId());
                     ObjectHash hash = node.currentObjectHash().orElseThrow();
@@ -54,8 +70,13 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                 .register("file", "exists", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.exists expects path and optional target user");
-                    RoutedPath routed = route(string(args.getFirst(), "file.exists path"),
-                            owner(args, 1));
+                    String path = string(args.getFirst(), "file.exists path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 1, "file.exists");
+                        return projection().exists(normalize(path));
+                    }
+                    if (isReservedRequest(path)) return false;
+                    RoutedPath routed = route(path, owner(args, 1));
                     requireFileAccess(routed.ownerId(), Capability.VFS_READ,
                             Capability.VFS_WRITE);
                     return resolve(routed.path(), routed.ownerId())
@@ -68,6 +89,13 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                             : string(args.getFirst(), "file.list path");
                     UUID owner = owner(args, 1);
                     String absolute = normalize(requested);
+                    if (isProjectionRequest(requested)) {
+                        if (args.size() > 1) throw new FclRuntimeException(
+                                "ProjectionTargetUnsupported",
+                                "System projection is local to the current user");
+                        return projection().list(absolute);
+                    }
+                    if (isReservedRequest(requested)) throw projectionNotFound(requested);
                     RoutedPath routed = route(requested, owner);
                     if (routed.ownerId().equals(process.ownerId())
                             && routed.path().equals("/Users") && isLocalAdministrator()) {
@@ -84,49 +112,87 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                 .register("file", "readMetaData", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.readMetaData expects path and optional target user");
-                    RoutedPath routed = route(string(args.getFirst(),
-                            "file.readMetaData path"), owner(args, 1));
+                    String path = string(args.getFirst(), "file.readMetaData path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 1, "file.readMetaData");
+                        return projection().metadata(normalize(path));
+                    }
+                    if (isReservedRequest(path)) throw projectionNotFound(path);
+                    RoutedPath routed = route(path, owner(args, 1));
                     requireFileAccess(routed.ownerId(), Capability.VFS_READ);
                     return nodeMap(requireNode(routed.path(), routed.ownerId()));
                 })
                 .register("file", "write", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "file.write expects path, content, and optional target user");
-                    return writeText(string(args.get(0), "file.write path"),
-                            display(args.get(1)), false, owner(args, 2));
+                    String path = string(args.get(0), "file.write path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 2, "file.write");
+                        return projection().write(normalize(path), display(args.get(1)));
+                    }
+                    if (isReservedRequest(path)) throw projectionReadOnly(path);
+                    return writeText(path, display(args.get(1)), false, owner(args, 2));
                 })
                 .register("file", "append", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "file.append expects path, content, and optional target user");
-                    return writeText(string(args.get(0), "file.append path"),
-                            display(args.get(1)), true, owner(args, 2));
+                    String path = string(args.get(0), "file.append path");
+                    if (isProjectionRequest(path) || isReservedRequest(path)) {
+                        throw projectionReadOnly(path);
+                    }
+                    return writeText(path, display(args.get(1)), true, owner(args, 2));
                 })
                 .register("file", "createFile", args -> {
                     if (args.size() < 1 || args.size() > 3) throw new FclRuntimeException(
                             "file.createFile expects path, optional content and target user");
                     String content = args.size() >= 2 ? display(args.get(1)) : "";
-                    return createText(string(args.getFirst(), "file.createFile path"),
-                            content, owner(args, 2));
+                    String path = string(args.getFirst(), "file.createFile path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 2, "file.createFile");
+                        projection().create(normalize(path), content);
+                        return normalize(path);
+                    }
+                    if (isReservedRequest(path)) throw projectionReadOnly(path);
+                    return createText(path, content, owner(args, 2));
                 })
                 .register("file", "createDir", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.createDir expects path and optional target user");
-                    return createDirectory(string(args.getFirst(), "file.createDir path"),
-                            owner(args, 1));
+                    String path = string(args.getFirst(), "file.createDir path");
+                    if (isProjectionRequest(path) || isReservedRequest(path)) {
+                        throw projectionReadOnly(path);
+                    }
+                    return createDirectory(path, owner(args, 1));
                 })
-                .register("file", "remove", args -> remove(args, "file.remove"))
+                .register("file", "remove", args -> {
+                    if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
+                            "file.remove expects path and optional target user");
+                    String path = string(args.getFirst(), "file.remove path");
+                    if (isProjectionRequest(path)) {
+                        rejectProjectionTarget(args, 1, "file.remove");
+                        return projection().remove(normalize(path));
+                    }
+                    if (isReservedRequest(path)) throw projectionReadOnly(path);
+                    return remove(args, "file.remove");
+                })
                 .register("file", "clear", args -> {
                     if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                             "file.clear expects path and optional target user");
-                    return clearDirectoryContents(string(args.getFirst(),
-                            "file.clear path"), owner(args, 1), "file.clear");
+                    String path = string(args.getFirst(), "file.clear path");
+                    if (isProjectionRequest(path) || isReservedRequest(path)) {
+                        throw projectionReadOnly(path);
+                    }
+                    return clearDirectoryContents(path, owner(args, 1), "file.clear");
                 })
                 .register("file", "rename", args -> {
                     if (args.size() < 2 || args.size() > 3) throw new FclRuntimeException(
                             "file.rename expects path, name, and optional target user");
                     UUID requestedOwner = owner(args, 2);
-                    RoutedPath routed = route(string(args.get(0), "file.rename path"),
-                            requestedOwner);
+                    String sourcePath = string(args.get(0), "file.rename path");
+                    if (isProjectionRequest(sourcePath) || isReservedRequest(sourcePath)) {
+                        throw projectionReadOnly(sourcePath);
+                    }
+                    RoutedPath routed = route(sourcePath, requestedOwner);
                     UUID owner = routed.ownerId();
                     requireFileAccess(owner, Capability.VFS_WRITE);
                     VfsNode source = requireNode(routed.path(), owner);
@@ -151,6 +217,10 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                     arity(args, 2, "file.link");
                     String linkPath = string(args.get(0), "file.link path");
                     String target = normalize(string(args.get(1), "file.link target"));
+                    if (isProjectionRequest(linkPath) || isReservedRequest(linkPath)
+                            || isProjectionRequest(target) || isReservedRequest(target)) {
+                        throw projectionReadOnly(linkPath);
+                    }
                     byte[] content = target.getBytes(StandardCharsets.UTF_8);
                     if (content.length > MAX_LINK_TARGET_BYTES) {
                         throw new FclRuntimeException("file.link target exceeds "
@@ -162,7 +232,11 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                 .register("file", "lock", args -> {
                     arity(args, 2, "file.lock");
                     Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
-                    VfsNode node = requireNode(string(args.get(0), "file.lock path"));
+                    String path = string(args.get(0), "file.lock path");
+                    if (isProjectionRequest(path) || isReservedRequest(path)) {
+                        throw projectionReadOnly(path);
+                    }
+                    VfsNode node = requireNode(path);
                     long lease = positiveMillis(args.get(1), "file.lock lease");
                     return transaction.vfs().acquireLock(node.nodeId(), process.ownerId(),
                                     process.identity().processUid(), process.executionEpoch(),
@@ -172,7 +246,11 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                 .register("file", "renewLock", args -> {
                     arity(args, 3, "file.renewLock");
                     Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
-                    VfsNode node = requireNode(string(args.get(0), "file.renewLock path"));
+                    String path = string(args.get(0), "file.renewLock path");
+                    if (isProjectionRequest(path) || isReservedRequest(path)) {
+                        throw projectionReadOnly(path);
+                    }
+                    VfsNode node = requireNode(path);
                     long token = integer(args.get(1), "file.renewLock token");
                     long lease = positiveMillis(args.get(2), "file.renewLock lease");
                     return transaction.vfs().renewLock(node.nodeId(), process.ownerId(),
@@ -183,7 +261,11 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                 .register("file", "unlock", args -> {
                     arity(args, 2, "file.unlock");
                     Authorization.require(transaction, process.ownerId(), Capability.VFS_WRITE);
-                    VfsNode node = requireNode(string(args.get(0), "file.unlock path"));
+                    String path = string(args.get(0), "file.unlock path");
+                    if (isProjectionRequest(path) || isReservedRequest(path)) {
+                        throw projectionReadOnly(path);
+                    }
+                    VfsNode node = requireNode(path);
                     return transaction.vfs().releaseLock(node.nodeId(), process.ownerId(),
                             process.identity().processUid(), process.executionEpoch(),
                             integer(args.get(1), "file.unlock token"));
@@ -202,7 +284,15 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
         registry.register("file", "open", args -> {
             if (args.size() < 1 || args.size() > 2) throw new FclRuntimeException(
                     "file.open expects path and optional target user");
-            RoutedPath routed = route(string(args.getFirst(), "file.open path"), owner(args, 1));
+            String path = string(args.getFirst(), "file.open path");
+            if (isProjectionRequest(path)) {
+                if (args.size() > 1) throw new FclRuntimeException(
+                        "ProjectionTargetUnsupported",
+                        "System projection is local to the current user");
+                return projection().open(normalize(path));
+            }
+            if (isReservedRequest(path)) throw projectionNotFound(path);
+            RoutedPath routed = route(path, owner(args, 1));
             // Opening resolves identity only; the individual method still checks the
             // capability it needs (read, write, or delete) before doing any work, so a
             // read-only caller may open a node for read methods.
@@ -220,12 +310,22 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
                     "file.create expects path and optional content");
             String path = string(args.getFirst(), "file.create path");
             String content = args.size() == 2 ? display(args.get(1)) : "";
+            if (isProjectionRequest(path)) {
+                projection().create(normalize(path), content);
+                return new FclSystemHandle("ProjectionFile", normalize(path),
+                        java.util.Map.of("projection", "database"));
+            }
+            if (isReservedRequest(path)) throw projectionReadOnly(path);
             String id = createText(path, content, process.ownerId());
             return new FclSystemHandle("File", id);
         });
         registry.register("file", "mkdir", args -> {
             arity(args, 1, "file.mkdir");
-            String id = createDirectory(string(args.getFirst(), "file.mkdir path"), process.ownerId());
+            String path = string(args.getFirst(), "file.mkdir path");
+            if (isProjectionRequest(path) || isReservedRequest(path)) {
+                throw projectionReadOnly(path);
+            }
+            String id = createDirectory(path, process.ownerId());
             return new FclSystemHandle("Directory", id);
         });
         registry.registerMethod("Path", "exists", (args, invocation) -> {
@@ -235,14 +335,33 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
         });
         for (String method : List.of("read", "readChunk", "size", "metadata", "write", "append",
                 "rename", "remove", "lock")) {
-            registry.registerMethod("File", method, (args, invocation) ->
-                    invokeNode((FclSystemHandle) args.getFirst(), method,
-                            args.subList(1, args.size()), invocation));
+            registry.registerMethod("File", method, (args, invocation) -> {
+                FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+                if (isProjectionHandle(handle)) {
+                    return projectionFile(handle, method, args.subList(1, args.size()));
+                }
+                return invokeNode(handle, method, args.subList(1, args.size()), invocation);
+            });
         }
         for (String method : List.of("list", "clear", "metadata", "rename", "remove")) {
-            registry.registerMethod("Directory", method, (args, invocation) ->
-                    invokeNode((FclSystemHandle) args.getFirst(), method,
-                            args.subList(1, args.size()), invocation));
+            registry.registerMethod("Directory", method, (args, invocation) -> {
+                FclSystemHandle handle = (FclSystemHandle) args.getFirst();
+                if (isProjectionHandle(handle)) {
+                    return projectionDirectory(handle, method, args.subList(1, args.size()));
+                }
+                return invokeNode(handle, method, args.subList(1, args.size()), invocation);
+            });
+        }
+        for (String method : List.of("read", "readChunk", "size", "metadata", "write", "append",
+                "rename", "remove", "lock")) {
+            registry.registerMethod("ProjectionFile", method, (args, invocation) ->
+                    projectionFile((FclSystemHandle) args.getFirst(), method,
+                            args.subList(1, args.size())));
+        }
+        for (String method : List.of("list", "clear", "metadata", "rename", "remove")) {
+            registry.registerMethod("ProjectionDirectory", method, (args, invocation) ->
+                    projectionDirectory((FclSystemHandle) args.getFirst(), method,
+                            args.subList(1, args.size())));
         }
         registry.registerMethod("FileLease", "renew", (args, invocation) -> {
             FclSystemHandle lease = (FclSystemHandle) args.getFirst();
@@ -368,6 +487,97 @@ final class FclFileRuntimeFunctions extends FclVfsRuntimeSupport {
             }
         }
         return "/" + String.join("/", parts);
+    }
+
+    private SystemProjection projection() {
+        return new SystemProjection(transaction, process.ownerId(), now);
+    }
+
+    private boolean isProjectionRequest(String source) {
+        return SystemProjection.isProjectionPath(normalize(source));
+    }
+
+    private boolean isReservedRequest(String source) {
+        return SystemProjection.isReservedPath(normalize(source));
+    }
+
+    private static boolean isProjectionHandle(FclSystemHandle handle) {
+        return handle.kind().equals("ProjectionFile")
+                || handle.kind().equals("ProjectionDirectory");
+    }
+
+    private void rejectProjectionTarget(List<Object> args, int targetIndex, String function) {
+        if (args.size() > targetIndex) {
+            throw new FclRuntimeException("ProjectionTargetUnsupported",
+                    function + " cannot target a system projection for another user");
+        }
+    }
+
+    private Object projectionFile(FclSystemHandle handle, String method,
+                                  List<Object> supplied) {
+        SystemProjection projection = projection();
+        String path = handle.id();
+        return switch (method) {
+            case "read" -> {
+                arity(supplied, 0, "File.read");
+                yield projection.read(path);
+            }
+            case "readChunk" -> {
+                arity(supplied, 2, "File.readChunk");
+                long offset = integer(supplied.get(0), "File.readChunk offset");
+                long maximum = integer(supplied.get(1), "File.readChunk maximum bytes");
+                if (offset < 0 || maximum < 0 || maximum > 4L * 1024 * 1024) {
+                    throw new FclRuntimeException(
+                            "File.readChunk requires a non-negative offset and at most 4 MiB");
+                }
+                yield projection.readChunk(path, offset, (int) maximum);
+            }
+            case "size" -> {
+                arity(supplied, 0, "File.size");
+                yield projection.size(path);
+            }
+            case "metadata" -> {
+                arity(supplied, 0, "File.metadata");
+                yield projection.metadata(path);
+            }
+            case "write" -> {
+                arity(supplied, 1, "File.write");
+                yield projection.write(path, display(supplied.getFirst()));
+            }
+            case "remove" -> {
+                arity(supplied, 0, "File.remove");
+                yield projection.remove(path);
+            }
+            case "append", "rename", "lock" -> throw projectionReadOnly(path);
+            default -> throw new FclRuntimeException("UnsupportedProjectionMethod",
+                    "Unsupported projection file method: " + method);
+        };
+    }
+
+    private Object projectionDirectory(FclSystemHandle handle, String method,
+                                       List<Object> supplied) {
+        SystemProjection projection = projection();
+        String path = handle.id();
+        return switch (method) {
+            case "list" -> {
+                arity(supplied, 0, "Directory.list");
+                yield projection.list(path);
+            }
+            case "metadata" -> {
+                arity(supplied, 0, "Directory.metadata");
+                yield projection.metadata(path);
+            }
+            default -> throw projectionReadOnly(path);
+        };
+    }
+
+    private static FclRuntimeException projectionNotFound(String path) {
+        return new FclRuntimeException("PathNotFound", "No such path: " + path);
+    }
+
+    private static FclRuntimeException projectionReadOnly(String path) {
+        return new FclRuntimeException("ReadOnlyProjection",
+                path + " is a read-only system projection; use a typed resource function");
     }
 
 }

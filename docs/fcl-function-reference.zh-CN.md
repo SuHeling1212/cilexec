@@ -659,6 +659,37 @@ terminal.find("<terminal-session-uuid>").remove()
 | `program` | `program.find(programId)`。 |
 | `terminal` | `terminal.find(sessionId)`。 |
 
+## 管理员系统数据文件（0.0.5）
+
+`local` 管理员（拥有 `SYSTEM_ADMIN` 的账号）可以把全部 CilExec 数据表当作 JSON 文件浏览和修改。
+这棵树实时生成，不属于 `vfs.node`：
+
+```text
+/.cilexec/system/db/<schema>/<table>/
+    _schema.json                  列、主键、generated/identity
+    <key>.json                    一行（首屏最多 200 行）
+    _next.json                    下一页游标（仅满页时出现）
+    page/<cursor>/                下一页
+```
+
+`<key>.json` 是主键 JSON 的 base64url（无 padding），例如
+`{"variable_name":"PROJ_TEST"}`。行文件内容与 `SELECT to_jsonb(row)` 相同；写文件时
+只需提供要修改的列。已有行不能通过文件修改主键；generated 列只读。
+
+```fcl
+file.open("/.cilexec/system/db").list()
+file.open("/.cilexec/system/db/auth/shared_environment_variable/_schema.json").read()
+file.create("/.cilexec/system/db/auth/shared_environment_variable/<key>.json",
+            "{\"variable_name\":\"PROJ_TEST\",\"variable_value\":\"one\"}")
+file.open("/.../<key>.json").write("{\"variable_value\":\"two\"}")
+file.open("/.../<key>.json").remove()
+```
+
+只有管理员可见；普通用户访问得到 `PathNotFound`。`/.cilexec` 前缀被投影保留，
+不能作为普通 VFS 路径写入。这是直接改数据库的兜底通道，会绕过类型化资源函数，
+可能破坏运行时不变量；正常操作请优先使用 `process.*`、`package.*` 等对象 API。
+它不新增迁移，仍属于 0.0.5。
+
 ## 系统与管理命名空间
 
 | 调用 | 作用 |

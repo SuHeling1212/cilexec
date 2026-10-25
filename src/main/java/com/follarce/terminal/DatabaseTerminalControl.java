@@ -1,5 +1,6 @@
 package com.follarce.terminal;
 
+import com.follarce.application.SystemProjection;
 import com.follarce.application.TerminalReplService;
 import com.follarce.domain.auth.UserAccount;
 import com.follarce.domain.terminal.TerminalSession;
@@ -274,6 +275,16 @@ public final class DatabaseTerminalControl implements TerminalControl {
      * SYSTEM_ADMIN grant takes effect immediately on existing terminal sessions.
      * The check is a cheap indexed read and terminal commands are user-paced.
      */
+    private boolean isAdministrator(TransactionContext transaction) {
+        return transaction.auth().capabilities(user.userId())
+                .contains(com.follarce.domain.auth.Capability.SYSTEM_ADMIN);
+    }
+
+    private static boolean isProjectionShellPath(String path) {
+        return path.equals("/.cilexec") || path.equals("/.cilexec/system")
+                || SystemProjection.isProjectionPath(path);
+    }
+
     private boolean isAdmin() {
         return transactions.inUserTransaction(user.userId(), Isolation.READ_COMMITTED,
                 transaction -> transaction.auth().capabilities(user.userId())
@@ -284,7 +295,22 @@ public final class DatabaseTerminalControl implements TerminalControl {
         return transactions.inUserTransaction(user.userId(), Isolation.SERIALIZABLE, transaction -> {
             String current = transaction.terminal().workingDirectory(sessionId);
             String replacement = FclPath.resolve(current, path);
-            VfsNode directory = resolve(transaction, replacement);
+            ResolvedPath routed = route(transaction, replacement);
+            boolean administrator = isAdministrator(transaction);
+            if (administrator && routed.ownerId().equals(user.userId())
+                    && isProjectionShellPath(routed.path())) {
+                SystemProjection projection = new SystemProjection(transaction, user.userId(),
+                        Instant.now());
+                if (!projection.isShellDirectory(routed.path())) {
+                    throw new IllegalArgumentException("Not a directory: " + replacement);
+                }
+                if (!transaction.terminal().changeWorkingDirectory(sessionId, current,
+                        routed.path(), Instant.now())) {
+                    throw new IllegalStateException("Working directory changed concurrently");
+                }
+                return "";
+            }
+            VfsNode directory = resolve(transaction, routed.ownerId(), routed.path());
             if (directory.type() != VfsNode.Type.DIRECTORY) {
                 throw new IllegalArgumentException("Not a directory: " + replacement);
             }
@@ -306,11 +332,20 @@ public final class DatabaseTerminalControl implements TerminalControl {
                     String current = transaction.terminal().workingDirectory(sessionId);
                     String requested = FclPath.resolve(current, path.orElse("."));
                     ResolvedPath routed = route(transaction, requested);
+                    boolean administrator = isAdministrator(transaction);
                     if (routed.ownerId().equals(user.userId())
                             && routed.path().equals("/Users") && isLocalAdministrator()) {
                         return transaction.auth().findUsersByAdministrator(user.userId()).stream()
                                 .map(UserAccount::username).sorted(String.CASE_INSENSITIVE_ORDER)
                                 .map(name -> name + "/")
+                                .collect(java.util.stream.Collectors.joining("\n"));
+                    }
+                    if (administrator && routed.ownerId().equals(user.userId())
+                            && isProjectionShellPath(routed.path())) {
+                        List<Map<String, Object>> entries = new SystemProjection(transaction,
+                                user.userId(), Instant.now()).listShell(routed.path());
+                        return entries.stream().map(entry -> String.valueOf(entry.get("name"))
+                                        + ("DIRECTORY".equals(entry.get("type")) ? "/" : ""))
                                 .collect(java.util.stream.Collectors.joining("\n"));
                     }
                     VfsNode directory = resolve(transaction, routed.ownerId(), routed.path());
@@ -319,10 +354,13 @@ public final class DatabaseTerminalControl implements TerminalControl {
                     }
                     List<VfsNode> children = transaction.vfs().findChildren(routed.ownerId(),
                             Optional.of(directory.nodeId()));
-                    if (children.isEmpty()) return "";
-                    return children.stream().map(node -> node.name()
+                    List<String> names = children.stream().map(node -> node.name()
                                     + (node.type() == VfsNode.Type.DIRECTORY ? "/" : ""))
-                            .collect(java.util.stream.Collectors.joining("\n"));
+                            .collect(java.util.stream.Collectors.toCollection(java.util.ArrayList::new));
+                    if (administrator && routed.path().equals("/")) {
+                        names.add(0, ".cilexec/");
+                    }
+                    return String.join("\n", names);
                 });
     }
 
