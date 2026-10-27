@@ -75,6 +75,35 @@ public final class JdbcProgramRepository extends JdbcRepositorySupport implement
         }
     }
 
+    @Override
+    public Optional<byte[]> findFunctionBody(ObjectHash structuralHash, int formatVersion) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT body_bytes FROM program.function_cache "
+                        + "WHERE structural_hash=? AND runtime_format_version=?")) {
+            statement.setBytes(1, JdbcValues.hash(structuralHash));
+            statement.setInt(2, formatVersion);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Optional.of(rows.getBytes(1)) : Optional.empty();
+            }
+        } catch (SQLException exception) {
+            throw failure("program.findFunctionBody", exception);
+        }
+    }
+
+    @Override
+    public void saveFunctionBody(ObjectHash structuralHash, int formatVersion, byte[] body) {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "INSERT INTO program.function_cache(structural_hash,runtime_format_version,"
+                        + "body_bytes) VALUES (?,?,?) ON CONFLICT (structural_hash) DO NOTHING")) {
+            statement.setBytes(1, JdbcValues.hash(structuralHash));
+            statement.setInt(2, formatVersion);
+            statement.setBytes(3, body);
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw failure("program.saveFunctionBody", exception);
+        }
+    }
+
     private Optional<Program> findOwnedByIdentity(ObjectHash programHash, String languageVersion,
                                                   int runtimeFormatVersion) {
         return find("program.findByIdentity", "SELECT " + COLUMNS

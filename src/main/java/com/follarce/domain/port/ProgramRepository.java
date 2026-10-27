@@ -20,6 +20,14 @@ public interface ProgramRepository {
 
     Program saveIfAbsent(Program program);
 
+    /** Optional persistent acceleration for name-independent function bodies. */
+    default Optional<byte[]> findFunctionBody(ObjectHash structuralHash, int formatVersion) {
+        return Optional.empty();
+    }
+
+    /** Concurrent inserts of the same immutable body are equivalent. */
+    default void saveFunctionBody(ObjectHash structuralHash, int formatVersion, byte[] body) { }
+
     /**
      * Explicit administrator removal of one program that no process references and no
      * other program imports; otherwise returns a reference report without removing it.

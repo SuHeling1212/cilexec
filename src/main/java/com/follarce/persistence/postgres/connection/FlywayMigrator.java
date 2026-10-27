@@ -26,6 +26,11 @@ public final class FlywayMigrator {
         if (!result.success) {
             throw new IllegalStateException("Flyway migration did not complete successfully");
         }
+        try (Connection connection = inspectionConnection()) {
+            V005Patch.apply(connection);
+        } catch (SQLException failure) {
+            throw new IllegalStateException("Cannot inspect the V005 patch state", failure);
+        }
         return result;
     }
 
@@ -39,10 +44,9 @@ public final class FlywayMigrator {
      * The inspection connection is read-only in effect: it only queries catalog and history.
      */
     private void requireMigratableDatabase() {
-        int requiredSchema = ReleaseVersion.schemaNumber(ReleaseVersion.current());
         try (Connection connection = inspectionConnection()) {
-            DatabaseFormatFence.requireMigratable(
-                    DatabaseFormatFence.inspect(connection), requiredSchema);
+            DatabaseFormatFence.requireMigratable(DatabaseFormatFence.inspect(connection),
+                    ReleaseVersion.schemaNumber(ReleaseVersion.current()));
         } catch (SQLException failure) {
             throw new IllegalStateException(
                     "Cannot inspect the database format before migration", failure);

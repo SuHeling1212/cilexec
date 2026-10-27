@@ -6,6 +6,7 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Connects the launching TTY to the Runtime's local terminal protocol. */
@@ -18,14 +19,20 @@ final class LocalTerminalClient {
     }
 
     static void attach(int port) {
-        String saved = terminalCommand("-g").trim();
-        if (saved.isEmpty()) throw new IllegalStateException("Cannot read terminal mode");
+        // Windows Console supplies line input itself and has no stty command. The
+        // protocol remains the same; terminal sizing uses the server's default.
+        boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT)
+                .contains("windows");
+        String saved = windows ? null : terminalCommand("-g").trim();
+        if (!windows && saved.isEmpty()) {
+            throw new IllegalStateException("Cannot read terminal mode");
+        }
         try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
             var remoteInput = socket.getInputStream();
             var remoteOutput = socket.getOutputStream();
             remoteOutput.write("\0M INTERACTIVE\n".getBytes(StandardCharsets.US_ASCII));
             remoteOutput.flush();
-            terminalCommand("raw", "-echo");
+            if (!windows) terminalCommand("raw", "-echo");
             try {
                 System.out.write(RESET);
                 System.out.flush();
@@ -41,38 +48,62 @@ final class LocalTerminalClient {
                                 connected.set(false);
                             }
                         });
-                byte[] input = new byte[4096];
-                long nextSizeCheck = System.nanoTime() + Duration.ofSeconds(1).toNanos();
-                try {
-                    while (connected.get()) {
-                        if (System.in.available() > 0) {
-                            int count = System.in.read(input, 0,
-                                    Math.min(input.length, System.in.available()));
-                            if (count < 0) {
-                                socket.shutdownOutput();
-                                break;
+                if (windows) {
+                    Thread.ofVirtual().name("cilexec-windows-terminal-input").start(() -> {
+                        try {
+                            java.io.Console console = System.console();
+                            java.io.BufferedReader fallback = console == null
+                                    ? new java.io.BufferedReader(new java.io.InputStreamReader(
+                                    System.in, StandardCharsets.UTF_8)) : null;
+                            while (connected.get()) {
+                                String line = console == null ? fallback.readLine()
+                                        : console.readLine();
+                                if (line == null) {
+                                    socket.shutdownOutput();
+                                    break;
+                                }
+                                remoteOutput.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+                                remoteOutput.flush();
                             }
-                            for (int index = 0; index < count; index++) {
-                                if (input[index] == 3) remoteOutput.write(new byte[]{0, 'I', '\n'});
-                                else remoteOutput.write(input[index]);
+                        } catch (IOException ignored) {
+                            // A remote disconnect ends this attachment only.
+                        }
+                    });
+                    output.join();
+                } else {
+                    byte[] input = new byte[4096];
+                    long nextSizeCheck = System.nanoTime() + Duration.ofSeconds(1).toNanos();
+                    try {
+                        while (connected.get()) {
+                            if (System.in.available() > 0) {
+                                int count = System.in.read(input, 0,
+                                        Math.min(input.length, System.in.available()));
+                                if (count < 0) {
+                                    socket.shutdownOutput();
+                                    break;
+                                }
+                                for (int index = 0; index < count; index++) {
+                                    if (input[index] == 3) remoteOutput.write(new byte[]{0, 'I', '\n'});
+                                    else remoteOutput.write(input[index]);
+                                }
+                                remoteOutput.flush();
+                            } else {
+                                Thread.sleep(25);
                             }
-                            remoteOutput.flush();
-                        } else {
-                            Thread.sleep(25);
+                            if (System.nanoTime() >= nextSizeCheck) {
+                                sendSize(remoteOutput);
+                                nextSizeCheck = System.nanoTime() + Duration.ofSeconds(1).toNanos();
+                            }
                         }
-                        if (System.nanoTime() >= nextSizeCheck) {
-                            sendSize(remoteOutput);
-                            nextSizeCheck = System.nanoTime() + Duration.ofSeconds(1).toNanos();
-                        }
+                    } catch (IOException ignored) {
+                        // A remote disconnect leaves the Runtime running for other terminals.
                     }
-                } catch (IOException ignored) {
-                    // A remote disconnect leaves the Runtime running for other terminals.
+                    output.join(Duration.ofSeconds(1));
                 }
-                output.join(Duration.ofSeconds(1));
             } finally {
                 System.out.write(RESET);
                 System.out.flush();
-                terminalCommand(saved);
+                if (!windows) terminalCommand(saved);
             }
         } catch (IOException failure) {
             throw new IllegalStateException("Cannot attach local terminal on port " + port,
@@ -84,6 +115,9 @@ final class LocalTerminalClient {
     }
 
     private static void sendSize(java.io.OutputStream remote) throws IOException {
+        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("windows")) {
+            return;
+        }
         String[] values = terminalCommand("size").trim().split("\\s+");
         if (values.length != 2) return;
         try {

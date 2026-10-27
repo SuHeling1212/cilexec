@@ -29,6 +29,9 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
   instruction table without recompiling source. Nothing is deleted on a schedule: programs,
   timers, terminal sessions, and audit history are removed only by explicit administrator
   operations.
+- **Function body cache** — ordinary function bodies use a structural SHA-256
+  before compilation. Renamed functions and reordered parameter names share a persisted
+  compiled body while retaining ordered operator semantics. Other functions compile normally.
 - **Multi-tenant by design** — every user maps to a stable PostgreSQL `NOLOGIN`, `NOINHERIT`
   tenant role with forced
   RLS; `SYSTEM_ADMIN` is an application-level superuser that never receives cluster or host
@@ -56,7 +59,7 @@ rows. An in-flight transaction is rolled back and its execution slice may run ag
 
 ## Quick start
 
-### Standalone JAR (macOS or Linux) — the supported distribution
+### Standalone JAR (Windows x64, Linux x64/ARM64, macOS ARM64) — the supported distribution
 
 Install Java 26, then build or place the shaded `cilexec-app.jar` in the directory where the
 instance should live:
@@ -66,7 +69,12 @@ mvn package
 java -jar target/cilexec-app.jar
 ```
 
-No separately installed PostgreSQL or database password files are needed. The JAR contains PostgreSQL 17.6 binaries for macOS and Linux on ARM64 and AMD64.
+No separately installed PostgreSQL or database password files are needed. The same JAR
+contains PostgreSQL 17.6 archives for Windows x64, Linux x64/ARM64, and macOS
+ARM64 (Apple silicon). It selects the matching archive at startup. Windows
+terminal input uses the console's line mode, so password input may be echoed by the
+host terminal; use a private terminal window. Windows startup is not exercised by the
+macOS/Linux test suite.
 First startup creates `cilexec-data/` beside the JAR, initializes the database and the current
 schema, and connects the launching TTY to the terminal. Routine startup logs are hidden by
 default; set `CILEXEC_LOG_LEVEL=INFO` to see them. Later starts reuse the same data. Keep the
@@ -143,8 +151,9 @@ FCL source → compiler → ProcessStatementExecutor (one transaction per execut
 ```
 
 Every process slice may batch up to 4,096 interpreter steps or 20 ms and stops on suspension,
-directive, completion, or failure. Everything else — pools, threads, caches — is disposable and rebuilt from committed rows on
-startup. Source layout and design decisions: [docs/architecture-baseline.md](docs/architecture-baseline.md).
+directive, completion, or failure. Worker pools and notifications are disposable; the
+optional function-body cache is stored in PostgreSQL and can be rebuilt from source.
+Source layout and design decisions: [docs/architecture-baseline.md](docs/architecture-baseline.md).
 
 ## Repository map
 

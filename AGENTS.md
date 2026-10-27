@@ -141,9 +141,9 @@ VFS node while retaining the host source. `host move` requires a target user hol
 - **Stable compatibility policy:** `V001__CilexecBaseline` is the frozen modular baseline.
   Never modify an applied migration; `V002`..`V005` are immutable forward migrations. 0.0.5
   is a hard format break: FCL program/continuation format `5`, package database format `3`,
-  and schema `V005`. Startup refuses old `cilexec-data/` directories and old external
-  databases before any write; old data are never migrated, converted, or deleted, and automatic
-  downgrades remain forbidden. The next change must be an immutable V006.
+  and schema `V005`. The unreleased 0.0.5 Runtime applies an idempotent V005 patch to
+  existing 0.0.5 data without changing FCLB or continuation format. V004 and older data
+  remain rejected; automatic downgrades remain forbidden.
 - **Database migrations:** Flyway baselines live in `src/main/resources/db/baseline/`;
   `database.migrate-on-start` (env `CILEXEC_MIGRATE_ON_START`, default `false`) now takes
   effect — when enabled, the Runtime applies pending migrations at startup instead of

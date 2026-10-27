@@ -41,6 +41,14 @@ public final class SchemaVerifier {
                 throw new DatabaseFormatFence.RefusalException(
                         DatabaseFormatFence.refusalMessage(decision, inspection, minimum, maximum));
             }
+            try (Statement patch = connection.createStatement();
+                 ResultSet rows = patch.executeQuery(
+                         "SELECT to_regclass('program.function_cache') IS NOT NULL")) {
+                if (!rows.next() || !rows.getBoolean(1)) {
+                    throw new IllegalStateException("V005 internal patch is missing; run migrate "
+                            + "or enable database.migrate-on-start");
+                }
+            }
             try (PreparedStatement invariants = connection.prepareStatement(
                     "SELECT meta.assert_security_invariants()")) {
                 invariants.execute();

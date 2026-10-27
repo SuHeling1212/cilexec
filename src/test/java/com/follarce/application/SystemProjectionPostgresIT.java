@@ -39,7 +39,7 @@ class SystemProjectionPostgresIT {
     private static final Instant NOW = Instant.parse("2026-10-25T00:00:00Z");
 
     @Test
-    void enforcesReadWritePolicyAndCommitsOnlyAuditedUpdates() throws Exception {
+    void administratorCanEditTablesAndEveryCommittedChangeIsAudited() throws Exception {
         try (EmbeddedPostgres pg = EmbeddedPostgres.builder()
                 // During Maven verify, the shaded JAR and dependencies both expose the
                 // same archive. Select one; the default resolver rejects duplicates.
@@ -95,37 +95,38 @@ class SystemProjectionPostgresIT {
                     assertEquals(0, rows.getInt(1)); // tenant RLS hides both other-owned rows
                 }
                 assertTrue(projection.read(groupPath).contains("old-name"));
-                assertFalse(projection.read(groupPath).contains("hidden-marker"));
-                assertThrows(SecurityException.class, () -> projection.read(credentialPath));
-                assertThrows(SecurityException.class, () -> projection.list(
-                        "/.cilexec/system/db/object_store/object"));
-                assertThrows(SecurityException.class, () -> projection.read(
+                assertTrue(projection.read(groupPath).contains("hidden-marker"));
+                assertTrue(projection.read(credentialPath).contains("pbkdf2-sha256"));
+                assertFalse(projection.list("/.cilexec/system/db/object_store/object").isEmpty());
+                assertThrows(FclRuntimeException.class, () -> projection.read(
                         path("terminal", "input", "input_id", UUID.randomUUID().toString())));
                 assertThrows(FclRuntimeException.class,
                         () -> new SystemProjection(context(connection, repository, null, false),
                                 actor, NOW).read(groupPath));
-                assertThrows(FclRuntimeException.class,
-                        () -> projection.create(groupPath, "{\"group_name\":\"forbidden\"}"));
-                assertThrows(SecurityException.class, () -> projection.remove(groupPath));
-                assertThrows(SecurityException.class, () -> repository.deleteRow(actor,
-                        "audit", "event", "{\"event_id\":\"" + UUID.randomUUID() + "\"}"));
+                assertFalse(repository.deleteRow(actor, "audit", "event",
+                        "{\"event_id\":\"" + UUID.randomUUID() + "\"}"));
                 assertThrows(IllegalArgumentException.class, () -> repository.readRow(actor,
                         "auth", "group_account", "{}"));
-                assertThrows(SecurityException.class, () -> repository.writeRow(actor,
+                assertThrows(IllegalArgumentException.class, () -> repository.writeRow(actor,
                         "auth", "group_account", "{\"group_id\":\"" + UUID.randomUUID()
                                 + "\",\"group_name\":\"cannot-create\"}"));
                 assertThrows(IllegalArgumentException.class, () -> projection.write(groupPath,
                         "{\"unknown\":\"ignored\"}"));
                 assertThrows(IllegalArgumentException.class, () -> projection.write(groupPath,
                         "{\"group_name\":\"first\",\"group_name\":\"second\"}"));
-                assertThrows(SecurityException.class, () -> projection.write(groupPath,
-                        "{\"status\":\"DISABLED\"}"));
                 assertThrows(FclRuntimeException.class, () -> projection.write(groupPath,
                         "{\"group_id\":\"" + UUID.randomUUID()
                                 + "\",\"group_name\":\"changed\"}"));
                 projection.write(groupPath, "{\"group_name\":\"new-name\"}");
                 projection.write(capabilityPath, "{\"description\":\"revised\"}");
                 assertTrue(projection.read(capabilityPath).contains("revised"));
+                UUID created = UUID.randomUUID();
+                String createdPath = path("auth", "group_account", "group_id", created.toString());
+                projection.create(createdPath, "{\"owner_id\":\"" + other
+                        + "\",\"group_name\":\"new-row\",\"status\":\"ACTIVE\"}");
+                assertTrue(projection.read(createdPath).contains("new-row"));
+                assertTrue(projection.remove(createdPath));
+                assertFalse(projection.remove(createdPath));
                 connection.commit();
             }
             try (Connection check = pg.getPostgresDatabase().getConnection();
@@ -152,7 +153,8 @@ class SystemProjectionPostgresIT {
                  Statement statement = check.createStatement();
                  ResultSet rows = statement.executeQuery("SELECT actor_id,action,resource_type,"
                          + "resource_id,result,details_json::text FROM audit.event "
-                         + "WHERE resource_type='auth.group_account'")) {
+                         + "WHERE resource_type='auth.group_account' "
+                         + "AND action='projection.update'")) {
                 assertTrue(rows.next());
                 assertEquals(actor.toString(), rows.getString(1));
                 assertEquals("projection.update", rows.getString(2));
@@ -221,7 +223,7 @@ class SystemProjectionPostgresIT {
                  Statement statement = check.createStatement();
                  ResultSet rows = statement.executeQuery("SELECT count(*) FROM audit.event")) {
                 assertTrue(rows.next());
-                assertEquals(6, rows.getInt(1)); // one event per committed update only
+                assertEquals(8, rows.getInt(1)); // six updates, one insert, one delete
             }
         }
     }
@@ -262,12 +264,13 @@ class SystemProjectionPostgresIT {
                     + "RETURNS boolean LANGUAGE sql AS 'SELECT current_user = ''" + tenant
                     + "'' AND current_setting(''app.cilexec_user_id'')::uuid = ''" + actor
                     + "''::uuid'");
-            sql.execute("GRANT SELECT, UPDATE ON auth.group_account TO cilexec_runtime");
+            sql.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON auth.group_account TO cilexec_runtime");
             sql.execute("GRANT SELECT, UPDATE ON auth.capability TO cilexec_runtime");
             sql.execute("GRANT SELECT ON auth.group_account TO " + tenant);
             sql.execute("GRANT SELECT ON auth.user_credential, object_store.object, "
                     + "terminal.input TO cilexec_runtime");
             sql.execute("GRANT INSERT ON audit.event TO " + tenant);
+            sql.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON audit.event TO cilexec_runtime");
             sql.execute("ALTER TABLE auth.group_account ENABLE ROW LEVEL SECURITY");
             sql.execute("ALTER TABLE auth.group_account FORCE ROW LEVEL SECURITY");
             sql.execute("CREATE POLICY runtime_all ON auth.group_account TO cilexec_runtime "

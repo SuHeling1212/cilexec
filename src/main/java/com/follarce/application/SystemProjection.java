@@ -191,23 +191,23 @@ public final class SystemProjection {
         String key = decodeRowKey(parsed.keyFile());
         String merged = mergeKey(content, key);
         repository().writeRow(actorId, parsed.schema(), parsed.table(), merged);
-        try {
-            transaction.audit().append(new AuditEvent(UUID.randomUUID(),
-                    AuditEvent.ActorType.ADMINISTRATOR, actorId.toString(),
-                    "projection.update", parsed.schema() + "." + parsed.table(), key,
-                    AuditEvent.Result.SUCCEEDED, Map.of(), now));
-        } catch (RuntimeException auditFailure) {
-            transaction.rollback();
-            throw auditFailure;
-        }
+        audit("update", parsed, key);
         return path;
     }
 
     String create(String source, String content) {
         String path = FclPath.normalizeAbsolute(source);
         requireVisible(path);
-        throw new FclRuntimeException("ReadOnlyProjection",
-                "Projected row creation is not allowed");
+        Parsed parsed = parse(path);
+        if (parsed.kind() != Kind.ROW) {
+            throw new FclRuntimeException("ReadOnlyProjection",
+                    "Only row files can be created: " + path);
+        }
+        table(parsed);
+        String key = decodeRowKey(parsed.keyFile());
+        repository().createRow(actorId, parsed.schema(), parsed.table(), mergeKey(content, key));
+        audit("create", parsed, key);
+        return path;
     }
 
     boolean remove(String source) {
@@ -219,8 +219,22 @@ public final class SystemProjection {
                     "Only row files can be removed: " + path);
         }
         table(parsed);
-        return repository().deleteRow(actorId, parsed.schema(), parsed.table(),
-                decodeRowKey(parsed.keyFile()));
+        String key = decodeRowKey(parsed.keyFile());
+        boolean removed = repository().deleteRow(actorId, parsed.schema(), parsed.table(), key);
+        if (removed) audit("delete", parsed, key);
+        return removed;
+    }
+
+    private void audit(String operation, Parsed parsed, String key) {
+        try {
+            transaction.audit().append(new AuditEvent(UUID.randomUUID(),
+                    AuditEvent.ActorType.ADMINISTRATOR, actorId.toString(),
+                    "projection." + operation, parsed.schema() + "." + parsed.table(), key,
+                    AuditEvent.Result.SUCCEEDED, Map.of(), now));
+        } catch (RuntimeException auditFailure) {
+            transaction.rollback();
+            throw auditFailure;
+        }
     }
 
     Map<String, Object> metadata(String source) {
@@ -368,17 +382,17 @@ public final class SystemProjection {
         result.put("table", definition.table());
         result.put("primaryKey", definition.primaryKey());
         result.put("columns", definition.columns());
-        result.put("readableColumns", ProjectionAccessPolicy.readColumns(
-                definition.schema(), definition.table()));
+        result.put("readableColumns", definition.columns());
         result.put("generated", definition.generated());
         result.put("identity", definition.identity());
         result.put("readable", ProjectionAccessPolicy.canRead(definition.schema(), definition.table()));
-        result.put("creatable", false);
-        result.put("writable", !ProjectionAccessPolicy.updateColumns(
-                definition.schema(), definition.table()).isEmpty());
-        result.put("updatableColumns", ProjectionAccessPolicy.updateColumns(
-                definition.schema(), definition.table()));
-        result.put("deletable", false);
+        result.put("creatable", true);
+        result.put("writable", true);
+        result.put("updatableColumns", definition.columns().stream()
+                .filter(column -> !definition.primaryKey().contains(column)
+                        && !definition.generated().contains(column)
+                        && !definition.identity().contains(column)).toList());
+        result.put("deletable", true);
         return Map.copyOf(result);
     }
 

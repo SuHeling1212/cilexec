@@ -11,13 +11,13 @@ java -jar /绝对路径/cilexec-app.jar
 如果 JAR 位于源码仓库的 `target/`，`mvn clean` 会保留同级的 `cilexec-data/`；
 仍建议把正式运行的 JAR 和数据目录放在独立位置并定期备份。
 
-需要 Java 26。当前 JAR 内含 PostgreSQL 17.6 的 macOS/Linux ARM64 与 AMD64
-二进制；无需安装 PostgreSQL，也无需创建数据库密码文件。首次启动会在
+需要 Java 26。通用 JAR 内含 PostgreSQL 17.6 的 Windows x64、Linux x64/ARM64
+和 macOS ARM64（Apple 芯片）二进制；无需安装 PostgreSQL，也无需创建数据库密码文件。首次启动会在
 JAR 同级创建 `cilexec-data/`，解包本机架构的数据库程序到 `bin/`，把数据库集群
 存入 `postgres/`，把嵌入式数据库的工作目录设为 `epg/`，创建所需数据库角色，
 并运行 JAR 内已有的 Flyway Schema。
-此后启动复用同一个 `postgres/`，只校验 Schema。0.0.5 不升级旧数据：旧目录或旧外部
-数据库会在任何写入前被拒绝；继续使用旧数据请保留旧版 JAR，0.0.5 需要全新的
+此后启动复用同一个 `postgres/`，并会对 0.0.5 的 V005 数据应用内部补丁；
+V004 及更旧目录或外部数据库仍会在任何写入前被拒绝；继续使用旧数据请保留旧版 JAR，0.0.5 需要全新的
 `cilexec-data/`（或全新数据库）。
 程序不会把运行数据写入当前工作目录。
 
@@ -38,12 +38,14 @@ JAR 同级创建 `cilexec-data/`，解包本机架构的数据库程序到 `bin/
 管理员密码。从真实 TTY 启动时，当前终端会自动连接 Runtime；输入 `:exit` 只断开
 当前终端，后台 Runtime 继续运行。无 TTY 时只启动监听在 `127.0.0.1:8022` 的
 终端服务。常规 INFO 启动日志默认隐藏，设置 `CILEXEC_LOG_LEVEL=INFO` 可查看。
-本地终端桥接使用 macOS/Linux 自带的 `stty`。`runtime`、`migrate`、`export` 和 `host move` 命令也可使用同级数据库，
+本地终端桥接在 macOS/Linux 使用 `stty`。Windows x64 使用控制台行输入，
+宿主终端可能回显密码；请在私密终端窗口操作。`runtime`、`migrate`、`export` 和 `host move` 命令也可使用同级数据库，
 但同一时刻只能有一个 JAR 实例管理它。
 
 如果显式设置 `CILEXEC_DATABASE_URL`，程序改用外部 PostgreSQL，保留原有
 角色、TLS、密码文件和显式迁移配置。这是兼容模式；直接启动单 JAR 时无需设置它。
 容器镜像发行文件已从仓库移除；单 JAR 是受支持的发行方式。
 
-当前仓库尚未提供 Windows PostgreSQL 二进制，因此单 JAR 本地数据库模式只支持
-上述 macOS 和 Linux 架构。构建及迁移不会自动替换正在运行的实例或其数据。
+同一个 `cilexec-app.jar` 面向上述四种系统架构；首次启动仍只在 JAR 同级创建
+`cilexec-data/`。各平台的实际启动需要在对应系统上验证，某一平台的构建或测试
+不能代替其他平台的实机测试。构建不会自动替换正在运行的实例或其数据。

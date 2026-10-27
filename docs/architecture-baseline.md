@@ -51,22 +51,20 @@ Capabilities are checked in the application. Users map to stable PostgreSQL
 `SYSTEM_ADMIN` has an explicit policy over application data but no PostgreSQL
 cluster-superuser or `BYPASSRLS` privilege.
 
-The administrator `/.cilexec/system/db` projection exposes table structure and a
-reviewed subset of metadata rows. Generic creation and deletion are disabled; only
-`auth.group_account.group_name` and `auth.capability.description` can be updated.
-Each update and its value-free audit event commit in one PostgreSQL transaction.
-Protected credentials, object bytes, process state, messages, effects, terminal
-input, and audit history are not readable through this projection. A real VFS
-`/.cilexec` node causes a conflict error instead of being hidden. The full access
-matrix is in [SYSTEM_PROJECTION_PLAN.md](../SYSTEM_PROJECTION_PLAN.md).
+The administrator `/.cilexec/system/db` projection exposes live rows in the CilExec
+schemas, including sensitive values and runtime state. `SYSTEM_ADMIN` can create,
+update, and delete rows subject to PostgreSQL constraints. Each successful operation
+and its value-free audit event commit in one transaction. An administrator may also
+change audit history. A real VFS `/.cilexec` node causes a conflict error. See
+[SYSTEM_PROJECTION_PLAN.md](../SYSTEM_PROJECTION_PLAN.md).
 
 ## Version boundary
 
 0.0.5 uses FCL program and continuation format 5, package database format 3,
-and schema V005. Startup checks the format before any upgrade write and refuses
-older local data directories or external databases. It does not delete, convert, or
-migrate them. The applied V001 baseline and V002–V005 migrations are immutable;
-future schema changes require a new forward migration.
+and schema V005. An idempotent pre-release V005 patch applies to existing V005
+data at local startup; an external PostgreSQL instance requires the `migrate`
+command or migrate-on-start. The runtime still rejects V004 and older data.
+The recorded V001–V005 migrations remain unchanged.
 
 ## Source map
 

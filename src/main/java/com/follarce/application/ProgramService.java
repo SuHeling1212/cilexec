@@ -109,7 +109,19 @@ public final class ProgramService {
                 sourceObject.objectHash(), LANGUAGE_VERSION, FclProgramCodec.FORMAT_VERSION);
         if (existing.isPresent()) return existing.get();
 
-        FclProgram compiled = compiler.compile(source);
+        FclProgram compiled = compiler.compile(source, new FclCompiler.FunctionBodyCache() {
+            @Override
+            public Optional<byte[]> find(String structuralSha256) {
+                return transaction.programs().findFunctionBody(new ObjectHash(structuralSha256),
+                        FclProgramCodec.FORMAT_VERSION);
+            }
+
+            @Override
+            public void save(String structuralSha256, byte[] compiledBody) {
+                transaction.programs().saveFunctionBody(new ObjectHash(structuralSha256),
+                        FclProgramCodec.FORMAT_VERSION, compiledBody);
+            }
+        });
         if (!sourceObject.objectHash().value().equals(compiled.sourceHash())) {
             throw new IllegalStateException("Compiler and object store disagree on source hash");
         }

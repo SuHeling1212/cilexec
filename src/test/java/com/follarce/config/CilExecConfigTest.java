@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 
 class CilExecConfigTest {
     @Test
-    void localDatabaseNeedsNoPasswordFilesOrUpgradesExistingData() {
+    void localDatabaseNeedsNoPasswordFilesAndMigratesExistingV005Data() {
         CilExecConfig fresh = CilExecConfig.loadLocal(54321, true);
         CilExecConfig existing = CilExecConfig.loadLocal(54321, false);
 
@@ -24,7 +24,7 @@ class CilExecConfigTest {
         assertNull(fresh.migratorDatabase().passwordFile());
         assertNull(fresh.exporterDatabase().passwordFile());
         assertTrue(fresh.migrateOnStart());
-        assertFalse(existing.migrateOnStart());
+        assertTrue(existing.migrateOnStart());
     }
 
     @Test

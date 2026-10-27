@@ -101,6 +101,10 @@
                     <groupId>io.zonky.test.postgres</groupId>
                     <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
                 </exclusion>
+                <exclusion>
+                    <groupId>io.zonky.test.postgres</groupId>
+                    <artifactId>embedded-postgres-binaries-linux-amd64-alpine</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
         <dependency>
@@ -109,15 +113,21 @@
         </dependency>
         <dependency>
             <groupId>io.zonky.test.postgres</groupId>
-            <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.zonky.test.postgres</groupId>
             <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
         </dependency>
         <dependency>
             <groupId>io.zonky.test.postgres</groupId>
             <artifactId>embedded-postgres-binaries-linux-arm64v8</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zonky.test.postgres</groupId>
+            <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
+        </dependency>
+        <!-- Test hosts may be macOS x64; keep that archive off the runtime classpath. -->
+        <dependency>
+            <groupId>io.zonky.test.postgres</groupId>
+            <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>
@@ -385,6 +395,7 @@
                                 <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-darwin-amd64</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-linux-amd64</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-linux-arm64v8</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>io.zonky.test.postgres:embedded-postgres-binaries-windows-amd64</ignoredUnusedDeclaredDependency>
                             </ignoredUnusedDeclaredDependencies>
                         </configuration>
                     </execution>

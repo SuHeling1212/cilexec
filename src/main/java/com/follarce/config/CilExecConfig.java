@@ -86,7 +86,7 @@ public record CilExecConfig(
         Map<String, String> local = new HashMap<>(System.getenv());
         local.put("CILEXEC_DATABASE_URL", "jdbc:postgresql://127.0.0.1:" + port + "/cilexec");
         local.put("CILEXEC_LOCAL_DATABASE", "true");
-        local.put("CILEXEC_MIGRATE_ON_START", Boolean.toString(newDatabase));
+        local.put("CILEXEC_MIGRATE_ON_START", "true");
         local.put("CILEXEC_DATABASE_SSL_ROOT_CERTIFICATE_FILE", "");
         local.put("CILEXEC_RUNTIME_DATABASE_USER", "cilexec_runtime");
         local.put("CILEXEC_EFFECT_DATABASE_USER", "cilexec_effect_worker");

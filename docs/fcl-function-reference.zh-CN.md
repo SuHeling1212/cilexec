@@ -12,8 +12,14 @@
 | FCL 源语言版本 | `fcl-0.0.5` |
 | FCL 程序与 continuation 格式 | `5` |
 | 包数据库（`.db`）格式 | `3` |
-| 数据库 schema（Flyway） | `V005`（schema 版本 5） |
+| 数据库 schema（Flyway） | `V005`（含未发布的内部补丁） |
 | 旧式实体 API | **已删除**，见[被取代的 0.0.4 API](#被取代的-004-api-与替代写法) |
+
+编译普通函数前，编译器会计算函数体的结构 SHA-256。函数名以及作为参数引用的
+形参名不计入键；绑定顺序仍被保留，所以 `return(a+b)` 与 `return(d+c)`
+可以复用函数体，字符串和列表加法不会被当成可交换运算。局部赋值和控制流
+也可复用。缓存的 FCLB 函数体保存在 PostgreSQL 的 `program.function_cache`。
+形参名作为动态调用目标或限定名称使用时，该函数仍正常编译。
 
 ## 目录
 
@@ -662,16 +668,15 @@ terminal.find("<terminal-session-uuid>").remove()
 ## 管理员系统数据文件（0.0.5）
 
 拥有 `SYSTEM_ADMIN` 的账号可浏览 `/.cilexec/system/db/<schema>/<table>` 树。
-表目录和 `_schema.json` 提供结构信息；读取数据行采用显式白名单。密码校验值、
-登录限流、对象内容、进程及 continuation、消息、外部效果、终端输入和审计事件
-都不能通过这里读取。
+表目录和 `_schema.json` 提供结构信息。管理员可以读取所有行列，包括密码校验值、
+对象内容、进程续体、终端输入和审计事件。
 
 行文件名是主键 JSON 的无 padding base64url 编码。每页最多 200 行；
 `_next.json` 和 `page/<cursor>` 用于翻页。`_schema.json` 标出 `readable`、
 `readableColumns`、`creatable`、`writable`、`updatableColumns` 与 `deletable`。
 
-目前只允许修改两个展示字段：`auth.group_account.group_name` 和
-`auth.capability.description`。打开已有行并调用 `write()`；路径提供主键：
+管理员可以用 `file.create(path, json)` 创建行，对已有行调用 `write(json)`，
+或调用 `remove()` 删除行；路径提供主键：
 
 ```fcl
 file.open("/.cilexec/system/db").list()
@@ -680,11 +685,12 @@ file.open("/.cilexec/system/db/auth/group_account/<key>.json")
     .write("{\"group_name\":\"new-name\"}")
 ```
 
-投影不允许创建或删除行。未知字段、重复字段、生成列、主键变更及其他只读列会被拒绝。
-成功更新与现有审计事件在同一事务提交，审计不包含行值；拒绝和事务失败
+未知字段、重复字段、生成列、identity 列及主键变更会被拒绝，数据库约束仍然生效。
+成功创建、修改或删除与现有审计事件在同一事务提交，审计不包含行值；管理员
+也能通过投影修改审计历史。拒绝和事务失败
 不宣称有持久审计记录。普通用户得到 `PathNotFound`。若真实 VFS 节点占用
-`/.cilexec`，访问会报 `ProjectionConflict`，不会遮蔽节点。其他修改请走类型化
-API。此改动不改变数据库迁移或 FCL 格式。
+`/.cilexec`，访问会报 `ProjectionConflict`，不会遮蔽节点。FCLB 仍为格式 5，
+数据库 Flyway 版本仍为 V005，内部补丁增加了该能力；产品版本仍为 0.0.5。
 
 ## 系统与管理命名空间
 

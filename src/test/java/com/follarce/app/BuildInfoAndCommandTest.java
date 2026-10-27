@@ -32,7 +32,7 @@ class BuildInfoAndCommandTest {
         assertEquals(schema, info.maximumSchema());
         assertEquals(schema, FclProgramCodec.FORMAT_VERSION);
         assertEquals("fcl-" + ReleaseVersion.current(), ProgramService.LANGUAGE_VERSION);
-        assertDoesNotThrow(() -> Class.forName("db.migration.V%03d".formatted(schema)));
+        assertDoesNotThrow(() -> Class.forName("db.migration.V%03d".formatted(info.maximumSchema())));
     }
 
     @Test

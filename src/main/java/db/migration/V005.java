@@ -11,8 +11,9 @@ package db.migration;
  * while validating the complete V004 contract. Old data are refused before any migration runs
  * (see the startup format fence); they are never upgraded in place.
  *
- * <p>Version 5 is immutable once applied: any later database change must be a new V006 forward
- * migration.
+ * <p>The recorded V005 migration is immutable. During the unreleased 0.0.5 development
+ * period, {@code V005Patch} applies the additional schema contract transactionally while
+ * retaining Flyway version 5 and existing V005 data.
  */
 public final class V005 extends ImmutableSqlJavaMigration {
     public V005() {

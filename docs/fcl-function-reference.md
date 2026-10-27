@@ -15,8 +15,16 @@ process's variables plus built-in function metadata.
 | FCL source language version | `fcl-0.0.5` |
 | FCL program and continuation format | `5` |
 | Package database (`.db`) format | `3` |
-| Database schema (Flyway) | `V005` (schema version 5) |
+| Database schema (Flyway) | `V005` (including the unreleased internal patch) |
 | Legacy entity API | **removed** — see [Removed 0.0.4 APIs and replacements](#removed-004-apis-and-replacements) |
+
+Before compiling an ordinary function, the compiler computes a structural SHA-256
+of its body. Function and formal parameter names are excluded from the key where they
+represent parameter references. The binding order is retained, so `return(a+b)` and
+`return(d+c)` can reuse a body without making string or list addition commutative.
+The cache also supports local assignments and control flow. Cached FCLB bodies live in
+PostgreSQL `program.function_cache`. Bodies whose parameter names are used as dynamic
+call targets or qualified names compile normally.
 
 ## Contents
 
@@ -724,17 +732,17 @@ receiver; all still use the current process identity and capabilities.
 ## Administrator system data files (0.0.5)
 
 An account with `SYSTEM_ADMIN` can browse the `/.cilexec/system/db/<schema>/<table>`
-tree. The tree and `_schema.json` expose table structure; row reads use an explicit
-allowlist. Credential verifiers, login throttles, object bytes, process and continuation
-state, messages, effects, terminal input and audit events are not readable here.
+tree. The tree and `_schema.json` expose table structure. An administrator can read
+all row columns, including credential verifiers, object bytes, execution state,
+terminal input, and audit events.
 
 A row name is base64url of its primary-key JSON without padding. Pagination uses
 `_next.json` and `page/<cursor>` with at most 200 rows per page. `_schema.json` reports
 `readable`, `readableColumns`, `creatable`, `writable`, `updatableColumns`, and `deletable`.
 
-Only two display columns are currently writable: `auth.group_account.group_name` and
-`auth.capability.description`. Open an existing row and call `write()` with its new
-value; the path supplies its primary key. For example:
+An administrator can create a row with `file.create(path, json)`, update an existing
+row with `write(json)`, or delete one with `remove()`. The path supplies the primary
+key. For example:
 
 ```fcl
 file.open("/.cilexec/system/db").list()
@@ -743,13 +751,14 @@ file.open("/.cilexec/system/db/auth/group_account/<key>.json")
     .write("{\"group_name\":\"new-name\"}")
 ```
 
-Projected row creation and deletion are disabled. Unknown, duplicate, generated,
-primary-key changing, and other read-only fields are rejected. Successful updates append an
-audit event in the same transaction; its details do not include row values. Denied
+Unknown, duplicate, generated, identity, and primary-key changing fields are
+rejected. PostgreSQL constraints still apply. Successful creates, updates, and
+deletes append an audit event in the same transaction without row values. An
+administrator can also alter audit history through the projection. Denied
 operations and failed transactions do not claim a durable audit event. Non-admins
 receive `PathNotFound`. A real VFS node at `/.cilexec` causes `ProjectionConflict`
-instead of hiding that node. Use typed APIs for all other changes. No schema or FCL
-format change is involved.
+instead of hiding that node. FCLB remains format 5 and Flyway remains V005;
+the pre-release V005 patch adds this access.
 
 ## System and administration namespaces
 

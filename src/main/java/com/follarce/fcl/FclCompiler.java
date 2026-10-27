@@ -5,6 +5,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 /** Compiles structured FCL source into statement-addressable instructions. */
 public final class FclCompiler {
@@ -24,7 +29,19 @@ public final class FclCompiler {
             "effect", "io", "memory", "file", "process", "system", "package", "env", "path");
     public FclProgram compile(String source) {
         Objects.requireNonNull(source, "source");
-        return new Parser(source, new Lexer(source).scan()).compile();
+        return new Parser(source, new Lexer(source).scan(), null).compile();
+    }
+
+    /** Persistent, non-authoritative cache of compiled ordinary function bodies. */
+    public interface FunctionBodyCache {
+        Optional<byte[]> find(String structuralSha256);
+        void save(String structuralSha256, byte[] compiledBody);
+    }
+
+    public FclProgram compile(String source, FunctionBodyCache cache) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(cache, "cache");
+        return new Parser(source, new Lexer(source).scan(), cache).compile();
     }
 
     private enum Type {
@@ -283,15 +300,18 @@ public final class FclCompiler {
     private static final class Parser {
         private final String source;
         private final List<Token> tokens;
+        private final FunctionBodyCache cache;
+        private final FclProgramCodec bodyCodec = new FclProgramCodec();
         private final List<FclInstruction> instructions = new ArrayList<>();
         private final Map<String, FclProgram.Function> functions = new LinkedHashMap<>();
         private final Map<String, FclProgram.ClassDefinition> classes = new LinkedHashMap<>();
         private int current;
         private long expressionId = 1;
 
-        private Parser(String source, List<Token> tokens) {
+        private Parser(String source, List<Token> tokens, FunctionBodyCache cache) {
             this.source = source;
             this.tokens = tokens;
+            this.cache = cache;
         }
 
         private FclProgram compile() {
@@ -404,14 +424,233 @@ public final class FclCompiler {
                     parameters, -1, -1, publicBinding));
             openBlock("Expected '{' before function body");
             int bodyTarget = instructions.size();
-            block(0, 1);
-            instructions.add(new FclInstruction.Return(start.line(), literal(null), true));
+            FunctionShape shape = cache == null ? null : functionShape(parameters);
+            Optional<byte[]> cached = shape == null ? Optional.empty() : cache.find(shape.hash());
+            if (cached.isPresent()) {
+                FclProgram body = bodyCodec.fromBytes(cached.get(), FclProgramCodec.FORMAT_VERSION,
+                        "function-cache:" + shape.hash());
+                FclProgram.Function origin = body.function("_cache");
+                if (origin == null || origin.parameters().size() != parameters.size()
+                        || body.instructions().isEmpty()) {
+                    throw new IllegalStateException("Invalid cached function body");
+                }
+                Map<String, String> rename = new LinkedHashMap<>();
+                for (int index = 0; index < parameters.size(); index++) {
+                    rename.put(origin.parameters().get(index),
+                            shape.canonicalParameters().get(index));
+                }
+                for (FclInstruction instruction : body.instructions()) {
+                    instructions.add(remapInstruction(instruction, rename,
+                            bodyTarget, start.line()));
+                }
+                current = shape.closingToken() + 1;
+            } else {
+                block(0, 1);
+                instructions.add(new FclInstruction.Return(start.line(), literal(null), true));
+                if (shape != null) {
+                    List<FclInstruction> relative = new ArrayList<>();
+                    for (int index = bodyTarget; index < instructions.size(); index++) {
+                        relative.add(remapInstruction(instructions.get(index), Map.of(),
+                                -bodyTarget, -start.line()));
+                    }
+                    FclProgram.Function origin = new FclProgram.Function("_cache",
+                            shape.canonicalParameters(), 0, relative.size());
+                    FclProgram fragment = new FclProgram(relative,
+                            Map.of("_cache", origin), "function-cache:" + shape.hash());
+                    cache.save(shape.hash(), bodyCodec.toBytes(fragment));
+                }
+            }
             int endTarget = instructions.size();
             instructions.set(declarationPointer, new FclInstruction.FunctionDeclaration(
                     start.line(), name.text(), parameters, bodyTarget, endTarget, publicBinding));
             functions.put(name.text(), new FclProgram.Function(name.text(), parameters,
                     bodyTarget, endTarget, null, publicBinding, null));
         }
+
+        private FunctionShape functionShape(List<String> parameters) {
+            int end = current;
+            int depth = 1;
+            while (end < tokens.size() && depth > 0) {
+                Type type = tokens.get(end).type();
+                if (type == Type.LEFT_BRACE) depth++;
+                else if (type == Type.RIGHT_BRACE) depth--;
+                if (depth > 0) end++;
+            }
+            if (depth != 0) return null;
+            List<Token> body = tokens.subList(current, end);
+            StringBuilder structure = new StringBuilder("fcl-function-body-v2/")
+                    .append(parameters.size()).append('/');
+            Map<String, String> canonical = new LinkedHashMap<>();
+            for (int index = 0; index < body.size(); index++) {
+                Token token = body.get(index);
+                if (token.type() == Type.IDENTIFIER && parameters.contains(token.text())) {
+                    if ((index > 0 && body.get(index - 1).type() == Type.DOT)
+                            || (index > 0 && body.get(index - 1).text().equals("new"))
+                            || (index + 1 < body.size()
+                            && body.get(index + 1).type() == Type.COLON)) {
+                        // Member names and bare map keys are literals, not parameter references.
+                        structure.append("LITERAL_NAME:").append(token.text());
+                        structure.append('|');
+                        continue;
+                    }
+                    if (index + 1 < body.size()
+                            && body.get(index + 1).type() == Type.LEFT_PAREN) return null;
+                    canonical.computeIfAbsent(token.text(), ignored -> "_p" + canonical.size());
+                    structure.append("PARAM:").append(canonical.get(token.text()));
+                } else {
+                    for (String parameter : parameters) {
+                        if (token.type() == Type.IDENTIFIER
+                                && token.text().startsWith(parameter + ".")) return null;
+                    }
+                    structure.append(token.type()).append(':').append(token.text().length())
+                            .append(':').append(token.text());
+                }
+                structure.append('|');
+            }
+            for (String parameter : parameters) {
+                canonical.computeIfAbsent(parameter, ignored -> "_p" + canonical.size());
+            }
+            try {
+                byte[] digest = MessageDigest.getInstance("SHA-256")
+                        .digest(structure.toString().getBytes(StandardCharsets.UTF_8));
+                List<String> ordered = new ArrayList<>(canonical.keySet());
+                return new FunctionShape(HexFormat.of().formatHex(digest), end,
+                        List.copyOf(ordered));
+            } catch (NoSuchAlgorithmException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+        }
+
+        private FclExpression remapExpression(FclExpression expression,
+                                              Map<String, String> rename) {
+            if (expression instanceof FclExpression.Literal literal) {
+                return new FclExpression.Literal(nextId(), literal.value());
+            }
+            if (expression instanceof FclExpression.Variable variable) {
+                return new FclExpression.Variable(nextId(),
+                        rename.getOrDefault(variable.name(), variable.name()));
+            }
+            if (expression instanceof FclExpression.Unary unary) {
+                return new FclExpression.Unary(nextId(), unary.operator(),
+                        remapExpression(unary.operand(), rename));
+            }
+            if (expression instanceof FclExpression.Binary binary) {
+                return new FclExpression.Binary(nextId(), binary.operator(),
+                        remapExpression(binary.left(), rename),
+                        remapExpression(binary.right(), rename));
+            }
+            if (expression instanceof FclExpression.ArrayLiteral array) {
+                return new FclExpression.ArrayLiteral(nextId(), array.elements().stream()
+                        .map(element -> remapExpression(element, rename)).toList());
+            }
+            if (expression instanceof FclExpression.MapLiteral map) {
+                return new FclExpression.MapLiteral(nextId(), map.entries().stream()
+                        .map(entry -> new FclExpression.MapEntry(
+                                remapExpression(entry.key(), rename),
+                                remapExpression(entry.value(), rename))).toList());
+            }
+            if (expression instanceof FclExpression.Index index) {
+                return new FclExpression.Index(nextId(), remapExpression(index.target(), rename),
+                        remapExpression(index.index(), rename));
+            }
+            if (expression instanceof FclExpression.Member member) {
+                return new FclExpression.Member(nextId(),
+                        remapExpression(member.target(), rename), member.name());
+            }
+            if (expression instanceof FclExpression.Update update) {
+                return new FclExpression.Update(nextId(),
+                        rename.getOrDefault(update.variable(), update.variable()),
+                        remapExpressions(update.indices(), rename), update.delta());
+            }
+            if (expression instanceof FclExpression.Call call) {
+                return new FclExpression.Call(nextId(), call.name(),
+                        remapExpressions(call.arguments(), rename));
+            }
+            if (expression instanceof FclExpression.MethodCall call) {
+                return new FclExpression.MethodCall(nextId(),
+                        remapExpression(call.target(), rename), call.name(),
+                        remapExpressions(call.arguments(), rename));
+            }
+            if (expression instanceof FclExpression.DestroyTarget target) {
+                return new FclExpression.DestroyTarget(nextId(), target.functionName(),
+                        rename.getOrDefault(target.rootName(), target.rootName()),
+                        remapExpressions(target.indices(), rename));
+            }
+            if (expression instanceof FclExpression.NewObject created) {
+                return new FclExpression.NewObject(nextId(), created.className(),
+                        remapExpressions(created.arguments(), rename));
+            }
+            if (expression instanceof FclExpression.SuperConstructor constructor) {
+                return new FclExpression.SuperConstructor(nextId(),
+                        remapExpressions(constructor.arguments(), rename));
+            }
+            throw new IllegalStateException("Unsupported cached expression type");
+        }
+
+        private List<FclExpression> remapExpressions(List<FclExpression> values,
+                                                     Map<String, String> rename) {
+            return values.stream().map(value -> remapExpression(value, rename)).toList();
+        }
+
+        private FclInstruction remapInstruction(FclInstruction value, Map<String, String> rename,
+                                                int targetDelta, int lineDelta) {
+            int line = value.line() + lineDelta;
+            if (value instanceof FclInstruction.Assignment assignment) {
+                return new FclInstruction.Assignment(line,
+                        rename.getOrDefault(assignment.variable(), assignment.variable()),
+                        remapExpressions(assignment.indices(), rename),
+                        remapExpression(assignment.value(), rename));
+            }
+            if (value instanceof FclInstruction.Link link) {
+                return new FclInstruction.Link(line,
+                        rename.getOrDefault(link.target(), link.target()),
+                        rename.getOrDefault(link.source(), link.source()));
+            }
+            if (value instanceof FclInstruction.Evaluation evaluation) {
+                return new FclInstruction.Evaluation(line,
+                        remapExpression(evaluation.expression(), rename));
+            }
+            if (value instanceof FclInstruction.Conditional conditional) {
+                return new FclInstruction.Conditional(line,
+                        remapExpression(conditional.condition(), rename),
+                        conditional.falseTarget() + targetDelta,
+                        conditional.endTarget() + targetDelta);
+            }
+            if (value instanceof FclInstruction.Loop loop) {
+                return new FclInstruction.Loop(line, remapExpression(loop.condition(), rename),
+                        loop.bodyTarget() + targetDelta, loop.endTarget() + targetDelta);
+            }
+            if (value instanceof FclInstruction.Break) return new FclInstruction.Break(line);
+            if (value instanceof FclInstruction.Continue) return new FclInstruction.Continue(line);
+            if (value instanceof FclInstruction.Update update) {
+                return new FclInstruction.Update(line,
+                        rename.getOrDefault(update.variable(), update.variable()),
+                        remapExpressions(update.indices(), rename), update.delta());
+            }
+            if (value instanceof FclInstruction.Return returned) {
+                return new FclInstruction.Return(line,
+                        remapExpression(returned.value(), rename), returned.implicit());
+            }
+            if (value instanceof FclInstruction.TryStart started) {
+                return new FclInstruction.TryStart(line,
+                        started.catchTarget() + targetDelta,
+                        started.catchEndTarget() + targetDelta,
+                        rename.getOrDefault(started.catchVariable(), started.catchVariable()));
+            }
+            if (value instanceof FclInstruction.CatchEnter) {
+                return new FclInstruction.CatchEnter(line);
+            }
+            if (value instanceof FclInstruction.CatchEnd) {
+                return new FclInstruction.CatchEnd(line);
+            }
+            if (value instanceof FclInstruction.Jump jump) {
+                return new FclInstruction.Jump(line, jump.target() + targetDelta);
+            }
+            throw new IllegalStateException("Unexpected declaration in a function body");
+        }
+
+        private record FunctionShape(String hash, int closingToken,
+                                     List<String> canonicalParameters) { }
 
         private void classDefinition(Token start, FclProgram.Access access) {
             Token name = consume(Type.IDENTIFIER, "Expected class name");
