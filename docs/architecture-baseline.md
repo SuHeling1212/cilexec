@@ -31,7 +31,8 @@ registers database-aware built-ins and runs process slices. Every process slice 
 batch up to 4096 interpreter steps or 20 ms and stops sooner on suspension, directive,
 completion, or failure. A `volatile func` call runs to completion inside one step, so a long
 pure calculation can exceed the nominal 20 ms slice duration; only its result crosses the
-caller checkpoint. `persistent func` ends a slice after each interpreter step while its call
+caller checkpoint. Volatile calls are capped at 10 million steps, 30 seconds, and 64 nested
+volatile calls. `persistent func` ends a slice after each interpreter step while its call
 stack is active. External effects use a journal and separate workers. IPC, timers, terminal input, and package bindings
 are durable.
 

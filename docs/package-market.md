@@ -238,6 +238,8 @@ already been run locally; use `--verify-only` to only recheck the existing artif
 The editor source lives in `dist/editor/`. It uses
 `volatile func ed_render_frame(state)` for full-frame rendering. This pure helper
 runs with disposable local state and returns a frame string to the durable editor process.
+The `EditorState.workerSnapshot()` method constructs its input map when a document has over
+10,000 lines or the viewport exceeds 12,000 cells.
 
 To build a single `.db`, use the package
 builder bundled into the Runtime JAR so package validation uses the authoritative current

@@ -420,6 +420,20 @@ class EditorState {
         return term.cursorTo(cursorRow, cursorCol) + term.showCursor()
     }
 
+    func workerSnapshot() {
+        return {
+            path: this.path,
+            lines: this.lines,
+            row: this.row,
+            col: this.col,
+            top: this.top,
+            left: this.left,
+            width: this.viewWidth(),
+            height: this.height,
+            dirty: this.dirty
+        }
+    }
+
     func renderWorker() {
         return ed_render_frame(this.workerSnapshot())
     }

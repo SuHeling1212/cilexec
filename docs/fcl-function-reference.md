@@ -144,6 +144,8 @@ rolls back the whole uncommitted slice, which may then replay from the preceding
   stateful calls fail. A crash rolls back the caller's slice, so the calculation may be retried.
   Assigning the return value to an ordinary variable persists it at the caller's next commit.
   A long call can extend its caller's database transaction beyond the usual 20 ms slice target.
+  Each call is limited to 10,000,000 interpreter steps, 30 seconds, and 64 nested volatile
+  calls. Exceeding a limit fails with `VolatileLimitExceeded`.
 - **Persistent functions.** Declare `persistent func name(args) { ... }` at the top level.
   Entering the function and each interpreter step in its call stack, including nested calls
   and its return, ends the current slice and commits a recovery checkpoint. A step is an
