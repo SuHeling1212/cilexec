@@ -420,37 +420,14 @@ class EditorState {
         return term.cursorTo(cursorRow, cursorCol) + term.showCursor()
     }
 
-    // A complete normal-mode frame can be costly for a large terminal or document. Keep the
-    // interactive process responsible for terminal I/O, but move the pure string construction
-    // to a volatile process. The worker is package-private data: it is created once from this
-    // immutable package resource and recreated automatically if the private cache is cleared.
-    func workerSnapshot() {
-        return {
-            path: this.path,
-            lines: this.lines,
-            row: this.row,
-            col: this.col,
-            top: this.top,
-            left: this.left,
-            width: this.viewWidth(),
-            height: this.height,
-            dirty: this.dirty
-        }
-    }
-
     func renderWorker() {
-        space = packageData.current()
-        workerPath = "runtime/editor-render-v1.fcl"
-        if !space.exists(workerPath) {
-            space.seedResource("render-worker.fcl", workerPath)
-        }
-        return process.run(space.root() + workerPath, [this.workerSnapshot()])
+        return ed_render_frame(this.workerSnapshot())
     }
 
     func render() {
         if this.mode == "help" { return this.renderHelp() }
         // A normal terminal frame is cheaper to build in the interactive process at ordinary
-        // sizes. Move only genuinely large full redraws to process.run; the frequent one-line
+        // sizes. Move only genuinely large full redraws to a volatile function; the frequent one-line
         // delta path below never pays a process hand-off.
         if this.mode == "normal" and (#this.lines > 10000 or this.viewWidth() * this.bodyHeight() > 12000) {
             return this.renderWorker()
@@ -597,4 +574,69 @@ func open(editorPath) {
 // Universal zero-argument application entrypoint used by the package runner.
 func run() {
     return open("untitled.txt")
+}
+
+func wr_min(a, b) {
+    if a < b { return a }
+    return b
+}
+
+func wr_max(a, b) {
+    if a > b { return a }
+    return b
+}
+
+func wr_fit(value, width) {
+    visible = term.sanitize(value)
+    visible = term.truncate(visible, width)
+    return visible + text.repeat(" ", width - term.displayWidth(visible))
+}
+
+func wr_body_height(state) {
+    if state["height"] > 3 { return state["height"] - 3 }
+    return 1
+}
+
+func wr_line(state, lineIndex) {
+    line = state["lines"][lineIndex]
+    start = wr_min(state["left"], #line)
+    return wr_fit(text.slice(line, start), state["width"])
+}
+
+func wr_title(state) {
+    title = " CilEdit  " + state["path"]
+    if state["dirty"] { title = title + "  [Modified]" }
+    return term.inverse(wr_fit(title, state["width"]))
+}
+
+func wr_status(state) {
+    return " line " + util.toString(state["row"] + 1) + "/" + util.toString(#state["lines"]) + "  col " + util.toString(state["col"] + 1)
+}
+
+func wr_cursor(state) {
+    height = wr_body_height(state)
+    cursorRow = state["row"] - state["top"] + 2
+    line = state["lines"][state["row"]]
+    cursorText = text.slice(line, state["left"], state["col"])
+    cursorCol = term.displayWidth(term.sanitize(cursorText)) + 1
+    return term.cursorTo(cursorRow, cursorCol) + term.showCursor()
+}
+
+volatile func ed_render_frame(state) {
+    width = wr_max(1, state["width"])
+    height = wr_body_height(state)
+    screen = term.hideCursor() + term.clear() + wr_title(state) + "\r\n"
+    visibleRow = 0
+    available = wr_min(height, #state["lines"] - state["top"])
+    while visibleRow < available {
+        screen = screen + wr_line(state, state["top"] + visibleRow) + "\r\n"
+        visibleRow++
+    }
+    remaining = height - visibleRow
+    if remaining > 0 {
+        screen = screen + text.repeat(wr_fit("~", width) + "\r\n", remaining)
+    }
+    screen = screen + term.inverse(wr_fit(wr_status(state), width)) + "\r\n"
+    screen = screen + wr_fit("^O Save  ^X Exit  ^W Search  ^K Cut  ^U Paste  ^G Help", width)
+    return screen + wr_cursor(state)
 }

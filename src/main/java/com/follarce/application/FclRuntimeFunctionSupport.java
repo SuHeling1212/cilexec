@@ -121,9 +121,8 @@ abstract class FclRuntimeFunctionSupport {
 
     /**
      * Resolves the database file that owns the private package-data space for the linked
-     * package currently executing this function.  Both {@code packageData.*} and the
-     * package-private {@code process.run} source URI use this check, so a package can never
-     * make volatile work execute source from another package's private space.
+     * package currently executing this function. {@code packageData.*} uses this check so
+     * linked code cannot access another package's private space.
      */
     protected ObjectHash currentPackageDataFile(FclFunctionRegistry.Invocation invocation) {
         Authorization.require(transaction, process.ownerId(), Capability.PACKAGE_BIND);

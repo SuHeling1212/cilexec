@@ -83,6 +83,47 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
+    void persistentFunctionCommitsAfterEachInterpreterStep() {
+        Fixture fixture = new Fixture("""
+                persistent func calculate() {
+                    first = 1
+                    second = first + 1
+                    return second
+                }
+                answer = calculate()
+                """);
+        fixture.executor.executeSlice(fixture.claim);
+        FclContinuation entered = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(1, entered.callStack().size());
+        assertFalse(entered.scope().contains("first"));
+
+        CilProcess ready = fixture.persistence.processes.current;
+        CilProcess claimed = ready.claim(ready.executionEpoch() + 1, NOW);
+        fixture.persistence.processes.current = claimed;
+        fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+        fixture.persistence.scheduler.lease = fixture.claim;
+        fixture.executor.executeSlice(fixture.claim);
+        FclContinuation afterFirst = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(1L, afterFirst.scope().get("first"));
+        assertFalse(afterFirst.scope().contains("second"));
+        runToCompletionAfterReady(fixture);
+        FclContinuation completed = new FclPersistenceBridge(new FclContinuationCodec())
+                .restore(fixture.persistence.processes.current.continuation());
+        assertEquals(2L, completed.scope().get("answer"));
+    }
+
+    private static void runToCompletionAfterReady(Fixture fixture) {
+        CilProcess ready = fixture.persistence.processes.current;
+        CilProcess claimed = ready.claim(ready.executionEpoch() + 1, NOW);
+        fixture.persistence.processes.current = claimed;
+        fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
+        fixture.persistence.scheduler.lease = fixture.claim;
+        runToCompletion(fixture);
+    }
+
+    @Test
     void refusesAnOldFormatContinuationBeforeExecution() {
         Fixture fixture = new Fixture("value = 1\n");
         FclContinuationCodec codec = new FclContinuationCodec();
@@ -596,45 +637,15 @@ class ProcessStatementExecutorTest {
     }
 
     @Test
-    void runDeliversAnInMemoryVolatileReturnValueWithoutCreatingAChildProcess() throws Exception {
-        Fixture fixture = new Fixture("answer = process.run(\"/sum.fcl\", [40, 2])\n",
+    void volatileFunctionReturnsValueWithoutCreatingAChildProcess() {
+        Fixture fixture = new Fixture("volatile func sum(a, b) { return a + b }\nanswer = sum(40, 2)\n",
                 com.follarce.extension.SourceExtensionIndex.catalog());
-        StoredObject source = StoredObject.create(new BinaryContent(
-                "return process.arg(0) + process.arg(1)\n".getBytes(
-                        java.nio.charset.StandardCharsets.UTF_8)),
-                ProgramService.SOURCE_MEDIA_TYPE, NOW);
-        fixture.persistence.vfs.saveObject(source);
-        com.follarce.domain.vfs.VfsNode root = new com.follarce.domain.vfs.VfsNode(
-                UUID.randomUUID(), Optional.empty(), fixture.ownerId, "/",
-                com.follarce.domain.vfs.VfsNode.Type.DIRECTORY, Optional.empty(),
-                java.util.Set.of(), false, NOW, NOW);
-        fixture.persistence.vfs.insertNode(root);
-        fixture.persistence.vfs.insertNode(new com.follarce.domain.vfs.VfsNode(
-                UUID.randomUUID(), Optional.of(root.nodeId()), fixture.ownerId, "sum.fcl",
-                com.follarce.domain.vfs.VfsNode.Type.FILE, Optional.of(source.objectHash()),
-                java.util.Set.of(), false, NOW, NOW));
         int programsBefore = fixture.persistence.programs.byId.size();
         int auditsBefore = fixture.persistence.audit.events.size();
-
-        fixture.executor.executeSlice(fixture.claim);
-        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-        while (fixture.persistence.processes.current.status() == CilProcess.Status.WAITING_EFFECT
-                && System.nanoTime() < deadline) {
-            Thread.sleep(5);
-        }
-
-        assertEquals(CilProcess.Status.READY, fixture.persistence.processes.current.status());
-        CilProcess ready = fixture.persistence.processes.current;
-        CilProcess claimed = ready.claim(ready.executionEpoch() + 1, NOW);
-        fixture.persistence.processes.current = claimed;
-        fixture.claim = claim(fixture.processUid, fixture.ownerId, claimed.executionEpoch());
-        fixture.persistence.scheduler.lease = fixture.claim;
         runToCompletion(fixture);
-
         FclContinuation restored = new FclPersistenceBridge(new FclContinuationCodec())
                 .restore(fixture.persistence.processes.current.continuation());
         assertEquals(42L, restored.scope().get("answer"));
-        assertEquals(fixture.processUid, fixture.persistence.processes.current.identity().processUid());
         assertEquals(programsBefore, fixture.persistence.programs.byId.size());
         assertEquals(auditsBefore, fixture.persistence.audit.events.size());
     }

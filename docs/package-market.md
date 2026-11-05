@@ -235,7 +235,11 @@ then regenerates and rechecks `SHA256SUMS`. Only after all staged artifacts vali
 the release artifacts in `dist` replaced. Use `--skip-tests` when the full test suite has
 already been run locally; use `--verify-only` to only recheck the existing artifacts.
 
-The editor source lives in `dist/editor/`. To build a single `.db`, use the package
+The editor source lives in `dist/editor/`. It uses
+`volatile func ed_render_frame(state)` for full-frame rendering. This pure helper
+runs with disposable local state and returns a frame string to the durable editor process.
+
+To build a single `.db`, use the package
 builder bundled into the Runtime JAR so package validation uses the authoritative current
 FCL compiler:
 

@@ -121,7 +121,7 @@ rolls back the whole uncommitted slice, which may then replay from the preceding
 - **Length operator.** `#` is the only unary length operator. `#value` returns the UTF-16
   code-unit count of a string, the element count of an array or map, and `1` for a single
   non-collection value such as a system handle. `#null` is `0`.
-- **Reserved words.** `func`, `if`, `else`, `while`, `break`, `continue`, `return`,
+- **Reserved words.** `func`, `volatile`, `persistent`, `if`, `else`, `while`, `break`, `continue`, `return`,
   `import`, `include`, `as`, `and`, `or`, `not`, `public`, `private`, `true`,
   `false`, `null`, `class`, `extends`, `new`, `this`, `super`, `link`, `try`,
   `catch` cannot be used as identifiers, function names, or parameter names; doing so is a
@@ -136,6 +136,24 @@ rolls back the whole uncommitted slice, which may then replay from the preceding
   loop and no `throw`/`finally`.
 - **Top-level return.** `return` is legal at the top level, and its value becomes the program
   result. REPL submissions and the `package.run` wrapper rely on this.
+- **Volatile functions.** Declare a top-level pure calculation with `volatile func name(args) { ... }`.
+  Its call runs to completion in disposable interpreter state within the caller's current
+  execution slice. Its arguments are copied in and its return value is copied out; local
+  variables and intermediate steps are never checkpointed. It may call pure FCL functions and
+  pure built-ins only. File, process, package, IPC, terminal I/O, network, effect and other
+  stateful calls fail. A crash rolls back the caller's slice, so the calculation may be retried.
+  Assigning the return value to an ordinary variable persists it at the caller's next commit.
+  A long call can extend its caller's database transaction beyond the usual 20 ms slice target.
+- **Persistent functions.** Declare `persistent func name(args) { ... }` at the top level.
+  Entering the function and each interpreter step in its call stack, including nested calls
+  and its return, ends the current slice and commits a recovery checkpoint. A step is an
+  interpreter operation, not a lexical token such as a name or operator. Ordinary functions
+  still use bounded batches. A `persistent func` call inside a `volatile func` is rejected.
+- **External operations.** Network requests and `io.print`/`io.println` first record an effect
+  request in the current transaction and suspend the process. The effect worker performs the
+  operation only after that transaction commits. `term.render` publishes its frame after the
+  same slice commits. These calls create a commit boundary; they do not perform an extra
+  preliminary commit before recording the request or frame.
 - **Exceptions.** `try { ... } catch (e) { ... }` catches deterministic FCL program failures
   (`UndefinedFunction`, `UndefinedMethod`, `StaleHandle`, arithmetic failures, and other
   `FclRuntimeException` cases). `e` is catch-local and immutable, with `e.type`,
@@ -363,7 +381,7 @@ if child != 0 {
 
 The corresponding plain namespace operations remain for process arguments, creation, and
 waiting: `process.args()`, `process.arg(i)`, `process.getPID()`, `process.getPPID()`,
-`process.listChildren()`, `process.list()`, `process.fork()`, `process.run(path, args)`,
+`process.listChildren()`, `process.list()`, `process.fork()`,
 `process.exec(path [, args])`, `process.wait()`, and administrator
 `process.clearFinished()`. See [Durable namespaces](#durable-namespaces).
 
@@ -564,7 +582,7 @@ names below is an `UndefinedFunction` error.
 
 Kept namespace operations (they are services without an entity receiver):
 `file.link`; `process.args`, `process.arg`, `process.getPID`, `process.getPPID`,
-`process.list`, `process.listChildren`, `process.fork`, `process.run`, `process.exec`,
+`process.list`, `process.listChildren`, `process.fork`, `process.exec`,
 `process.wait`, `process.clearFinished`; `swapPool.create`, `swapPool.open`;
 `ipc.createChannel`, `ipc.createTopic`, `ipc.receive`, `ipc.poll`, `ipc.purge`;
 `package.build`, `package.install`, `package.list`, `package.recover`, `package.find`,
@@ -720,7 +738,7 @@ receiver; all still use the current process identity and capabilities.
 | Namespace | Visible calls |
 | --- | --- |
 | `file` | `file.open`, `file.create`, `file.mkdir`, `file.path`, `file.link(linkPath, targetPath)` (creates a symbolic-link node; the old object API replaces the other `file.*` names). |
-| `process` | `process.args()`, `process.arg(index)`, `process.getPID()`, `process.getPPID()`, `process.list()`, `process.listChildren()`, `process.fork()` (parent receives the child PID, the child runs from 0), `process.run(sourcePath [, args])` (volatile FCL calculation task, not a resumable process), `process.exec(commandOrPath [, args])`, `process.wait(pid)`, `process.clearFinished()`, `process.find(pid)`. |
+| `process` | `process.args()`, `process.arg(index)`, `process.getPID()`, `process.getPPID()`, `process.list()`, `process.listChildren()`, `process.fork()` (parent receives the child PID, the child runs from 0), `process.exec(commandOrPath [, args])`, `process.wait(pid)`, `process.clearFinished()`, `process.find(pid)`. |
 | `swapPool` | `swapPool.create(path)`, `swapPool.open(path)`. |
 | `ipc` | `ipc.createChannel(name)`, `ipc.channel(id)`, `ipc.createTopic(name)`, `ipc.topic(name)`, `ipc.delivery(id)`, `ipc.receive()`, `ipc.poll()`, `ipc.purge(olderThan [, limit])`. |
 | `package` | `package.build(sourcePath, outputPath)`, `package.install(vfsPath)`, `package.list()`, `package.recover()`, `package.find(hashOrCoordinate)`, `package.quotaFor(user, hash)`. |

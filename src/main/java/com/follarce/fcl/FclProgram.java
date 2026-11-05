@@ -65,6 +65,16 @@ public final class FclProgram {
         public Function(String name, List<String> parameters, int entryPoint, int endPoint) {
             this(name, parameters, entryPoint, endPoint, null, true, null);
         }
+
+        /** Stored in the existing name field so 0.0.5 FCLB layout remains readable. */
+        public boolean volatileFunction() { return name.startsWith("\u0001volatile:"); }
+
+        public static String volatileName(String name) { return "\u0001volatile:" + name; }
+
+        /** Checkpoint after every interpreter step while this function is active. */
+        public boolean persistentFunction() { return name.startsWith("\u0001persistent:"); }
+
+        public static String persistentName(String name) { return "\u0001persistent:" + name; }
     }
 
     private final List<FclInstruction> instructions;

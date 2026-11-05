@@ -21,7 +21,7 @@ public final class FclCompiler {
             "func", "if", "else", "while", "break", "continue", "return",
             "import", "include", "as", "and", "or", "not", "public", "private",
             "true", "false", "null", "class", "extends", "new", "this", "super", "link",
-            "try", "catch");
+            "try", "catch", "volatile", "persistent");
     /** Qualified names treated as the language-level memory.destroy operation. */
     private static final java.util.Set<String> DESTROY_FUNCTIONS = java.util.Set.of(
             "memory.destroy");
@@ -338,6 +338,20 @@ public final class FclCompiler {
                 function(start, true);
                 return;
             }
+            if (word("volatile")) {
+                if (!topLevel || functionDepth != 0) fail(start, "Volatile functions must be top-level");
+                Token keyword = consume(Type.IDENTIFIER, "Expected 'func' after volatile");
+                if (!keyword.text().equals("func")) fail(keyword, "Expected 'func' after volatile");
+                function(start, true, true, false);
+                return;
+            }
+            if (word("persistent")) {
+                if (!topLevel || functionDepth != 0) fail(start, "Persistent functions must be top-level");
+                Token keyword = consume(Type.IDENTIFIER, "Expected 'func' after persistent");
+                if (!keyword.text().equals("func")) fail(keyword, "Expected 'func' after persistent");
+                function(start, true, false, true);
+                return;
+            }
             if (word("public") || word("private")) {
                 boolean publicBinding = previous().text().equals("public");
                 if (word("class")) {
@@ -399,6 +413,11 @@ public final class FclCompiler {
         }
 
         private void function(Token start, boolean publicBinding) {
+            function(start, publicBinding, false, false);
+        }
+
+        private void function(Token start, boolean publicBinding, boolean volatileFunction,
+                              boolean persistentFunction) {
             Token name = consume(Type.IDENTIFIER, "Expected function name");
             requireBindableIdentifier(name, "Function name");
             if (functions.containsKey(name.text())) {
@@ -463,7 +482,9 @@ public final class FclCompiler {
             int endTarget = instructions.size();
             instructions.set(declarationPointer, new FclInstruction.FunctionDeclaration(
                     start.line(), name.text(), parameters, bodyTarget, endTarget, publicBinding));
-            functions.put(name.text(), new FclProgram.Function(name.text(), parameters,
+            String storedName = volatileFunction ? FclProgram.Function.volatileName(name.text())
+                    : persistentFunction ? FclProgram.Function.persistentName(name.text()) : name.text();
+            functions.put(name.text(), new FclProgram.Function(storedName, parameters,
                     bodyTarget, endTarget, null, publicBinding, null));
         }
 

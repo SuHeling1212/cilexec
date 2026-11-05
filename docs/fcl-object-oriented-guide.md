@@ -201,11 +201,7 @@ linked code of that exact package, with the `package.data` capability:
 ```fcl
 // Inside linked package code only:
 space = packageData.current()
-workerPath = "runtime/worker.fcl"
-if !space.exists(workerPath) {
-    space.seedResource("worker.fcl", workerPath)
-}
-process.run(space.root() + workerPath, [])
+space.append("draft.txt", "new content")
 ```
 
 Private data is not a VFS path: arbitrary `file.*` calls cannot reach it, and other users'

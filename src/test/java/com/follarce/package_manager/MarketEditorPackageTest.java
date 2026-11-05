@@ -52,7 +52,6 @@ class MarketEditorPackageTest {
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> java.util.Map.of(
                         "width", 80L, "height", 24L), "size")
-                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
                 .register("file", "exists", arguments -> false)
                 .register("file", "read", arguments -> "")
                 .register("file", "write", arguments -> {
@@ -99,7 +98,6 @@ class MarketEditorPackageTest {
         List<List<Object>> readArguments = new java.util.ArrayList<>();
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> size.get(), "size")
-                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
                 .register("file", "exists", arguments -> false)
                 .register("file", "read", arguments -> "")
                 .register("file", "write", arguments -> true)
@@ -152,7 +150,6 @@ class MarketEditorPackageTest {
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> Map.of(
                         "width", 80L, "height", 24L), "size")
-                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
                 .register("file", "exists", arguments -> false)
                 .register("file", "read", arguments -> "")
                 .register("file", "write", arguments -> {
@@ -215,17 +212,14 @@ class MarketEditorPackageTest {
         assertTrue(module.contains("func renderDelta(before)"));
         assertTrue(module.contains("return this.fix()"));
         assertTrue(module.contains("file.open(this.path).write(content)"));
-        assertTrue(module.contains("space = packageData.current()"));
-        assertTrue(module.contains("space.seedResource(\"render-worker.fcl\", workerPath)"));
-        assertTrue(module.contains("process.run(space.root() + workerPath"));
+        assertTrue(module.contains("volatile func ed_render_frame(state)"));
+        assertTrue(module.contains("return ed_render_frame(this.workerSnapshot())"));
+        assertFalse(module.contains("process.run("));
         assertTrue(module.contains("io.readKey(true)"));
         assertFalse(module.contains("io.readKey(250"));
         assertTrue(module.contains("array.removeAt(lines, row)"));
         assertFalse(module.contains("while index < #lines"));
-        String worker = new String(reader.readResource(database, "render-worker.fcl"),
-                StandardCharsets.UTF_8);
-        assertTrue(worker.contains("state = process.arg(0)"));
-        assertTrue(worker.contains("return screen + wr_cursor(state)"));
+        assertTrue(module.contains("return screen + wr_cursor(state)"));
     }
 
     @Test
@@ -244,9 +238,6 @@ class MarketEditorPackageTest {
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> java.util.Map.of(
                         "width", 80L, "height", 24L), "size")
-                .register("term", "sanitize", arguments ->
-                        com.follarce.terminal.TerminalSanitizer.sanitize(
-                                String.valueOf(arguments.getFirst())))
                 .register("file", "exists", arguments -> false)
                 .register("file", "read", arguments -> "")
                 .register("file", "write", arguments -> {
@@ -312,7 +303,6 @@ class MarketEditorPackageTest {
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> java.util.Map.of(
                         "width", 80L, "height", 24L), "size")
-                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
                 .register("file", "exists", arguments -> true)
                 .register("file", "read", arguments -> source)
                 .register("file", "write", arguments -> {
@@ -360,7 +350,6 @@ class MarketEditorPackageTest {
         FclFunctionRegistry functions = FclBuiltins.pureRegistry()
                 .register("term", "getSize", arguments -> java.util.Map.of(
                         "width", 80L, "height", 24L), "size")
-                .register("term", "sanitize", arguments -> String.valueOf(arguments.getFirst()))
                 .register("file", "exists", arguments -> true)
                 .register("file", "read", arguments -> "中a")
                 .register("file", "write", arguments -> true)

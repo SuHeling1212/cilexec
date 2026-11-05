@@ -109,7 +109,7 @@ FCL 编译为解释器指令表。每个执行片是一个数据库事务和一�
 - **注释。** 只有 `//` 行注释；`#` 与注释无关。
 - **长度运算符。** `#` 是唯一的一元长度运算符。字符串返回 UTF-16 码元数，数组/Map 返回元素
   数，其他单值（包括系统句柄）返回 `1`，`#null` 为 `0`。
-- **保留字。** `func`、`if`、`else`、`while`、`break`、`continue`、`return`、
+- **保留字。** `func`、`volatile`、`persistent`、`if`、`else`、`while`、`break`、`continue`、`return`、
   `import`、`include`、`as`、`and`、`or`、`not`、`public`、`private`、
   `true`、`false`、`null`、`class`、`extends`、`new`、`this`、`super`、
   `link`、`try`、`catch` 不能作为标识符、函数名或参数名；违反是编译错误。
@@ -120,6 +120,19 @@ FCL 编译为解释器指令表。每个执行片是一个数据库事务和一�
   `while`、`break`、`continue`、`return`。没有 `for`，也没有 `throw`/`finally`。
 - **顶层 return。** `return` 可用于顶层，其值成为程序结果；REPL 提交和 `package.run`
   包装器依赖此规则。
+- **非持久函数。** 用 `volatile func name(args) { ... }` 声明顶层纯计算函数。
+  调用在当前切片中使用可丢弃的解释器状态完成；参数与返回值会复制，局部变量及中间步骤
+  不会保存。只能调用纯 FCL 函数及纯内建函数；文件、进程、包、IPC、终端输入输出、
+  网络和外部效果操作均会失败。崩溃会回滚调用者所在切片，计算可能重试。把返回值赋给
+  普通变量后，该值会随调用者的下一次提交持久化。
+  长时间调用可能使调用者的数据库事务超过通常的 20 毫秒切片目标。
+- **全持久化函数。** 在顶层声明 `persistent func name(args) { ... }`。进入函数、函数
+  调用栈中的每个解释器步骤（包括嵌套调用和返回）都会结束当前切片并提交恢复检查点。
+  这里的步骤是解释器操作，不是标识符或运算符等词法 token。普通函数仍按有界切片
+  批量执行。`volatile func` 内调用 `persistent func` 会被拒绝。
+- **外部操作。** 网络请求和 `io.print`/`io.println` 先在当前事务记录效果请求并
+  挂起进程；该事务提交后，效果 worker 才执行操作。`term.render` 也在切片提交后
+  发布画面。这些调用形成提交边界，不会在记录请求或画面之前额外提交一次。
 - **异常。** `try { ... } catch (e) { ... }` 捕获确定性 FCL 失败（`UndefinedFunction`、
   `UndefinedMethod`、`StaleHandle`、算术错误等 `FclRuntimeException`）。`e` 是
   catch 局部不可变值，含 `e.type`、`e.message`、`e.stack`；每个栈帧含
@@ -312,7 +325,7 @@ if child != 0 {
 
 对应普通命名空间操作仍保留：`process.args()`、`process.arg(i)`、`process.getPID()`、
 `process.getPPID()`、`process.listChildren()`、`process.list()`、`process.fork()`、
-`process.run(path, args)`、`process.exec(path [, args])`、`process.wait()`，
+`process.exec(path [, args])`、`process.wait()`，
 以及管理员 `process.clearFinished()`。
 
 ### Swap Pool（`swapPool`）
@@ -656,7 +669,7 @@ terminal.find("<terminal-session-uuid>").remove()
 | 命名空间 | 可见调用 |
 | --- | --- |
 | `file` | `file.open`、`file.create`、`file.mkdir`、`file.path`、`file.link(linkPath, targetPath)`（创建符号链接节点；其余 `file.*` 已由对象 API 取代）。 |
-| `process` | `process.args()`、`process.arg(index)`、`process.getPID()`、`process.getPPID()`、`process.list()`、`process.listChildren()`、`process.fork()`（父进程得到子 PID，子进程从 0 运行）、`process.run(sourcePath [, args])`（非持久 FCL 计算任务，不是可恢复进程对象）、`process.exec(commandOrPath [, args])`、`process.wait(pid)`、`process.clearFinished()`、`process.find(pid)`。 |
+| `process` | `process.args()`、`process.arg(index)`、`process.getPID()`、`process.getPPID()`、`process.list()`、`process.listChildren()`、`process.fork()`（父进程得到子 PID，子进程从 0 运行）、`process.exec(commandOrPath [, args])`、`process.wait(pid)`、`process.clearFinished()`、`process.find(pid)`。 |
 | `swapPool` | `swapPool.create(path)`、`swapPool.open(path)`。 |
 | `ipc` | `ipc.createChannel(name)`、`ipc.channel(id)`、`ipc.createTopic(name)`、`ipc.topic(name)`、`ipc.delivery(id)`、`ipc.receive()`、`ipc.poll()`、`ipc.purge(olderThan [, limit])`。 |
 | `package` | `package.build(sourcePath, outputPath)`、`package.install(vfsPath)`、`package.list()`、`package.recover()`、`package.find(hashOrCoordinate)`、`package.quotaFor(user, hash)`。 |

@@ -185,11 +185,7 @@ pid = process.find(process.getPID()).kill()   // 终止自身返回 true
 ```fcl
 // 仅已链接包代码内可用：
 space = packageData.current()
-workerPath = "runtime/worker.fcl"
-if !space.exists(workerPath) {
-    space.seedResource("worker.fcl", workerPath)
-}
-process.run(space.root() + workerPath, [])
+space.append("draft.txt", "new content")
 ```
 
 私有数据不是 VFS 路径：任意 `file.*` 都无法到达，其他用户的私有空间也不可达。

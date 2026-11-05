@@ -215,10 +215,6 @@ final class FclCoreRuntimeFunctions extends FclVfsRuntimeSupport {
                     return Map.of("width", (long) size.width(),
                             "height", (long) size.height());
                 }, "size")
-                .register("term", "sanitize", args -> {
-                    arity(args, 1, "term.sanitize");
-                    return ConsoleTextSanitizer.sanitize(display(args.getFirst()));
-                })
                 .registerContextual("term", "render", (args, invocation) -> {
                     arity(args, 1, "term.render");
                     String text = string(args.getFirst(), "term.render frame");

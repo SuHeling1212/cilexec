@@ -80,7 +80,7 @@ public final class FclRuntimeFunctions extends FclVfsRuntimeSupport {
 
     private static void volatileUnavailable(VolatileProcessRequest request) {
         throw new FclRuntimeException(
-                "process.run is only available while executing a durable process");
+                "Legacy volatile process requests are unavailable");
     }
 
     private static void terminalRenderUnavailable(ProcessOutput output) {

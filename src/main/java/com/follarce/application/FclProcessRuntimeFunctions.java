@@ -12,26 +12,19 @@ import com.follarce.domain.process.ProcessInbox;
 import com.follarce.domain.process.ProcessIdentity;
 import com.follarce.domain.program.Program;
 import com.follarce.domain.timer.ProcessTimer;
-import com.follarce.domain.vfs.BinaryContent;
 import com.follarce.ipc.IpcService;
-import com.follarce.domain.vfs.ObjectHash;
 import com.follarce.domain.vfs.VfsNode;
 import com.follarce.fcl.FclContinuation;
 import com.follarce.fcl.FclContinuationCodec;
 import com.follarce.fcl.FclFunctionRegistry;
-import com.follarce.fcl.FclCompiler;
-import com.follarce.fcl.FclInstruction;
 import com.follarce.fcl.FclPath;
-import com.follarce.fcl.FclProgram;
 import com.follarce.fcl.FclRuntimeException;
 import com.follarce.fcl.FclSystemHandle;
 import com.follarce.fcl.FclScope;
 import com.follarce.fcl.FclSuspension;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -40,19 +33,6 @@ import java.util.UUID;
 
 final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
     static final String STARTUP_ARGUMENTS_SCOPE_KEY = "cilexec.process.arguments";
-    private static final int VOLATILE_PROGRAM_CACHE_LIMIT = 64;
-    /**
-     * A bounded optimisation cache only. The source bytes remain authoritative in the VFS or
-     * package-data store, and a restart simply recompiles them.
-     */
-    private static final Map<String, FclProgram> VOLATILE_PROGRAM_CACHE =
-            new LinkedHashMap<>(VOLATILE_PROGRAM_CACHE_LIMIT + 1, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, FclProgram> entry) {
-                    return size() > VOLATILE_PROGRAM_CACHE_LIMIT;
-                }
-            };
-
     FclProcessRuntimeFunctions(FclVfsRuntimeSupport source) { super(source); }
 
     protected void registerProcesses() {
@@ -125,32 +105,6 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
                                     com.follarce.domain.scheduler.SchedulerQueueEntry.Status.READY));
                     audit("process.fork", childUid, Map.of("pid", Long.toString(childPid)));
                     return childPid;
-                })
-                .registerContextual("process", "run", (args, invocation) -> {
-                    arity(args, 2, "process.run");
-                    if (invocation.continuation().scope().contains(ProcessInbox.VOLATILE_RESULT)) {
-                        return consumeVolatileResult(invocation.continuation());
-                    }
-                    Authorization.require(transaction, process.ownerId(),
-                            Capability.PROCESS_CREATE);
-                    String requestedPath = string(args.getFirst(), "process.run path");
-                    List<Object> startupArguments = arguments(args.get(1), "process.run arguments");
-                    VolatileSource volatileSource = volatileSource(requestedPath, invocation);
-                    FclProgram compiled = cachedVolatileProgram(volatileSource.source());
-                    if (compiled.instructions().stream().anyMatch(instruction ->
-                            instruction instanceof FclInstruction.Import
-                                    || instruction instanceof FclInstruction.Include)) {
-                        throw new FclRuntimeException(
-                                "volatile processes cannot import packages or source modules");
-                    }
-                    UUID taskId = UUID.randomUUID();
-                    invocation.continuation().waitFor("volatile:" + taskId,
-                            Map.of("taskId", taskId.toString(),
-                                    "expressionId", invocation.expressionId()));
-                    volatileProcessRequests.accept(new VolatileProcessRequest(process.ownerId(),
-                            process.identity().processUid(), taskId, compiled, startupArguments,
-                            volatileSource.description()));
-                    throw FclSuspension.suspend();
                 })
                 .registerContextual("process", "exec", (args, invocation) -> {
                     if (args.size() < 1 || args.size() > 2) {
@@ -248,84 +202,6 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
         return target;
     }
 
-    private VolatileSource volatileSource(String requestedPath,
-                                          FclFunctionRegistry.Invocation invocation) {
-        if (requestedPath.startsWith("package-data://")) {
-            return packageDataVolatileSource(requestedPath, invocation);
-        }
-        String absolutePath = requestedPath.replace('\\', '/').startsWith("/")
-                ? normalize(requestedPath)
-                : FclPath.resolve(invocation.continuation(), requestedPath);
-        RoutedPath routed = route(absolutePath, process.ownerId());
-        if (!routed.ownerId().equals(process.ownerId())) {
-            throw new FclRuntimeException(
-                    "process.run accepts a file in the current user's VFS");
-        }
-        VfsNode sourceNode = requireNode(routed.path(), routed.ownerId());
-        requireType(sourceNode, VfsNode.Type.FILE, "process.run");
-        if (absolutePath.toLowerCase(Locale.ROOT).endsWith(".db")) {
-            throw new FclRuntimeException(
-                    "process.run accepts an FCL source file, not a package database");
-        }
-        String source = readText(routed.path(), routed.ownerId());
-        return new VolatileSource(absolutePath, new FclSourceIncludes().expand(transaction,
-                process.ownerId(), source, parentDirectory(routed.path())));
-    }
-
-    private VolatileSource packageDataVolatileSource(String requestedPath,
-                                                     FclFunctionRegistry.Invocation invocation) {
-        ObjectHash allowedDataFile = currentPackageDataFile(invocation);
-        String remainder = requestedPath.substring("package-data://".length());
-        int separator = remainder.indexOf('/');
-        if (separator <= 0 || separator == remainder.length() - 1) {
-            throw new FclRuntimeException("Invalid package-data process.run source URI");
-        }
-        String fileHash = remainder.substring(0, separator);
-        if (!allowedDataFile.value().equals(fileHash)) {
-            throw new FclRuntimeException(
-                    "process.run may only execute source from the calling package data space");
-        }
-        String relativePath = remainder.substring(separator + 1);
-        requireCanonicalPackageDataPath(relativePath);
-        byte[] source = transaction.packages().readDataEntry(process.ownerId(), allowedDataFile,
-                relativePath);
-        if (source == null) {
-            throw new FclRuntimeException("Unknown package-data process.run source: "
-                    + relativePath);
-        }
-        if (source.length > MAX_IN_MEMORY_READ_BYTES) {
-            throw new FclRuntimeException("package-data process.run source exceeds the 16 MiB limit");
-        }
-        return new VolatileSource(requestedPath,
-                new String(source, StandardCharsets.UTF_8));
-    }
-
-    private static void requireCanonicalPackageDataPath(String path) {
-        if (path.isBlank() || path.startsWith("/") || path.endsWith("/")) {
-            throw new FclRuntimeException("Invalid package-data process.run source path");
-        }
-        for (String part : path.split("/")) {
-            if (part.isBlank() || part.equals(".") || part.equals("..")) {
-                throw new FclRuntimeException("Invalid package-data process.run source path");
-            }
-        }
-    }
-
-    private static FclProgram cachedVolatileProgram(String source) {
-        String key = ObjectHash.sha256(new BinaryContent(source.getBytes(StandardCharsets.UTF_8)))
-                .value();
-        synchronized (VOLATILE_PROGRAM_CACHE) {
-            FclProgram cached = VOLATILE_PROGRAM_CACHE.get(key);
-            if (cached != null) return cached;
-            FclProgram compiled = new FclCompiler().compile(source);
-            VOLATILE_PROGRAM_CACHE.put(key, compiled);
-            return compiled;
-        }
-    }
-
-    private record VolatileSource(String description, String source) {
-    }
-
     private static List<Object> startupArguments(FclContinuation continuation) {
         FclScope scope = continuation.globalScope();
         if (!scope.contains(STARTUP_ARGUMENTS_SCOPE_KEY)) return List.of();
@@ -339,17 +215,6 @@ final class FclProcessRuntimeFunctions extends FclVfsRuntimeSupport {
         List<Object> copied = new ArrayList<>(supplied.size());
         supplied.forEach(item -> copied.add(VolatileProcessRequest.copyValue(item)));
         return java.util.Collections.unmodifiableList(copied);
-    }
-
-    private static Object consumeVolatileResult(FclContinuation continuation) {
-        Object raw = continuation.scope().remove(ProcessInbox.VOLATILE_RESULT);
-        if (!(raw instanceof Map<?, ?> result) || !(result.get("ok") instanceof Boolean ok)) {
-            throw new FclRuntimeException("Invalid volatile process result");
-        }
-        if (ok) return result.get("value");
-        Object failure = result.get("failure");
-        throw new FclRuntimeException(failure instanceof String message && !message.isBlank()
-                ? message : "VolatileProcessLost");
     }
 
     /**

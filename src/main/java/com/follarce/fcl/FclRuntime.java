@@ -11,9 +11,15 @@ public final class FclRuntime {
     /** Keeps a recursive FCL program from exhausting heap through persisted call frames. */
     static final int MAX_CALL_DEPTH = 256;
     private final FclFunctionRegistry functions;
+    private final boolean allowPersistentCalls;
 
     public FclRuntime(FclFunctionRegistry functions) {
+        this(functions, true);
+    }
+
+    FclRuntime(FclFunctionRegistry functions, boolean allowPersistentCalls) {
         this.functions = Objects.requireNonNull(functions, "functions");
+        this.allowPersistentCalls = allowPersistentCalls;
     }
 
     public FclStepResult executeOne(FclProgram program, FclContinuation continuation) {
@@ -241,6 +247,9 @@ public final class FclRuntime {
         FclProgram.Function function = program.function(call.name());
         if (function == null) {
             throw new FclRuntimeException("UndefinedFunction", "Undefined user function: " + call.name());
+        }
+        if (function.persistentFunction() && !allowPersistentCalls) {
+            throw new FclRuntimeException("Persistent functions cannot run inside volatile functions");
         }
         if (call.arguments().size() != function.parameters().size()) {
             throw new FclRuntimeException("InvalidArgument", "Function " + call.name() + " expects "

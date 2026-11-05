@@ -148,6 +148,11 @@ final class FclExpressionEvaluator {
                 userFunction = null;
             }
             if (userFunction != null) {
+                if (userFunction.volatileFunction()) {
+                    Object value = FclVolatileFunction.call(program, userFunction, arguments);
+                    recordResult(call.id(), value);
+                    return value;
+                }
                 throw new UserCallSignal(new UserCall(call.id(), call.name(), arguments, null, null, false));
             }
             Object value = functions.invoke(call.name(), arguments,

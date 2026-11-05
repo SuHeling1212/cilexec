@@ -236,6 +236,7 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             Continuation previousForPersistence = current.continuation();
             long sliceStarted = System.nanoTime();
             for (int executed = 0; executed < MAX_STEPS_PER_SLICE; executed++) {
+                boolean persistentBefore = inPersistentFunction(compiled, continuation);
                 step = statementRuntime.executeOne(compiled, continuation);
                 ExecutionReplacement replacement;
                 try {
@@ -261,7 +262,8 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
                     return PostCommitSignal.NONE;
                 }
                 deliverPendingTerminalInput(transaction, current, continuation, now);
-                if (sliceBoundary(step, continuation)
+                if (persistentBefore || inPersistentFunction(compiled, continuation)
+                        || sliceBoundary(step, continuation)
                         || System.nanoTime() - sliceStarted >= MAX_SLICE_NANOS) {
                     break;
                 }
@@ -387,6 +389,14 @@ public final class ProcessStatementExecutor implements ClaimedProcessHandler {
             return true;
         }
         return continuation.waitState().kind() != FclContinuation.WaitKind.NONE;
+    }
+
+    private static boolean inPersistentFunction(FclProgram program,
+                                                 FclContinuation continuation) {
+        return continuation.callStack().stream().anyMatch(frame -> {
+            FclProgram.Function function = program.function(frame.functionName());
+            return function != null && function.persistentFunction();
+        });
     }
 
     private static void validateClaim(CilProcess process, SchedulerClaim claim) {

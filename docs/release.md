@@ -30,6 +30,22 @@ The default flow runs the Maven tests and produces:
 - `dist/release-manifest.json`
 - `dist/SHA256SUMS`
 
+For GitHub Release, build the shaded Runtime JAR and derive four downloads from that same
+verified artifact:
+
+```bash
+mvn package -DskipTests
+python3 tools/platform_jars.py
+```
+
+`build/platform-jars/` then contains `cilexec-0.0.5-general.jar`,
+`cilexec-0.0.5-linux.jar`, `cilexec-0.0.5-windows.jar`,
+`cilexec-0.0.5-macos.jar`, and their `SHA256SUMS`. The general JAR includes
+Linux x64/ARM64, Windows x64, and macOS x64/ARM64 PostgreSQL resources.
+The platform JARs retain only the matching native resources; they otherwise contain
+the same Runtime classes. All require Java 26. The separate market server remains
+`cilexec-market-server.jar` in the full distribution.
+
 The flow cross-validates JARs, SQLite packages, the market catalog, release documents,
 license, resolved Maven runtime inventories, SBOM, release manifest, and SHA-256 sums in a
 temporary directory. The manifest records the version, revision, formal/candidate status,

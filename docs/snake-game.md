@@ -38,3 +38,5 @@ Every completed FCL execution slice persists the `SnakeGame` object before its f
 published. A Runtime crash can discard the current repaint and the in-flight movement,
 but recovery resumes from the last committed whole game state. The game never persists ANSI
 frames themselves because they can be regenerated from that state.
+The pure `sn_fit` text-formatting helper is a `volatile func`; its temporary strings are
+discarded after each call, while the game state remains durable.

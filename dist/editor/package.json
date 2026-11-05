@@ -10,9 +10,7 @@
       "path": "main.fcl"
     }
   ],
-  "resources": [
-    "render-worker.fcl"
-  ],
+  "resources": [],
   "dependencies": [],
   "entrypoints": [
     {

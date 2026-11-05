@@ -334,7 +334,11 @@ public final class FclBuiltins {
     }
 
     private static void registerTerminal(FclFunctionRegistry registry) {
-        registry.register("term", "color", args -> {
+        registry.register("term", "sanitize", args -> {
+                    arity(args, 1, "sanitize");
+                    return sanitize(FclValues.display(args.getFirst()));
+                })
+                .register("term", "color", args -> {
                     arity(args, 2, "color");
                     return ansiColor(stringAt(args, 0, "color"))
                             + String.valueOf(args.get(1)) + "\u001b[0m";
@@ -442,6 +446,22 @@ public final class FclBuiltins {
                 return ansiColor(color) + String.valueOf(args.getFirst()) + "\u001b[0m";
             });
         }
+    }
+
+    private static String sanitize(String value) {
+        if (value == null || value.isEmpty()) return "";
+        StringBuilder safe = new StringBuilder(value.length());
+        value.codePoints().forEach(codePoint -> {
+            int type = Character.getType(codePoint);
+            if (codePoint == '\t') safe.append("    ");
+            else if (Character.isISOControl(codePoint) || type == Character.FORMAT
+                    || type == Character.LINE_SEPARATOR || type == Character.PARAGRAPH_SEPARATOR
+                    || codePoint == 0x202A || codePoint == 0x202B || codePoint == 0x202D
+                    || codePoint == 0x202E || codePoint == 0x202C
+                    || (codePoint >= 0x2066 && codePoint <= 0x2069)) safe.append('?');
+            else safe.appendCodePoint(codePoint);
+        });
+        return safe.toString();
     }
 
     private static String ansiWrap(List<Object> args, String function, String code) {

@@ -13,7 +13,7 @@ func sn_max(a, b) {
     return b
 }
 
-func sn_fit(value, width) {
+volatile func sn_fit(value, width) {
     clean = term.truncate(value, width)
     used = term.displayWidth(clean)
     if used < width { return clean + text.repeat(" ", width - used) }

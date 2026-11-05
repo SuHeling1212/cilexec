@@ -113,6 +113,10 @@
         </dependency>
         <dependency>
             <groupId>io.zonky.test.postgres</groupId>
+            <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zonky.test.postgres</groupId>
             <artifactId>embedded-postgres-binaries-linux-amd64</artifactId>
         </dependency>
         <dependency>
@@ -122,12 +126,6 @@
         <dependency>
             <groupId>io.zonky.test.postgres</groupId>
             <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
-        </dependency>
-        <!-- Test hosts may be macOS x64; keep that archive off the runtime classpath. -->
-        <dependency>
-            <groupId>io.zonky.test.postgres</groupId>
-            <artifactId>embedded-postgres-binaries-darwin-amd64</artifactId>
-            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>

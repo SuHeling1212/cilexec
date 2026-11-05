@@ -31,7 +31,7 @@ class FclBuiltinsExhaustiveTest {
                 "text.repeat", "text.replace",
                 "path.normalize", "path.resolve", "path.getFileName",
                 "path.getParentPath", "path.getParent", "path.isAbsolute", "path.join",
-                "term.color", "term.paint", "term.bold", "term.dim", "term.reset",
+                "term.sanitize", "term.color", "term.paint", "term.bold", "term.dim", "term.reset",
                 "term.clear", "term.eraseLine", "term.inverse", "term.underline",
                 "term.strikethrough", "term.alternate", "term.mouse", "term.paste",
                 "term.focus", "term.bg", "term.color256", "term.bg256",
@@ -112,6 +112,7 @@ class FclBuiltinsExhaustiveTest {
         assertEquals(true, call("path.isAbsolute", "\\a"));
         assertEquals("/a/c", call("path.join", "/a", "b", "..", "c"));
 
+        assertEquals("a?b", call("term.sanitize", "a\u001bb"));
         assertEquals("\u001b[31mx\u001b[0m", call("term.color", "red", "x"));
         assertEquals("\u001b[34mx\u001b[0m", call("term.paint", "BLUE", "x"));
         assertEquals("\u001b[1mx\u001b[0m", call("term.bold", "x"));

@@ -27,11 +27,18 @@ FCL source → compiler → continuation program
 ```
 
 The compiler and interpreter live in `com.follarce.fcl`. The application layer
-registers database-aware built-ins and runs process slices. A normal process slice
-advances one interpreter step; a terminal slice may batch up to 4096 steps or 20 ms
-and stops sooner on suspension, directive, completion, or failure. External effects
-use a journal and separate workers. IPC, timers, terminal input, and package bindings
+registers database-aware built-ins and runs process slices. Every process slice may
+batch up to 4096 interpreter steps or 20 ms and stops sooner on suspension, directive,
+completion, or failure. A `volatile func` call runs to completion inside one step, so a long
+pure calculation can exceed the nominal 20 ms slice duration; only its result crosses the
+caller checkpoint. `persistent func` ends a slice after each interpreter step while its call
+stack is active. External effects use a journal and separate workers. IPC, timers, terminal input, and package bindings
 are durable.
+
+`volatile func` and `persistent func` store their declaration flags in the existing FCLB 5
+function-name field.
+The binary layout, release version, schema version, and continuation format stay at 0.0.5 / 5.
+Previously stored 0.0.5 programs without the flag still decode as ordinary functions.
 
 FCL 0.0.5 uses system entity handles for files, processes, IPC, pools, packages, and
 administrative entities. A handle serializes a type, stable identity, and any required

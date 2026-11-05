@@ -97,7 +97,11 @@ public final class FclProgramLinker {
                     : context.program().functions().entrySet()) {
                 FclProgram.Function source = entry.getValue();
                 String internal = localNames.get(entry.getKey());
-                FclProgram.Function linked = new FclProgram.Function(internal,
+                String storedName = source.volatileFunction()
+                        ? FclProgram.Function.volatileName(internal)
+                        : source.persistentFunction()
+                        ? FclProgram.Function.persistentName(internal) : internal;
+                FclProgram.Function linked = new FclProgram.Function(storedName,
                         source.parameters(), source.entryPoint() + offset,
                         source.endPoint() + offset, context.module().packageIdentity(),
                         source.publicBinding(), context.module().bindings());
